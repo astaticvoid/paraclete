@@ -1,0 +1,15 @@
+[package]
+name        = "paraclete-hal"
+description = "Paraclete L0 HAL — audio I/O, MIDI I/O, controller abstraction"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+license     = "GPL-3.0-or-later"
+
+[dependencies]
+paraclete-node-api = { workspace = true }
+paraclete-runtime  = { workspace = true }
+cpal        = { workspace = true }
+log         = { workspace = true }
+crossterm   = "0.27"

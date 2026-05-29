@@ -1,0 +1,11 @@
+[package]
+name        = "paraclete-node-api"
+description = "Paraclete L2 Node API — the universal node contract (LGPL-3.0)"
+version.workspace     = true
+edition.workspace     = true
+authors.workspace     = true
+rust-version.workspace = true
+license     = "LGPL-3.0-or-later"
+
+[dependencies]
+midi2.workspace = true

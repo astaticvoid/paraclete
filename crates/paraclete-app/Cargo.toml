@@ -1,0 +1,20 @@
+[package]
+name        = "paraclete-app"
+description = "Paraclete standalone application binary"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+license     = "GPL-3.0-or-later"
+
+[[bin]]
+name = "paraclete"
+path = "src/main.rs"
+
+[dependencies]
+paraclete-node-api  = { workspace = true }
+paraclete-runtime   = { workspace = true }
+paraclete-hal       = { workspace = true }
+paraclete-nodes     = { workspace = true }
+paraclete-scripting = { workspace = true }
+log  = { workspace = true }

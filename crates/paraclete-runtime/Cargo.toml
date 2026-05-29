@@ -1,0 +1,13 @@
+[package]
+name        = "paraclete-runtime"
+description = "Paraclete L1 Runtime — graph scheduling, configurator/executor split, clock federation"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+license     = "GPL-3.0-or-later"
+
+[dependencies]
+paraclete-node-api = { workspace = true }
+petgraph = { workspace = true }
+log = { workspace = true }

@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/paraclete-node-api",
+    "crates/paraclete-runtime",
+    "crates/paraclete-hal",
+    "crates/paraclete-nodes",
+    "crates/paraclete-scripting",
+    "crates/paraclete-app",
+]
+
+[workspace.package]
+version      = "0.1.0"
+edition      = "2021"
+authors      = ["Paraclete Contributors"]
+rust-version = "1.75"
+
+[workspace.dependencies]
+paraclete-node-api  = { path = "crates/paraclete-node-api" }
+paraclete-runtime   = { path = "crates/paraclete-runtime" }
+paraclete-hal       = { path = "crates/paraclete-hal" }
+paraclete-nodes     = { path = "crates/paraclete-nodes" }
+paraclete-scripting = { path = "crates/paraclete-scripting" }
+
+cpal     = "0.15"
+rhai     = { version = "1", features = ["sync"] }
+petgraph = "0.6"
+log      = "0.4"
+midi2    = "0.11"
