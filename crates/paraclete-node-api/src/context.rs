@@ -70,45 +70,63 @@ pub struct ProcessInput<'a> {
 }
 
 impl<'a> ProcessInput<'a> {
-    fn find_input(&self, port_id: u32, kind: SignalPortKind) -> &[f32] {
-        for slot in self.signal_inputs {
-            if slot.port_id == port_id {
-                assert_eq!(slot.kind, kind, "signal port {port_id} type mismatch");
-                // SAFETY: ptr is valid for the duration of this process() call.
-                return unsafe { std::slice::from_raw_parts(slot.ptr, slot.frames) };
-            }
-        }
-        panic!("no signal input with port_id {port_id}");
-    }
-
-    // The signal accessor methods return typed buffer references.
-    // At P0 these always panic because signal_inputs is always empty.
-    // P1 implementation will coerce the raw slice to the typed buffer via a
-    // safe wrapper once the buffer layout is stabilised.
+    // Signal buffer views for connected ports arrive at P4.
+    // For now: panic on wrong type (programming error), return silence on
+    // unconnected (normal operation — the port simply has no source).
 
     pub fn cv(&self, port_id: u32) -> &CvBuffer {
-        let _ = self.find_input(port_id, SignalPortKind::Cv);
-        unimplemented!("signal port views land at P1")
+        for slot in self.signal_inputs {
+            if slot.port_id == port_id {
+                assert_eq!(slot.kind, SignalPortKind::Cv, "port {port_id} is not a Cv port");
+                unimplemented!("connected signal port views arrive at P4");
+            }
+        }
+        static SILENT: std::sync::OnceLock<CvBuffer> = std::sync::OnceLock::new();
+        SILENT.get_or_init(|| CvBuffer::new(0))
     }
 
     pub fn phase(&self, port_id: u32) -> &PhaseBuffer {
-        let _ = self.find_input(port_id, SignalPortKind::Phase);
-        unimplemented!("signal port views land at P1")
+        for slot in self.signal_inputs {
+            if slot.port_id == port_id {
+                assert_eq!(slot.kind, SignalPortKind::Phase, "port {port_id} is not a Phase port");
+                unimplemented!("connected signal port views arrive at P4");
+            }
+        }
+        static SILENT: std::sync::OnceLock<PhaseBuffer> = std::sync::OnceLock::new();
+        SILENT.get_or_init(|| PhaseBuffer::new(0))
     }
 
     pub fn logic(&self, port_id: u32) -> &LogicBuffer {
-        let _ = self.find_input(port_id, SignalPortKind::Logic);
-        unimplemented!("signal port views land at P1")
+        for slot in self.signal_inputs {
+            if slot.port_id == port_id {
+                assert_eq!(slot.kind, SignalPortKind::Logic, "port {port_id} is not a Logic port");
+                unimplemented!("connected signal port views arrive at P4");
+            }
+        }
+        static SILENT: std::sync::OnceLock<LogicBuffer> = std::sync::OnceLock::new();
+        SILENT.get_or_init(|| LogicBuffer::new(0))
     }
 
     pub fn pitch(&self, port_id: u32) -> &PitchBuffer {
-        let _ = self.find_input(port_id, SignalPortKind::Pitch);
-        unimplemented!("signal port views land at P1")
+        for slot in self.signal_inputs {
+            if slot.port_id == port_id {
+                assert_eq!(slot.kind, SignalPortKind::Pitch, "port {port_id} is not a Pitch port");
+                unimplemented!("connected signal port views arrive at P4");
+            }
+        }
+        static SILENT: std::sync::OnceLock<PitchBuffer> = std::sync::OnceLock::new();
+        SILENT.get_or_init(|| PitchBuffer::new(0))
     }
 
     pub fn modulation(&self, port_id: u32) -> &ModBuffer {
-        let _ = self.find_input(port_id, SignalPortKind::Modulation);
-        unimplemented!("signal port views land at P1")
+        for slot in self.signal_inputs {
+            if slot.port_id == port_id {
+                assert_eq!(slot.kind, SignalPortKind::Modulation, "port {port_id} is not a Modulation port");
+                unimplemented!("connected signal port views arrive at P4");
+            }
+        }
+        static SILENT: std::sync::OnceLock<ModBuffer> = std::sync::OnceLock::new();
+        SILENT.get_or_init(|| ModBuffer::new(0))
     }
 }
 

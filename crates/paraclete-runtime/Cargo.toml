@@ -11,3 +11,4 @@ license     = "GPL-3.0-or-later"
 paraclete-node-api = { workspace = true }
 petgraph = { workspace = true }
 log = { workspace = true }
+rtrb = { workspace = true }

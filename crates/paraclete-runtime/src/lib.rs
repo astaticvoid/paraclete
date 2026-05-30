@@ -14,5 +14,7 @@ pub(crate) mod ring_buffer;
 pub use configurator::NodeConfigurator;
 pub use executor::NodeExecutor;
 pub use graph::NodeId;
-pub use state_bus::StateBusSubscription;
 pub use message::ConfigMessage;
+
+// Re-export StateBusSubscription from L2 for convenience.
+pub use paraclete_node_api::StateBusSubscription;

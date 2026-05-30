@@ -23,7 +23,9 @@ paraclete-nodes     = { path = "crates/paraclete-nodes" }
 paraclete-scripting = { path = "crates/paraclete-scripting" }
 
 cpal     = "0.15"
-rhai     = { version = "1", features = ["sync"] }
+rhai     = "1"
+rtrb     = "0.3"
+hound    = "3.5"
 petgraph = "0.6"
 log      = "0.4"
 midi2    = "0.11"

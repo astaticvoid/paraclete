@@ -1,23 +1,50 @@
-/// Agreement produced by the runtime when two nodes connect.
-/// Stub at P0 — baseline only. Full negotiation protocol at Phase 3.
+use crate::capability::ParamUnit;
+use crate::transport::TransportInfo;
+
+// ── LockableParam ─────────────────────────────────────────────────────────────
+
+/// A parameter exposed for locking by a connected sequencer.
+///
+/// Declared by instrument nodes in `ConnectionAgreement::lockable_params`
+/// during the connection handshake. The sequencer reads this list to discover
+/// which parameters can be overridden per-step.
+#[derive(Clone, Debug)]
+pub struct LockableParam {
+    /// Hash of parameter name. Matches `ParamDescriptor::id`.
+    pub param_id: u32,
+    pub name: String,
+    pub min: f64,
+    pub max: f64,
+    pub default: f64,
+    pub unit: ParamUnit,
+}
+
+// ── ConnectionAgreement ──────────────────────────────────────────────────────
+
+/// Agreement produced during the connection handshake.
+/// Both nodes receive a reconciled copy via `set_connection_record()`.
+#[derive(Clone, Debug)]
 pub struct ConnectionAgreement {
-    /// Agreed audio buffer format.
     pub sample_rate: f32,
     pub block_size: usize,
     pub channels: usize,
 
-    /// Negotiated space_ids for custom extended events.
-    /// Empty at P0.
+    /// Negotiated space IDs for custom extended events. Empty at P0.
     pub space_ids: Vec<(String, u16)>,
 
     /// Current clock position at connection time.
-    /// Downstream nodes initialise their internal transport state from this
-    /// so they do not have to wait for the next TransportEvent.
-    pub initial_transport: Option<crate::transport::TransportInfo>,
+    pub initial_transport: Option<TransportInfo>,
+
+    /// Parameters this node will accept `ParamLockEvent` for.
+    /// Populated by the receiving node (e.g. `Sampler`) in `negotiate()`.
+    /// The sending node (e.g. `Sequencer`) reads this to discover what it
+    /// can lock per step.
+    pub lockable_params: Vec<LockableParam>,
 }
 
 impl ConnectionAgreement {
-    /// Baseline agreement — no custom extensions, standard stereo audio format, no initial transport.
+    /// Baseline agreement — standard stereo audio, no custom event spaces,
+    /// no lockable parameters.
     pub fn baseline() -> Self {
         Self {
             sample_rate: 44100.0,
@@ -25,8 +52,25 @@ impl ConnectionAgreement {
             channels: 2,
             space_ids: vec![],
             initial_transport: None,
+            lockable_params: vec![],
         }
     }
+}
+
+// ── ConnectionRecord ──────────────────────────────────────────────────────────
+
+/// Delivered to both nodes after the connection handshake completes.
+///
+/// Each node receives the reconciled agreement and its partner's node ID.
+/// Nodes that implement `Negotiable` store this to know who they are
+/// connected to and what was agreed.
+#[derive(Clone, Debug)]
+pub struct ConnectionRecord {
+    pub agreement: ConnectionAgreement,
+    /// The `NodeId` (user-assigned `u32`) of the connected partner.
+    pub partner_id: u32,
+    /// Which of this node's ports this record applies to.
+    pub local_port_id: u32,
 }
 
 #[cfg(test)]
@@ -51,5 +95,52 @@ mod tests {
     #[test]
     fn baseline_agreement_has_no_custom_event_spaces() {
         assert!(ConnectionAgreement::baseline().space_ids.is_empty());
+    }
+
+    #[test]
+    fn baseline_agreement_has_no_lockable_params() {
+        assert!(ConnectionAgreement::baseline().lockable_params.is_empty());
+    }
+
+    #[test]
+    fn connection_agreement_carries_lockable_params() {
+        let mut ag = ConnectionAgreement::baseline();
+        ag.lockable_params.push(LockableParam {
+            param_id: 42,
+            name: "pitch".into(),
+            min: -24.0,
+            max: 24.0,
+            default: 0.0,
+            unit: ParamUnit::Semitones,
+        });
+        assert_eq!(ag.lockable_params.len(), 1);
+        assert_eq!(ag.lockable_params[0].param_id, 42);
+    }
+
+    #[test]
+    fn lockable_param_is_clone_and_debug() {
+        let p = LockableParam {
+            param_id: 1,
+            name: "volume".into(),
+            min: 0.0,
+            max: 1.0,
+            default: 0.8,
+            unit: ParamUnit::Generic,
+        };
+        let q = p.clone();
+        assert_eq!(q.param_id, 1);
+        let _ = format!("{:?}", q);
+    }
+
+    #[test]
+    fn connection_record_stores_partner_id_and_port() {
+        let record = ConnectionRecord {
+            agreement: ConnectionAgreement::baseline(),
+            partner_id: 7,
+            local_port_id: 2,
+        };
+        assert_eq!(record.partner_id, 7);
+        assert_eq!(record.local_port_id, 2);
+        let _ = format!("{:?}", record);
     }
 }

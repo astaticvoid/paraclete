@@ -1,4 +1,4 @@
-use crate::agreement::ConnectionAgreement;
+use crate::agreement::{ConnectionAgreement, ConnectionRecord};
 use crate::capability::CapabilityDocument;
 use crate::context::{ProcessInput, ProcessOutput};
 use crate::state_bus::StateBusValue;
@@ -9,7 +9,7 @@ use crate::port::PortDescriptor;
 /// Three implicit engagement levels (see ADR-008):
 /// - L1: implement only `ports()` and `process()` — passive signal processor.
 /// - L2: also override `capability_document()` and lifecycle hooks — instrument.
-/// - L3: also override `negotiate()` — smart/protocol-aware node.
+/// - L3: also override `negotiate()` and `set_connection_record()` — smart node.
 ///
 pub trait Node: Send {
     // ── Required ──────────────────────────────────────────────────────────────
@@ -93,11 +93,32 @@ pub trait Node: Send {
     /// passing each node the other's `CapabilityDocument`. The runtime reconciles
     /// the two `ConnectionAgreement`s into a final agreement shared by both nodes.
     ///
-    /// Default returns `ConnectionAgreement::baseline()` — standard audio format,
-    /// no custom event spaces.
+    /// Default returns `ConnectionAgreement::baseline()`.
     ///
     /// Called on the main thread at connection time.
     fn negotiate(&mut self, _their_doc: &CapabilityDocument) -> ConnectionAgreement {
         ConnectionAgreement::baseline()
     }
+
+    /// Receive the reconciled connection record after both sides have negotiated.
+    ///
+    /// Store the record to know who you are connected to and what was agreed.
+    /// Called by the runtime after `negotiate()` on both sides completes.
+    ///
+    /// Default is a no-op.
+    fn set_connection_record(&mut self, _record: ConnectionRecord) {}
 }
+
+// ── Negotiable ────────────────────────────────────────────────────────────────
+
+/// Marker trait for nodes that actively participate in connection handshakes.
+///
+/// Implement this alongside meaningful overrides of `Node::negotiate()` and
+/// `Node::set_connection_record()`. The runtime always invokes the handshake
+/// on both sides of every connection — `Negotiable` is a declaration of intent
+/// (and a discovery hook), not a capability gate.
+///
+/// The `Sampler` implements `Negotiable` to advertise its lockable parameters.
+/// The `Sequencer` reads those params from the returned `ConnectionAgreement`
+/// to build its per-step lock UI.
+pub trait Negotiable: Node {}

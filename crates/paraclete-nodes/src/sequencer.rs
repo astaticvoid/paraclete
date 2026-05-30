@@ -373,7 +373,7 @@ mod tests {
     use super::*;
     use paraclete_node_api::{
         AudioBuffer, EventOutputBuffer, Event, TransportEvent, TransportFlags, ExtendedEventSlab,
-        TransportInfo, Node, TimedEvent, TICKS_PER_BEAT,
+        TransportInfo, Node, TimedEvent, UmpMessage, TICKS_PER_BEAT,
         midi::ChannelVoice2,
     };
 

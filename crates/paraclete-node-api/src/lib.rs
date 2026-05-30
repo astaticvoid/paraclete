@@ -45,7 +45,7 @@ pub use transport::{TransportEvent, TransportFlags, TransportInfo};
 
 pub use tempo_source::{ClockPriority, TempoSource};
 
-pub use state_bus::{StateBusValue, StatePublisher};
+pub use state_bus::{StateBusHandle, StateBusSubscription, StateBusValue, StatePublisher};
 
 pub use context::{
     EventOutputBuffer, ProcessInput, ProcessOutput, SignalInputSlot, SignalOutputSlot,
@@ -56,9 +56,9 @@ pub use capability::{
     CapabilityDocument, ParamDescriptor, ParamDisplay, ParamDisplayAdapter, ParamUnit,
 };
 
-pub use agreement::ConnectionAgreement;
+pub use agreement::{ConnectionAgreement, ConnectionRecord, LockableParam};
 
-pub use node::Node;
+pub use node::{Negotiable, Node};
 
 pub use templates::{
     ControllerNode, InstrumentNode, SequencerNode, SignalNode,

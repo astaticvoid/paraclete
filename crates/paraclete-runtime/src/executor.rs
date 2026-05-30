@@ -1,12 +1,10 @@
-use std::collections::HashMap;
-
 use paraclete_node_api::{
-    AudioBuffer, EventOutputBuffer, HardwareOutput, ExtendedEventSlab, StateBusValue, LedUpdate,
-    ProcessInput, ProcessOutput, RgbColor, TransportInfo, TimedEvent,
+    AudioBuffer, Event, EventOutputBuffer, HardwareOutput, ExtendedEventSlab, StateBusValue,
+    LedUpdate, ProcessInput, ProcessOutput, RgbColor, TransportInfo, TimedEvent,
 };
 
 use crate::configurator::NodeOrDevice;
-use crate::state_bus::StateBusSnapshot;
+use crate::state_bus::StateBusUpdate;
 use crate::message::ConfigMessage;
 use crate::ring_buffer::Receiver;
 
@@ -14,8 +12,9 @@ use crate::ring_buffer::Receiver;
 ///
 /// Receives graph changes from `NodeConfigurator` via a lock-free ring buffer,
 /// then executes the node graph in topological order. Never allocates, blocks,
-/// or takes a lock during the audio path — the StateBus snapshot write at the
-/// end of each cycle is the sole exception (lock held for microseconds).
+/// or takes a lock during the audio path.
+///
+/// State bus updates are pushed to the main thread via an `rtrb` SPSC producer.
 pub struct NodeExecutor {
     nodes: Vec<NodeSlot>,
     event_routes: Vec<Vec<usize>>,
@@ -25,8 +24,7 @@ pub struct NodeExecutor {
     block_size: usize,
     receiver: Receiver<ConfigMessage>,
     extended_event_slab: ExtendedEventSlab,
-    /// Shared with the NodeConfigurator — written here, read on main thread.
-    state_bus_snapshot: StateBusSnapshot,
+    state_bus_producer: rtrb::Producer<StateBusUpdate>,
 }
 
 struct NodeSlot {
@@ -66,7 +64,7 @@ impl NodeExecutor {
         receiver: Receiver<ConfigMessage>,
         sample_rate: f32,
         block_size: usize,
-        state_bus_snapshot: StateBusSnapshot,
+        state_bus_producer: rtrb::Producer<StateBusUpdate>,
     ) -> Self {
         let n = nodes.len();
         let slots = nodes
@@ -88,7 +86,7 @@ impl NodeExecutor {
             block_size,
             receiver,
             extended_event_slab: ExtendedEventSlab::empty(),
-            state_bus_snapshot,
+            state_bus_producer,
         }
     }
 
@@ -103,22 +101,14 @@ impl NodeExecutor {
     }
 
     /// Build LED feedback for hardware devices from the current StateBus values.
-    ///
-    /// Reads the pattern positions published by the Sequencer and lights pads:
-    /// - current step: green
-    /// - inactive steps: off
-    /// Active patterns are inferred from the StateBus snapshot.
-    fn build_hardware_output(&self, local_state_bus: &HashMap<String, StateBusValue>) -> HardwareOutput {
+    fn build_hardware_output(&self, entries: &[(String, StateBusValue)]) -> HardwareOutput {
         let mut led_updates = Vec::new();
 
-        // Find any Sequencer nodes publishing step state.
-        // We scan the state_bus for keys matching the pattern.
-        for (key, val) in local_state_bus {
+        for (key, val) in entries {
             if key.ends_with("/state/current_step") {
                 if let StateBusValue::Int(current_step) = val {
-                    // Extract node_id from path: /node/{id}/state/current_step
                     let current_step = *current_step as u32;
-                    // Light the current step green, clear others (0-15).
+                    // TODO P4: replace with iteration over HardwareDevice::surface() descriptor
                     for pad in 0u32..16 {
                         led_updates.push(LedUpdate {
                             control_id: pad,
@@ -155,7 +145,21 @@ impl NodeExecutor {
             slot.audio_out.clear();
             slot.events_out.clear();
 
-            let events: Vec<TimedEvent> = std::mem::take(&mut self.incoming[slot_idx]);
+            let mut events: Vec<TimedEvent> = std::mem::take(&mut self.incoming[slot_idx]);
+
+            // Sort events within same sample_offset by priority:
+            // 1. ParamLock, 2. Transport/Tempo, 3. Midi2, 4. Hardware, 5. Extended
+            events.sort_unstable_by_key(|e| {
+                let priority: u8 = match e.event {
+                    Event::ParamLock(_)  => 0,
+                    Event::Transport(_)  => 1,
+                    Event::Tempo(_)      => 1,
+                    Event::Midi2(_)      => 2,
+                    Event::Hardware(_)   => 3,
+                    Event::Extended(_)   => 4,
+                };
+                (e.sample_offset, priority)
+            });
 
             // SAFETY: transport and slab are read-only during process().
             let transport_ref = unsafe { &*transport };
@@ -200,25 +204,18 @@ impl NodeExecutor {
             }
         }
 
-        // Collect published state into a local map (no lock yet).
-        let mut local_state_bus: HashMap<String, StateBusValue> = HashMap::new();
-        for slot in &self.nodes {
-            for (k, v) in slot.published_state() {
-                local_state_bus.insert(k, v);
-            }
+        // Collect published state from all nodes.
+        let entries: Vec<(String, StateBusValue)> = self.nodes.iter()
+            .flat_map(|s| s.published_state())
+            .collect();
+
+        // Push to SPSC ring buffer — non-blocking, drop if full (main thread is behind).
+        if !entries.is_empty() {
+            let _ = self.state_bus_producer.push(StateBusUpdate { entries: entries.clone() });
         }
 
-        // Write to the shared snapshot (brief lock).
-        if !local_state_bus.is_empty() {
-            if let Ok(mut map) = self.state_bus_snapshot.write() {
-                for (k, v) in &local_state_bus {
-                    map.insert(k.clone(), v.clone());
-                }
-            }
-        }
-
-        // Build LED feedback from local state_bus and call update_output.
-        let hw_out = self.build_hardware_output(&local_state_bus);
+        // Build LED feedback and call update_output on hardware devices (always).
+        let hw_out = self.build_hardware_output(&entries);
         for slot in &mut self.nodes {
             slot.hw_update(&hw_out);
         }

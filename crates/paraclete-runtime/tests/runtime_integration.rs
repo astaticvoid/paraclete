@@ -348,7 +348,9 @@ fn state_bus_values_published_by_melos_appear_in_snapshot() {
     let mut out = vec![0.0f32; 64 * 2];
     exec.process(&mut out, 2);
 
-    // Value should now be in the StateBus snapshot readable from main thread.
+    // Drain the SPSC so the main-thread handle is up to date.
+    conf.process_state_bus();
+
     let val = conf.state_bus_read("/bus/test/value");
     assert_eq!(val, Some(StateBusValue::Int(42)));
 }
@@ -357,7 +359,6 @@ fn state_bus_values_published_by_melos_appear_in_snapshot() {
 fn state_bus_subscription_detects_first_change() {
     let mut conf = NodeConfigurator::new(44100.0, 64);
     conf.add_node(1, Box::new(PublishingNode::new("/bus/sub/value")));
-    let snapshot = conf.state_bus_snapshot_ref().clone(); // clone the Arc
     let mut exec = conf.build_executor();
 
     let mut sub = conf.state_bus_subscribe("/bus/sub/value");
@@ -365,8 +366,10 @@ fn state_bus_subscription_detects_first_change() {
     let mut out = vec![0.0f32; 64 * 2];
     exec.process(&mut out, 2);
 
-    let snap = snapshot.read().unwrap();
-    let changed = sub.changed(&snap);
+    // Drain the SPSC before polling the subscription.
+    conf.process_state_bus();
+
+    let changed = conf.state_bus_poll_subscription(&mut sub);
     assert!(changed.is_some(), "expected subscription to detect change");
 }
 

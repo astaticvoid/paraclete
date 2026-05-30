@@ -3,6 +3,7 @@ use crate::port::{PortDescriptor, PortName};
 // ── ParamUnit ─────────────────────────────────────────────────────────────────
 
 /// Units for parameter display.
+#[derive(Clone, Debug)]
 pub enum ParamUnit {
     Generic,
     Hz,

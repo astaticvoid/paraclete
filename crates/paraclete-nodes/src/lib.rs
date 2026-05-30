@@ -8,11 +8,13 @@ pub mod sequencer;
 pub mod mapping;
 pub mod oscillator;
 pub mod internal_clock;
+pub mod sampler;
 
 pub use sequencer::{Sequencer, Step, StepParamLock};
 pub use mapping::HardwareMappingNode;
 pub use oscillator::{SineOscillator, midi_note_to_hz};
 pub use internal_clock::InternalClock;
+pub use sampler::Sampler;
 
 use paraclete_node_api::{
     CapabilityDocument, Node, ConnectionAgreement, PortDescriptor, PortDirection, PortName, PortType,
@@ -56,7 +58,6 @@ impl SilentNode {
             }],
         }
     }
-
 }
 
 impl Default for SilentNode {

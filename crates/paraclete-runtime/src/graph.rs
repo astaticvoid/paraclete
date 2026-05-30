@@ -22,11 +22,9 @@ pub(crate) struct NodeMeta {
 
 /// Metadata stored per edge (port connection) in the graph.
 pub(crate) struct EdgeMeta {
-    /// Source port id on the upstream node. Used for audio buffer wiring at P2.
-    #[allow(dead_code)]
+    /// Source port id on the upstream node.
     pub src_port: u32,
-    /// Destination port id on the downstream node. Used for audio buffer wiring at P2.
-    #[allow(dead_code)]
+    /// Destination port id on the downstream node.
     pub dst_port: u32,
     /// Port type of the source port. Determines what data flows over this edge.
     /// Stored here so the executor can build event-routing tables without

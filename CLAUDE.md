@@ -17,7 +17,7 @@ cargo build
 # Build release
 cargo build --release
 
-# Run the app (P1 demo: sine oscillator triggered by keyboard-emulated Launchpad)
+# Run the app (P2 demo: InternalClock → Sequencer → SineOscillator)
 cargo run
 
 # Run all tests
@@ -52,6 +52,16 @@ No layer may reach across another layer's boundary. This is a hard constraint.
 
 **The LGPL3 boundary at L2 is intentional:** third parties can write closed-source nodes by implementing the L2 Node API without being forced to open-source their implementations.
 
+## Configurator API
+
+`NodeConfigurator` has three distinct `add_*` methods — use the correct one:
+
+| Method | Use when |
+|--------|----------|
+| `add_node(id, Box<dyn Node>)` | Standard node (oscillator, sequencer, mapper) |
+| `add_hardware_device(id, Box<dyn HardwareDevice>)` | Physical or emulated controller; also receives `update_output()` after each cycle |
+| `add_tempo_source(id, Box<dyn TempoSource>)` | Clock master; registers a clock domain, returns `(NodeId, domain_id)` |
+
 ## Core Design: Configurator / Executor Split
 
 The runtime splits into two halves to keep the audio thread allocation-free:
@@ -67,9 +77,16 @@ The core trait is `Node` in `paraclete-node-api`. Three engagement levels:
 
 - **L1** — implement only `ports()` and `process()`. Passive signal processor (oscillator, filter, math module).
 - **L2** — also override `capability_document()`, `activate()`, `deactivate()`, `serialize()`, `deserialize()`. Instruments and stateful nodes.
-- **L3** — also override `negotiate()`. Smart nodes that participate in the connection handshake (sequencers, hardware controllers).
+- **L3** — also implement `Negotiable`. `negotiate()` returns a `ConnectionAgreement` (declaring `lockable_params` for instruments); `set_connection_record()` receives the reconciled `ConnectionRecord` from both sides. The runtime invokes the handshake at `connect()` time if either node implements `Negotiable`.
 
 `HardwareDevice` is a supertrait of `Node` that additionally receives `update_output()` callbacks after each cycle and declares a `SurfaceDescriptor`.
+
+Four convenience super-traits exist in `paraclete-node-api::templates` as contribution scaffolding for third-party authors:
+
+- `SignalNode` — implement `dsp()`; blanket `Node` impl handles port routing
+- `InstrumentNode` — `on_note_on()`, `on_note_off()`, `render()`
+- `SequencerNode` — `on_clock_tick()`, `emit_events()`
+- `ControllerNode` — `on_packet()`, `set_led()`
 
 ## Signal / Port Types
 
@@ -83,6 +100,38 @@ Ports are typed. Type compatibility is enforced at connection time.
 
 Events are routed between nodes within the same buffer cycle. The executor builds an `event_routes` table at `build_executor()` time by inspecting edge `src_port_type`.
 
+## Transport Start Model
+
+`InternalClock` emits `global_start: true` on its **first tick**. Downstream nodes (e.g. `Sequencer`) start with `playing: false` and only enter their pattern on receiving `global_start`. A `sync_pulse` (emitted on every bar boundary) lets a node that connects mid-session position itself correctly before playing. Nodes must not assume a running transport — they wait for the signal.
+
+## StateBus
+
+**P3 replaces the provisional `Arc<RwLock<HashMap>>` with lock-free `rtrb` SPSC.** The audio thread (executor) pushes a `StateBusUpdate` at end-of-cycle; the main thread drains it in `NodeConfigurator::process_state_bus()`. No lock is held on the audio thread.
+
+The stable API (`StateBusHandle`) is the only surface consumers should touch:
+
+```rust
+handle.read(path)             // → Option<&StateBusValue>
+handle.write(path, value)     // main thread only
+handle.subscribe(path)        // → StateBusSubscription
+```
+
+The main loop must call `conf.process_state_bus()` between audio cycles — this drains the SPSC, notifies subscriptions, and calls `update_output()` on all hardware devices.
+
+Rhai scripts access the state bus through this same API. Scripts may `read()` any path and `write()` to `/node/{id}/param/*`. Writing to `/transport/*` or `/hw/*` is sandbox-rejected. Scripts run on the main thread (`Rc<RefCell>` not `Arc<Mutex>`).
+
+## Event Delivery Ordering
+
+Within the same `sample_offset`, the executor delivers events in this priority order:
+
+1. `ParamLockEvent` — apply parameter overrides before note triggers
+2. `TransportEvent` — position updates
+3. `Midi2` — notes and controllers
+4. `Hardware` — pad events
+5. `Extended` — custom
+
+`ParamLockEvent` is routed by `node_id` match, not by graph edges. A lock for an unknown `param_id` is silently ignored.
+
 ## Audio Thread Rules
 
 These are hard constraints, not guidelines:
@@ -90,6 +139,11 @@ These are hard constraints, not guidelines:
 - `process()` must never allocate, block, or take a lock.
 - The `NodeExecutor::process()` loop uses raw pointer aliasing to work around Rust's borrow checker for the `transport` and `extended_events` fields — this is intentional and documented with `SAFETY` comments.
 - All main-thread → audio-thread communication goes through the lock-free ring buffer (`ConfigMessage`).
+
+## New Dependencies at P3
+
+- `hound = "3.5"` (MIT) in `paraclete-nodes` — WAV file loading for `Sampler`. Isolated to one function; `symphonia` is the documented upgrade path for broader format support.
+- `rtrb = "0.3"` (MIT) in `paraclete-runtime` — lock-free SPSC ring buffer for the StateBus upgrade.
 
 ## DSP Source Policy
 
@@ -101,7 +155,8 @@ All design documents live in `design/`. Key documents:
 
 - `design/architecture-core.md` — stable: layer model, Node API, signal types, design principles
 - `design/architecture-evolving.md` — living: roadmap, open questions, phase notes
-- `design/adr/` — all Architecture Decision Records
+- `design/adr/` — all Architecture Decision Records (ADRs are **append-only** — never edit a past ADR, add a new one to supersede it)
 - `design/adr/ADR-005-scheduler-cycles.md` — why the graph must be a DAG (cycle rejection)
 - `design/adr/ADR-008-node-api-level.md` — the three engagement levels
-- `design/phases/` — per-phase interface specs and implementation reports
+- `design/phases/` — per-phase interface specs and implementation reports (append-only once a phase ships)
+- `design/phases/p3-interfaces.md` — P3 spec: `Negotiable` trait, parameter lock protocol, `Sampler` node, StateBus SPSC upgrade, Rhai bindings

@@ -1,20 +1,26 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::EdgeRef;
 
-use paraclete_node_api::{HardwareDevice, StateBusValue, Node, PortDescriptor, PortType};
+use paraclete_node_api::{
+    CapabilityDocument, ConnectionAgreement, ConnectionRecord,
+    HardwareDevice, StateBusHandle, StateBusSubscription, StateBusValue,
+    Node, PortDescriptor, PortType,
+};
 
 use crate::executor::NodeExecutor;
 use crate::graph::{EdgeMeta, NodeId, NodeMeta, RuntimeGraph};
-use crate::state_bus::{self, StateBusSnapshot, StateBusSubscription};
+use crate::state_bus::StateBusUpdate;
 use crate::message::ConfigMessage;
 use crate::ring_buffer;
 
 const RING_CAPACITY: usize = 256;
+const STATE_BUS_RING_CAPACITY: usize = 256;
 
-/// Holds either a regular node or a hardware device. Both implement `Node` via
-/// the `HardwareDevice: Node` supertrait, so `process()` is callable on both.
+/// Holds either a regular node or a hardware device.
 pub(crate) enum NodeOrDevice {
     Node(Box<dyn Node>),
     Device(Box<dyn HardwareDevice>),
@@ -41,11 +47,36 @@ impl NodeOrDevice {
             NodeOrDevice::Device(d) => d.deactivate(),
         }
     }
+
+    pub(crate) fn capability_document(&self) -> CapabilityDocument {
+        match self {
+            NodeOrDevice::Node(m) => m.capability_document(),
+            NodeOrDevice::Device(d) => d.capability_document(),
+        }
+    }
+
+    pub(crate) fn negotiate(&mut self, their_doc: &CapabilityDocument) -> ConnectionAgreement {
+        match self {
+            NodeOrDevice::Node(m) => m.negotiate(their_doc),
+            NodeOrDevice::Device(d) => d.negotiate(their_doc),
+        }
+    }
+
+    pub(crate) fn set_connection_record(&mut self, record: ConnectionRecord) {
+        match self {
+            NodeOrDevice::Node(m) => m.set_connection_record(record),
+            NodeOrDevice::Device(d) => d.set_connection_record(record),
+        }
+    }
 }
 
 /// Runs on the main thread. Owns the graph topology and manages node lifecycle.
 /// Sends incremental changes to `NodeExecutor` via a lock-free ring buffer
 /// so the audio thread is never blocked.
+///
+/// State bus updates from the executor arrive via an `rtrb` SPSC ring buffer.
+/// Call `process_state_bus()` between audio cycles to drain updates and notify
+/// subscriptions.
 pub struct NodeConfigurator {
     graph: RuntimeGraph,
     id_to_index: HashMap<u32, NodeIndex>,
@@ -55,8 +86,12 @@ pub struct NodeConfigurator {
     tempo_source_domains: Vec<(u32, u32)>,
     next_domain_id: u32,
 
-    /// Shared StateBus snapshot — written by executor, read by main thread.
-    state_bus_snapshot: StateBusSnapshot,
+    /// Stable state bus handle — shared with the scripting engine.
+    state_bus: Rc<RefCell<StateBusHandle>>,
+    /// Consumer side of the executor → configurator SPSC ring buffer.
+    state_bus_consumer: rtrb::Consumer<StateBusUpdate>,
+    /// Producer side held until `build_executor()` — then moved into the executor.
+    state_bus_producer_pending: Option<rtrb::Producer<StateBusUpdate>>,
 
     sample_rate: f32,
     block_size: usize,
@@ -67,13 +102,16 @@ pub struct NodeConfigurator {
 impl NodeConfigurator {
     pub fn new(sample_rate: f32, block_size: usize) -> Self {
         let (sender, receiver) = ring_buffer::channel(RING_CAPACITY);
+        let (producer, consumer) = rtrb::RingBuffer::<StateBusUpdate>::new(STATE_BUS_RING_CAPACITY);
         Self {
             graph: RuntimeGraph::new(),
             id_to_index: HashMap::new(),
             nodes: HashMap::new(),
             tempo_source_domains: Vec::new(),
             next_domain_id: 0,
-            state_bus_snapshot: state_bus::new_snapshot(),
+            state_bus: Rc::new(RefCell::new(StateBusHandle::new())),
+            state_bus_consumer: consumer,
+            state_bus_producer_pending: Some(producer),
             sample_rate,
             block_size,
             sender,
@@ -82,7 +120,6 @@ impl NodeConfigurator {
     }
 
     fn register(&mut self, user_id: u32, mut slot: NodeOrDevice) -> NodeId {
-        // Notify the node of its assigned ID (for StateBus path construction).
         match &mut slot {
             NodeOrDevice::Node(m) => m.set_node_id(user_id),
             NodeOrDevice::Device(d) => d.set_node_id(user_id),
@@ -102,11 +139,7 @@ impl NodeConfigurator {
 
     /// Register a TempoSource clock domain provider.
     ///
-    /// The node participates in the graph as a regular Node AND is registered
-    /// as a clock domain authority. Returns `(NodeId, domain_id)`.
-    ///
-    /// Higher-priority TempoSource nodes take precedence in clock federation
-    /// (see ADR-009). At P2, only one internal clock domain is supported.
+    /// Returns `(NodeId, domain_id)`.
     pub fn add_tempo_source(
         &mut self,
         user_id: u32,
@@ -119,8 +152,7 @@ impl NodeConfigurator {
         (id, domain_id)
     }
 
-    /// Register a hardware device. Participates in the graph as a `Node`
-    /// AND receives `HardwareOutput` callbacks after each cycle.
+    /// Register a hardware device.
     pub fn add_hardware_device(
         &mut self,
         user_id: u32,
@@ -141,8 +173,8 @@ impl NodeConfigurator {
 
     /// Connect an output port on `src` to an input port on `dst`.
     ///
-    /// Looks up the port type on the source node and stores it in the edge
-    /// so the executor can build event-routing tables at build_executor() time.
+    /// Runs the Negotiable handshake: calls `negotiate()` on both nodes and
+    /// delivers `ConnectionRecord`s to both sides.
     ///
     /// Returns an error if the connection would create a cycle (ADR-005).
     pub fn connect(
@@ -180,23 +212,85 @@ impl NodeConfigurator {
             ));
         }
 
+        // ── Negotiable handshake ──────────────────────────────────────────────
+        // Get capability documents from both sides (immutable borrows).
+        let src_doc = self.nodes[&src].capability_document();
+        let dst_doc = self.nodes[&dst].capability_document();
+
+        // Each side negotiates with the other's capability document.
+        let src_agreement = self.nodes.get_mut(&src).unwrap().negotiate(&dst_doc);
+        let dst_agreement = self.nodes.get_mut(&dst).unwrap().negotiate(&src_doc);
+
+        // Reconcile: use runtime audio config; lockable_params come from dst
+        // (the instrument declares what the sequencer can lock).
+        let reconciled = ConnectionAgreement {
+            sample_rate: self.sample_rate,
+            block_size: self.block_size,
+            channels: 2,
+            space_ids: src_agreement.space_ids.into_iter()
+                .chain(dst_agreement.space_ids)
+                .collect(),
+            initial_transport: None,
+            lockable_params: dst_agreement.lockable_params,
+        };
+
+        let src_user_id = self.graph[src].user_id;
+        let dst_user_id = self.graph[dst].user_id;
+
+        // Deliver connection records to both sides.
+        self.nodes.get_mut(&src).unwrap().set_connection_record(ConnectionRecord {
+            agreement: reconciled.clone(),
+            partner_id: dst_user_id,
+            local_port_id: src_port,
+        });
+        self.nodes.get_mut(&dst).unwrap().set_connection_record(ConnectionRecord {
+            agreement: reconciled,
+            partner_id: src_user_id,
+            local_port_id: dst_port,
+        });
+
         Ok(())
     }
 
-    /// Read a value from the StateBus snapshot. Returns `None` if the path
-    /// has not been published yet.
+    /// Read a value from the StateBus. Returns `None` if the path has no value.
     pub fn state_bus_read(&self, path: &str) -> Option<StateBusValue> {
-        self.state_bus_snapshot.read().ok()?.get(path).cloned()
+        self.state_bus.borrow().read(path).cloned()
+    }
+
+    /// Write a value to the StateBus from the main thread.
+    pub fn state_bus_write(&mut self, path: &str, value: StateBusValue) {
+        self.state_bus.borrow_mut().write(path, value);
     }
 
     /// Subscribe to a StateBus path.
     pub fn state_bus_subscribe(&self, path: &str) -> StateBusSubscription {
-        StateBusSubscription::new(path)
+        self.state_bus.borrow().subscribe(path)
     }
 
-    /// Expose the snapshot Arc for direct inspection (e.g. in tests).
-    pub fn state_bus_snapshot_ref(&self) -> &crate::state_bus::StateBusSnapshot {
-        &self.state_bus_snapshot
+    /// Poll a subscription: returns `Some(value)` if changed since last poll.
+    pub fn state_bus_poll_subscription(
+        &self,
+        sub: &mut StateBusSubscription,
+    ) -> Option<StateBusValue> {
+        self.state_bus.borrow().poll_subscription(sub).cloned()
+    }
+
+    /// Get a shared reference to the state bus handle.
+    /// Pass this to the scripting engine to enable state bus access from scripts.
+    pub fn state_bus_handle(&self) -> Rc<RefCell<StateBusHandle>> {
+        Rc::clone(&self.state_bus)
+    }
+
+    /// Drain executor state bus updates and apply them to the handle.
+    ///
+    /// Call this from the main loop between audio cycles. Keeps the main-thread
+    /// state bus view up to date and is required for `state_bus_read()` to
+    /// reflect the latest executor-published values.
+    pub fn process_state_bus(&mut self) {
+        let mut bus = self.state_bus.borrow_mut();
+        while let Ok(update) = self.state_bus_consumer.pop() {
+            bus.apply_updates(update.entries);
+        }
     }
 
     /// Send a transport command to the executor.
@@ -207,16 +301,17 @@ impl NodeConfigurator {
 
     /// Build a `NodeExecutor` from the current graph state.
     ///
-    /// Nodes are moved into the executor in topological order. Also computes
-    /// the event-routing table so the executor can route events between nodes
-    /// without re-querying the graph each cycle.
-    ///
-    /// Panics if called twice (the ring-buffer receiver has already been moved).
+    /// Moves nodes into the executor in topological order. Panics if called twice.
     pub fn build_executor(&mut self) -> NodeExecutor {
         let receiver = self
             .pending_receiver
             .take()
             .expect("build_executor called twice on the same NodeConfigurator");
+
+        let state_bus_producer = self
+            .state_bus_producer_pending
+            .take()
+            .expect("build_executor called twice");
 
         let order = crate::graph::execution_order(&self.graph)
             .expect("graph has a cycle — connect() should have rejected it");
@@ -255,7 +350,7 @@ impl NodeConfigurator {
             receiver,
             self.sample_rate,
             self.block_size,
-            self.state_bus_snapshot.clone(),
+            state_bus_producer,
         )
     }
 }
