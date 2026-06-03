@@ -263,6 +263,7 @@ fn test_node_process_receives_sample_rate_and_block_size() {
         sample_rate: 48000.0,
         block_size: 256,
         extended_events: &slab,
+            commands: &[],
     };
 
     let mut output = ProcessOutput {

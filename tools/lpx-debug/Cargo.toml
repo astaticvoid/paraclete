@@ -1,0 +1,18 @@
+[package]
+name        = "lpx-debug"
+description = "Launchpad X hardware debug and setup verification tool"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "lpx-debug"
+path = "src/main.rs"
+
+[dependencies]
+paraclete-hal = { workspace = true }
+midir         = { workspace = true }
+cpal          = { workspace = true }
+ctrlc         = { workspace = true }

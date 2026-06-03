@@ -7,8 +7,9 @@ use petgraph::visit::EdgeRef;
 
 use paraclete_node_api::{
     CapabilityDocument, ConnectionAgreement, ConnectionRecord,
-    HardwareDevice, StateBusHandle, StateBusSubscription, StateBusValue,
-    Node, PortDescriptor, PortType,
+    HardwareDevice, HardwareOutputHandle, NodeCommand,
+    StateBusHandle, StateBusSubscription, StateBusValue,
+    Node, PortDescriptor, PortDirection, PortType,
 };
 
 use crate::executor::NodeExecutor;
@@ -19,6 +20,7 @@ use crate::ring_buffer;
 
 const RING_CAPACITY: usize = 256;
 const STATE_BUS_RING_CAPACITY: usize = 256;
+const NODE_CMD_RING_CAPACITY: usize = 512;
 
 /// Holds either a regular node or a hardware device.
 pub(crate) enum NodeOrDevice {
@@ -71,27 +73,25 @@ impl NodeOrDevice {
 }
 
 /// Runs on the main thread. Owns the graph topology and manages node lifecycle.
-/// Sends incremental changes to `NodeExecutor` via a lock-free ring buffer
-/// so the audio thread is never blocked.
-///
-/// State bus updates from the executor arrive via an `rtrb` SPSC ring buffer.
-/// Call `process_state_bus()` between audio cycles to drain updates and notify
-/// subscriptions.
 pub struct NodeConfigurator {
     graph: RuntimeGraph,
     id_to_index: HashMap<u32, NodeIndex>,
     nodes: HashMap<NodeIndex, NodeOrDevice>,
 
-    /// Registered TempoSource clock domain providers: (user_id, domain_id).
     tempo_source_domains: Vec<(u32, u32)>,
     next_domain_id: u32,
 
-    /// Stable state bus handle — shared with the scripting engine.
     state_bus: Rc<RefCell<StateBusHandle>>,
-    /// Consumer side of the executor → configurator SPSC ring buffer.
     state_bus_consumer: rtrb::Consumer<StateBusUpdate>,
-    /// Producer side held until `build_executor()` — then moved into the executor.
     state_bus_producer_pending: Option<rtrb::Producer<StateBusUpdate>>,
+
+    /// NodeCommand SPSC producer — messages sent to the executor each cycle.
+    node_cmd_producer: rtrb::Producer<NodeCommand>,
+    node_cmd_consumer_pending: Option<rtrb::Consumer<NodeCommand>>,
+
+    /// HardwareOutputHandles from devices that implement take_output_handle().
+    /// Stored as (device_id, handle) so script LED output can be routed by device_id.
+    output_handles: Vec<(u32, Box<dyn HardwareOutputHandle>)>,
 
     sample_rate: f32,
     block_size: usize,
@@ -103,6 +103,7 @@ impl NodeConfigurator {
     pub fn new(sample_rate: f32, block_size: usize) -> Self {
         let (sender, receiver) = ring_buffer::channel(RING_CAPACITY);
         let (producer, consumer) = rtrb::RingBuffer::<StateBusUpdate>::new(STATE_BUS_RING_CAPACITY);
+        let (cmd_prod, cmd_cons) = rtrb::RingBuffer::<NodeCommand>::new(NODE_CMD_RING_CAPACITY);
         Self {
             graph: RuntimeGraph::new(),
             id_to_index: HashMap::new(),
@@ -112,6 +113,9 @@ impl NodeConfigurator {
             state_bus: Rc::new(RefCell::new(StateBusHandle::new())),
             state_bus_consumer: consumer,
             state_bus_producer_pending: Some(producer),
+            node_cmd_producer: cmd_prod,
+            node_cmd_consumer_pending: Some(cmd_cons),
+            output_handles: Vec::new(),
             sample_rate,
             block_size,
             sender,
@@ -120,6 +124,10 @@ impl NodeConfigurator {
     }
 
     fn register(&mut self, user_id: u32, mut slot: NodeOrDevice) -> NodeId {
+        assert!(
+            !self.id_to_index.contains_key(&user_id),
+            "duplicate node id {user_id} — each node must have a unique id"
+        );
         match &mut slot {
             NodeOrDevice::Node(m) => m.set_node_id(user_id),
             NodeOrDevice::Device(d) => d.set_node_id(user_id),
@@ -132,14 +140,10 @@ impl NodeConfigurator {
         NodeId(idx)
     }
 
-    /// Register a node. `activate()` is called immediately on the calling thread.
     pub fn add_node(&mut self, user_id: u32, node: Box<dyn Node>) -> NodeId {
         self.register(user_id, NodeOrDevice::Node(node))
     }
 
-    /// Register a TempoSource clock domain provider.
-    ///
-    /// Returns `(NodeId, domain_id)`.
     pub fn add_tempo_source(
         &mut self,
         user_id: u32,
@@ -152,16 +156,19 @@ impl NodeConfigurator {
         (id, domain_id)
     }
 
-    /// Register a hardware device.
+    /// Register a hardware device. Calls `take_output_handle()` immediately;
+    /// if `Some`, the handle is stored and ticked each main-loop iteration.
     pub fn add_hardware_device(
         &mut self,
         user_id: u32,
-        device: Box<dyn HardwareDevice>,
+        mut device: Box<dyn HardwareDevice>,
     ) -> NodeId {
+        if let Some(handle) = device.take_output_handle() {
+            self.output_handles.push((user_id, handle));
+        }
         self.register(user_id, NodeOrDevice::Device(device))
     }
 
-    /// Remove a node and all its connections.
     pub fn remove_node(&mut self, user_id: u32) {
         if let Some(idx) = self.id_to_index.remove(&user_id) {
             if let Some(mut slot) = self.nodes.remove(&idx) {
@@ -171,12 +178,6 @@ impl NodeConfigurator {
         }
     }
 
-    /// Connect an output port on `src` to an input port on `dst`.
-    ///
-    /// Runs the Negotiable handshake: calls `negotiate()` on both nodes and
-    /// delivers `ConnectionRecord`s to both sides.
-    ///
-    /// Returns an error if the connection would create a cycle (ADR-005).
     pub fn connect(
         &mut self,
         src_id: u32,
@@ -184,21 +185,36 @@ impl NodeConfigurator {
         dst_id: u32,
         dst_port: u32,
     ) -> Result<(), String> {
-        let src = *self
-            .id_to_index
-            .get(&src_id)
+        let src = *self.id_to_index.get(&src_id)
             .ok_or_else(|| format!("no node with id {src_id}"))?;
-        let dst = *self
-            .id_to_index
-            .get(&dst_id)
+        let dst = *self.id_to_index.get(&dst_id)
             .ok_or_else(|| format!("no node with id {dst_id}"))?;
 
-        let src_port_type = self.nodes[&src]
-            .ports()
-            .iter()
-            .find(|p| p.id == src_port)
-            .map(|p| p.port_type)
-            .unwrap_or(PortType::Audio);
+        let src_port_desc = self.nodes[&src]
+            .ports().iter().find(|p| p.id == src_port)
+            .ok_or_else(|| format!("node {src_id} has no port {src_port}"))?;
+        let src_port_type = src_port_desc.port_type;
+        if src_port_desc.direction != PortDirection::Output {
+            return Err(format!(
+                "port {src_port} on node {src_id} is an Input — source port must be Output"
+            ));
+        }
+
+        let dst_port_desc = self.nodes[&dst]
+            .ports().iter().find(|p| p.id == dst_port)
+            .ok_or_else(|| format!("node {dst_id} has no port {dst_port}"))?;
+        if dst_port_desc.direction != PortDirection::Input {
+            return Err(format!(
+                "port {dst_port} on node {dst_id} is an Output — destination port must be Input"
+            ));
+        }
+        if dst_port_desc.port_type != src_port_type {
+            return Err(format!(
+                "type mismatch: port {src_port} on node {src_id} is {:?}, \
+                 port {dst_port} on node {dst_id} is {:?}",
+                src_port_type, dst_port_desc.port_type
+            ));
+        }
 
         self.graph.add_edge(src, dst, EdgeMeta { src_port, dst_port, src_port_type });
 
@@ -212,17 +228,12 @@ impl NodeConfigurator {
             ));
         }
 
-        // ── Negotiable handshake ──────────────────────────────────────────────
-        // Get capability documents from both sides (immutable borrows).
         let src_doc = self.nodes[&src].capability_document();
         let dst_doc = self.nodes[&dst].capability_document();
 
-        // Each side negotiates with the other's capability document.
         let src_agreement = self.nodes.get_mut(&src).unwrap().negotiate(&dst_doc);
         let dst_agreement = self.nodes.get_mut(&dst).unwrap().negotiate(&src_doc);
 
-        // Reconcile: use runtime audio config; lockable_params come from dst
-        // (the instrument declares what the sequencer can lock).
         let reconciled = ConnectionAgreement {
             sample_rate: self.sample_rate,
             block_size: self.block_size,
@@ -237,7 +248,6 @@ impl NodeConfigurator {
         let src_user_id = self.graph[src].user_id;
         let dst_user_id = self.graph[dst].user_id;
 
-        // Deliver connection records to both sides.
         self.nodes.get_mut(&src).unwrap().set_connection_record(ConnectionRecord {
             agreement: reconciled.clone(),
             partner_id: dst_user_id,
@@ -252,22 +262,27 @@ impl NodeConfigurator {
         Ok(())
     }
 
-    /// Read a value from the StateBus. Returns `None` if the path has no value.
+    /// Send a `NodeCommand` to a graph node. Delivered on the next audio cycle.
+    /// Returns `Err` if the ring buffer is full — caller should retry next tick.
+    pub fn send_command(&mut self, cmd: NodeCommand) -> Result<(), NodeCommand> {
+        match self.node_cmd_producer.push(cmd) {
+            Ok(()) => Ok(()),
+            Err(_) => Err(cmd),
+        }
+    }
+
     pub fn state_bus_read(&self, path: &str) -> Option<StateBusValue> {
         self.state_bus.borrow().read(path).cloned()
     }
 
-    /// Write a value to the StateBus from the main thread.
     pub fn state_bus_write(&mut self, path: &str, value: StateBusValue) {
         self.state_bus.borrow_mut().write(path, value);
     }
 
-    /// Subscribe to a StateBus path.
     pub fn state_bus_subscribe(&self, path: &str) -> StateBusSubscription {
         self.state_bus.borrow().subscribe(path)
     }
 
-    /// Poll a subscription: returns `Some(value)` if changed since last poll.
     pub fn state_bus_poll_subscription(
         &self,
         sub: &mut StateBusSubscription,
@@ -275,52 +290,60 @@ impl NodeConfigurator {
         self.state_bus.borrow().poll_subscription(sub).cloned()
     }
 
-    /// Get a shared reference to the state bus handle.
-    /// Pass this to the scripting engine to enable state bus access from scripts.
     pub fn state_bus_handle(&self) -> Rc<RefCell<StateBusHandle>> {
         Rc::clone(&self.state_bus)
     }
 
     /// Drain executor state bus updates and apply them to the handle.
-    ///
-    /// Call this from the main loop between audio cycles. Keeps the main-thread
-    /// state bus view up to date and is required for `state_bus_read()` to
-    /// reflect the latest executor-published values.
-    pub fn process_state_bus(&mut self) {
+    /// Also ticks all registered `HardwareOutputHandle`s.
+    /// Call from the main loop between audio cycles.
+    pub fn process_main_thread(&mut self) {
         let mut bus = self.state_bus.borrow_mut();
         while let Ok(update) = self.state_bus_consumer.pop() {
             bus.apply_updates(update.entries);
         }
+        drop(bus);
+        for (_, handle) in &mut self.output_handles {
+            handle.tick();
+        }
     }
 
-    /// Send a transport command to the executor.
-    /// Returns `false` if the ring buffer is full.
+    /// Route script-generated LED output (from `set_led()` calls) to the matching
+    /// hardware device's output handle. Call after `process_subscriptions()`.
+    pub fn deliver_script_output(
+        &mut self,
+        output: std::collections::HashMap<u32, paraclete_node_api::HardwareOutput>,
+    ) {
+        for (device_id, hw_out) in output {
+            if let Some((_, handle)) = self.output_handles.iter_mut().find(|(id, _)| *id == device_id) {
+                handle.deliver(hw_out);
+            }
+        }
+    }
+
+    /// Legacy alias for `process_main_thread()`.
+    pub fn process_state_bus(&mut self) {
+        self.process_main_thread();
+    }
+
     pub fn send(&self, msg: ConfigMessage) -> bool {
         self.sender.try_send(msg).is_ok()
     }
 
-    /// Build a `NodeExecutor` from the current graph state.
-    ///
-    /// Moves nodes into the executor in topological order. Panics if called twice.
+    /// Build a `NodeExecutor` from the current graph state. Can only be called once.
     pub fn build_executor(&mut self) -> NodeExecutor {
-        let receiver = self
-            .pending_receiver
-            .take()
-            .expect("build_executor called twice on the same NodeConfigurator");
-
-        let state_bus_producer = self
-            .state_bus_producer_pending
-            .take()
+        let receiver = self.pending_receiver.take()
+            .expect("build_executor called twice");
+        let state_bus_producer = self.state_bus_producer_pending.take()
+            .expect("build_executor called twice");
+        let cmd_consumer = self.node_cmd_consumer_pending.take()
             .expect("build_executor called twice");
 
         let order = crate::graph::execution_order(&self.graph)
             .expect("graph has a cycle — connect() should have rejected it");
 
         let idx_to_slot: HashMap<NodeIndex, usize> = order
-            .iter()
-            .enumerate()
-            .map(|(pos, &ni)| (ni, pos))
-            .collect();
+            .iter().enumerate().map(|(pos, &ni)| (ni, pos)).collect();
 
         let n = order.len();
         let mut event_routes: Vec<Vec<usize>> = vec![vec![]; n];
@@ -351,6 +374,7 @@ impl NodeConfigurator {
             self.sample_rate,
             self.block_size,
             state_bus_producer,
+            cmd_consumer,
         )
     }
 }

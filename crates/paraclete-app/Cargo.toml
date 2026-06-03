@@ -18,3 +18,5 @@ paraclete-hal       = { workspace = true }
 paraclete-nodes     = { workspace = true }
 paraclete-scripting = { workspace = true }
 log  = { workspace = true }
+rhai  = { workspace = true }
+ctrlc = { workspace = true }

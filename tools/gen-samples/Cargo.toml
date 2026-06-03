@@ -1,0 +1,15 @@
+[package]
+name        = "gen-samples"
+description = "Generate synthesized drum samples for Paraclete development/testing"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "gen-samples"
+path = "src/main.rs"
+
+[dependencies]
+hound = { workspace = true }

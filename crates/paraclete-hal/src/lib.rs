@@ -6,6 +6,14 @@
 
 pub mod audio;
 pub mod emulator;
+pub mod midi;
+pub mod launchpad;
+pub mod digitakt;
+pub mod keystep;
 
 pub use audio::{AudioBackend, AudioError};
 pub use emulator::LaunchpadEmulator;
+pub use launchpad::LaunchpadNode;
+pub use digitakt::DigitaktMidiNode;
+pub use keystep::KeystepNode;
+pub use midi::{MidiDeviceError, MidiDeviceRegistry};

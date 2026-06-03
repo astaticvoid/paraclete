@@ -17,8 +17,14 @@ cargo build
 # Build release
 cargo build --release
 
-# Run the app (P2 demo: InternalClock → Sequencer → SineOscillator)
+# Run the app (P4 graph: 8-track drum machine at 140 BPM)
+# WAV files samples/track0.wav–track7.wav are used by Sampler[0–7].
+# Hardware devices (Launchpad, Digitakt, Keystep) opened if present; falls back gracefully.
+# Profile scripts loaded from profiles/ if present.
 cargo run
+
+# Run with developer UI (prints sequencer step positions to stderr each second)
+cargo run -- --dev-ui
 
 # Run all tests
 cargo test
@@ -59,7 +65,7 @@ No layer may reach across another layer's boundary. This is a hard constraint.
 | Method | Use when |
 |--------|----------|
 | `add_node(id, Box<dyn Node>)` | Standard node (oscillator, sequencer, mapper) |
-| `add_hardware_device(id, Box<dyn HardwareDevice>)` | Physical or emulated controller; also receives `update_output()` after each cycle |
+| `add_hardware_device(id, Box<dyn HardwareDevice>)` | Physical or emulated controller. Calls `take_output_handle()` at registration; if `Some`, the handle is ticked each main loop iteration instead of calling `update_output()` from the executor. |
 | `add_tempo_source(id, Box<dyn TempoSource>)` | Clock master; registers a clock domain, returns `(NodeId, domain_id)` |
 
 ## Core Design: Configurator / Executor Split
@@ -77,9 +83,15 @@ The core trait is `Node` in `paraclete-node-api`. Three engagement levels:
 
 - **L1** — implement only `ports()` and `process()`. Passive signal processor (oscillator, filter, math module).
 - **L2** — also override `capability_document()`, `activate()`, `deactivate()`, `serialize()`, `deserialize()`. Instruments and stateful nodes.
-- **L3** — also implement `Negotiable`. `negotiate()` returns a `ConnectionAgreement` (declaring `lockable_params` for instruments); `set_connection_record()` receives the reconciled `ConnectionRecord` from both sides. The runtime invokes the handshake at `connect()` time if either node implements `Negotiable`.
+- **L3** — also implement `Negotiable` and override `is_negotiable()` to return `true`. `negotiate()` returns a `ConnectionAgreement` (declaring `lockable_params` for instruments); `set_connection_record()` receives the reconciled `ConnectionRecord` from both sides. The runtime invokes the handshake at `connect()` time for all connections (handshake defaults are no-ops for non-Negotiable nodes).
 
-`HardwareDevice` is a supertrait of `Node` that additionally receives `update_output()` callbacks after each cycle and declares a `SurfaceDescriptor`.
+`HardwareDevice` is a supertrait of `Node` that declares a `SurfaceDescriptor` and provides two output paths:
+- **Legacy path** — `update_output()` called from the executor (audio thread) each cycle.
+- **P4+ path** — implement `take_output_handle()` returning `Some(Box<dyn HardwareOutputHandle>)`. The configurator holds the handle and calls `handle.tick()` each main-loop iteration (main thread). Use this for all new hardware nodes — it avoids audio-thread output. The `HardwareOutputHandle` pattern works via a device-internal SPSC: the audio-thread side pushes `HardwareOutput`; `tick()` drains it.
+
+**ParameterBank** — any node that declares parameters in `capability_document()` should use `ParameterBank` (shipped, in L2). Build it at `activate()` time; call `bank.handle_commands(input.commands())` before DSP in `process()`. It handles `CMD_SET_PARAM` and `CMD_BUMP_PARAM` allocation-free, with clamping and silent ignore for unknown IDs.
+
+**AudioEffect marker** — effect nodes (distortion, filter, reverb) are plain `Node` implementations with audio ports. Wet/dry and bypass are parameters, lockable by the sequencer. Optionally implement the `AudioEffect` marker trait (no required methods) so profile scripts can discover them by querying `CapabilityDocument.extensions` for `"paraclete.effect"`.
 
 Four convenience super-traits exist in `paraclete-node-api::templates` as contribution scaffolding for third-party authors:
 
@@ -90,7 +102,7 @@ Four convenience super-traits exist in `paraclete-node-api::templates` as contri
 
 ## Signal / Port Types
 
-Ports are typed. Type compatibility is enforced at connection time.
+Ports are typed. `connect()` validates: (1) both port IDs must exist on their respective nodes, (2) source port must be `Output` and destination port must be `Input`, (3) port types must match. All public L2 port/event enums carry `#[non_exhaustive]` — external matches require a `_` fallback arm.
 
 | Type | Description |
 |------|-------------|
@@ -106,7 +118,7 @@ Events are routed between nodes within the same buffer cycle. The executor build
 
 ## StateBus
 
-**P3 replaces the provisional `Arc<RwLock<HashMap>>` with lock-free `rtrb` SPSC.** The audio thread (executor) pushes a `StateBusUpdate` at end-of-cycle; the main thread drains it in `NodeConfigurator::process_state_bus()`. No lock is held on the audio thread.
+The audio thread (executor) pushes a `StateBusUpdate` at end-of-cycle via lock-free `rtrb` SPSC; the main thread drains it via `NodeConfigurator::process_main_thread()`. No lock is held on the audio thread.
 
 The stable API (`StateBusHandle`) is the only surface consumers should touch:
 
@@ -116,9 +128,9 @@ handle.write(path, value)     // main thread only
 handle.subscribe(path)        // → StateBusSubscription
 ```
 
-The main loop must call `conf.process_state_bus()` between audio cycles — this drains the SPSC, notifies subscriptions, and calls `update_output()` on all hardware devices.
+The main loop must call `conf.process_main_thread()` each iteration — this drains the state bus SPSC, calls `handle.tick()` on all registered `HardwareOutputHandle`s, and notifies subscriptions. (`process_state_bus()` is kept as an alias.)
 
-Rhai scripts access the state bus through this same API. Scripts may `read()` any path and `write()` to `/node/{id}/param/*`. Writing to `/transport/*` or `/hw/*` is sandbox-rejected. Scripts run on the main thread (`Rc<RefCell>` not `Arc<Mutex>`).
+Rhai scripts access the state bus through this same API. Scripts may `read()` any path and `write_sandboxed()` to `/node/{id}/param/*` only. Writing to `/node/*/state/*`, `/transport/*`, or `/hw/*` is sandbox-rejected. Scripts run on the main thread (`Rc<RefCell>` not `Arc<Mutex>`).
 
 ## Event Delivery Ordering
 
@@ -139,24 +151,47 @@ These are hard constraints, not guidelines:
 - `process()` must never allocate, block, or take a lock.
 - The `NodeExecutor::process()` loop uses raw pointer aliasing to work around Rust's borrow checker for the `transport` and `extended_events` fields — this is intentional and documented with `SAFETY` comments.
 - All main-thread → audio-thread communication goes through the lock-free ring buffer (`ConfigMessage`).
+- `NodeCommand` messages (`CMD_SET_PARAM = 0`, `CMD_BUMP_PARAM = 1`) are routed per-node via a separate SPSC and delivered as `input.commands()` in `process()`. Node-specific command type IDs start at 16.
 
-## New Dependencies at P3
+## Dependencies Added Per Phase
 
-- `hound = "3.5"` (MIT) in `paraclete-nodes` — WAV file loading for `Sampler`. Isolated to one function; `symphonia` is the documented upgrade path for broader format support.
+**P3:**
+- `hound = "3.5"` (MIT) in `paraclete-nodes` — WAV loading for `Sampler`. `symphonia` is the P6 upgrade path.
 - `rtrb = "0.3"` (MIT) in `paraclete-runtime` — lock-free SPSC ring buffer for the StateBus upgrade.
+
+**P4:**
+- `midir = "0.9"` (MIT) in `paraclete-hal` — cross-platform MIDI I/O for real hardware nodes.
+- `rtrb = "0.3"` (MIT) in `paraclete-hal` — internal SPSC for `LaunchpadNode` output handle.
+- `crossterm = "0.27"` in `paraclete-hal` — terminal emulator for `LaunchpadEmulator`.
+- `egui`/`eframe` deferred — `--dev-ui` logs to stderr instead; full egui window pushed to P5+.
 
 ## DSP Source Policy
 
 All DSP algorithm implementations must be sourced from MIT/Apache-licensed code or written from scratch. Mutable Instruments firmware (MIT) is the primary DSP reference. HexoDSP may be studied as a GPL3-to-GPL3 reference but implementations must be independent.
 
+## Cellular Architecture Constraint
+
+**Every component that participates in data flow, state management, or event routing is a `Node`.** There is no legitimate second class of platform object (ADR-018). Any design that appears to require a component outside the graph is a signal to extend the Node API — not a reason to create an exception. The scripting engine is the sole exemption: it is the live environment nodes operate within, not a node itself.
+
+Multi-track is a graph topology, not a node feature (ADR-016): 8 tracks = 8 `Sequencer` node instances connected in parallel to one `InternalClock`. Any hardware control can reach any parameter declared in `capability_document()` generically via `CMD_SET_PARAM`/`CMD_BUMP_PARAM` — type knowledge is not required (ADR-019).
+
 ## Design Documents
 
 All design documents live in `design/`. Key documents:
 
-- `design/architecture-core.md` — stable: layer model, Node API, signal types, design principles
-- `design/architecture-evolving.md` — living: roadmap, open questions, phase notes
-- `design/adr/` — all Architecture Decision Records (ADRs are **append-only** — never edit a past ADR, add a new one to supersede it)
+- `design/architecture-core.md` — stable: layer model, Node API, signal types, design principles (binding constraints)
+- `design/architecture-evolving.md` — append-only phase log; records what shipped and what was found per phase
+- `design/roadmap.md` — living: current phase scope, known provisional implementations, open questions
+- `design/instrument-vision.md` — the concrete instrument being built; design tiebreaker for ambiguous decisions
+- `design/adr/` — all Architecture Decision Records (**append-only** — never edit a past ADR, add a new one to supersede it)
 - `design/adr/ADR-005-scheduler-cycles.md` — why the graph must be a DAG (cycle rejection)
 - `design/adr/ADR-008-node-api-level.md` — the three engagement levels
+- `design/adr/ADR-016-multi-track-sequencer.md` — multi-track = multiple node instances
+- `design/adr/ADR-017-effect-node-architecture.md` — effects are plain nodes; `AudioEffect` is a marker only
+- `design/adr/ADR-018-cellular-architecture.md` — no non-node platform components; Node API extension is the answer
+- `design/adr/ADR-019-universal-parameter-control.md` — `CMD_SET_PARAM`/`CMD_BUMP_PARAM`; `ParameterBank` spec
 - `design/phases/` — per-phase interface specs and implementation reports (append-only once a phase ships)
 - `design/phases/p3-interfaces.md` — P3 spec: `Negotiable` trait, parameter lock protocol, `Sampler` node, StateBus SPSC upgrade, Rhai bindings
+- `design/phases/p4-interfaces.md` — P4 spec: hardware integration, `ParameterBank`, `NodeCommand`, `HardwareOutputHandle`, effect nodes, profile scripts
+- `design/phases/p4-report.md` — P4 implementation report: what shipped, node IDs, test coverage, deferred items
+- `profiles/` — Rhai profile scripts loaded at startup (`launchpad.rhai`, `digitakt.rhai`, `keystep.rhai`). Constants `LP_DEVICE_ID`, `DT_DEVICE_ID`, `KS_DEVICE_ID`, `TRACK_SEQ_IDS`, etc. injected per profile.

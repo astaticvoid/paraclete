@@ -55,7 +55,7 @@ impl Voice {
             active: false,
             note: 0,
             playback_pos: 0.0,
-            active_locks: HashMap::new(),
+            active_locks: HashMap::with_capacity(7),
             triggered_at: 0,
         }
     }
@@ -98,6 +98,8 @@ pub struct Sampler {
     // Voice pool
     voices: [Voice; 4],
     cycle_counter: u64,
+    samp_trig_count: u64,
+    last_triggered_note: u8,
 
     output_sample_rate: f32,
     root_note: u8,
@@ -116,6 +118,10 @@ impl Sampler {
     pub const PORT_AUDIO_OUT_R: u32 = 2;
     pub const PORT_PITCH_MOD:   u32 = 3;
     pub const PORT_VOLUME_MOD:  u32 = 4;
+
+    /// Trigger the default note at full velocity immediately.
+    /// Sent from scripts in trigger mode: send_cmd(samp_id, CMD_TRIGGER, 0, 0.0)
+    pub const CMD_TRIGGER: u32 = 19;
 
     pub fn new() -> Self { Self::build(None) }
 
@@ -140,6 +146,8 @@ impl Sampler {
             node_locks: HashMap::new(),
             voices: [Voice::new(), Voice::new(), Voice::new(), Voice::new()],
             cycle_counter: 0,
+            samp_trig_count: 0,
+            last_triggered_note: 0,
             output_sample_rate: 44100.0,
             root_note: 60,
             sample_path,
@@ -147,6 +155,16 @@ impl Sampler {
             render_l: Vec::new(),
             render_r: Vec::new(),
         }
+    }
+
+    fn is_known_param(param_id: u32) -> bool {
+        param_id == param_hash("pitch")
+            || param_id == param_hash("volume")
+            || param_id == param_hash("pan")
+            || param_id == param_hash("start")
+            || param_id == param_hash("end")
+            || param_id == param_hash("loop")
+            || param_id == param_hash("slice")
     }
 
     fn base_for(&self, param_id: u32) -> f64 {
@@ -167,6 +185,8 @@ impl Sampler {
     }
 
     fn trigger_voice(&mut self, note: u8, _velocity: u16, _sample_offset: u32) {
+        self.samp_trig_count = self.samp_trig_count.wrapping_add(1);
+        self.last_triggered_note = note;
         let voice_idx = self.voices.iter().position(|v| !v.active)
             .unwrap_or_else(|| {
                 self.voices.iter().enumerate()
@@ -197,20 +217,18 @@ impl Sampler {
             self.voices[idx].active = false;
             self.voices[idx].active_locks.clear();
         }
-
-        self.node_locks.clear();
     }
 
     fn lockable_params_list(&self) -> Vec<LockableParam> {
         self.capability_document().params
-            .iter()
+            .into_iter()
             .map(|p| LockableParam {
                 param_id: p.id,
                 name: p.name.as_str().to_string(),
                 min: p.min,
                 max: p.max,
                 default: p.default,
-                unit: ParamUnit::Generic,
+                unit: p.unit,
             })
             .collect()
     }
@@ -224,6 +242,13 @@ impl Node for Sampler {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
 
     fn set_node_id(&mut self, id: u32) { self.node_id = id; }
+
+    fn published_state(&self) -> Vec<(String, paraclete_node_api::StateBusValue)> {
+        vec![
+            (format!("/node/{}/state/trig",      self.node_id), paraclete_node_api::StateBusValue::Int(self.samp_trig_count as i64)),
+            (format!("/node/{}/state/last_note", self.node_id), paraclete_node_api::StateBusValue::Int(self.last_triggered_note as i64)),
+        ]
+    }
 
     fn capability_document(&self) -> CapabilityDocument {
         CapabilityDocument {
@@ -273,14 +298,25 @@ impl Node for Sampler {
         self.cycle_counter += 1;
         let block_size = input.block_size;
 
+        // Clear per-cycle node-level locks so locks from a previous step do not
+        // bleed into steps that have no param lock. Locks are re-populated from
+        // the incoming events below before any voice trigger fires.
+        self.node_locks.clear();
+
+        // 0. Handle NodeCommands (CMD_TRIGGER from scripting layer).
+        for cmd in input.commands {
+            if cmd.type_id == Self::CMD_TRIGGER {
+                self.trigger_voice(60, u16::MAX / 2, 0);
+            }
+        }
+
         // 1. Handle events (executor ensures ParamLock arrives before NoteOn).
         for timed in input.events {
             match timed.event {
                 Event::ParamLock(ref lock) if lock.node_id == self.node_id => {
-                    let param_id = lock.param_id;
                     // Only accept known param IDs — unknown are silently ignored.
-                    if self.base_for(param_id) != 0.0 || param_id == param_hash("pitch") {
-                        self.node_locks.insert(param_id, ActiveParamLock {
+                    if Self::is_known_param(lock.param_id) {
+                        self.node_locks.insert(lock.param_id, ActiveParamLock {
                             locked_value: lock.value,
                         });
                     }
@@ -393,6 +429,8 @@ impl Node for Sampler {
             }
         }
     }
+
+    fn is_negotiable(&self) -> bool { true }
 
     /// Declare all parameters as lockable.
     fn negotiate(&mut self, _their_doc: &CapabilityDocument) -> ConnectionAgreement {
@@ -557,6 +595,7 @@ mod tests {
             audio_inputs: &[], signal_inputs: &[], events,
             transport: &transport, sample_rate: 44100.0, block_size: block,
             extended_events: &slab,
+            commands: &[],
         };
         let mut output = ProcessOutput {
             audio_outputs: &mut outs, signal_outputs: &mut [],

@@ -69,6 +69,7 @@ impl ExtendedEventSlab {
 /// Typed node event.
 /// `Copy` — events live in pre-allocated slices; nodes copy them as needed.
 #[derive(Clone, Copy, Debug)]
+#[non_exhaustive]
 pub enum Event {
     /// MIDI 2.0 Universal MIDI Packet (see ADR-013).
     /// Covers all performance events: note on/off, per-note expression,

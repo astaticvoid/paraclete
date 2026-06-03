@@ -4,10 +4,6 @@ use crate::port::PortName;
 // ── Hardware events ───────────────────────────────────────────────────────────
 
 /// Native hardware control event. `Copy` — lives in pre-allocated event slices.
-///
-/// Carries typed, controller-specific information (grid position, velocity)
-/// that cannot be cleanly represented in MIDI 2.0 UMP. A `HardwareMappingNode`
-/// in the graph translates `Hardware` events to `Midi2` events for sound nodes.
 #[derive(Clone, Copy, Debug)]
 pub enum HardwareEvent {
     /// Pad pressed. velocity and pressure are 16-bit (MIDI 2.0 resolution).
@@ -20,19 +16,26 @@ pub enum HardwareEvent {
     ButtonPressed { id: u32 },
     /// Button released.
     ButtonReleased { id: u32 },
-    /// Encoder rotated. delta is signed — negative = counter-clockwise.
-    EncoderDelta { id: u32, delta: i32 },
+    /// Encoder changed. delta is signed — negative = counter-clockwise.
+    EncoderChanged { id: u32, value: u16, delta: i16 },
     /// Encoder shaft pressed or released.
     EncoderPush { id: u32, pressed: bool },
     /// Fader moved. value is 16-bit.
     FaderMoved { id: u32, value: u16 },
 }
 
+/// A hardware event tagged with the source device node id.
+/// Produced by `ScriptingGatewayNode` and consumed by the scripting engine.
+#[derive(Clone, Copy, Debug)]
+pub struct HardwareEventMsg {
+    pub device_id: u32,
+    pub event: HardwareEvent,
+}
+
 // ── Surface descriptor ────────────────────────────────────────────────────────
 
 /// Complete description of a hardware controller's physical surface.
-/// Allocated once at controller construction time; referenced by the runtime
-/// for capability discovery.
+#[derive(Clone, Debug)]
 pub struct SurfaceDescriptor {
     pub name: &'static str,
     pub vendor: &'static str,
@@ -40,6 +43,7 @@ pub struct SurfaceDescriptor {
 }
 
 /// A single physical control on a hardware surface.
+#[derive(Clone, Debug)]
 pub enum Control {
     Pad(PadDescriptor),
     Button(ButtonDescriptor),
@@ -49,11 +53,11 @@ pub enum Control {
     Display(DisplayDescriptor),
 }
 
-/// A velocity/pressure-sensitive pad. Common on grid controllers.
+/// A velocity/pressure-sensitive pad.
+#[derive(Clone, Debug)]
 pub struct PadDescriptor {
     pub id: u32,
     pub name: PortName,
-    /// Position in a grid layout. `None` if not part of a grid.
     pub row: Option<u8>,
     pub col: Option<u8>,
     pub velocity_sensitive: bool,
@@ -62,23 +66,33 @@ pub struct PadDescriptor {
 }
 
 /// A momentary button.
+#[derive(Clone, Debug)]
 pub struct ButtonDescriptor {
     pub id: u32,
     pub name: PortName,
     pub rgb: bool,
 }
 
+/// Whether an encoder reports absolute position or relative deltas.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EncoderBehaviour {
+    /// Sends absolute position. `range_max` = 127 for standard 7-bit CC.
+    Absolute { range_max: u16 },
+    /// Sends signed delta. Positive = clockwise. Used by Digitakt and XL Mk3.
+    Relative,
+}
+
 /// A rotary encoder.
+#[derive(Clone, Debug)]
 pub struct EncoderDescriptor {
     pub id: u32,
     pub name: PortName,
-    /// True if the encoder shaft can be pressed.
     pub has_push: bool,
-    /// True for endless rotation. False for ranged (with min/max stops).
-    pub endless: bool,
+    pub behaviour: EncoderBehaviour,
 }
 
 /// A linear fader.
+#[derive(Clone, Debug)]
 pub struct FaderDescriptor {
     pub id: u32,
     pub name: PortName,
@@ -86,6 +100,7 @@ pub struct FaderDescriptor {
 }
 
 /// A standalone LED (not part of a pad or button).
+#[derive(Clone, Debug)]
 pub struct LedDescriptor {
     pub id: u32,
     pub name: PortName,
@@ -93,6 +108,7 @@ pub struct LedDescriptor {
 }
 
 /// A text or pixel display.
+#[derive(Clone, Debug)]
 pub struct DisplayDescriptor {
     pub id: u32,
     pub name: PortName,
@@ -101,22 +117,17 @@ pub struct DisplayDescriptor {
     pub display_type: DisplayType,
 }
 
-/// The rendering capability of a display.
+#[derive(Clone, Debug)]
 pub enum DisplayType {
-    /// 7-segment numeric display.
     Segment,
-    /// Character LCD — fixed-width character grid.
     Character,
-    /// Bitmap pixel display.
     Pixel,
 }
 
 // ── Hardware output ───────────────────────────────────────────────────────────
 
 /// Collected output state sent to a hardware device after each cycle.
-///
-/// Stub at P1 — populated by the runtime at P2 when the state bus wires up
-/// LED feedback. Until then, `update_output()` always receives an empty struct.
+#[derive(Clone, Debug)]
 pub struct HardwareOutput {
     pub led_updates: Vec<LedUpdate>,
     pub display_updates: Vec<DisplayUpdate>,
@@ -128,22 +139,22 @@ impl HardwareOutput {
     }
 }
 
+#[derive(Clone, Debug)]
 pub struct LedUpdate {
     pub control_id: u32,
     pub color: RgbColor,
 }
 
+#[derive(Clone, Debug)]
 pub struct DisplayUpdate {
     pub control_id: u32,
     pub content: DisplayContent,
 }
 
+#[derive(Clone, Debug)]
 pub enum DisplayContent {
-    /// UTF-8 text string.
     Text(String),
-    /// Bitmask for 7-segment display.
     Segments(u8),
-    /// Raw pixel bitmap. Format is device-defined.
     Pixels(Vec<u8>),
 }
 
@@ -163,26 +174,47 @@ impl RgbColor {
     pub const BLUE:  RgbColor = RgbColor { r: 0,   g: 0,   b: 255 };
 }
 
+// ── HardwareOutputHandle ──────────────────────────────────────────────────────
+
+/// Main-thread output handler for a hardware device.
+///
+/// Created by `HardwareDevice::take_output_handle()` at registration time.
+/// The configurator holds it and calls `tick()` each main-loop iteration.
+/// The device's audio-thread side pushes `HardwareOutput` to an internal SPSC;
+/// `tick()` drains and delivers to the physical device. Must not block.
+pub trait HardwareOutputHandle: Send {
+    /// Called by the configurator each main-loop iteration. Drains the
+    /// device's internal audio-thread SPSC and sends pending output.
+    fn tick(&mut self);
+
+    /// Deliver script-generated output directly from the main thread.
+    /// Called after `process_subscriptions()` with LED updates from Rhai scripts.
+    /// Default: no-op (device has no LED output from scripts).
+    fn deliver(&mut self, _output: HardwareOutput) {}
+}
+
 // ── HardwareDevice trait ──────────────────────────────────────────────────────
 
-/// A hardware controller node.
+/// A hardware controller node. Implements `Node` for graph participation.
 ///
-/// Implements `Node` for graph participation — the controller emits
-/// `HardwareEvent` instances via `output.events_out` in `process()`.
-///
-/// Implements `HardwareDevice` to declare its physical surface and receive
-/// output state (LED colours, display content) from the runtime.
+/// Two output paths are available:
+/// - **Legacy path:** `update_output()` called from the executor (audio thread).
+/// - **P4+ path:** implement `take_output_handle()` returning `Some(...)`. The
+///   configurator holds the handle and calls `handle.tick()` each main-loop
+///   iteration (main thread). Use this for all new hardware nodes.
 pub trait HardwareDevice: Node {
-    /// Declare the physical surface of this controller.
-    /// Called once at registration time. May be called from any thread.
     fn surface(&self) -> &SurfaceDescriptor;
 
-    /// Receive output state from the graph after each process cycle.
-    ///
-    /// Called on the audio thread immediately after `process()` completes
-    /// for all nodes. At P1, `output` is always empty — LED feedback is
-    /// wired at P2 when the state bus is available.
+    /// Legacy output path: called from the executor after each process cycle.
+    /// New P4+ devices implement `take_output_handle()` instead and leave this
+    /// as a no-op.
     fn update_output(&mut self, output: &HardwareOutput);
+
+    /// Called once by the configurator after registration. Return `Some` to opt
+    /// into the main-thread output path; `None` uses the legacy audio-thread path.
+    fn take_output_handle(&mut self) -> Option<Box<dyn HardwareOutputHandle>> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -192,9 +224,19 @@ mod tests {
     #[test]
     fn hardware_event_is_copy() {
         let a = HardwareEvent::PadPressed { id: 0, velocity: 100, pressure: 0 };
-        let b = a; // Copy
+        let b = a;
         let _ = a;
         let _ = b;
+    }
+
+    #[test]
+    fn hardware_event_msg_is_copy() {
+        let msg = HardwareEventMsg {
+            device_id: 1,
+            event: HardwareEvent::ButtonPressed { id: 5 },
+        };
+        let _ = msg;
+        let _ = msg;
     }
 
     #[test]
@@ -214,7 +256,21 @@ mod tests {
     }
 
     #[test]
-    fn surface_descriptor_construction_for_test_surface() {
+    fn encoder_behaviour_absolute_vs_relative() {
+        let abs = EncoderBehaviour::Absolute { range_max: 127 };
+        let rel = EncoderBehaviour::Relative;
+        assert_ne!(abs, rel);
+        assert_eq!(abs, EncoderBehaviour::Absolute { range_max: 127 });
+    }
+
+    #[test]
+    fn hardware_output_handle_is_object_safe() {
+        // Verify the trait is object-safe by forming a trait object reference.
+        fn _takes_handle(_h: &dyn HardwareOutputHandle) {}
+    }
+
+    #[test]
+    fn surface_descriptor_construction() {
         let surface = SurfaceDescriptor {
             name: "Test Controller",
             vendor: "Test",

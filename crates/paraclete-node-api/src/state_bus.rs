@@ -53,11 +53,24 @@ impl StateBusHandle {
         self.store.insert(path.to_string(), value);
     }
 
-    /// Write only if the path is under `/node/` — enforces the script sandbox.
-    /// Returns `Err` for protected paths (`/transport/`, `/hw/`).
+    /// Write with sandbox enforcement. Scripts may write to:
+    ///   - `/script/` — script-private state (mode flags, UI state)
+    ///   - `/node/{id}/param/` — declared node parameters
+    ///
+    /// Scripts may NOT write to:
+    ///   - `/node/{id}/state/` — written by the executor, read-only for scripts
+    ///   - `/transport/` — clock domain state
+    ///   - `/hw/` — hardware state
     pub fn write_sandboxed(&mut self, path: &str, value: StateBusValue) -> Result<(), &'static str> {
-        if !path.starts_with("/node/") {
-            return Err("scripts may only write to /node/ paths");
+        let allowed = path.starts_with("/script/")
+            || (path.starts_with("/node/") && {
+                let after_node = &path["/node/".len()..];
+                after_node.find('/').map(|slash| {
+                    after_node[slash + 1..].starts_with("param/")
+                }).unwrap_or(false)
+            });
+        if !allowed {
+            return Err("scripts may not write to this path — only /script/ and /node/{id}/param/ are writable");
         }
         self.store.insert(path.to_string(), value);
         Ok(())
@@ -167,8 +180,28 @@ mod tests {
     }
 
     #[test]
-    fn state_bus_write_sandboxed_accepts_node_path() {
+    fn state_bus_write_sandboxed_accepts_node_param_path() {
         let mut handle = StateBusHandle::new();
         assert!(handle.write_sandboxed("/node/1/param/pitch", StateBusValue::Float(2.0)).is_ok());
+    }
+
+    #[test]
+    fn state_bus_write_sandboxed_rejects_node_state_path() {
+        let mut handle = StateBusHandle::new();
+        assert!(handle.write_sandboxed("/node/1/state/steps", StateBusValue::Text("1010".into())).is_err());
+    }
+
+    #[test]
+    fn state_bus_write_sandboxed_accepts_script_path() {
+        let mut handle = StateBusHandle::new();
+        assert!(handle.write_sandboxed("/script/lp/mode", StateBusValue::Text("sequence".into())).is_ok());
+        assert_eq!(handle.read("/script/lp/mode"), Some(&StateBusValue::Text("sequence".into())));
+    }
+
+    #[test]
+    fn state_bus_write_sandboxed_rejects_transport_and_hw_paths() {
+        let mut handle = StateBusHandle::new();
+        assert!(handle.write_sandboxed("/transport/bpm", StateBusValue::Float(120.0)).is_err());
+        assert!(handle.write_sandboxed("/hw/led/1", StateBusValue::Int(0)).is_err());
     }
 }

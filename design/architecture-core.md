@@ -58,7 +58,11 @@ Interfaces are designed for full depth from day one. Implementations ship at the
 
 Everything is a composable node with well-defined typed ports. Nodes advertise capabilities and negotiate protocols. The graph is the universal interface. Nodes are agents, not passive processors. Composition is the primary mode of construction at every layer.
 
-### 3. Cybernetic Architecture
+**There is no legitimate second class of platform object.** Any design that appears to require a component outside the graph is a signal that the Node API needs extension — not a reason to create an exception. The scripting engine is the one acknowledged exemption: it is the live environment within which nodes operate, not a node within it. See ADR-018.
+
+### 3. Cellular, Cybernetic Architecture
+
+The platform is a **cellular** system: each node is a cell with defined inputs and outputs. Cells communicate through connections. The whole emerges from composition. Nothing is hardwired at the structural level. The runtime is the connective tissue — it routes and schedules; it does not decide.
 
 Computation happens at the edges. The runtime is a nervous system — it orchestrates without controlling. Dumb core, smart nodes. Central orchestration is available but never imposed. Local intelligence is always respected. The system degrades gracefully when the center is absent.
 
@@ -364,7 +368,7 @@ paraclete/
 
 |Term                 |Definition                                                                                |
 |---------------------|------------------------------------------------------------------------------------------|
-|Node                 |Atomic unit. Any processor, instrument, controller, or effect implementing the Node trait.|
+|Node                 |**The universal primitive.** Every component that participates in data flow, state management, or event routing. Implements the Node trait. Exists within the graph. There is no legitimate platform component outside the graph — only the scripting engine is exempt by nature. See ADR-018.|
 |Port                 |Typed input or output on a node.                                                          |
 |Graph                |The network of connected nodes, managed by the runtime.                                   |
 |State Bus            |Publish/subscribe observable namespace with hierarchical addresses.                       |

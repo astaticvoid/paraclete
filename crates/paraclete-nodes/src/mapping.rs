@@ -109,6 +109,7 @@ mod tests {
             sample_rate: 44100.0,
             block_size: block,
             extended_events: &extended,
+        commands: &[],
         };
         let mut output = ProcessOutput {
             audio_outputs: &mut outs,

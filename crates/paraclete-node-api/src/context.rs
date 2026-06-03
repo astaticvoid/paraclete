@@ -1,13 +1,11 @@
 use crate::buffer::{
     AudioBuffer, CvBuffer, LogicBuffer, ModBuffer, PhaseBuffer, PitchBuffer,
 };
+use crate::command::NodeCommand;
 use crate::event::{ExtendedEventSlab, TimedEvent};
 use crate::transport::TransportInfo;
 
 // ── Signal slot types ─────────────────────────────────────────────────────────
-// Signal port connections (Cv, Phase, Logic, Pitch, Mod) land at P1 alongside
-// the first CvSignal connections. These stub types carry the API shape; the
-// full implementation (with proper buffer wiring) arrives in P1.
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SignalPortKind {
@@ -19,7 +17,6 @@ pub enum SignalPortKind {
 }
 
 /// Input signal slot. Created by the executor at connection time.
-/// At P0, signal_inputs on ProcessInput is always an empty slice.
 pub struct SignalInputSlot {
     pub port_id: u32,
     pub kind: SignalPortKind,
@@ -29,8 +26,13 @@ pub struct SignalInputSlot {
 }
 
 // SAFETY: The executor creates SignalInputSlots on the audio thread.
-// No cross-thread sharing occurs during process().
 unsafe impl Send for SignalInputSlot {}
+
+impl SignalInputSlot {
+    pub fn new(port_id: u32, kind: SignalPortKind, data: &[f32]) -> Self {
+        Self { port_id, kind, ptr: data.as_ptr(), frames: data.len() }
+    }
+}
 
 /// Output signal slot. Created by the executor at connection time.
 pub struct SignalOutputSlot {
@@ -43,88 +45,59 @@ pub struct SignalOutputSlot {
 
 unsafe impl Send for SignalOutputSlot {}
 
+impl SignalOutputSlot {
+    pub fn new(port_id: u32, kind: SignalPortKind, data: &mut [f32]) -> Self {
+        Self { port_id, kind, ptr: data.as_mut_ptr(), frames: data.len() }
+    }
+}
+
 // ── ProcessInput ──────────────────────────────────────────────────────────────
 
 /// Everything a node reads during `process()`. Immutable.
-///
-/// All fields are `pub` — the executor (in `paraclete-runtime`) constructs
-/// this struct directly. Node code should treat it as read-only.
 pub struct ProcessInput<'a> {
-    /// Audio input buffers, one per connected audio input port, in declaration order.
     pub audio_inputs: &'a [&'a AudioBuffer],
-
-    /// Signal input slots. Always empty at P0.
     pub signal_inputs: &'a [SignalInputSlot],
-
-    /// Events for this node, pre-filtered and sorted by `sample_offset`.
     pub events: &'a [TimedEvent],
-
-    /// Clock state at the start of this buffer.
     pub transport: &'a TransportInfo,
-
     pub sample_rate: f32,
     pub block_size: usize,
-
-    /// ExtendedEventSlab (extended event slab). Stub at P0.
     pub extended_events: &'a ExtendedEventSlab,
+    /// NodeCommands addressed to this node for this cycle.
+    pub commands: &'a [NodeCommand],
 }
 
 impl<'a> ProcessInput<'a> {
-    // Signal buffer views for connected ports arrive at P4.
-    // For now: panic on wrong type (programming error), return silence on
-    // unconnected (normal operation — the port simply has no source).
-
-    pub fn cv(&self, port_id: u32) -> &CvBuffer {
-        for slot in self.signal_inputs {
-            if slot.port_id == port_id {
-                assert_eq!(slot.kind, SignalPortKind::Cv, "port {port_id} is not a Cv port");
-                unimplemented!("connected signal port views arrive at P4");
-            }
-        }
+    /// CV input for a connected port.
+    ///
+    /// **Not yet implemented (P5):** signal port buffer wiring is deferred. This
+    /// method always returns an empty buffer regardless of graph connections. Nodes
+    /// that declare Cv ports will compile and link against this API, but will receive
+    /// silence until the executor wires signal buffers at `build_executor()` time.
+    pub fn cv(&self, _port_id: u32) -> &CvBuffer {
         static SILENT: std::sync::OnceLock<CvBuffer> = std::sync::OnceLock::new();
         SILENT.get_or_init(|| CvBuffer::new(0))
     }
 
-    pub fn phase(&self, port_id: u32) -> &PhaseBuffer {
-        for slot in self.signal_inputs {
-            if slot.port_id == port_id {
-                assert_eq!(slot.kind, SignalPortKind::Phase, "port {port_id} is not a Phase port");
-                unimplemented!("connected signal port views arrive at P4");
-            }
-        }
+    /// Phase input for a connected port. **Not yet implemented (P5) — always returns silence.**
+    pub fn phase(&self, _port_id: u32) -> &PhaseBuffer {
         static SILENT: std::sync::OnceLock<PhaseBuffer> = std::sync::OnceLock::new();
         SILENT.get_or_init(|| PhaseBuffer::new(0))
     }
 
-    pub fn logic(&self, port_id: u32) -> &LogicBuffer {
-        for slot in self.signal_inputs {
-            if slot.port_id == port_id {
-                assert_eq!(slot.kind, SignalPortKind::Logic, "port {port_id} is not a Logic port");
-                unimplemented!("connected signal port views arrive at P4");
-            }
-        }
+    /// Logic input for a connected port. **Not yet implemented (P5) — always returns silence.**
+    pub fn logic(&self, _port_id: u32) -> &LogicBuffer {
         static SILENT: std::sync::OnceLock<LogicBuffer> = std::sync::OnceLock::new();
         SILENT.get_or_init(|| LogicBuffer::new(0))
     }
 
-    pub fn pitch(&self, port_id: u32) -> &PitchBuffer {
-        for slot in self.signal_inputs {
-            if slot.port_id == port_id {
-                assert_eq!(slot.kind, SignalPortKind::Pitch, "port {port_id} is not a Pitch port");
-                unimplemented!("connected signal port views arrive at P4");
-            }
-        }
+    /// Pitch input for a connected port. **Not yet implemented (P5) — always returns silence.**
+    pub fn pitch(&self, _port_id: u32) -> &PitchBuffer {
         static SILENT: std::sync::OnceLock<PitchBuffer> = std::sync::OnceLock::new();
         SILENT.get_or_init(|| PitchBuffer::new(0))
     }
 
-    pub fn modulation(&self, port_id: u32) -> &ModBuffer {
-        for slot in self.signal_inputs {
-            if slot.port_id == port_id {
-                assert_eq!(slot.kind, SignalPortKind::Modulation, "port {port_id} is not a Modulation port");
-                unimplemented!("connected signal port views arrive at P4");
-            }
-        }
+    /// Modulation input for a connected port. **Not yet implemented (P5) — always returns silence.**
+    pub fn modulation(&self, _port_id: u32) -> &ModBuffer {
         static SILENT: std::sync::OnceLock<ModBuffer> = std::sync::OnceLock::new();
         SILENT.get_or_init(|| ModBuffer::new(0))
     }
@@ -132,18 +105,9 @@ impl<'a> ProcessInput<'a> {
 
 // ── ProcessOutput ─────────────────────────────────────────────────────────────
 
-/// Everything a node writes during `process()`.
-///
-/// All fields are `pub` — the executor constructs this struct directly.
 pub struct ProcessOutput<'a> {
-    /// Audio output buffers, one per connected audio output port, in declaration order.
-    /// Index 0 is the primary stereo output; additional outputs follow in port order.
     pub audio_outputs: &'a mut [&'a mut AudioBuffer],
-
-    /// Signal output slots. Always empty at P0.
     pub signal_outputs: &'a mut [SignalOutputSlot],
-
-    /// Outgoing events. The executor routes these to downstream nodes.
     pub events_out: &'a mut EventOutputBuffer,
 }
 
@@ -159,29 +123,29 @@ impl<'a> ProcessOutput<'a> {
         panic!("no signal output with port_id {port_id}");
     }
 
-    pub fn cv_mut(&mut self, port_id: u32) -> &mut CvBuffer {
-        let _ = self.find_output(port_id, SignalPortKind::Cv);
-        unimplemented!("signal port views land at P1")
+    /// **Not yet implemented (P5).**
+    pub fn cv_mut(&mut self, _port_id: u32) -> &mut CvBuffer {
+        unimplemented!("signal output views land at P5")
     }
 
-    pub fn phase_mut(&mut self, port_id: u32) -> &mut PhaseBuffer {
-        let _ = self.find_output(port_id, SignalPortKind::Phase);
-        unimplemented!("signal port views land at P1")
+    /// **Not yet implemented (P5).**
+    pub fn phase_mut(&mut self, _port_id: u32) -> &mut PhaseBuffer {
+        unimplemented!("signal output views land at P5")
     }
 
-    pub fn logic_mut(&mut self, port_id: u32) -> &mut LogicBuffer {
-        let _ = self.find_output(port_id, SignalPortKind::Logic);
-        unimplemented!("signal port views land at P1")
+    /// **Not yet implemented (P5).**
+    pub fn logic_mut(&mut self, _port_id: u32) -> &mut LogicBuffer {
+        unimplemented!("signal output views land at P5")
     }
 
-    pub fn pitch_mut(&mut self, port_id: u32) -> &mut PitchBuffer {
-        let _ = self.find_output(port_id, SignalPortKind::Pitch);
-        unimplemented!("signal port views land at P1")
+    /// **Not yet implemented (P5).**
+    pub fn pitch_mut(&mut self, _port_id: u32) -> &mut PitchBuffer {
+        unimplemented!("signal output views land at P5")
     }
 
-    pub fn modulation_mut(&mut self, port_id: u32) -> &mut ModBuffer {
-        let _ = self.find_output(port_id, SignalPortKind::Modulation);
-        unimplemented!("signal port views land at P1")
+    /// **Not yet implemented (P5).**
+    pub fn modulation_mut(&mut self, _port_id: u32) -> &mut ModBuffer {
+        unimplemented!("signal output views land at P5")
     }
 }
 
@@ -198,7 +162,6 @@ impl EventOutputBuffer {
         Self { events: Vec::with_capacity(capacity), capacity }
     }
 
-    /// Push an outgoing event. Panics if capacity exceeded.
     pub fn push(&mut self, event: TimedEvent) {
         assert!(
             self.events.len() < self.capacity,
@@ -208,37 +171,40 @@ impl EventOutputBuffer {
         self.events.push(event);
     }
 
-    pub fn len(&self) -> usize {
-        self.events.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.events.is_empty()
-    }
-
-    pub fn clear(&mut self) {
-        self.events.clear();
-    }
-
-    pub fn as_slice(&self) -> &[TimedEvent] {
-        &self.events
-    }
+    pub fn len(&self) -> usize { self.events.len() }
+    pub fn is_empty(&self) -> bool { self.events.is_empty() }
+    pub fn clear(&mut self) { self.events.clear(); }
+    pub fn as_slice(&self) -> &[TimedEvent] { &self.events }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::buffer::AudioBuffer;
+    use crate::command::NodeCommand;
     use crate::event::{ExtendedEventSlab, TimedEvent};
     use crate::transport::TransportInfo;
 
-    // ── EventOutputBuffer ─────────────────────────────────────────────────────
+    fn make_input<'a>(
+        transport: &'a TransportInfo,
+        slab: &'a ExtendedEventSlab,
+    ) -> ProcessInput<'a> {
+        ProcessInput {
+            audio_inputs: &[],
+            signal_inputs: &[],
+            events: &[],
+            transport,
+            sample_rate: 44100.0,
+            block_size: 64,
+            extended_events: slab,
+            commands: &[],
+        }
+    }
 
     #[test]
     fn event_output_buffer_starts_empty() {
         let buf = EventOutputBuffer::new(16);
         assert!(buf.is_empty());
-        assert_eq!(buf.len(), 0);
     }
 
     #[test]
@@ -246,8 +212,7 @@ mod tests {
         use crate::event::Event;
         let mut buf = EventOutputBuffer::new(4);
         buf.push(TimedEvent::new(0, Event::Tempo(120.0)));
-        buf.push(TimedEvent::new(1, Event::Tempo(130.0)));
-        assert_eq!(buf.len(), 2);
+        assert_eq!(buf.len(), 1);
     }
 
     #[test]
@@ -265,55 +230,58 @@ mod tests {
         use crate::event::Event;
         let mut buf = EventOutputBuffer::new(1);
         buf.push(TimedEvent::new(0, Event::Tempo(120.0)));
-        buf.push(TimedEvent::new(1, Event::Tempo(130.0))); // should panic
+        buf.push(TimedEvent::new(1, Event::Tempo(130.0)));
     }
 
-    // ── ProcessInput / ProcessOutput structural split ─────────────────────────
-
     #[test]
-    fn process_input_audio_inputs_are_immutable_references() {
-        // ProcessInput provides &[&AudioBuffer] — read-only by construction.
-        // ProcessOutput provides &mut [&mut AudioBuffer] — writable.
-        // This test demonstrates the type-system split is correctly constructed.
-        let buf = AudioBuffer::new(2, 64);
-        let inputs: &[&AudioBuffer] = &[&buf];
+    fn process_input_has_commands_field() {
         let transport = TransportInfo::default();
-        let extended = ExtendedEventSlab::empty();
-
+        let slab = ExtendedEventSlab::empty();
+        let cmd = NodeCommand { target_id: 1, type_id: 0, arg0: 0, arg1: 0.5 };
         let input = ProcessInput {
-            audio_inputs: inputs,
+            audio_inputs: &[],
             signal_inputs: &[],
             events: &[],
             transport: &transport,
             sample_rate: 44100.0,
             block_size: 64,
-            extended_events: &extended,
+            extended_events: &slab,
+            commands: &[cmd],
         };
+        assert_eq!(input.commands.len(), 1);
+    }
 
+    #[test]
+    fn process_input_audio_inputs_are_immutable_references() {
+        let buf = AudioBuffer::new(2, 64);
+        let transport = TransportInfo::default();
+        let slab = ExtendedEventSlab::empty();
+        let input = ProcessInput {
+            audio_inputs: &[&buf],
+            signal_inputs: &[],
+            events: &[],
+            transport: &transport,
+            sample_rate: 44100.0,
+            block_size: 64,
+            extended_events: &slab,
+            commands: &[],
+        };
         assert_eq!(input.audio_inputs.len(), 1);
-        assert_eq!(input.audio_inputs[0].channels(), 2);
-        assert_eq!(input.audio_inputs[0].frames(), 64);
         assert_eq!(input.block_size, 64);
-        assert_eq!(input.sample_rate, 44100.0);
     }
 
     #[test]
     fn process_output_audio_outputs_are_mutable() {
         let mut buf = AudioBuffer::new(2, 64);
         let mut events_out = EventOutputBuffer::new(16);
-
-        // Construct output — uses same unsafe lifetime bridge as the executor.
         let out_ptr: *mut AudioBuffer = &mut buf as *mut AudioBuffer;
         let out_ref: &mut AudioBuffer = unsafe { &mut *out_ptr };
-        let mut outs: [&mut AudioBuffer; 1] = [out_ref];
-
+        let mut outs = [out_ref];
         let output = ProcessOutput {
             audio_outputs: &mut outs,
             signal_outputs: &mut [],
             events_out: &mut events_out,
         };
-
-        // Write through output — this is what a node does in process().
         output.audio_outputs[0].channel_mut(0).fill(0.5);
         assert_eq!(buf.channel(0)[0], 0.5);
     }

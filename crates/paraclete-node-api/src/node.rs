@@ -87,6 +87,17 @@ pub trait Node: Send {
 
     // ── Level 3 — override for smart nodes ───────────────────────────────────
 
+    /// Returns `true` if this node actively participates in the connection
+    /// handshake — i.e., it implements `Negotiable` and overrides `negotiate()`
+    /// and/or `set_connection_record()` with meaningful behaviour.
+    ///
+    /// Default returns `false`. Override to `true` whenever `Negotiable` is
+    /// implemented. The runtime uses this to log negotiation-aware connections
+    /// and may use it to skip redundant handshakes in performance-sensitive paths.
+    fn is_negotiable(&self) -> bool {
+        false
+    }
+
     /// Participate in the connection handshake.
     ///
     /// When two nodes connect, the runtime calls `negotiate()` on both sides,
@@ -113,10 +124,11 @@ pub trait Node: Send {
 
 /// Marker trait for nodes that actively participate in connection handshakes.
 ///
-/// Implement this alongside meaningful overrides of `Node::negotiate()` and
-/// `Node::set_connection_record()`. The runtime always invokes the handshake
-/// on both sides of every connection — `Negotiable` is a declaration of intent
-/// (and a discovery hook), not a capability gate.
+/// Implementors **must** also:
+/// 1. Override `Node::negotiate()` to return a meaningful `ConnectionAgreement`.
+/// 2. Override `Node::set_connection_record()` to store the reconciled record.
+/// 3. Override `Node::is_negotiable()` to return `true` so the runtime can
+///    discover this node's participation at connection time.
 ///
 /// The `Sampler` implements `Negotiable` to advertise its lockable parameters.
 /// The `Sequencer` reads those params from the returned `ConnectionAgreement`

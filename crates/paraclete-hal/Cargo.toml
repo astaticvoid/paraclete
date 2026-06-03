@@ -13,3 +13,5 @@ paraclete-runtime  = { workspace = true }
 cpal        = { workspace = true }
 log         = { workspace = true }
 crossterm   = "0.27"
+midir       = { workspace = true }
+rtrb        = { workspace = true }

@@ -39,6 +39,12 @@ impl InternalClock {
         Self::with_domain(0)
     }
 
+    pub fn with_bpm(bpm: f64) -> Self {
+        let mut clock = Self::with_domain(0);
+        clock.bpm = bpm;
+        clock
+    }
+
     pub fn with_domain(domain_id: u32) -> Self {
         Self {
             ports: [
@@ -238,6 +244,7 @@ mod tests {
             sample_rate: 44100.0,
             block_size,
             extended_events: &slab,
+            commands: &[],
         };
         let mut output = ProcessOutput {
             audio_outputs: &mut outs,

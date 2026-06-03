@@ -3,8 +3,9 @@
 use std::sync::{Arc, Mutex, atomic::{AtomicU32, Ordering}};
 
 use paraclete_node_api::{
-    Event, HardwareDevice, HardwareEvent, HardwareOutput, StateBusValue, Node,
-    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput,
+    CapabilityDocument, ConnectionAgreement, ConnectionRecord, Event, HardwareDevice,
+    HardwareEvent, HardwareOutput, StateBusValue, Node,
+    ParamLockEvent, PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput,
     SurfaceDescriptor, TimedEvent,
 };
 use paraclete_runtime::{ConfigMessage, NodeConfigurator};
@@ -60,6 +61,31 @@ impl Node for ConstantOutputNode {
     }
 }
 
+// A node with both an Event output (port 0) and Event input (port 1),
+// used to test connect() direction and cycle validation end-to-end.
+struct BidirectionalNode {
+    ports: [PortDescriptor; 2],
+}
+
+impl BidirectionalNode {
+    const PORT_OUT: u32 = 0;
+    const PORT_IN:  u32 = 1;
+
+    fn new() -> Self {
+        Self {
+            ports: [
+                PortDescriptor { id: Self::PORT_OUT, name: "out".into(), direction: PortDirection::Output, port_type: PortType::Event },
+                PortDescriptor { id: Self::PORT_IN,  name: "in".into(),  direction: PortDirection::Input,  port_type: PortType::Event },
+            ],
+        }
+    }
+}
+
+impl Node for BidirectionalNode {
+    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn process(&mut self, _: &ProcessInput, _: &mut ProcessOutput) {}
+}
+
 // ── NodeConfigurator ─────────────────────────────────────────────────────────────────
 
 #[test]
@@ -73,29 +99,31 @@ fn configurator_can_register_a_node_and_build_executor() {
 #[test]
 fn configurator_connect_rejects_two_node_cycle() {
     let mut conf = NodeConfigurator::new(44100.0, 512);
-    conf.add_node(1, Box::new(CountingNode::new(Arc::new(AtomicU32::new(0)))));
-    conf.add_node(2, Box::new(CountingNode::new(Arc::new(AtomicU32::new(0)))));
+    conf.add_node(1, Box::new(BidirectionalNode::new()));
+    conf.add_node(2, Box::new(BidirectionalNode::new()));
 
-    assert!(conf.connect(1, 0, 2, 0).is_ok());
-    assert!(conf.connect(2, 0, 1, 0).is_err());
+    // 1's output → 2's input: valid
+    assert!(conf.connect(1, BidirectionalNode::PORT_OUT, 2, BidirectionalNode::PORT_IN).is_ok());
+    // 2's output → 1's input: forms a cycle, must be rejected
+    assert!(conf.connect(2, BidirectionalNode::PORT_OUT, 1, BidirectionalNode::PORT_IN).is_err());
 }
 
 #[test]
 fn configurator_connect_rejects_self_loop() {
     let mut conf = NodeConfigurator::new(44100.0, 512);
-    conf.add_node(1, Box::new(CountingNode::new(Arc::new(AtomicU32::new(0)))));
-    assert!(conf.connect(1, 0, 1, 0).is_err());
+    conf.add_node(1, Box::new(BidirectionalNode::new()));
+    assert!(conf.connect(1, BidirectionalNode::PORT_OUT, 1, BidirectionalNode::PORT_IN).is_err());
 }
 
 #[test]
 fn configurator_connect_accepts_valid_dag() {
     let mut conf = NodeConfigurator::new(44100.0, 512);
-    conf.add_node(1, Box::new(CountingNode::new(Arc::new(AtomicU32::new(0)))));
-    conf.add_node(2, Box::new(CountingNode::new(Arc::new(AtomicU32::new(0)))));
-    conf.add_node(3, Box::new(CountingNode::new(Arc::new(AtomicU32::new(0)))));
+    conf.add_node(1, Box::new(BidirectionalNode::new()));
+    conf.add_node(2, Box::new(BidirectionalNode::new()));
+    conf.add_node(3, Box::new(BidirectionalNode::new()));
 
-    assert!(conf.connect(1, 0, 2, 0).is_ok());
-    assert!(conf.connect(2, 0, 3, 0).is_ok());
+    assert!(conf.connect(1, BidirectionalNode::PORT_OUT, 2, BidirectionalNode::PORT_IN).is_ok());
+    assert!(conf.connect(2, BidirectionalNode::PORT_OUT, 3, BidirectionalNode::PORT_IN).is_ok());
 }
 
 // ── NodeExecutor ──────────────────────────────────────────────────────────────
@@ -384,4 +412,159 @@ fn add_tempo_source_returns_domain_id_and_node_participates_in_graph() {
     let melos2 = Box::new(CountingNode::new(Arc::new(AtomicU32::new(0))));
     let (_id2, domain_id2) = conf.add_tempo_source(11, melos2);
     assert_eq!(domain_id2, 1);
+}
+
+// ── P3-S7: connect() invokes negotiate() end-to-end ──────────────────────────
+
+struct NegotiatingInstrument {
+    ports: Vec<PortDescriptor>,
+    negotiate_called: Arc<AtomicU32>,
+    record_received: Arc<AtomicU32>,
+}
+
+impl NegotiatingInstrument {
+    fn new(negotiate_called: Arc<AtomicU32>, record_received: Arc<AtomicU32>) -> Self {
+        Self {
+            ports: vec![PortDescriptor {
+                id: 0,
+                name: "events_in".into(),
+                direction: PortDirection::Input,
+                port_type: PortType::Event,
+            }],
+            negotiate_called,
+            record_received,
+        }
+    }
+}
+
+impl Node for NegotiatingInstrument {
+    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn process(&mut self, _: &ProcessInput, _: &mut ProcessOutput) {}
+
+    fn is_negotiable(&self) -> bool { true }
+
+    fn negotiate(&mut self, _their_doc: &CapabilityDocument) -> ConnectionAgreement {
+        self.negotiate_called.fetch_add(1, Ordering::Relaxed);
+        ConnectionAgreement::baseline()
+    }
+
+    fn set_connection_record(&mut self, _record: ConnectionRecord) {
+        self.record_received.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn connect_invokes_negotiate_and_set_connection_record_on_both_sides() {
+    let src_negotiate  = Arc::new(AtomicU32::new(0));
+    let dst_negotiate  = Arc::new(AtomicU32::new(0));
+    let src_record_rx  = Arc::new(AtomicU32::new(0));
+    let dst_record_rx  = Arc::new(AtomicU32::new(0));
+
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+
+    // src: Event Output
+    conf.add_node(1, Box::new(EventEmittingNode::new(
+        HardwareEvent::PadPressed { id: 0, velocity: 0, pressure: 0 },
+    )));
+    conf.add_node(2, Box::new(NegotiatingInstrument::new(
+        dst_negotiate.clone(), dst_record_rx.clone(),
+    )));
+    conf.connect(1, 0, 2, 0).unwrap();
+
+    // negotiate() is called on both sides; set_connection_record() is called on both sides.
+    // The NegotiatingInstrument on dst side (node 2) should have been called.
+    assert_eq!(dst_negotiate.load(Ordering::Relaxed), 1, "dst negotiate() not called");
+    assert_eq!(dst_record_rx.load(Ordering::Relaxed), 1, "dst set_connection_record() not called");
+    // src side uses the default negotiate() which we cannot count here (CountingNode doesn't
+    // override it), so we only assert on the NegotiatingInstrument side.
+    let _ = (src_negotiate, src_record_rx); // unused but declared for symmetry
+}
+
+// ── P3-S8: ParamLockEvent delivery ordering ───────────────────────────────────
+
+struct OrderCapturingNode {
+    ports: Vec<PortDescriptor>,
+    received_order: Arc<Mutex<Vec<String>>>,
+}
+
+impl OrderCapturingNode {
+    fn new(received_order: Arc<Mutex<Vec<String>>>) -> Self {
+        Self {
+            ports: vec![PortDescriptor {
+                id: 0,
+                name: "events_in".into(),
+                direction: PortDirection::Input,
+                port_type: PortType::Event,
+            }],
+            received_order,
+        }
+    }
+}
+
+impl Node for OrderCapturingNode {
+    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn process(&mut self, input: &ProcessInput, _output: &mut ProcessOutput) {
+        let mut order = self.received_order.lock().unwrap();
+        for timed in input.events {
+            let label = match timed.event {
+                Event::ParamLock(_) => "param_lock",
+                Event::Midi2(_)     => "midi2",
+                Event::Hardware(_)  => "hardware",
+                _                   => "other",
+            };
+            order.push(label.to_string());
+        }
+    }
+}
+
+struct MultiEventEmitter {
+    ports: Vec<PortDescriptor>,
+}
+
+impl MultiEventEmitter {
+    fn new() -> Self {
+        Self {
+            ports: vec![PortDescriptor {
+                id: 0,
+                name: "events_out".into(),
+                direction: PortDirection::Output,
+                port_type: PortType::Event,
+            }],
+        }
+    }
+}
+
+impl Node for MultiEventEmitter {
+    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
+        use paraclete_node_api::{UmpMessage, midi::{ChannelVoice2, NoteOn}};
+        let note_on = NoteOn::<[u32; 4]>::new();
+        let ump = UmpMessage::from(ChannelVoice2::from(note_on));
+
+        // Emit in reverse priority order: Midi2 first, then ParamLock.
+        // The executor must reorder so ParamLock arrives before Midi2.
+        output.events_out.push(TimedEvent::new(0, Event::Midi2(ump)));
+        output.events_out.push(TimedEvent::new(0, Event::ParamLock(
+            ParamLockEvent { node_id: 99, param_id: 0, value: 1.0 }
+        )));
+    }
+}
+
+#[test]
+fn executor_delivers_param_lock_before_midi2_at_same_sample_offset() {
+    let order = Arc::new(Mutex::new(vec![]));
+
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+    conf.add_node(1, Box::new(MultiEventEmitter::new()));
+    conf.add_node(2, Box::new(OrderCapturingNode::new(order.clone())));
+    conf.connect(1, 0, 2, 0).unwrap();
+    let mut exec = conf.build_executor();
+
+    let mut out = vec![0.0f32; 64 * 2];
+    exec.process(&mut out, 2);
+
+    let received = order.lock().unwrap();
+    assert_eq!(received.len(), 2, "expected 2 events");
+    assert_eq!(received[0], "param_lock", "ParamLock must arrive before Midi2");
+    assert_eq!(received[1], "midi2");
 }

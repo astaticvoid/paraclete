@@ -1,24 +1,31 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Paraclete L3 first-party nodes.
-//!
-//! All nodes are implemented exclusively on the L2 Node API.
-//! No node reaches into L0 or L1 internals.
 
-pub mod sequencer;
-pub mod mapping;
-pub mod oscillator;
+pub mod distortion;
+pub mod filter;
+pub mod gateway;
 pub mod internal_clock;
+pub mod mapping;
+pub mod mix;
+pub mod oscillator;
+pub mod pattern;
 pub mod sampler;
+pub mod sequencer;
 
-pub use sequencer::{Sequencer, Step, StepParamLock};
-pub use mapping::HardwareMappingNode;
-pub use oscillator::{SineOscillator, midi_note_to_hz};
+pub use distortion::DistortionNode;
+pub use filter::FilterNode;
+pub use gateway::{ScriptingGatewayNode, ScriptEventConsumer};
 pub use internal_clock::InternalClock;
+pub use mapping::HardwareMappingNode;
+pub use mix::MixNode;
+pub use oscillator::{SineOscillator, midi_note_to_hz};
+pub use pattern::{apply_preset, TrackPreset, TRACKS};
 pub use sampler::Sampler;
+pub use sequencer::{Sequencer, Step, StepParamLock};
 
 use paraclete_node_api::{
-    CapabilityDocument, Node, ConnectionAgreement, PortDescriptor, PortDirection, PortName, PortType,
-    ProcessInput, ProcessOutput, UmpMessage,
+    CapabilityDocument, ConnectionAgreement, Node, PortDescriptor, PortDirection,
+    PortName, PortType, ProcessInput, ProcessOutput, UmpMessage,
     midi::{ChannelVoice2, Channeled, Grouped, NoteOff, NoteOn, u4, u7},
 };
 
@@ -40,7 +47,6 @@ pub(crate) fn build_note_off(group: u8, channel: u8, note: u8) -> UmpMessage {
     UmpMessage::from(ChannelVoice2::from(msg))
 }
 
-/// A node that produces silence. P0 placeholder — superseded by SineOscillator.
 pub struct SilentNode {
     ports: [PortDescriptor; 1],
 }
@@ -66,20 +72,13 @@ impl Default for SilentNode {
 
 impl Node for SilentNode {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
-
     fn process(&mut self, _input: &ProcessInput, _output: &mut ProcessOutput) {}
-
     fn capability_document(&self) -> CapabilityDocument {
         CapabilityDocument {
-            name: "SilentNode",
-            vendor: "Paraclete",
-            version: (0, 1, 0),
-            ports: self.ports.to_vec(),
-            params: vec![],
-            extensions: vec![],
+            name: "SilentNode", vendor: "Paraclete", version: (0, 1, 0),
+            ports: self.ports.to_vec(), params: vec![], extensions: vec![],
         }
     }
-
     fn negotiate(&mut self, _their_doc: &CapabilityDocument) -> ConnectionAgreement {
         ConnectionAgreement::baseline()
     }

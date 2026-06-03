@@ -1,6 +1,7 @@
 /// The signal type flowing through a port connection.
 /// Enforced at connection time by the runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PortType {
     /// Stereo or multi-channel audio buffer.
     Audio,
@@ -24,6 +25,7 @@ pub enum PortType {
 
 /// The direction of signal flow through a port.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PortDirection {
     Input,
     Output,

@@ -1,47 +1,378 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Paraclete L4 Scripting — live runtime scripting via Rhai.
 //!
-//! Scripts run exclusively on the main thread. They read and write
-//! authorised state bus addresses, call `Scriptable` entry points on nodes,
-//! and define / redefine hardware mappings without restart.
+//! Scripts run exclusively on the main thread. Each profile loads into an
+//! isolated `ScriptContext`. Hardware events are dispatched to registered
+//! handlers. State bus subscriptions fire callbacks on value changes.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
+use std::time::Instant;
 
-use rhai::{Engine, EvalAltResult, Scope, AST};
+use rhai::{Dynamic, Engine, EvalAltResult, FnPtr, Scope, AST};
 
-use paraclete_node_api::{StateBusHandle, StateBusValue};
+use paraclete_node_api::{
+    HardwareEvent, HardwareEventMsg, HardwareOutput, LedUpdate, NodeCommand,
+    RgbColor, StateBusHandle, StateBusValue,
+};
 
-// ── StateBusProxy ─────────────────────────────────────────────────────────────
+// ── EventSignature and MacroBinding ──────────────────────────────────────────
 
-/// Rhai-visible state bus access object.
-///
-/// Registered as `StateBus` in the Rhai engine. Scripts receive an instance
-/// bound to `state_bus` in their execution scope.
+#[derive(Clone, Debug)]
+pub struct EventSignature {
+    pub device_id:  u32,
+    pub event_type: String,
+    pub control_id: u32,
+}
+
+#[derive(Clone, Debug)]
+struct MacroBinding {
+    signature: EventSignature,
+    macro_name: String,
+}
+
+// ── OwnedSubscription ─────────────────────────────────────────────────────────
+
+struct OwnedSubscription {
+    path: String,
+    last_value: Option<StateBusValue>,
+    callback: FnPtr,
+    last_written_at: Instant,
+}
+
+// ── ScriptContext ─────────────────────────────────────────────────────────────
+
+/// One named profile script's runtime state. Isolated from other contexts.
+pub struct ScriptContext {
+    pub name: String,
+    ast: AST,
+    scope: Scope<'static>,
+}
+
+// ── Shared mutable state (accessible from Rhai builtins) ─────────────────────
+
+struct ScriptState {
+    current_context: String,
+    /// Per-context: hw_handlers, macros, bindings, subscriptions
+    context_data: HashMap<String, ContextData>,
+    pending_commands: Vec<NodeCommand>,
+    pending_output: HashMap<u32, HardwareOutput>,
+    state_bus: Option<Rc<RefCell<StateBusHandle>>>,
+}
+
+struct ContextData {
+    hw_handlers: Vec<(u32, FnPtr)>,
+    macros:      HashMap<String, FnPtr>,
+    bindings:    Vec<MacroBinding>,
+    subscriptions: Vec<OwnedSubscription>,
+}
+
+impl ContextData {
+    fn new() -> Self {
+        Self {
+            hw_handlers: Vec::new(),
+            macros:      HashMap::new(),
+            bindings:    Vec::new(),
+            subscriptions: Vec::new(),
+        }
+    }
+
+    fn clear(&mut self) {
+        self.hw_handlers.clear();
+        self.macros.clear();
+        self.bindings.clear();
+        self.subscriptions.clear();
+    }
+}
+
+impl ScriptState {
+    fn new() -> Self {
+        Self {
+            current_context: String::new(),
+            context_data: HashMap::new(),
+            pending_commands: Vec::new(),
+            pending_output: HashMap::new(),
+            state_bus: None,
+        }
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn event_type_str(ev: &HardwareEvent) -> &'static str {
+    match ev {
+        HardwareEvent::PadPressed { .. }     => "PadPressed",
+        HardwareEvent::PadReleased { .. }    => "PadReleased",
+        HardwareEvent::PadPressure { .. }    => "PadPressure",
+        HardwareEvent::ButtonPressed { .. }  => "ButtonPressed",
+        HardwareEvent::ButtonReleased { .. } => "ButtonReleased",
+        HardwareEvent::EncoderChanged { .. } => "EncoderChanged",
+        HardwareEvent::EncoderPush { .. }    => "EncoderPush",
+        HardwareEvent::FaderMoved { .. }     => "FaderMoved",
+    }
+}
+
+fn event_control_id(ev: &HardwareEvent) -> u32 {
+    match ev {
+        HardwareEvent::PadPressed { id, .. }     => *id,
+        HardwareEvent::PadReleased { id }        => *id,
+        HardwareEvent::PadPressure { id, .. }    => *id,
+        HardwareEvent::ButtonPressed { id }      => *id,
+        HardwareEvent::ButtonReleased { id }     => *id,
+        HardwareEvent::EncoderChanged { id, .. } => *id,
+        HardwareEvent::EncoderPush { id, .. }    => *id,
+        HardwareEvent::FaderMoved { id, .. }     => *id,
+    }
+}
+
+fn event_to_dynamic(msg: &HardwareEventMsg) -> Dynamic {
+    let mut map = rhai::Map::new();
+    let ev = &msg.event;
+    map.insert("device_id".into(),  Dynamic::from(msg.device_id as i64));
+    map.insert("event_type".into(), Dynamic::from(event_type_str(ev).to_string()));
+    map.insert("id".into(), Dynamic::from(event_control_id(ev) as i64));
+    map.insert("row".into(), Dynamic::from(event_control_id(ev) as i64 / 8));
+    map.insert("col".into(), Dynamic::from(event_control_id(ev) as i64 % 8));
+    match ev {
+        HardwareEvent::PadPressed { velocity, pressure, .. } => {
+            map.insert("velocity".into(), Dynamic::from(*velocity as i64));
+            map.insert("pressure".into(), Dynamic::from(*pressure as i64));
+        }
+        HardwareEvent::PadPressure { pressure, .. } => {
+            map.insert("pressure".into(), Dynamic::from(*pressure as i64));
+        }
+        HardwareEvent::EncoderChanged { value, delta, .. } => {
+            map.insert("value".into(), Dynamic::from(*value as i64));
+            map.insert("delta".into(), Dynamic::from(*delta as i64));
+        }
+        HardwareEvent::EncoderPush { pressed, .. } => {
+            map.insert("pressed".into(), Dynamic::from(*pressed));
+        }
+        HardwareEvent::FaderMoved { value, .. } => {
+            map.insert("value".into(), Dynamic::from(*value as i64));
+        }
+        _ => {}
+    }
+    Dynamic::from(map)
+}
+
+fn state_to_dynamic(v: &StateBusValue) -> Dynamic {
+    match v {
+        StateBusValue::Float(f) => Dynamic::from(*f),
+        StateBusValue::Int(i)   => Dynamic::from(*i),
+        StateBusValue::Bool(b)  => Dynamic::from(*b),
+        StateBusValue::Text(s)  => Dynamic::from(s.clone()),
+    }
+}
+
+// ── Builtin registration ──────────────────────────────────────────────────────
+
+fn register_builtins(engine: &mut Engine, state: Rc<RefCell<ScriptState>>) {
+    // ── state_read(path) → Dynamic ────────────────────────────────────────────
+    {
+        let s = Rc::clone(&state);
+        engine.register_fn("state_read", move |path: &str| -> Dynamic {
+            let st = s.borrow();
+            if let Some(bus) = &st.state_bus {
+                let bus = bus.borrow();
+                return bus.read(path).map(state_to_dynamic).unwrap_or(Dynamic::UNIT);
+            }
+            Dynamic::UNIT
+        });
+    }
+
+    // ── state_write(path, value) ──────────────────────────────────────────────
+    {
+        let s = Rc::clone(&state);
+        engine.register_fn("state_write", move |path: &str, value: Dynamic| {
+            let st = s.borrow();
+            if let Some(bus) = &st.state_bus {
+                let mut bus = bus.borrow_mut();
+                // Check bool before int — Rhai bools can coerce to int.
+                // Use is::<ImmutableString>() to detect Rhai strings correctly;
+                // try_cast::<String>() fails on ImmutableString.
+                let sv = if let Some(b) = value.as_bool().ok() {
+                    StateBusValue::Bool(b)
+                } else if let Some(i) = value.as_int().ok() {
+                    StateBusValue::Int(i)
+                } else if let Some(f) = value.as_float().ok() {
+                    StateBusValue::Float(f)
+                } else if value.is::<rhai::ImmutableString>() {
+                    StateBusValue::Text(value.cast::<rhai::ImmutableString>().to_string())
+                } else {
+                    return;
+                };
+                let _ = bus.write_sandboxed(path, sv);
+            }
+        });
+    }
+
+    // ── send_cmd(node_id, type_id, arg0, arg1) ────────────────────────────────
+    {
+        let s = Rc::clone(&state);
+        engine.register_fn("send_cmd", move |target_id: i64, type_id: i64, arg0: i64, arg1: f64| {
+            s.borrow_mut().pending_commands.push(NodeCommand {
+                target_id: target_id as u32,
+                type_id:   type_id as u32,
+                arg0,
+                arg1,
+            });
+        });
+    }
+
+    // ── set_led(device_id, control_id, r, g, b) ───────────────────────────────
+    {
+        let s = Rc::clone(&state);
+        engine.register_fn("set_led", move |device_id: i64, control_id: i64, r: i64, g: i64, b: i64| {
+            let mut st = s.borrow_mut();
+            let entry = st.pending_output
+                .entry(device_id as u32)
+                .or_insert_with(HardwareOutput::empty);
+            entry.led_updates.push(LedUpdate {
+                control_id: control_id as u32,
+                color: RgbColor { r: r as u8, g: g as u8, b: b as u8 },
+            });
+        });
+    }
+
+    // ── on_hw_event(device_id, fn) ────────────────────────────────────────────
+    {
+        let s = Rc::clone(&state);
+        engine.register_fn("on_hw_event", move |device_id: i64, handler: FnPtr| {
+            let mut st = s.borrow_mut();
+            let ctx_name = st.current_context.clone();
+            let ctx = st.context_data.entry(ctx_name).or_insert_with(ContextData::new);
+            ctx.hw_handlers.push((device_id as u32, handler));
+        });
+    }
+
+    // ── subscribe(path, fn) ───────────────────────────────────────────────────
+    {
+        let s = Rc::clone(&state);
+        engine.register_fn("subscribe", move |path: &str, callback: FnPtr| {
+            let mut st = s.borrow_mut();
+            let initial = st.state_bus.as_ref()
+                .and_then(|b| b.borrow().read(path).cloned());
+            let ctx_name = st.current_context.clone();
+            let ctx = st.context_data.entry(ctx_name).or_insert_with(ContextData::new);
+            ctx.subscriptions.push(OwnedSubscription {
+                path: path.to_string(),
+                last_value: initial,
+                callback,
+                last_written_at: Instant::now(),
+            });
+        });
+    }
+
+    // ── state_alive(path, timeout_ms) → bool ─────────────────────────────────
+    {
+        let s = Rc::clone(&state);
+        engine.register_fn("state_alive", move |path: &str, timeout_ms: i64| -> bool {
+            let st = s.borrow();
+            if let Some(ctx) = st.context_data.get(&st.current_context) {
+                if let Some(sub) = ctx.subscriptions.iter().find(|sub| sub.path == path) {
+                    return sub.last_written_at.elapsed().as_millis() < timeout_ms as u128;
+                }
+            }
+            false
+        });
+    }
+
+    // ── def_macro(name, fn) ───────────────────────────────────────────────────
+    {
+        let s = Rc::clone(&state);
+        engine.register_fn("def_macro", move |name: &str, f: FnPtr| {
+            let mut st = s.borrow_mut();
+            let ctx_name = st.current_context.clone();
+            let ctx = st.context_data.entry(ctx_name).or_insert_with(ContextData::new);
+            ctx.macros.insert(name.to_string(), f);
+        });
+    }
+
+    // ── bind_macro(device_id, event_type, control_id, macro_name) ────────────
+    {
+        let s = Rc::clone(&state);
+        engine.register_fn("bind_macro", move |device_id: i64, event_type: &str, control_id: i64, macro_name: &str| {
+            let mut st = s.borrow_mut();
+            let ctx_name = st.current_context.clone();
+            let ctx = st.context_data.entry(ctx_name).or_insert_with(ContextData::new);
+            ctx.bindings.push(MacroBinding {
+                signature: EventSignature {
+                    device_id:  device_id as u32,
+                    event_type: event_type.to_string(),
+                    control_id: control_id as u32,
+                },
+                macro_name: macro_name.to_string(),
+            });
+        });
+    }
+
+    // ── fire_macro(name) ──────────────────────────────────────────────────────
+    // Note: firing a macro requires calling a FnPtr which needs the AST.
+    // The actual fire_macro call is handled in dispatch_hardware_event().
+    // Here we register a no-op placeholder so scripts don't error on the call.
+    {
+        engine.register_fn("fire_macro", |_name: &str| {
+            // Actual dispatch done in ScriptingEngine::dispatch_hardware_event
+        });
+    }
+
+    // ── debug_print(msg) ──────────────────────────────────────────────────────
+    engine.register_fn("debug_print", |msg: &str| {
+        eprintln!("[rhai] {msg}");
+    });
+
+    // ── get_step_state(node_id) → String ─────────────────────────────────────
+    {
+        let s = Rc::clone(&state);
+        engine.register_fn("get_step_state", move |node_id: i64| -> String {
+            let st = s.borrow();
+            if let Some(bus) = &st.state_bus {
+                let bus = bus.borrow();
+                let path = format!("/node/{}/state/steps", node_id);
+                if let Some(StateBusValue::Text(bits)) = bus.read(&path) {
+                    return bits.clone();
+                }
+            }
+            String::new()
+        });
+    }
+
+    // ── reload_profile(name) — handled externally; stub here ─────────────────
+    engine.register_fn("reload_profile", |_name: &str| {});
+
+    // ── assert helper ─────────────────────────────────────────────────────────
+    engine.register_fn("assert", |condition: bool| {
+        if !condition {
+            panic!("rhai assertion failed");
+        }
+    });
+}
+
+// ── Legacy StateBusProxy (preserved for compatibility) ───────────────────────
+
 #[derive(Clone)]
 pub struct StateBusProxy {
     handle: Rc<RefCell<StateBusHandle>>,
 }
 
 impl StateBusProxy {
-    fn new(handle: Rc<RefCell<StateBusHandle>>) -> Self {
-        Self { handle }
-    }
+    fn new(handle: Rc<RefCell<StateBusHandle>>) -> Self { Self { handle } }
 
-    pub fn read(&mut self, path: &str) -> rhai::Dynamic {
+    pub fn read(&mut self, path: &str) -> Dynamic {
         let handle = self.handle.borrow();
         match handle.read(path) {
-            Some(StateBusValue::Float(f)) => rhai::Dynamic::from(*f),
-            Some(StateBusValue::Int(i))   => rhai::Dynamic::from(*i),
-            Some(StateBusValue::Bool(b))  => rhai::Dynamic::from(*b),
-            Some(StateBusValue::Text(s))  => rhai::Dynamic::from(s.clone()),
-            None                          => rhai::Dynamic::UNIT,
+            Some(StateBusValue::Float(f)) => Dynamic::from(*f),
+            Some(StateBusValue::Int(i))   => Dynamic::from(*i),
+            Some(StateBusValue::Bool(b))  => Dynamic::from(*b),
+            Some(StateBusValue::Text(s))  => Dynamic::from(s.clone()),
+            None                          => Dynamic::UNIT,
         }
     }
 
     pub fn write(&mut self, path: &str, value: f64) {
-        let _ = self.handle.borrow_mut()
-            .write_sandboxed(path, StateBusValue::Float(value));
+        let _ = self.handle.borrow_mut().write_sandboxed(path, StateBusValue::Float(value));
     }
 
     pub fn subscribe(&mut self, path: &str) -> StateBusSubscriptionProxy {
@@ -53,9 +384,6 @@ impl StateBusProxy {
     }
 }
 
-// ── StateBusSubscriptionProxy ─────────────────────────────────────────────────
-
-/// Rhai-visible subscription handle for a single state bus path.
 #[derive(Clone)]
 pub struct StateBusSubscriptionProxy {
     handle: Rc<RefCell<StateBusHandle>>,
@@ -65,7 +393,7 @@ pub struct StateBusSubscriptionProxy {
 
 impl StateBusSubscriptionProxy {
     pub fn changed(&mut self) -> bool {
-        let handle = self.handle.borrow();
+        let handle  = self.handle.borrow();
         let current = handle.read(&self.path).cloned();
         if current != self.last_value {
             self.last_value = current;
@@ -75,81 +403,237 @@ impl StateBusSubscriptionProxy {
         }
     }
 
-    pub fn value(&mut self) -> rhai::Dynamic {
+    pub fn value(&mut self) -> Dynamic {
         match &self.last_value {
-            Some(StateBusValue::Float(f)) => rhai::Dynamic::from(*f),
-            Some(StateBusValue::Int(i))   => rhai::Dynamic::from(*i),
-            Some(StateBusValue::Bool(b))  => rhai::Dynamic::from(*b),
-            Some(StateBusValue::Text(s))  => rhai::Dynamic::from(s.clone()),
-            None                          => rhai::Dynamic::UNIT,
+            Some(StateBusValue::Float(f)) => Dynamic::from(*f),
+            Some(StateBusValue::Int(i))   => Dynamic::from(*i),
+            Some(StateBusValue::Bool(b))  => Dynamic::from(*b),
+            Some(StateBusValue::Text(s))  => Dynamic::from(s.clone()),
+            None                          => Dynamic::UNIT,
         }
     }
 }
 
-// ── State bus API registration ────────────────────────────────────────────────
-
-fn register_state_bus_api(engine: &mut Engine) {
+fn register_legacy_state_bus(engine: &mut Engine) {
     engine.register_type_with_name::<StateBusProxy>("StateBus");
-    engine.register_fn("read", StateBusProxy::read);
-    engine.register_fn("write", StateBusProxy::write);
+    engine.register_fn("read",      StateBusProxy::read);
+    engine.register_fn("write",     StateBusProxy::write);
     engine.register_fn("subscribe", StateBusProxy::subscribe);
 
     engine.register_type_with_name::<StateBusSubscriptionProxy>("StateBusSubscription");
     engine.register_fn("changed", StateBusSubscriptionProxy::changed);
-    engine.register_fn("value", StateBusSubscriptionProxy::value);
-}
-
-fn register_test_helpers(engine: &mut Engine) {
-    engine.register_fn("assert", |condition: bool| {
-        if !condition {
-            panic!("rhai assertion failed");
-        }
-    });
+    engine.register_fn("value",   StateBusSubscriptionProxy::value);
 }
 
 // ── ScriptingEngine ───────────────────────────────────────────────────────────
 
-/// A sandboxed Rhai scripting engine.
-///
-/// Created once; lives on the main thread. Scripts are evaluated on demand.
-/// Bind the state bus with `bind_state_bus()` to enable `state_bus` access
-/// from scripts.
-///
-/// Note: this type is `!Send` (Rhai without the `sync` feature + `Rc<RefCell<>>`
-/// inside `StateBusProxy`). Scripts must only run on the main thread.
+/// The main scripting runtime. Lives on the main thread only (`!Send`).
 pub struct ScriptingEngine {
     engine: Engine,
+    script_state: Rc<RefCell<ScriptState>>,
+    contexts: HashMap<String, ScriptContext>,
+    /// Legacy state bus proxy for backwards-compatible scripts.
     state_bus_proxy: Option<StateBusProxy>,
 }
 
 impl ScriptingEngine {
     pub fn new() -> Self {
         let mut engine = Engine::new();
+        engine.set_max_operations(500_000);
+        engine.set_max_call_levels(64);
+        engine.set_max_expr_depths(128, 64);
 
-        engine.set_max_operations(100_000);
-        engine.set_max_call_levels(32);
-        engine.set_max_expr_depths(64, 32);
-
-        register_state_bus_api(&mut engine);
-        register_test_helpers(&mut engine);
+        let script_state = Rc::new(RefCell::new(ScriptState::new()));
+        register_builtins(&mut engine, Rc::clone(&script_state));
+        register_legacy_state_bus(&mut engine);
 
         log::info!("scripting engine initialised");
 
-        Self { engine, state_bus_proxy: None }
+        Self {
+            engine,
+            script_state,
+            contexts: HashMap::new(),
+            state_bus_proxy: None,
+        }
     }
 
-    /// Bind the state bus handle so scripts can use `state_bus.read()`,
-    /// `state_bus.write()`, and `state_bus.subscribe()`.
+    /// Bind the shared state bus handle (for both legacy and new builtins).
     pub fn bind_state_bus(&mut self, handle: Rc<RefCell<StateBusHandle>>) {
+        self.script_state.borrow_mut().state_bus = Some(Rc::clone(&handle));
         self.state_bus_proxy = Some(StateBusProxy::new(handle));
     }
 
-    /// Compile a script source string to an AST for repeated evaluation.
+    /// Evaluate a script file into a named `ScriptContext`.
+    /// If a context with this name already exists, it is torn down first.
+    /// Calls `on_load()` in the script if defined.
+    pub fn eval_file(
+        &mut self,
+        name: &str,
+        path: &str,
+        constants: &[(String, Dynamic)],
+    ) -> Result<(), Box<EvalAltResult>> {
+        // Tear down existing context.
+        if let Some(ctx_data) = self.script_state.borrow_mut().context_data.get_mut(name) {
+            ctx_data.clear();
+        }
+        self.contexts.remove(name);
+
+        // Set current context for builtin registration.
+        self.script_state.borrow_mut().current_context = name.to_string();
+        // Ensure the context data slot exists.
+        self.script_state.borrow_mut().context_data
+            .entry(name.to_string()).or_insert_with(ContextData::new);
+
+        // Build scope with injected constants.
+        let mut scope = Scope::new();
+        for (k, v) in constants {
+            scope.push_constant(k.as_str(), v.clone());
+        }
+        if let Some(ref proxy) = self.state_bus_proxy {
+            scope.push("state_bus", proxy.clone());
+        }
+
+        // Compile and run.
+        let source = std::fs::read_to_string(path)
+            .map_err(|e| -> Box<EvalAltResult> {
+                Box::new(EvalAltResult::ErrorSystem(
+                    format!("cannot read {path}: {e}"),
+                    Box::new(e),
+                ))
+            })?;
+        let ast = self.engine.compile(&source)?;
+        self.engine.run_ast_with_scope(&mut scope, &ast)?;
+
+        // Call on_load() if defined (ignore "function not found" errors).
+        let _ = self.engine.call_fn::<()>(&mut scope, &ast, "on_load", ());
+
+        self.contexts.insert(name.to_string(), ScriptContext {
+            name: name.to_string(),
+            ast,
+            scope,
+        });
+
+        Ok(())
+    }
+
+    /// Dispatch a hardware event to all matching handlers and macro bindings.
+    pub fn dispatch_hardware_event(&mut self, msg: &HardwareEventMsg) {
+        let event_type_s = event_type_str(&msg.event).to_string();
+        let control_id   = event_control_id(&msg.event);
+        let event_dyn    = event_to_dynamic(msg);
+
+        let ctx_names: Vec<String> = self.contexts.keys().cloned().collect();
+        for ctx_name in &ctx_names {
+            // Collect matching handlers (clone to avoid borrow conflict).
+            let handlers: Vec<FnPtr> = {
+                let st = self.script_state.borrow();
+                st.context_data.get(ctx_name)
+                    .map(|d| d.hw_handlers.iter()
+                        .filter(|(dev_id, _)| *dev_id == msg.device_id)
+                        .map(|(_, fp)| fp.clone())
+                        .collect())
+                    .unwrap_or_default()
+            };
+
+            if let Some(ctx) = self.contexts.get_mut(ctx_name) {
+                for handler in &handlers {
+                    // FnPtr::call(engine, ast, args) — scope is embedded in captured closures.
+                    let _ = handler.call::<()>(
+                        &self.engine,
+                        &ctx.ast,
+                        (event_dyn.clone(),),
+                    );
+                }
+            }
+
+            // Macro bindings.
+            let matching_macro: Option<FnPtr> = {
+                let st = self.script_state.borrow();
+                st.context_data.get(ctx_name).and_then(|d| {
+                    d.bindings.iter()
+                        .find(|b|
+                            b.signature.device_id  == msg.device_id &&
+                            b.signature.event_type == event_type_s  &&
+                            b.signature.control_id == control_id)
+                        .and_then(|b| d.macros.get(&b.macro_name).cloned())
+                })
+            };
+
+            if let Some(macro_fn) = matching_macro {
+                if let Some(ctx) = self.contexts.get_mut(ctx_name) {
+                    let _ = macro_fn.call::<()>(
+                        &self.engine,
+                        &ctx.ast,
+                        (),
+                    );
+                }
+            }
+        }
+    }
+
+    /// Fire subscription callbacks for any state bus paths that changed.
+    /// Call after `process_main_thread()` has drained the state bus.
+    pub fn process_subscriptions(&mut self, state_bus: &StateBusHandle) {
+        for (ctx_name, ctx) in &mut self.contexts {
+            let subs_len = self.script_state.borrow()
+                .context_data.get(ctx_name.as_str())
+                .map(|d| d.subscriptions.len())
+                .unwrap_or(0);
+
+            for i in 0..subs_len {
+                let (path, last_val) = {
+                    let st = self.script_state.borrow();
+                    let d = &st.context_data[ctx_name.as_str()];
+                    (d.subscriptions[i].path.clone(), d.subscriptions[i].last_value.clone())
+                };
+
+                let current = state_bus.read(&path).cloned();
+                if current != last_val {
+                    // Fire callback.
+                    let (fp, new_ts) = {
+                        let st = self.script_state.borrow();
+                        let d = &st.context_data[ctx_name.as_str()];
+                        (d.subscriptions[i].callback.clone(), Instant::now())
+                    };
+
+                    let dyn_val = current.as_ref().map(state_to_dynamic).unwrap_or(Dynamic::UNIT);
+                    let _ = fp.call::<()>(
+                        &self.engine,
+                        &ctx.ast,
+                        (dyn_val,),
+                    );
+
+                    // Update last_value and last_written_at.
+                    if let Some(d) = self.script_state.borrow_mut()
+                        .context_data.get_mut(ctx_name.as_str()) {
+                        d.subscriptions[i].last_value      = current;
+                        d.subscriptions[i].last_written_at = new_ts;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Drain and return accumulated NodeCommands from `send_cmd()` calls.
+    pub fn take_pending_commands(&mut self) -> Vec<NodeCommand> {
+        let mut cmds = Vec::new();
+        std::mem::swap(&mut cmds, &mut self.script_state.borrow_mut().pending_commands);
+        cmds
+    }
+
+    /// Drain and return accumulated LED output from `set_led()` calls.
+    pub fn take_pending_output(&mut self) -> HashMap<u32, HardwareOutput> {
+        let mut out = HashMap::new();
+        std::mem::swap(&mut out, &mut self.script_state.borrow_mut().pending_output);
+        out
+    }
+
+    // ── Legacy API (P3 compatibility) ─────────────────────────────────────────
+
     pub fn compile(&self, source: &str) -> Result<AST, Box<EvalAltResult>> {
         self.engine.compile(source).map_err(|e| e.into())
     }
 
-    /// Evaluate a pre-compiled AST with a fresh variable scope.
     pub fn run(&self, ast: &AST) -> Result<(), Box<EvalAltResult>> {
         let mut scope = Scope::new();
         if let Some(ref proxy) = self.state_bus_proxy {
@@ -158,7 +642,6 @@ impl ScriptingEngine {
         self.engine.run_ast_with_scope(&mut scope, ast)
     }
 
-    /// Compile and immediately evaluate a source string.
     pub fn eval_str(&self, source: &str) -> Result<(), Box<EvalAltResult>> {
         let ast = self.compile(source)?;
         self.run(&ast)
@@ -220,11 +703,9 @@ mod tests {
     #[test]
     fn scripting_engine_state_bus_write_to_transport_is_rejected() {
         let (engine, handle) = make_engine_with_bus();
-        // write_sandboxed silently drops invalid paths — no panic or error in script.
         assert!(engine.eval_str(r#"
             state_bus.write("/transport/bpm", 140.0);
         "#).is_ok());
-        // Value must NOT have been written.
         assert!(handle.borrow().read("/transport/bpm").is_none());
     }
 
@@ -236,5 +717,80 @@ mod tests {
             let sub = state_bus.subscribe("/node/1/state/step");
             assert(sub.changed());
         "#).expect("script failed");
+    }
+
+    #[test]
+    fn state_read_builtin_returns_value() {
+        let (mut engine, handle) = make_engine_with_bus();
+        handle.borrow_mut().write("/node/1/state/x", StateBusValue::Float(42.0));
+        assert!(engine.eval_str(r#"
+            let v = state_read("/node/1/state/x");
+        "#).is_ok());
+    }
+
+    #[test]
+    fn send_cmd_accumulates_node_commands() {
+        let mut engine = ScriptingEngine::new();
+        engine.eval_str("send_cmd(5, 0, 10, 0.5);").expect("send_cmd failed");
+        let real: Vec<_> = engine.take_pending_commands().into_iter()
+            .filter(|c| c.target_id == 5 && c.type_id == 0)
+            .collect();
+        assert_eq!(real.len(), 1);
+        assert_eq!(real[0].target_id, 5);
+        assert_eq!(real[0].arg0, 10);
+        assert!((real[0].arg1 - 0.5).abs() < 1e-9);
+    }
+
+    // ── state_write string regression ────────────────────────────────────────
+    // Root cause of the "mode never switches" bug: try_cast::<String>() fails
+    // on Rhai's ImmutableString type, so string writes were silently dropped.
+
+    #[test]
+    fn state_write_string_roundtrips() {
+        let (mut engine, handle) = make_engine_with_bus();
+        engine.eval_str(r#"
+            state_write("/node/1/param/mode", "sequence");
+        "#).expect("state_write string failed");
+        assert_eq!(
+            handle.borrow().read("/node/1/param/mode"),
+            Some(&StateBusValue::Text("sequence".into())),
+            "state_write with a string value must persist to the state bus"
+        );
+    }
+
+    #[test]
+    fn state_write_overwrites_string() {
+        let (mut engine, handle) = make_engine_with_bus();
+        engine.eval_str(r#"
+            state_write("/node/1/param/mode", "trigger");
+            state_write("/node/1/param/mode", "sequence");
+        "#).expect("script failed");
+        assert_eq!(
+            handle.borrow().read("/node/1/param/mode"),
+            Some(&StateBusValue::Text("sequence".into()))
+        );
+    }
+
+    #[test]
+    fn state_read_after_write_string_returns_correct_value() {
+        let (mut engine, handle) = make_engine_with_bus();
+        handle.borrow_mut().write("/node/1/param/selected", StateBusValue::Int(3));
+        engine.eval_str(r#"
+            state_write("/node/1/param/mode", "sequence");
+            let m = state_read("/node/1/param/mode");
+            assert(m == "sequence");
+            let t = state_read("/node/1/param/selected");
+            assert(t == 3);
+        "#).expect("state read/write roundtrip failed");
+    }
+
+    #[test]
+    fn set_led_accumulates_output() {
+        let mut engine = ScriptingEngine::new();
+        engine.eval_str("set_led(1, 5, 64, 128, 255);").expect("set_led failed");
+        let out = engine.take_pending_output();
+        assert!(out.contains_key(&1));
+        assert_eq!(out[&1].led_updates[0].control_id, 5);
+        assert_eq!(out[&1].led_updates[0].color.r, 64);
     }
 }

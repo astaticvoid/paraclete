@@ -9,19 +9,20 @@
 pub mod agreement;
 pub mod buffer;
 pub mod capability;
+pub mod command;
 pub mod constants;
 pub mod context;
 pub mod event;
 pub mod hardware;
-pub mod state_bus;
 pub mod midi;
 pub mod node;
+pub mod parameter;
 pub mod port;
+pub mod state_bus;
 pub mod tempo_source;
 pub mod templates;
 pub mod transport;
 
-// Flat re-exports for the common case.
 pub use constants::TICKS_PER_BEAT;
 
 pub use buffer::{
@@ -36,8 +37,9 @@ pub use event::{
 };
 
 pub use hardware::{
-    ButtonDescriptor, Control, DisplayContent, DisplayDescriptor, DisplayType, EncoderDescriptor,
-    FaderDescriptor, HardwareDevice, HardwareEvent, HardwareOutput, LedDescriptor, LedUpdate,
+    ButtonDescriptor, Control, DisplayContent, DisplayDescriptor, DisplayType,
+    EncoderBehaviour, EncoderDescriptor, FaderDescriptor, HardwareDevice, HardwareEvent,
+    HardwareEventMsg, HardwareOutput, HardwareOutputHandle, LedDescriptor, LedUpdate,
     PadDescriptor, RgbColor, SurfaceDescriptor,
 };
 
@@ -63,3 +65,7 @@ pub use node::{Negotiable, Node};
 pub use templates::{
     ControllerNode, InstrumentNode, SequencerNode, SignalNode,
 };
+
+pub use command::{NodeCommand, CMD_BUMP_PARAM, CMD_SET_PARAM};
+
+pub use parameter::ParameterBank;
