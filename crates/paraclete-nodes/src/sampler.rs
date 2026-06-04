@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use paraclete_node_api::{
     CapabilityDocument, ConnectionAgreement, ConnectionRecord, Event, LockableParam,
-    Negotiable, Node, ParamDescriptor, ParamUnit, ParamDisplayAdapter, ParamDisplay,
+    Negotiable, Node, ParamDescriptor, ParamUnit,
+    ParameterBank,
     PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, UmpMessage,
     midi::ChannelVoice2,
 };
@@ -12,25 +13,6 @@ use paraclete_node_api::{
 fn param_hash(name: &str) -> u32 {
     ParamDescriptor::id_for_name(name)
 }
-
-// ── ON/OFF display for the loop parameter ────────────────────────────────────
-
-struct OnOffDisplay;
-
-impl ParamDisplay for OnOffDisplay {
-    fn format(&self, v: f64) -> String {
-        if v >= 0.5 { "On".into() } else { "Off".into() }
-    }
-    fn parse(&self, s: &str) -> Option<f64> {
-        match s.to_lowercase().as_str() {
-            "on" | "1" => Some(1.0),
-            "off" | "0" => Some(0.0),
-            _ => None,
-        }
-    }
-}
-
-static ON_OFF: OnOffDisplay = OnOffDisplay;
 
 // ── ActiveParamLock ────────────────────────────────────────────────────────────
 
@@ -55,7 +37,7 @@ impl Voice {
             active: false,
             note: 0,
             playback_pos: 0.0,
-            active_locks: HashMap::with_capacity(7),
+            active_locks: HashMap::with_capacity(9), // pitch/vol/pan/start/end/attack/release/loop/slice
             triggered_at: 0,
         }
     }
@@ -64,6 +46,29 @@ impl Voice {
         self.active_locks.get(&param_id)
             .map(|l| l.locked_value)
             .unwrap_or(base)
+    }
+}
+
+// ── Sampler capability document ───────────────────────────────────────────────
+
+/// Static capability document for the Sampler. Called at new() and capability_document().
+/// Ports are overridden with the instance's port list in capability_document().
+fn sampler_capability_document() -> CapabilityDocument {
+    CapabilityDocument {
+        name: "Sampler",
+        vendor: "Paraclete",
+        version: (0, 4, 0),
+        ports: vec![],
+        params: vec![
+            ParamDescriptor { id: param_hash("pitch"),   name: "pitch".into(),   min: -24.0, max: 24.0, default: 0.0,   stepped: false, unit: ParamUnit::Semitones, display: None },
+            ParamDescriptor { id: param_hash("volume"),  name: "volume".into(),  min: 0.0,   max: 1.0,  default: 1.0,   stepped: false, unit: ParamUnit::Generic,   display: None },
+            ParamDescriptor { id: param_hash("pan"),     name: "pan".into(),     min: -1.0,  max: 1.0,  default: 0.0,   stepped: false, unit: ParamUnit::Generic,   display: None },
+            ParamDescriptor { id: param_hash("start"),   name: "start".into(),   min: 0.0,   max: 1.0,  default: 0.0,   stepped: false, unit: ParamUnit::Percent,   display: None },
+            ParamDescriptor { id: param_hash("end"),     name: "end".into(),     min: 0.0,   max: 1.0,  default: 1.0,   stepped: false, unit: ParamUnit::Percent,   display: None },
+            ParamDescriptor { id: param_hash("attack"),  name: "attack".into(),  min: 0.0,   max: 1.0,  default: 0.005, stepped: false, unit: ParamUnit::Seconds,   display: None },
+            ParamDescriptor { id: param_hash("release"), name: "release".into(), min: 0.0,   max: 4.0,  default: 0.1,   stepped: false, unit: ParamUnit::Seconds,   display: None },
+        ],
+        extensions: vec!["paraclete.instrument"],
     }
 }
 
@@ -83,14 +88,13 @@ pub struct Sampler {
     // Slice table — one full-sample slice at P3: (start_frame, end_frame).
     slices: Vec<(usize, usize)>,
 
-    // Base parameters (user-set, pre-lock)
-    base_pitch:  f64,
-    base_volume: f64,
-    base_pan:    f64,
-    base_start:  f64,
-    base_end:    f64,
-    base_loop:   bool,
-    base_slice:  usize,
+    // Hardware-reachable base parameters managed by ParameterBank (CMD_SET_PARAM / CMD_BUMP_PARAM).
+    // Initialised at new() time so values survive across activate() calls and deserialize().
+    bank: ParameterBank,
+
+    // Loop and slice are lockable (is_known_param) but not hardware-reachable (not in bank).
+    base_loop:  bool,
+    base_slice: usize,
 
     // Node-level active locks (applied before voice trigger each cycle)
     node_locks: HashMap<u32, ActiveParamLock>,
@@ -141,8 +145,9 @@ impl Sampler {
             sample_rate_native: 44100.0,
             sample_frames: 0,
             slices: vec![],
-            base_pitch: 0.0, base_volume: 0.8, base_pan: 0.0,
-            base_start: 0.0, base_end: 1.0, base_loop: false, base_slice: 0,
+            bank: ParameterBank::from_capability_document(&sampler_capability_document()),
+            base_loop: false,
+            base_slice: 0,
             node_locks: HashMap::new(),
             voices: [Voice::new(), Voice::new(), Voice::new(), Voice::new()],
             cycle_counter: 0,
@@ -163,18 +168,27 @@ impl Sampler {
             || param_id == param_hash("pan")
             || param_id == param_hash("start")
             || param_id == param_hash("end")
+            || param_id == param_hash("attack")
+            || param_id == param_hash("release")
             || param_id == param_hash("loop")
             || param_id == param_hash("slice")
     }
 
     fn base_for(&self, param_id: u32) -> f64 {
-        if param_id == param_hash("pitch")  { return self.base_pitch; }
-        if param_id == param_hash("volume") { return self.base_volume; }
-        if param_id == param_hash("pan")    { return self.base_pan; }
-        if param_id == param_hash("start")  { return self.base_start; }
-        if param_id == param_hash("end")    { return self.base_end; }
-        if param_id == param_hash("loop")   { return if self.base_loop { 1.0 } else { 0.0 }; }
-        if param_id == param_hash("slice")  { return self.base_slice as f64; }
+        // Bank-managed params: delegate to ParameterBank (reflects CMD_BUMP_PARAM changes).
+        if param_id == param_hash("pitch")
+            || param_id == param_hash("volume")
+            || param_id == param_hash("pan")
+            || param_id == param_hash("start")
+            || param_id == param_hash("end")
+            || param_id == param_hash("attack")
+            || param_id == param_hash("release")
+        {
+            return self.bank.get(param_id);
+        }
+        // Non-bank params: read from dedicated fields.
+        if param_id == param_hash("loop")  { return if self.base_loop { 1.0 } else { 0.0 }; }
+        if param_id == param_hash("slice") { return self.base_slice as f64; }
         0.0
     }
 
@@ -251,23 +265,9 @@ impl Node for Sampler {
     }
 
     fn capability_document(&self) -> CapabilityDocument {
-        CapabilityDocument {
-            name: "Sampler",
-            vendor: "Paraclete",
-            version: (0, 3, 0),
-            ports: self.ports.to_vec(),
-            params: vec![
-                ParamDescriptor { id: param_hash("pitch"),  name: "pitch".into(),  min: -24.0, max: 24.0,  default: 0.0, stepped: false, unit: ParamUnit::Semitones, display: None },
-                ParamDescriptor { id: param_hash("volume"), name: "volume".into(), min: 0.0,   max: 1.0,   default: 0.8, stepped: false, unit: ParamUnit::Generic,   display: None },
-                ParamDescriptor { id: param_hash("pan"),    name: "pan".into(),    min: -1.0,  max: 1.0,   default: 0.0, stepped: false, unit: ParamUnit::Generic,   display: None },
-                ParamDescriptor { id: param_hash("start"),  name: "start".into(),  min: 0.0,   max: 1.0,   default: 0.0, stepped: false, unit: ParamUnit::Percent,   display: None },
-                ParamDescriptor { id: param_hash("end"),    name: "end".into(),    min: 0.0,   max: 1.0,   default: 1.0, stepped: false, unit: ParamUnit::Percent,   display: None },
-                ParamDescriptor { id: param_hash("loop"),   name: "loop".into(),   min: 0.0,   max: 1.0,   default: 0.0, stepped: true,  unit: ParamUnit::Generic,
-                    display: Some(ParamDisplayAdapter::Static(&ON_OFF)) },
-                ParamDescriptor { id: param_hash("slice"),  name: "slice".into(),  min: 0.0,   max: 127.0, default: 0.0, stepped: true,  unit: ParamUnit::Generic,   display: None },
-            ],
-            extensions: vec!["paraclete.instrument"],
-        }
+        let mut doc = sampler_capability_document();
+        doc.ports = self.ports.to_vec();
+        doc
     }
 
     fn activate(&mut self, sample_rate: f32, block_size: usize) {
@@ -295,6 +295,9 @@ impl Node for Sampler {
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
+        // Update persistent base params from CMD_SET_PARAM / CMD_BUMP_PARAM before any DSP.
+        self.bank.handle_commands(input.commands);
+
         self.cycle_counter += 1;
         let block_size = input.block_size;
 
@@ -444,13 +447,21 @@ impl Node for Sampler {
     }
 
     fn serialize(&self) -> Vec<u8> {
-        let mut buf = vec![1u8];
+        let mut buf = vec![2u8]; // version 2: bank-based params
         let path = self.sample_path.as_deref().unwrap_or("");
         let path_bytes = path.as_bytes();
         buf.extend_from_slice(&(path_bytes.len() as u16).to_le_bytes());
         buf.extend_from_slice(path_bytes);
         buf.push(self.root_note);
-        for &val in &[self.base_pitch, self.base_volume, self.base_pan, self.base_start, self.base_end] {
+        for &val in &[
+            self.bank.get(param_hash("pitch")),
+            self.bank.get(param_hash("volume")),
+            self.bank.get(param_hash("pan")),
+            self.bank.get(param_hash("start")),
+            self.bank.get(param_hash("end")),
+            self.bank.get(param_hash("attack")),
+            self.bank.get(param_hash("release")),
+        ] {
             buf.extend_from_slice(&val.to_le_bytes());
         }
         buf.push(self.base_loop as u8);
@@ -459,7 +470,7 @@ impl Node for Sampler {
     }
 
     fn deserialize(&mut self, data: &[u8]) {
-        if data.is_empty() || data[0] != 1 { return; }
+        if data.is_empty() || data[0] != 2 { return; }
         let mut cur = 1usize;
 
         if cur + 2 > data.len() { return; }
@@ -482,11 +493,13 @@ impl Node for Sampler {
             }};
         }
 
-        self.base_pitch  = read_f64!();
-        self.base_volume = read_f64!();
-        self.base_pan    = read_f64!();
-        self.base_start  = read_f64!();
-        self.base_end    = read_f64!();
+        self.bank.set(param_hash("pitch"),   read_f64!());
+        self.bank.set(param_hash("volume"),  read_f64!());
+        self.bank.set(param_hash("pan"),     read_f64!());
+        self.bank.set(param_hash("start"),   read_f64!());
+        self.bank.set(param_hash("end"),     read_f64!());
+        self.bank.set(param_hash("attack"),  read_f64!());
+        self.bank.set(param_hash("release"), read_f64!());
 
         if cur >= data.len() { return; }
         self.base_loop = data[cur] != 0; cur += 1;
@@ -555,6 +568,7 @@ mod tests {
     use paraclete_node_api::{
         AudioBuffer, EventOutputBuffer, ExtendedEventSlab, Event, ParamLockEvent,
         TransportInfo, ProcessInput, ProcessOutput, TimedEvent, UmpMessage,
+        NodeCommand, CMD_BUMP_PARAM, CMD_SET_PARAM,
         midi::{ChannelVoice2, Grouped, Channeled, NoteOn, NoteOff, u4, u7},
     };
 
@@ -605,6 +619,31 @@ mod tests {
         audio
     }
 
+    fn run_sampler_with_cmds(sampler: &mut Sampler, events: &[TimedEvent], commands: &[NodeCommand]) -> AudioBuffer {
+        let block = 64usize;
+        let mut audio = AudioBuffer::new(2, block);
+        let mut events_out = EventOutputBuffer::new(64);
+        let transport = TransportInfo::default();
+        let slab = ExtendedEventSlab::empty();
+
+        let audio_ptr: *mut AudioBuffer = &mut audio;
+        let audio_ref: &mut AudioBuffer = unsafe { &mut *audio_ptr };
+        let mut outs = [audio_ref];
+
+        let input = ProcessInput {
+            audio_inputs: &[], signal_inputs: &[], events,
+            transport: &transport, sample_rate: 44100.0, block_size: block,
+            extended_events: &slab,
+            commands,
+        };
+        let mut output = ProcessOutput {
+            audio_outputs: &mut outs, signal_outputs: &mut [],
+            events_out: &mut events_out,
+        };
+        sampler.process(&input, &mut output);
+        audio
+    }
+
     fn load_test_sample(sampler: &mut Sampler, frames: usize) {
         sampler.sample_data = vec![0.5; frames];
         sampler.sample_rate_native = 44100.0;
@@ -623,6 +662,7 @@ mod tests {
 
     #[test]
     fn sampler_capability_document_has_7_params() {
+        // pitch, volume, pan, start, end, attack, release
         let s = Sampler::new();
         assert_eq!(s.capability_document().params.len(), 7);
     }
@@ -745,11 +785,13 @@ mod tests {
     #[test]
     fn sampler_serialize_deserialize_round_trip() {
         let mut s = Sampler::new();
-        s.base_pitch = 2.0;
-        s.base_volume = 0.5;
-        s.base_pan = -0.3;
-        s.base_start = 0.1;
-        s.base_end = 0.9;
+        s.bank.set(param_hash("pitch"),  2.0);
+        s.bank.set(param_hash("volume"), 0.5);
+        s.bank.set(param_hash("pan"),   -0.3);
+        s.bank.set(param_hash("start"),  0.1);
+        s.bank.set(param_hash("end"),    0.9);
+        s.bank.set(param_hash("attack"), 0.05);
+        s.bank.set(param_hash("release"), 0.8);
         s.base_loop = true;
         s.base_slice = 3;
         s.root_note = 69;
@@ -759,9 +801,13 @@ mod tests {
         let mut t = Sampler::new();
         t.deserialize(&data);
 
-        assert_eq!(t.base_pitch, 2.0);
-        assert_eq!(t.base_volume, 0.5);
-        assert_eq!(t.base_pan, -0.3);
+        assert!((t.bank.get(param_hash("pitch"))   - 2.0).abs() < 1e-9);
+        assert!((t.bank.get(param_hash("volume"))  - 0.5).abs() < 1e-9);
+        assert!((t.bank.get(param_hash("pan"))     - (-0.3)).abs() < 1e-9);
+        assert!((t.bank.get(param_hash("start"))   - 0.1).abs() < 1e-9);
+        assert!((t.bank.get(param_hash("end"))     - 0.9).abs() < 1e-9);
+        assert!((t.bank.get(param_hash("attack"))  - 0.05).abs() < 1e-9);
+        assert!((t.bank.get(param_hash("release")) - 0.8).abs() < 1e-9);
         assert!(t.base_loop);
         assert_eq!(t.base_slice, 3);
         assert_eq!(t.root_note, 69);
@@ -772,14 +818,15 @@ mod tests {
     fn sampler_deserialize_unknown_version_leaves_defaults() {
         let mut s = Sampler::new();
         s.deserialize(&[0xFF]);
-        assert_eq!(s.base_volume, 0.8);
+        // Unknown version byte → no-op; bank retains constructed defaults.
+        assert!((s.bank.get(param_hash("volume")) - 1.0).abs() < 1e-9);
     }
 
     #[test]
     fn sampler_stereo_output_reflects_pan() {
         let mut s = Sampler::new();
         s.set_node_id(1);
-        s.base_pan = 1.0; // hard right
+        s.bank.set(param_hash("pan"), 1.0); // hard right
         load_test_sample(&mut s, 4096);
 
         let buf = run_sampler(&mut s, &[make_note_on(60)]);
@@ -788,5 +835,43 @@ mod tests {
 
         // Hard right: R >> L
         assert!(sum_r > sum_l, "panned right: R channel should dominate");
+    }
+
+    #[test]
+    fn sampler_bump_param_volume_changes_output_level() {
+        let mut s = Sampler::new();
+        s.set_node_id(1);
+        load_test_sample(&mut s, 4096);
+
+        // Default volume (1.0) — trigger and measure output.
+        let buf_default = run_sampler(&mut s, &[make_note_on(60)]);
+        let sum_default: f32 = buf_default.channel(0).iter().sum();
+        assert!(sum_default.abs() > 0.0);
+
+        // Reset voice state by deactivating the note.
+        let _ = run_sampler(&mut s, &[make_note_off(60)]);
+
+        // Send CMD_BUMP_PARAM to reduce volume to ~0.5 then retrigger.
+        let bump = NodeCommand { target_id: s.node_id, type_id: CMD_BUMP_PARAM, arg0: param_hash("volume") as i64, arg1: -0.5 };
+        let _ = run_sampler_with_cmds(&mut s, &[], &[bump]);
+
+        let buf_half = run_sampler(&mut s, &[make_note_on(60)]);
+        let sum_half: f32 = buf_half.channel(0).iter().sum();
+
+        assert!(sum_half.abs() > 0.0, "half-volume output should be non-zero");
+        assert!(sum_half.abs() < sum_default.abs(), "half-volume should be quieter than default");
+    }
+
+    #[test]
+    fn sampler_set_param_volume_zero_silences_output() {
+        let mut s = Sampler::new();
+        s.set_node_id(1);
+        load_test_sample(&mut s, 4096);
+
+        let set_zero = NodeCommand { target_id: s.node_id, type_id: CMD_SET_PARAM, arg0: param_hash("volume") as i64, arg1: 0.0 };
+        let _ = run_sampler_with_cmds(&mut s, &[], &[set_zero]);
+
+        let buf = run_sampler(&mut s, &[make_note_on(60)]);
+        assert!(buf.channel(0).iter().all(|&x| x == 0.0), "volume=0 should silence output");
     }
 }
