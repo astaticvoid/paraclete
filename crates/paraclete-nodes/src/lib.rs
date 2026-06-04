@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Paraclete L3 first-party nodes.
 
+pub mod delay;
 pub mod distortion;
 pub mod filter;
 pub mod gateway;
@@ -13,6 +14,7 @@ pub mod reverb;
 pub mod sampler;
 pub mod sequencer;
 
+pub use delay::DelayNode;
 pub use distortion::DistortionNode;
 pub use filter::FilterNode;
 pub use gateway::{ScriptingGatewayNode, ScriptEventConsumer};
