@@ -159,6 +159,35 @@ mod tests {
         assert!(out.is_empty(), "non-Hardware events must not be forwarded");
     }
 
+    /// P4.5 Fix 2 done criterion — two gateways with distinct device_ids do not
+    /// cross-contaminate: events from device A arrive only in gateway A's consumer,
+    /// tagged with A's device_id; events from device B arrive only in gateway B's.
+    /// Spec: one_gateway_per_device_correct_device_id
+    #[test]
+    fn two_gateways_each_receive_only_their_devices_events() {
+        let (mut gw_a, mut consumer_a) = ScriptingGatewayNode::new(10, 64);
+        let (mut gw_b, mut consumer_b) = ScriptingGatewayNode::new(20, 64);
+
+        let ev_a = vec![TimedEvent::new(0, Event::Hardware(HardwareEvent::PadPressed { id: 1, velocity: 64, pressure: 0 }))];
+        let ev_b = vec![TimedEvent::new(0, Event::Hardware(HardwareEvent::PadPressed { id: 2, velocity: 64, pressure: 0 }))];
+
+        run_process(&mut gw_a, &ev_a);
+        run_process(&mut gw_b, &ev_b);
+
+        let mut out_a = Vec::new();
+        let mut out_b = Vec::new();
+        consumer_a.drain(&mut out_a);
+        consumer_b.drain(&mut out_b);
+
+        assert_eq!(out_a.len(), 1);
+        assert_eq!(out_a[0].device_id, 10, "gateway A events must carry device_id 10");
+        assert!(matches!(out_a[0].event, HardwareEvent::PadPressed { id: 1, .. }));
+
+        assert_eq!(out_b.len(), 1);
+        assert_eq!(out_b[0].device_id, 20, "gateway B events must carry device_id 20");
+        assert!(matches!(out_b[0].event, HardwareEvent::PadPressed { id: 2, .. }));
+    }
+
     #[test]
     fn consumer_drain_empties_the_buffer() {
         let (mut gw, mut consumer) = ScriptingGatewayNode::new(1, 64);

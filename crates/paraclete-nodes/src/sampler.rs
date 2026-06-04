@@ -862,6 +862,47 @@ mod tests {
         assert!(sum_half.abs() < sum_default.abs(), "half-volume should be quieter than default");
     }
 
+    /// P4.5 Fix 3 done criterion — CMD_BUMP_PARAM pitch audibly shifts playback speed.
+    /// At +12 semitones the playback rate doubles, so the sample is consumed ~2× faster;
+    /// the voice reaches end_frame sooner, producing fewer non-zero output frames.
+    /// Spec: sampler_bump_param_pitch_changes_playback
+    #[test]
+    fn sampler_bump_param_pitch_changes_playback() {
+        // 64-frame sample = fills exactly one block at pitch=0.
+        // At pitch=+12 (2× rate), it is consumed in ~32 frames → fewer non-zero output frames.
+        let frames = 64usize;
+        let block  = 64usize;
+
+        // Baseline: pitch=0
+        let mut s0 = Sampler::new();
+        s0.set_node_id(1);
+        s0.sample_data = vec![0.5; frames];
+        s0.sample_rate_native = 44100.0;
+        s0.sample_frames = frames;
+        s0.slices = vec![(0, frames)];
+        s0.activate(44100.0, block);
+        let buf0 = run_sampler(&mut s0, &[make_note_on(60)]);
+        let nonzero0 = buf0.channel(0).iter().filter(|&&x| x != 0.0).count();
+        assert!(nonzero0 > 0, "baseline: should produce non-zero output");
+
+        // Pitched up: +12 semitones
+        let mut s1 = Sampler::new();
+        s1.set_node_id(1);
+        s1.sample_data = vec![0.5; frames];
+        s1.sample_rate_native = 44100.0;
+        s1.sample_frames = frames;
+        s1.slices = vec![(0, frames)];
+        s1.activate(44100.0, block);
+        let bump = NodeCommand { target_id: 1, type_id: CMD_BUMP_PARAM, arg0: param_hash("pitch") as i64, arg1: 12.0 };
+        let _ = run_sampler_with_cmds(&mut s1, &[], &[bump]);
+        let buf1 = run_sampler(&mut s1, &[make_note_on(60)]);
+        let nonzero1 = buf1.channel(0).iter().filter(|&&x| x != 0.0).count();
+
+        assert!(nonzero1 < nonzero0,
+            "pitch=+12 should exhaust sample faster: {} non-zero frames vs {} at pitch=0",
+            nonzero1, nonzero0);
+    }
+
     #[test]
     fn sampler_set_param_volume_zero_silences_output() {
         let mut s = Sampler::new();

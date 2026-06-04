@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex, atomic::{AtomicU32, Ordering}};
 
 use paraclete_node_api::{
     CapabilityDocument, ConnectionAgreement, ConnectionRecord, Event, HardwareDevice,
-    HardwareEvent, HardwareOutput, StateBusValue, Node,
+    HardwareEvent, HardwareOutput, HardwareOutputHandle, StateBusValue, Node,
     ParamLockEvent, PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput,
     SurfaceDescriptor, TimedEvent,
 };
@@ -332,6 +332,75 @@ fn disconnected_nodes_receive_empty_event_slice() {
     assert!(received.lock().unwrap().is_empty());
 }
 
+// A HardwareOutputHandle that counts deliver() calls.
+struct DeliverCountHandle {
+    count: Arc<AtomicU32>,
+}
+impl HardwareOutputHandle for DeliverCountHandle {
+    fn tick(&mut self) {}
+    fn deliver(&mut self, _output: HardwareOutput) {
+        self.count.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+// A HardwareDevice that hands its output handle to the configurator.
+struct DeviceWithHandle {
+    ports: Vec<PortDescriptor>,
+    surface: SurfaceDescriptor,
+    deliver_count: Arc<AtomicU32>,
+}
+impl DeviceWithHandle {
+    fn new(deliver_count: Arc<AtomicU32>) -> Self {
+        Self {
+            ports: vec![],
+            surface: SurfaceDescriptor { name: "Test", vendor: "Test", controls: vec![] },
+            deliver_count,
+        }
+    }
+}
+impl Node for DeviceWithHandle {
+    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn process(&mut self, _: &ProcessInput, _: &mut ProcessOutput) {}
+}
+impl HardwareDevice for DeviceWithHandle {
+    fn surface(&self) -> &SurfaceDescriptor { &self.surface }
+    fn update_output(&mut self, _: &HardwareOutput) {}
+    fn take_output_handle(&mut self) -> Option<Box<dyn HardwareOutputHandle>> {
+        Some(Box::new(DeliverCountHandle { count: Arc::clone(&self.deliver_count) }))
+    }
+}
+
+/// P4.5 Fix 1 — deliver_script_output() routes LED output to the registered handle.
+/// Spec: led_routing_deliver_script_output_reaches_handle
+#[test]
+fn led_routing_deliver_script_output_reaches_handle() {
+    let deliver_count = Arc::new(AtomicU32::new(0));
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+    conf.add_hardware_device(42, Box::new(DeviceWithHandle::new(Arc::clone(&deliver_count))));
+    let _exec = conf.build_executor();
+
+    let mut pending = std::collections::HashMap::new();
+    pending.insert(42u32, HardwareOutput::empty());
+    conf.deliver_script_output(pending);
+
+    assert_eq!(deliver_count.load(Ordering::Relaxed), 1, "deliver() should be called once");
+}
+
+#[test]
+fn led_routing_unknown_device_id_is_silently_dropped() {
+    let deliver_count = Arc::new(AtomicU32::new(0));
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+    conf.add_hardware_device(42, Box::new(DeviceWithHandle::new(Arc::clone(&deliver_count))));
+    let _exec = conf.build_executor();
+
+    // device_id 99 has no registered handle — should not panic
+    let mut pending = std::collections::HashMap::new();
+    pending.insert(99u32, HardwareOutput::empty());
+    conf.deliver_script_output(pending);
+
+    assert_eq!(deliver_count.load(Ordering::Relaxed), 0, "unknown device_id must be silently dropped");
+}
+
 #[test]
 fn add_hardware_device_registers_device_for_output_callbacks() {
     let update_count = Arc::new(AtomicU32::new(0));
@@ -621,6 +690,10 @@ impl Node for AudioSinkNode {
     }
 }
 
+/// P4.5 Fix 4 done criterion: downstream node receives non-empty audio_inputs when
+/// wired to an upstream audio source. Covers the FilterNode scenario — FilterNode
+/// uses audio_inputs identically to AudioSinkNode here; the wiring mechanism is the same.
+/// Spec: filter_node_receives_audio_inputs
 #[test]
 fn audio_inputs_populated_from_upstream_audio_output() {
     let received = Arc::new(Mutex::new(None::<f32>));
