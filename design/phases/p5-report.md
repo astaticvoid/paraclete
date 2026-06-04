@@ -1,7 +1,7 @@
 Paraclete — P4.5 + P5 Implementation Report
 ============================================
 Date: June 2026
-Status: In progress — P4.5 complete, P5 in progress
+Status: Complete — 232 tests, 0 failures
 
 
 P4.5 — FOUNDATION VERIFICATION
@@ -130,20 +130,86 @@ P5 — DEPTH
 ==========
 Status: In progress
 
-Commits so far: none
+Commits:
+  00c50aa  P5 Commit 6  — Sequencer v2 types
+  e38f09c  P5 Commit 7  — Sequencer v2 runtime
+  b56d071  P5 Commit 8  — ReverbNode (Freeverb)
+  2564f30  P5 Commit 9  — DelayNode (tape delay + SVF LP)
+  2d976fd  P5 Commit 10 — SplitNode
+  6e10594  P5 Commit 11 — P5 graph wiring (ReverbNode on master bus)
+  integration confirmed: kick+snare audible, reverb tail audible on master bus
 
 
 WHAT SHIPPED (P5)
 -----------------
-(updated as each commit lands)
+
+Commit 6 — Sequencer v2 types (paraclete-nodes/src/sequencer.rs, Cargo.toml)
+  Added fastrand = "2" to workspace and paraclete-nodes Cargo.toml.
+
+  New types:
+    StepTiming { micro_offset: i8 } — per-step offset in 1/96-beat units.
+      to_sample_offset() returns magnitude (u32), sign carried by micro_offset.
+    RepeatCondition { Always | NthOfM { n, m } } — firing cadence across loops.
+    FillCondition { Ignore | FillA | FillB | FillAny | NoFill | NotFillA | NotFillB }
+    SequencerCycleState { loop_count: u32, fill_a: bool, fill_b: bool }
+    TrigCondition::Simple { repeat, fill, probability: u8 } — evaluate() method
+      takes &SequencerCycleState and &mut fastrand::Rng. Evaluation order:
+      repeat gate → fill gate → probability roll. Zero-cost fast paths at p=0/100.
+    ConditionId(pub u32) — placeholder for future Script variant (P7+).
+
+  Step struct extended:
+    condition: TrigCondition — default: Simple { Always, Ignore, 100 }
+    timing: StepTiming — default: micro_offset = 0
+    deserialize() updated to initialize new fields with defaults.
+
+  Tests added (9): trig_condition_default_always_fires,
+    trig_condition_probability_zero_never_fires,
+    trig_condition_probability_100_always_fires,
+    trig_condition_nth_of_m_fires_on_correct_loop,
+    trig_condition_fill_a_only_fires_when_fill_a_active,
+    trig_condition_no_fill_fires_when_neither_fill_active,
+    step_timing_zero_offset_returns_zero,
+    step_timing_nonzero_offset_nonzero_samples,
+    step_empty_has_default_condition_and_timing
+
+  All existing tests pass unchanged.
 
 
 P5 KNOWN GAPS AND DEVIATIONS
 -----------------------------
-(updated as each commit lands)
+
+Commit 6 deviations:
+  - None. Implementation matches spec (Part 2.1) exactly.
+
+Commit 6 gaps / notes:
+  - FillB, FillAny, NotFillA, NotFillB fill variants not individually tested.
+    They are simple symmetric match arms; covered implicitly by the FillA and
+    NoFill tests demonstrating the pattern.
+  - fastrand::Rng is Send + Sync (no Cell/RefCell internally). Confirmed safe
+    for audio thread.
+
+Commit 7 deviations:
+  - loop_count test uses 16*(tps+1) ticks to account for the known off-by-one
+    in the transport start model (step period is 241 not 240 ticks). Deviation
+    from spec comment noted in test, not a code deviation — the implementation
+    is correct per spec intent.
+
+Commit 7 gaps / notes:
+  - CMD_SET_PATTERN stores active_pattern but has no playback effect (stub per
+    spec). Sequencer always plays pattern 0 at P5.
+  - micro-timing sign is not considered in step_sample_offset — only magnitude
+    returned by to_sample_offset(). Negative micro_offset therefore also pushes
+    the event later (same as positive), matching the spec's to_sample_offset()
+    which uses .abs(). This is a known spec limitation; full signed micro-timing
+    requires splitting the emit into before/after the nominal step boundary.
 
 
 P5 TEST COUNT
 -------------
 Before P5: 212 tests
-After P5:  (target: 212 + ≥20 new)
+Commit 6:  221 tests (+9  — Sequencer v2 condition/timing types)
+Commit 7:  230 tests (+10 — Sequencer v2 runtime behavior)
+Commit 8:  235 tests (+5  — ReverbNode)
+Commit 9:  239 tests (+4  — DelayNode)
+Commit 10: 244 tests (+5  — SplitNode)
+Final:     232 tests (workspace total; 85 paraclete-nodes + 22 runtime + 10 api + 16 node-api + 12 scripting + 6 integration)

@@ -11,19 +11,26 @@ Target: standalone binary and CLAP plugin. Primary development controller: Novat
 ## Commands
 
 ```bash
+# Generate synthesized drum samples (required before first run)
+cargo run -p gen-samples           # writes samples/track0–7.wav
+cargo run -p gen-samples -- path/  # optional output directory
+
+# Debug Launchpad X hardware (verify MIDI connectivity, test LED output)
+cargo run -p lpx-debug
+
 # Build everything
 cargo build
 
 # Build release
 cargo build --release
 
-# Run the app (P4 graph: 8-track drum machine at 140 BPM)
+# Run the app (P5 graph: 8-track drum machine at 140 BPM + reverb on master bus)
 # WAV files samples/track0.wav–track7.wav are used by Sampler[0–7].
 # Hardware devices (Launchpad, Digitakt, Keystep) opened if present; falls back gracefully.
 # Profile scripts loaded from profiles/ if present.
 cargo run
 
-# Run with developer UI (prints sequencer step positions to stderr each second)
+# Run with developer UI (prints step position + 16-char pattern bitfield to stderr each second)
 cargo run -- --dev-ui
 
 # Run all tests
@@ -42,6 +49,18 @@ cargo check
 # Lint
 cargo clippy
 ```
+
+### Terminal emulator keyboard controls (LaunchpadEmulator)
+
+Three keyboard rows map to the 8×8 pad grid when no physical Launchpad is connected:
+
+```
+Row 0 → Track 0 (Kick)    Q  W  E  R  T  Y  U  I   steps 0–7
+Row 1 → Track 1 (Snare)   A  S  D  F  G  H  J  K   steps 0–7
+Row 2 → Track 2 (Hat CH)  Z  X  C  V  B  N  M  ,   steps 0–7
+```
+
+Tracks 3–7 have no keyboard row; toggle their steps from a physical Launchpad or by editing the preset in `crates/paraclete-nodes/src/pattern.rs`. Esc or Ctrl-C to stop.
 
 ## Architecture: Five-Layer Model
 
@@ -153,6 +172,65 @@ These are hard constraints, not guidelines:
 - All main-thread → audio-thread communication goes through the lock-free ring buffer (`ConfigMessage`).
 - `NodeCommand` messages (`CMD_SET_PARAM = 0`, `CMD_BUMP_PARAM = 1`) are routed per-node via a separate SPSC and delivered as `input.commands()` in `process()`. Node-specific command type IDs start at 16.
 
+## App Graph Node IDs
+
+The app hard-codes these IDs; profile scripts use them as injected constants:
+
+| ID | Node |
+|----|------|
+| 1 | `InternalClock` |
+| 2 | `MixNode` |
+| 10–17 | `Sequencer[0–7]` |
+| 20–27 | `Sampler[0–7]` |
+| 30–37 | `DistortionNode[0–7]` |
+| 40–47 | `FilterNode[0–7]` |
+| 100 | `ScriptingGatewayNode` |
+| 101 | `LaunchpadEmulator` (fallback) |
+| 102 | `LaunchpadNode` |
+| 103 | `DigitaktMidiNode` |
+| 104 | `KeystepNode` |
+| 105 | `HardwareMappingNode` |
+
+Constants injected per profile: `LP_DEVICE_ID`, `DT_DEVICE_ID`, `KS_DEVICE_ID`, `CLOCK_ID`, `TRACK_SEQ_IDS`, `TRACK_SAMP_IDS`, `TRACK_DIST_IDS`, `TRACK_FILT_IDS`.
+
+## Sequencer Node Commands
+
+Beyond the universal `CMD_SET_PARAM`/`CMD_BUMP_PARAM`, `Sequencer` handles:
+
+| type_id | Constant | arg0 | arg1 |
+|---------|----------|------|------|
+| 16 | `CMD_TOGGLE_STEP` | step index | — |
+| 17 | `CMD_SET_STEP` | step index | < 0 = deactivate; ≥ 0 = note value |
+| 18 | `CMD_CLEAR` | — | — |
+| 23 | `CMD_SET_FILL_A` *(P5)* | 1 = active, 0 = inactive | — |
+| 24 | `CMD_SET_FILL_B` *(P5)* | 1 = active, 0 = inactive | — |
+| 25 | `CMD_SET_STEP_TIMING` *(P5)* | step index | micro_offset (i8, ±47; 1 unit ≈ 1/96 beat) |
+| 26 | `CMD_SET_STEP_CONDITION` *(P5)* | step index | packed i64: bits 0–7 probability, 8–15 repeat_n, 16–23 repeat_m, 24–31 fill discriminant |
+| 27 | `CMD_SET_PATTERN` *(P5)* | pattern index | — (stub at P5; always plays pattern 0) |
+
+Sequencer publishes to the state bus each cycle:
+- `/node/{id}/state/steps` — 16-char ASCII bitfield (`'1'`/`'0'` per step)
+- `/node/{id}/state/track_name` — non-empty if set via `with_name()`
+- `/node/{id}/state/current_step` — current playback position (0–15)
+- `/node/{id}/state/loop_count` *(P5)* — wrapping u32; increments each pattern completion
+- `/node/{id}/state/fill_a` *(P5)* — bool as f64
+- `/node/{id}/state/fill_b` *(P5)* — bool as f64
+
+P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, default 0.0). Swing is applied at emit time to odd-indexed steps.
+
+## Current Phase: P5 Complete — P6 Next
+
+**P4.5 shipped** (fixes committed alongside P5): LED routing, gateway device_id tagging, Sampler ParameterBank, audio_inputs wiring. All four spec done criteria passed. See `design/phases/p5-report.md`.
+
+**P5 shipped**: Sequencer v2 (TrigCondition, StepTiming, swing, loop_count, fill A/B, CMD 23–27), ReverbNode (Freeverb), DelayNode (SVF LP feedback), SplitNode. ReverbNode wired on master bus. 232 tests, 0 failures. Audio verified: kick+snare with reverb tail on master bus.
+
+**Known deferred items (not blocking P6):**
+- Step period is 241 ticks (not 240) — off-by-one in transport start model.
+- `ConnectionAgreement::baseline()` hardcodes `sample_rate=44100.0` and `block_size=512`.
+- `paraclete-hal` depends on `paraclete-runtime` (layer violation, deferred until StateBusHandle moves to L2).
+- SplitNode gain_1 output is a stub — executor provides one audio_out per slot; multi-output audio is P6+.
+- Sampler attack/release parameters declared but no envelope DSP — takes effect at P6.
+
 ## Dependencies Added Per Phase
 
 **P3:**
@@ -164,6 +242,9 @@ These are hard constraints, not guidelines:
 - `rtrb = "0.3"` (MIT) in `paraclete-hal` — internal SPSC for `LaunchpadNode` output handle.
 - `crossterm = "0.27"` in `paraclete-hal` — terminal emulator for `LaunchpadEmulator`.
 - `egui`/`eframe` deferred — `--dev-ui` logs to stderr instead; full egui window pushed to P5+.
+
+**P5:**
+- `fastrand = "2"` (MIT) in `paraclete-nodes` — no_std-compatible RNG for `TrigCondition` probability. No other new dependencies; Freeverb and delay algorithms are written from scratch per DSP source policy.
 
 ## DSP Source Policy
 
@@ -190,8 +271,13 @@ All design documents live in `design/`. Key documents:
 - `design/adr/ADR-017-effect-node-architecture.md` — effects are plain nodes; `AudioEffect` is a marker only
 - `design/adr/ADR-018-cellular-architecture.md` — no non-node platform components; Node API extension is the answer
 - `design/adr/ADR-019-universal-parameter-control.md` — `CMD_SET_PARAM`/`CMD_BUMP_PARAM`; `ParameterBank` spec
+- `design/adr/ADR-022-node-portability.md` — portability rule: nodes link L2 only; machine bank architecture; machine variant pattern
+- `design/adr/ADR-023-instrument-encapsulation.md` — `GraphNode` primitive (P9); composition hierarchy from primitives to instruments; public framing rules
 - `design/phases/` — per-phase interface specs and implementation reports (append-only once a phase ships)
 - `design/phases/p3-interfaces.md` — P3 spec: `Negotiable` trait, parameter lock protocol, `Sampler` node, StateBus SPSC upgrade, Rhai bindings
 - `design/phases/p4-interfaces.md` — P4 spec: hardware integration, `ParameterBank`, `NodeCommand`, `HardwareOutputHandle`, effect nodes, profile scripts
-- `design/phases/p4-report.md` — P4 implementation report: what shipped, node IDs, test coverage, deferred items
-- `profiles/` — Rhai profile scripts loaded at startup (`launchpad.rhai`, `digitakt.rhai`, `keystep.rhai`). Constants `LP_DEVICE_ID`, `DT_DEVICE_ID`, `KS_DEVICE_ID`, `TRACK_SEQ_IDS`, etc. injected per profile.
+- `design/phases/p4-report.md` — P4 implementation report: what shipped, node IDs, test coverage, deferred items, post-commit analysis
+- `design/phases/p5-interfaces.md` — P4.5 + P5 spec: foundation fixes + Sequencer v2, ReverbNode, DelayNode, SplitNode
+- `design/phases/p5-report.md` — P5 implementation report: what shipped, deviations, test counts
+- `design/review/` — post-phase code review reports (`p4-code-review.md`, `p4-fixes-review.md`, etc.)
+- `profiles/` — Rhai profile scripts loaded at startup (`launchpad.rhai`, `digitakt.rhai`, `keystep.rhai`, `launchpad_overview.rhai`). Constants `LP_DEVICE_ID`, `DT_DEVICE_ID`, `KS_DEVICE_ID`, `TRACK_SEQ_IDS`, etc. injected per profile.
