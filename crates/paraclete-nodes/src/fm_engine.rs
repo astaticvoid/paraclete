@@ -112,8 +112,9 @@ impl FmEngine {
         self.carrier_phase   = 0.0;
         self.modulator_phase = 0.0;
         self.prev_mod_out    = 0.0;
-        // pitch_env is only ticked in process_kick; don't trigger it for Bell/Bass
-        // to prevent the AdState from accumulating stuck Attack state.
+        // Only Kick uses pitch_env for the pitch-drop chirp.
+        // P7: re-enable pitch_env.trigger() for Bell/Bass when pitch-chirp
+        // parameters are added to those machine variants.
         if self.machine == FmMachine::Kick {
             self.pitch_env.trigger();
         }

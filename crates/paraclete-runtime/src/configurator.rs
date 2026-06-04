@@ -9,7 +9,7 @@ use paraclete_node_api::{
     CapabilityDocument, ConnectionAgreement, ConnectionRecord,
     HardwareDevice, HardwareOutputHandle, NodeCommand,
     StateBusHandle, StateBusSubscription, StateBusValue,
-    Node, PortDescriptor, PortDirection, PortType,
+    Node, PortDescriptor, PortDirection, PortType, SignalPortKind,
 };
 
 use crate::executor::NodeExecutor;
@@ -330,6 +330,22 @@ impl NodeConfigurator {
         self.sender.try_send(msg).is_ok()
     }
 
+    fn port_type_to_signal_kind(pt: PortType) -> SignalPortKind {
+        match pt {
+            PortType::Modulation => SignalPortKind::Modulation,
+            PortType::Logic      => SignalPortKind::Logic,
+            PortType::Cv         => SignalPortKind::Cv,
+            PortType::Pitch      => SignalPortKind::Pitch,
+            PortType::Phase      => SignalPortKind::Phase,
+            _ => unreachable!(),
+        }
+    }
+
+    fn is_signal_port_type(pt: PortType) -> bool {
+        matches!(pt, PortType::Modulation | PortType::Logic
+                     | PortType::Cv | PortType::Pitch | PortType::Phase)
+    }
+
     /// Build a `NodeExecutor` from the current graph state. Can only be called once.
     pub fn build_executor(&mut self) -> NodeExecutor {
         let receiver = self.pending_receiver.take()
@@ -348,6 +364,7 @@ impl NodeConfigurator {
         let n = order.len();
         let mut event_routes: Vec<Vec<usize>> = vec![vec![]; n];
         let mut audio_routes: Vec<Vec<usize>> = vec![vec![]; n];
+        let mut signal_input_routes: Vec<Vec<(u32, SignalPortKind, usize, u32)>> = vec![vec![]; n];
 
         for slot_pos in 0..n {
             let ni = order[slot_pos];
@@ -360,8 +377,15 @@ impl NodeConfigurator {
                     }
                     PortType::Audio => {
                         if let Some(&dst_pos) = idx_to_slot.get(&edge.target()) {
-                            // Record slot_pos as an audio source for dst_pos.
                             audio_routes[dst_pos].push(slot_pos);
+                        }
+                    }
+                    pt if Self::is_signal_port_type(pt) => {
+                        if let Some(&dst_pos) = idx_to_slot.get(&edge.target()) {
+                            let kind     = Self::port_type_to_signal_kind(pt);
+                            let src_port = edge.weight().src_port;
+                            let dst_port = edge.weight().dst_port;
+                            signal_input_routes[dst_pos].push((dst_port, kind, slot_pos, src_port));
                         }
                     }
                     _ => {}
@@ -377,10 +401,26 @@ impl NodeConfigurator {
             }
         }
 
+        // Allocate output buffers for each slot's signal output ports.
+        let block_size = self.block_size;
+        let mut signal_output_bufs: Vec<Vec<(u32, SignalPortKind, Vec<f32>)>> = vec![vec![]; n];
+        for (slot_pos, (_, node_or_device)) in ordered.iter().enumerate() {
+            for port in node_or_device.ports() {
+                if port.direction == PortDirection::Output
+                   && Self::is_signal_port_type(port.port_type)
+                {
+                    let kind = Self::port_type_to_signal_kind(port.port_type);
+                    signal_output_bufs[slot_pos].push((port.id, kind, vec![0.0f32; block_size]));
+                }
+            }
+        }
+
         NodeExecutor::new(
             ordered,
             event_routes,
             audio_routes,
+            signal_output_bufs,
+            signal_input_routes,
             receiver,
             self.sample_rate,
             self.block_size,

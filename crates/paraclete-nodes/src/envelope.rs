@@ -99,7 +99,10 @@ impl Node for EnvelopeNode {
             if gate_fell && mode == 0 { self.phase = EnvPhase::Release; }
 
             match self.phase {
-                EnvPhase::Idle => {}
+                EnvPhase::Idle => {
+                    // Looping AD starts autonomously — no gate required after initial cycle.
+                    if mode == 2 { self.phase = EnvPhase::Attack; }
+                }
                 EnvPhase::Attack => {
                     self.value += attack_inc;
                     if self.value >= 1.0 {
@@ -301,6 +304,24 @@ mod tests {
         // Count peaks (value near 1.0)
         let peaks = out.windows(2).filter(|w| w[0] > 0.9 && w[1] <= w[0]).count();
         assert!(peaks >= 2, "looping AD should produce multiple peaks, got {peaks}");
+    }
+
+    #[test]
+    fn envelope_looping_ad_no_gate_cycles_continuously() {
+        // Looping AD must cycle autonomously — no gate signal after the initial trigger.
+        // With the fix, mode=2 transitions from Idle to Attack without a gate pulse.
+        let mut env = EnvelopeNode::new();
+        env.activate(44100.0, 512);
+        set_param(&mut env, "env_mode", 2.0); // Looping AD
+        set_param(&mut env, "attack", 0.005);
+        set_param(&mut env, "decay", 0.005);
+        // One cycle ≈ (0.005 + 0.005) × 44100 ≈ 441 samples. 8 blocks = 4096 samples ≈ 9 cycles.
+        // Gate is all-zeros throughout — autonomous loop only.
+        let blocks: Vec<Vec<f32>> = (0..8).map(|_| gate_low(512)).collect();
+        let out = run_env(&mut env, &blocks);
+        let peaks = out.windows(2).filter(|w| w[0] > 0.9 && w[1] <= w[0]).count();
+        assert!(peaks >= 2,
+            "looping AD should cycle continuously with no gate; got {peaks} peaks");
     }
 
     #[test]

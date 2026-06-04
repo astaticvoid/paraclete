@@ -41,9 +41,9 @@ impl LadderFilterNode {
             name: "LadderFilterNode", vendor: "Paraclete", version: (0, 6, 0),
             ports: vec![],
             params: vec![
-                ParamDescriptor { id: lad("ladder_cutoff"),    name: "ladder_cutoff".into(),    min: 20.0, max: 18000.0, default: 4000.0, stepped: false, unit: ParamUnit::Hz,      display: None },
-                ParamDescriptor { id: lad("ladder_resonance"), name: "ladder_resonance".into(), min: 0.0,  max: 1.0,    default: 0.0,    stepped: false, unit: ParamUnit::Generic, display: None },
-                ParamDescriptor { id: lad("ladder_drive"),     name: "ladder_drive".into(),     min: 0.0,  max: 1.0,    default: 0.0,    stepped: false, unit: ParamUnit::Generic, display: None },
+                ParamDescriptor { id: lad("cutoff"),    name: "cutoff".into(),    min: 20.0, max: 18000.0, default: 4000.0, stepped: false, unit: ParamUnit::Hz,      display: None },
+                ParamDescriptor { id: lad("resonance"), name: "resonance".into(), min: 0.0,  max: 1.0,    default: 0.0,    stepped: false, unit: ParamUnit::Generic, display: None },
+                ParamDescriptor { id: lad("drive"),     name: "drive".into(),     min: 0.0,  max: 1.0,    default: 0.0,    stepped: false, unit: ParamUnit::Generic, display: None },
             ],
             extensions: vec!["paraclete.effect"],
         }
@@ -67,9 +67,9 @@ impl Node for LadderFilterNode {
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
         self.bank.handle_commands(input.commands);
 
-        let base_cutoff    = self.bank.get(lad("ladder_cutoff"))    as f32;
-        let base_resonance = self.bank.get(lad("ladder_resonance")) as f32;
-        let drive          = self.bank.get(lad("ladder_drive"))     as f32;
+        let base_cutoff    = self.bank.get(lad("cutoff"))    as f32;
+        let base_resonance = self.bank.get(lad("resonance")) as f32;
+        let drive          = self.bank.get(lad("drive"))     as f32;
 
         let cutoff_mod    = input.modulation(Self::PORT_CUTOFF_MOD);
         let resonance_mod = input.modulation(Self::PORT_RESONANCE_MOD);
@@ -161,7 +161,7 @@ mod tests {
 
         // Cutoff = 500 Hz, test at 1000 Hz (2× cutoff)
         use paraclete_node_api::{NodeCommand, CMD_SET_PARAM};
-        filt.bank.handle_commands(&[NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: lad("ladder_cutoff") as i64, arg1: 500.0 }]);
+        filt.bank.handle_commands(&[NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: lad("cutoff") as i64, arg1: 500.0 }]);
 
         // Warm up filter for 2048 samples
         let warmup = sine_at_hz(1000.0, 44100.0, 2048);
@@ -178,7 +178,7 @@ mod tests {
     }
 
     #[test]
-    fn ladder_resonance_peak_at_cutoff() {
+    fn resonance_peak_at_cutoff() {
         use paraclete_node_api::{NodeCommand, CMD_SET_PARAM};
         // Warm up both filters to steady state before measuring.
         let warmup = sine_at_hz(500.0, 44100.0, 2048);
@@ -187,8 +187,8 @@ mod tests {
         let mut filt_no_res = LadderFilterNode::new();
         filt_no_res.activate(44100.0, 512);
         filt_no_res.bank.handle_commands(&[
-            NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: lad("ladder_cutoff") as i64, arg1: 500.0 },
-            NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: lad("ladder_resonance") as i64, arg1: 0.0 },
+            NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: lad("cutoff") as i64, arg1: 500.0 },
+            NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: lad("resonance") as i64, arg1: 0.0 },
         ]);
         run_ladder(&mut filt_no_res, &warmup);
         let out_no_res = run_ladder(&mut filt_no_res, &sig);
@@ -196,8 +196,8 @@ mod tests {
         let mut filt_res = LadderFilterNode::new();
         filt_res.activate(44100.0, 512);
         filt_res.bank.handle_commands(&[
-            NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: lad("ladder_cutoff") as i64, arg1: 500.0 },
-            NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: lad("ladder_resonance") as i64, arg1: 0.8 },
+            NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: lad("cutoff") as i64, arg1: 500.0 },
+            NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: lad("resonance") as i64, arg1: 0.8 },
         ]);
         run_ladder(&mut filt_res, &warmup);
         let out_res = run_ladder(&mut filt_res, &sig);
@@ -217,8 +217,8 @@ mod tests {
         filt.activate(44100.0, 512);
         use paraclete_node_api::{NodeCommand, CMD_SET_PARAM};
         filt.bank.handle_commands(&[
-            NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: lad("ladder_resonance") as i64, arg1: 1.0 },
-            NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: lad("ladder_drive") as i64, arg1: 1.0 },
+            NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: lad("resonance") as i64, arg1: 1.0 },
+            NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: lad("drive") as i64, arg1: 1.0 },
         ]);
         // Use 1024 samples of noise as input
         let mut st: u32 = 1;
@@ -233,7 +233,7 @@ mod tests {
     }
 
     #[test]
-    fn ladder_cutoff_mod_shifts_frequency() {
+    fn cutoff_mod_shifts_frequency() {
         // Two runs at different effective cutoffs should produce different outputs.
         let mut filt_lo = LadderFilterNode::new();
         filt_lo.activate(44100.0, 512);
@@ -243,7 +243,7 @@ mod tests {
         let mut filt_hi = LadderFilterNode::new();
         filt_hi.activate(44100.0, 512);
         use paraclete_node_api::{NodeCommand, CMD_SET_PARAM};
-        filt_hi.bank.handle_commands(&[NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: lad("ladder_cutoff") as i64, arg1: 200.0 }]);
+        filt_hi.bank.handle_commands(&[NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: lad("cutoff") as i64, arg1: 200.0 }]);
         let out_hi = run_ladder(&mut filt_hi, &sig);
 
         let differ = out_lo.iter().zip(&out_hi).any(|(a, b)| (a - b).abs() > 1e-5);

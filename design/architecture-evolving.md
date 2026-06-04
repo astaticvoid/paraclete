@@ -150,3 +150,65 @@ parameter control), Keystep 37 (melodic).
 **Document model changed**
 architecture-evolving.md is now append-only (this file).
 roadmap.md is a new short living document replaced per phase.
+
+---
+
+### P6 — Synthesis (Complete, June 2026)
+
+**Delivered:** Synthesis primitive vocabulary study embedded in p6-interfaces.md.
+Primitive nodes: OscillatorNode (5 waveforms, polyBLEP, gate sync), EnvelopeNode
+(ADSR/AD/Looping-AD), LfoNode (5 shapes, S&H), LadderFilterNode (4-pole Moog).
+engine_dsp.rs shared helpers (AdState, xorshift, soft_clip, svf_lp_sample,
+note_to_hz). AnalogEngine: KickMachine, SnareMachine, HiHatMachine. FmEngine
+(2-operator PM): FmKickMachine, FmBellMachine, FmBassMachine. Machine variant
+pattern established. Sampler audio quality: symphonia replaces hound
+(WAV/FLAC/AIFF/OGG/MP3); rubato load-time resampling; attack/release envelope
+DSP activated. 285 tests, 0 failures.
+
+**Key findings:**
+- ParamLock bleed in AnalogEngine/FmEngine caught in post-ship review: ParamLock
+  events were permanently mutating the bank rather than pushing to a per-cycle
+  node_locks vec. Fix replicates the established Sampler pattern. Both engine types
+  now have node_locks cleared at top of process(). This pattern is canonical for all
+  future generator nodes (codified in ADR-019 amendment).
+- modulation() and logic() in ProcessInput were unimplemented stubs returning zeroed
+  buffers since P0. Fixed in P6 Commit 1 (L2 API extension). FilterNode and other
+  nodes with signal input ports now respond to CV modulation for the first time.
+- SVF filter state must not be reset on NoteOn retrigger — hard reset causes a click.
+  Amp envelope starting from current value (not zero) drives the filter to the correct
+  region without discontinuity.
+- Rubato scope: applied at sample load time for sample-rate conversion only. Per-voice
+  real-time pitch resampling deferred to P7.
+- OscillatorNode triangle formula was wrong (out-of-range values at certain phases).
+  Fixed in P6.5 Commit 4.
+
+**Deferred to P6.5:**
+- Signal port executor allocation (primitive nodes in graph): P6.5 Commit 3 ✓
+- EnvelopeNode Looping AD bug (went to Idle instead of re-triggering Attack): P6.5 Commit 1 ✓
+- LadderFilterNode parameter names (ladder_cutoff → cutoff, etc.): P6.5 Commit 2 ✓
+
+**Deferred to P7+:**
+- Per-voice rubato in Sampler (load-time only at P6)
+- AnalogEngine/FmEngine polyphony (monophonic with retrigger at P6)
+- Signed micro-timing in Sequencer
+
+---
+
+### P6.5 — Pre-P7 Cleanup (Complete, June 2026)
+
+**Delivered:** Four commits resolving bugs, naming regressions, and infrastructure
+gaps identified in the P6 code review and post-review analysis. 289 tests, 0 failures.
+
+- Commit 1: EnvelopeNode Looping AD autonomous cycle — in Idle phase with mode=2,
+  transition to Attack without needing a gate signal. Verified by new test
+  `envelope_looping_ad_no_gate_cycles_continuously`.
+- Commit 2: LadderFilterNode parameter names unified to canonical names (`"cutoff"`,
+  `"resonance"`, `"drive"`). ADR-019 naming convention compliance. No API break since
+  not yet published.
+- Commit 3: Signal port executor allocation — NodeExecutor pre-allocates Vec<f32>
+  buffers for Modulation/Logic/Cv/Pitch/Phase output ports. signal_input_routes
+  pre-computed at build_executor() time. EnvelopeNode, LfoNode, OscillatorNode now
+  wireable in the executor graph. Three integration tests added.
+- Commit 4: Docs — OscillatorNode triangle formula bug fixed (was out-of-range at
+  certain phase values); pitch_env guard comment in FmEngine; architecture-evolving.md
+  P6 entry; roadmap.md updated.

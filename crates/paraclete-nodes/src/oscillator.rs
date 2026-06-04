@@ -116,8 +116,9 @@ impl Node for OscillatorNode {
                 let sample = match waveform {
                     0 => (self.phase * std::f32::consts::TAU).sin(),
                     1 => {
-                        let p = self.phase;
-                        4.0 * (p - (p + 0.5).floor() + 0.5).abs() - 1.0
+                        // Triangle. The formula 4*(p-(p+0.5).floor()+0.5).abs()-1
+                        // evaluates out of [-1,1] (e.g. 2.0 at p=0.25). Correct:
+                        4.0 * (self.phase - 0.5).abs() - 1.0
                     }
                     2 => {
                         let saw = 2.0 * self.phase - 1.0;

@@ -4,7 +4,7 @@
 > planning changes occur. Keep it short — current state only.
 > 
 > **Last updated:** June 2026  
-> **Current phase:** P5 complete — P6 next
+> **Current phase:** P6.5 complete — P7 next
 
 -----
 
@@ -19,41 +19,48 @@
 |**P4**  |Hardware Integration   |3-device setup live. Launchpad = 8-track drum machine. XL = contextual params. Keystep = melodic. DistortionNode + FilterNode.                                  |**Complete** |
 |**P4.5**|Foundation Verification|Fix four blocking gaps (LED routing, device ID tagging, Sampler ParameterBank, audio_inputs wiring). Integration test.                                          |**Complete** |
 |**P5**  |Depth                  |Sequencer v2 (conditional trigs, micro-timing, swing). ReverbNode, DelayNode, SplitNode. Signal port buffer wiring.                                             |**Complete** |
-|**P6**  |Synthesis              |Synthesis primitive study. FM engine, analog emulation engine. Machine variants. High-quality resampling. Broader audio format support.                         |—            |
+|**P6**  |Synthesis              |Synthesis primitive study. FM engine, analog emulation engine. Machine variants. High-quality resampling. Broader audio format support.                         |**Complete** |
+|**P6.5**|Pre-P7 Cleanup         |EnvelopeNode Looping AD fix. LadderFilter param rename. Signal port executor allocation. OscillatorNode triangle fix.                                           |**Complete** |
 |**P7**  |DAW Integration        |CLAP plugin mode. Minimal host adapter. Machine bank plugins. DAW transport sync. Project save/recall. paraclete-node-api ships to crates.io.                   |—            |
 |**P8**  |CLAP Host              |Platform loads third-party CLAP plugins as nodes. Third-party machine slots.                                                                                    |—            |
 |**P9**  |Modular Graph          |GraphNode instrument encapsulation. Patchable primitive graph. Runtime machine slot swapping. Single-sample feedback. Nested sequencers. Sequencer as CV source.|—            |
 
 -----
 
-## P6 Scope (next)
+## P7 Scope (next)
 
-**Deliverable:** The platform can synthesize sounds, not just play samples. Machine
-variant pattern established. Plugin extraction path validated.
+**Deliverable:** CLAP plugin mode, project save/recall, paraclete-node-api v0.1.0
+on crates.io.
 
-**Pre-P6 synthesis primitive study:** Systematic review of reference instrument
-architectures to extract the complete primitive node vocabulary — every filter
-topology, envelope shape, LFO mode, oscillator type, and routing option needed to
-compose any reference instrument topology without gaps. Output is an internal design
-document driving P6 node design. See ADR-023.
+**CLAP integration** (ADR-024):
+- `paraclete-clap` crate — hand-rolled adapter (~200 lines), no nih-plug
+- `SingleNodePlugin` and `SubgraphPlugin` (machine bank) targets
+- `ClapParamBridge`: CLAP param_id ↔ Paraclete `id_for_name()` translation
+- DAW transport → `TransportInfo` / `TransportEvent` via `translate_transport()`
+- Machine bank plugins: one `.clap` per machine variant
+- Sequencer as a CLAP MIDI effect
+- `clap-validator` CI step
 
-**Synthesis nodes:**
+**Project save/recall** (ADR-025):
+- RON project file format — human-readable, diffable, version-controllable
+- `NodeSnapshot`, `GraphSnapshot`, `ProjectMetadata`, `ProfileBinding` types
+- `NodeConfigurator::all_nodes()` and `all_edges()` iterators
+- `Node::type_name()` default method
+- Save/load wired to keyboard shortcut (main thread only)
+- OQ-2 resolved
 
-- Primitive nodes — oscillators, envelopes (ADSR, AD, looping), filters (multimode
-  SVF, ladder), LFOs (sine, square, ramp, random), operators (FM)
-- `AnalogEngine` — analog voice emulation. Machine variants: KickMachine,
-  SnareMachine, HiHatMachine
-- `FmEngine` — operator-based FM synthesis. Machine variants: FmKickMachine,
-  FmBellMachine, FmBassMachine
+**paraclete-node-api v0.1.0:**
+- First crates.io publication of the LGPL3 node API
+- Parameter names are now stable public contracts — no renames without semver bump
+- Signal port model (mod_output_mut, logic_output_mut) confirmed stable
 
-**Machine variant pattern:** Named engine configurations with constrained
-`capability_document()` surfaces. Full engine depth available via
-`ConnectionAgreement`. See ADR-022.
-
-**Audio quality:**
-
-- High-quality resampling (rubato crate) replacing linear interpolation in Sampler
-- Broader audio format support (symphonia crate) replacing WAV-only
+**Other P7:**
+- Per-voice rubato pitch resampling in Sampler (load-time only at P6)
+- LadderFilter HP/BP modes
+- LFO tempo sync (TransportInfo in process())
+- 4-pole SVF variant (multimode)
+- AnalogEngine stereo widening
+- published_state() pre-allocated push-down (OQ-9)
 
 -----
 
@@ -101,9 +108,8 @@ See ADR-022 (node portability), ADR-023 (instrument encapsulation).
 |--------------------------------------------|------|---------------------------------|---------------------|
 |StatePublisher as default method on Node    |Active|Rust 1.76+ trait upcasting       |When 1.76+ is minimum|
 |NodeOrDevice enum in executor               |Active|Rust 1.76+ trait object upcasting|When 1.76+ is minimum|
-|published_state() allocates per cycle (OQ-9)|Active|Pre-allocated push-down          |P6                   |
-|Linear interpolation resampler in Sampler   |Active|rubato crate                     |P6                   |
-|WAV-only format support                     |Active|symphonia crate                  |P6                   |
+|published_state() allocates per cycle (OQ-9)|Active|Pre-allocated push-down          |P7                   |
+|Linear interpolation resampler in Sampler   |Active|rubato per-voice resampling       |P7                   |
 |Mutex<VecDeque> in hardware nodes (S-005)   |Active|SPSC ring buffer                 |P5                   |
 |published_state() dirty flag missing (S-008)|Active|Per-node dirty flag              |P5                   |
 |Multi-pattern bank storage                  |Active|Stub only at P5                  |P6                   |
@@ -115,7 +121,7 @@ See ADR-022 (node portability), ADR-023 (instrument encapsulation).
 |#    |Question                               |Blocking|Notes                                                                                                 |
 |-----|---------------------------------------|--------|------------------------------------------------------------------------------------------------------|
 |OQ-1 |GUI library for production UI          |P6      |egui for dev tooling only. Full GUI deferred.                                                         |
-|OQ-2 |State bus persistence boundary         |P7      |serialize() for structured state + StateBus snapshot. Boundary unspecified until P7 save/recall.      |
+|OQ-2 |State bus persistence boundary         |P7      |Resolved by ADR-025 (RON project file format). Node serialize()/deserialize(); state bus not persisted.|
 |OQ-3 |MIDI 2.0 CI depth                      |P5      |Negotiable trait shipped at P3 with no CI. Real hardware integration at P5 forces a decision.         |
 |OQ-4 |Network / distributed nodes            |P9      |Shapes EventStream serialisation format. Not blocking.                                                |
 |OQ-5 |Single-sample feedback loop break model|P9      |Forced by GraphNode nested executor scheduling. Explicit loop-break nodes preferred. ADR needed at P9.|

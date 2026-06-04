@@ -1,7 +1,7 @@
 # ADR-019: Universal Parameter Control
 
 **Date:** May 2026
-**Status:** Accepted
+**Status:** Accepted — amended June 2026 (P6.5: parameter naming convention)
 
 ---
 
@@ -77,7 +77,7 @@ expected range and meaning. The platform uses them to:
 - Compute `CMD_BUMP_PARAM` deltas relative to the current value
 - Display meaningful labels and ranges in tooling
 - Allow parameter locks to survive capability renegotiation (content-addressed
-  IDs mean a lock for `"cutoff_hz"` remains valid across preset changes)
+  IDs mean a lock for `"cutoff"` remains valid across preset changes)
 
 They do not prevent a node from accepting values outside the declared range
 internally, or from interpreting a parameter in a context-sensitive way. The
@@ -182,6 +182,86 @@ on the audio thread. `Vec` pre-allocated at `activate()` is the right structure.
 
 ---
 
+## Parameter Naming Convention
+
+*(Added P6.5 — motivated by the LadderFilterNode parameter naming regression.)*
+
+The content-addressed parameter ID model (`id_for_name()`) only provides
+cross-node genericness if parameters that represent the same concept use the
+same name string. A hardware encoder mapped to `id_for_name("cutoff")` reaches
+any node that declares a parameter named `"cutoff"` — and only those nodes.
+
+**Rule: parameters representing the same physical concept must use the same
+name string across all nodes that declare them.**
+
+Canonical names for common parameters:
+
+| Name | Concept | Typical range | Example nodes |
+|------|---------|---------------|---------------|
+| `"cutoff"` | Filter cutoff frequency | Hz | FilterNode, LadderFilterNode |
+| `"resonance"` | Filter resonance / Q | 0.0–1.0 | FilterNode, LadderFilterNode |
+| `"drive"` | Saturation / input gain | 0.0–1.0 | DistortionNode, AnalogEngine, FmEngine, LadderFilterNode |
+| `"wet"` | Wet mix level | 0.0–1.0 | ReverbNode, DelayNode |
+| `"dry"` | Dry mix level | 0.0–1.0 | ReverbNode, DelayNode |
+| `"decay"` | Amplitude decay time | seconds | AnalogEngine, FmEngine, EnvelopeNode |
+| `"attack"` | Amplitude attack time | seconds | EnvelopeNode, FmEngine (FmBass) |
+| `"release"` | Amplitude release time | seconds | EnvelopeNode, Sampler |
+| `"tune"` | Pitch offset | semitones | OscillatorNode, AnalogEngine, FmEngine |
+
+This table is non-exhaustive. Before introducing a new parameter name, check
+whether an existing canonical name covers the concept. Prefer the existing name.
+
+**Corollary: parameter names that are node-type-specific prefixes are wrong.**
+`"ladder_cutoff"` is wrong; `"cutoff"` is right. A hardware encoder should not
+need to know whether it is talking to an SVF or a ladder filter to control cutoff.
+
+**Stability:** Parameter names are long-term contracts. A renamed parameter in a
+published node is a breaking change for any DAW project that has automated that
+parameter (via CLAP, P7+) or any profile script that references it by name. Names
+in `capability_document()` should be treated with the same care as public API
+function names.
+
+---
+
+## ParamLock Pattern for Generator Nodes
+
+*(Added P6.5 — codifying the pattern caught in the P6 code review.)*
+
+Generator nodes (AnalogEngine, FmEngine, and any future nodes with per-step
+parameter override behaviour) must implement the per-cycle node_locks pattern,
+not route ParamLock events through `bank.handle_commands()`.
+
+**The pattern:**
+
+```rust
+// In the generator node struct:
+node_locks: Vec<(u32, f64)>,  // cleared at top of process()
+
+// In process(), first thing:
+self.node_locks.clear();
+
+// ParamLock event handling (inside the event scan loop):
+Event::ParamLock(pl) => {
+    self.node_locks.push((pl.param_id, pl.value));
+}
+
+// Parameter read helper:
+fn get_param(&self, param_id: u32) -> f64 {
+    self.node_locks.iter()
+        .find(|(id, _)| *id == param_id)
+        .map(|(_, v)| *v)
+        .unwrap_or_else(|| self.bank.get(param_id))
+}
+```
+
+`bank.handle_commands()` handles `CMD_SET_PARAM` and `CMD_BUMP_PARAM` (base
+value changes). `node_locks` handles `ParamLock` events (per-step overrides).
+They must not be conflated — routing ParamLock events through the bank
+permanently changes the base value, causing the lock to bleed into subsequent
+cycles that did not request the lock.
+
+---
+
 ## Consequences
 
 **For node authors:**
@@ -211,21 +291,32 @@ send_cmd(node_id, 1, param_id, delta);   // CMD_BUMP_PARAM
 The script does not need to know the node's type. It queries `param_id` from
 the node's capability document if needed, or uses a known constant if the
 relationship is fixed (e.g. a dedicated encoder always controls filter cutoff).
+With canonical parameter names, the same encoder binding works across node types.
 
 **For the sequencer:**
 
 Parameter locks (already implemented at P3 via `Event::ParamLock`) and generic
 parameter control (CMD_SET_PARAM/CMD_BUMP_PARAM via NodeCommand) are now two
-paths to the same underlying storage. `ParameterBank` reconciles them: parameter
-locks apply per-step overrides temporarily; `CMD_SET_PARAM` changes the base
-value persistently. Nodes that use `ParameterBank` handle both correctly.
+paths to the same underlying storage. `ParameterBank` reconciles them per the
+ParamLock pattern above: parameter locks apply per-step overrides temporarily;
+`CMD_SET_PARAM` changes the base value persistently. Nodes that use `ParameterBank`
+and the `node_locks` pattern handle both correctly.
 
 **For third-party nodes:**
 
 Any third-party node published after P4 that declares parameters in
 `capability_document()` and uses `ParameterBank` is automatically controllable
 from any hardware surface in any Paraclete instrument — without any platform
-changes. This is the open extensibility the LGPL3 boundary is designed to enable.
+changes. Using canonical parameter names means the node's parameters are
+reachable by existing hardware profiles without modification. This is the
+open extensibility the LGPL3 boundary is designed to enable.
+
+**For CLAP plugins (P7+):**
+
+Parameter names in `capability_document()` become the basis for CLAP parameter
+IDs and display names. A rename after crates.io publication breaks DAW automation
+lanes and saved projects. Treat parameter names as stable public API from
+`paraclete-node-api` v0.1.0 onward.
 
 ---
 
@@ -236,5 +327,7 @@ changes. This is the open extensibility the LGPL3 boundary is designed to enable
 - ADR-015 — Connection Negotiation (bilateral; graceful degradation model)
 - ADR-018 — Cellular Architecture (hardware reaches any declared parameter;
   no second-class platform objects)
+- ADR-024 — CLAP Plugin Wrapper (CLAP parameter ↔ NodeCommand bridge)
 - p4-interfaces.md — `ParameterBank` implementation spec; `CMD_SET_PARAM` and
   `CMD_BUMP_PARAM` constants; node-specific type IDs start at 16
+- p6-report.md — ParamLock bleed finding (P6 post-ship code review)

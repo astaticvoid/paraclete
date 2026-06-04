@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use paraclete_node_api::{
     AudioBuffer, Control, Event, EventOutputBuffer, HardwareOutput, ExtendedEventSlab,
     NodeCommand, ProcessInput, ProcessOutput, StateBusValue,
+    SignalInputSlot, SignalOutputSlot, SignalPortKind,
     TransportInfo, TimedEvent,
 };
 
@@ -31,6 +32,19 @@ pub struct NodeExecutor {
     /// Scratch buffer for collecting audio input pointers each process() cycle.
     /// Pre-allocated to the maximum number of audio sources any node has.
     audio_input_scratch: Vec<*const AudioBuffer>,
+
+    /// Pre-allocated output buffers for non-audio signal ports.
+    /// signal_output_bufs[slot_idx] = Vec<(port_id, kind, buffer)>.
+    /// Zeroed at the start of each slot's process() call.
+    signal_output_bufs: Vec<Vec<(u32, SignalPortKind, Vec<f32>)>>,
+
+    /// Pre-computed signal routing. Built at build_executor() time; never mutated.
+    /// signal_input_routes[slot_idx] = Vec<(dst_port, kind, src_slot, src_port)>.
+    signal_input_routes: Vec<Vec<(u32, SignalPortKind, usize, u32)>>,
+
+    /// Scratch slices for per-slot signal I/O — no audio-thread allocation.
+    signal_out_scratch: Vec<SignalOutputSlot>,
+    signal_in_scratch:  Vec<SignalInputSlot>,
 }
 
 struct NodeSlot {
@@ -95,6 +109,8 @@ impl NodeExecutor {
         nodes: Vec<(u32, NodeOrDevice)>,
         event_routes: Vec<Vec<usize>>,
         audio_routes: Vec<Vec<usize>>,
+        signal_output_bufs: Vec<Vec<(u32, SignalPortKind, Vec<f32>)>>,
+        signal_input_routes: Vec<Vec<(u32, SignalPortKind, usize, u32)>>,
         receiver: Receiver<ConfigMessage>,
         sample_rate: f32,
         block_size: usize,
@@ -113,7 +129,9 @@ impl NodeExecutor {
             }
         }).collect();
 
-        let max_audio_inputs = audio_routes.iter().map(|r| r.len()).max().unwrap_or(0);
+        let max_audio_inputs  = audio_routes.iter().map(|r| r.len()).max().unwrap_or(0);
+        let max_signal_outs   = signal_output_bufs.iter().map(|v| v.len()).max().unwrap_or(0);
+        let max_signal_ins    = signal_input_routes.iter().map(|v| v.len()).max().unwrap_or(0);
 
         Self {
             nodes: slots,
@@ -129,6 +147,10 @@ impl NodeExecutor {
             cmd_consumer,
             pending_cmds,
             audio_input_scratch: Vec::with_capacity(max_audio_inputs.max(1)),
+            signal_output_bufs,
+            signal_input_routes,
+            signal_out_scratch: Vec::with_capacity(max_signal_outs.max(1)),
+            signal_in_scratch:  Vec::with_capacity(max_signal_ins.max(1)),
         }
     }
 
@@ -191,6 +213,44 @@ impl NodeExecutor {
                 )
             };
 
+            // Build signal output slots for this slot (scoped to release borrows before
+            // the slot mutable borrow below; raw pointer slices are extracted after).
+            {
+                let (scratch, out_bufs) = (&mut self.signal_out_scratch, &mut self.signal_output_bufs);
+                scratch.clear();
+                for (port_id, kind, buf) in out_bufs[slot_idx].iter_mut() {
+                    buf.fill(0.0);
+                    scratch.push(SignalOutputSlot::new(*port_id, *kind, buf));
+                }
+            }
+            // Build signal input slots from upstream output buffers.
+            {
+                let (scratch, routes, out_bufs) = (
+                    &mut self.signal_in_scratch,
+                    &self.signal_input_routes,
+                    &self.signal_output_bufs,
+                );
+                scratch.clear();
+                for &(dst_port, kind, src_slot, src_port) in &routes[slot_idx] {
+                    for (port_id, _, buf) in &out_bufs[src_slot] {
+                        if *port_id == src_port {
+                            scratch.push(SignalInputSlot::new(dst_port, kind, buf));
+                            break;
+                        }
+                    }
+                }
+            }
+            // Extract raw slice pointers so signal I/O can be passed to process()
+            // without conflicting with the mutable borrow of self.nodes[slot_idx] below.
+            // SAFETY: signal_out_scratch and signal_in_scratch are separate fields from
+            // nodes; their backing Vec data is stable (no push/pop past this point per
+            // cycle). The *mut f32 pointers inside each SignalOutputSlot refer to
+            // signal_output_bufs[slot_idx], not to nodes; no aliasing.
+            let sig_out_ptr = self.signal_out_scratch.as_mut_ptr();
+            let sig_out_len = self.signal_out_scratch.len();
+            let sig_in_ptr  = self.signal_in_scratch.as_ptr();
+            let sig_in_len  = self.signal_in_scratch.len();
+
             let slot = &mut self.nodes[slot_idx];
             slot.audio_out.clear();
             slot.events_out.clear();
@@ -232,7 +292,9 @@ impl NodeExecutor {
 
             let input = ProcessInput {
                 audio_inputs,
-                signal_inputs: &[],
+                // SAFETY: sig_in_ptr/sig_in_len from self.signal_in_scratch; stable for
+                // the duration of this call; separate field from nodes.
+                signal_inputs: unsafe { std::slice::from_raw_parts(sig_in_ptr, sig_in_len) },
                 events: &events,
                 transport: transport_ref,
                 sample_rate,
@@ -243,7 +305,10 @@ impl NodeExecutor {
 
             let mut output = ProcessOutput {
                 audio_outputs: &mut outs,
-                signal_outputs: &mut [],
+                // SAFETY: sig_out_ptr/sig_out_len from self.signal_out_scratch; stable for
+                // the duration of this call; SignalOutputSlot::ptr fields point into
+                // signal_output_bufs[slot_idx], distinct from nodes.
+                signal_outputs: unsafe { std::slice::from_raw_parts_mut(sig_out_ptr, sig_out_len) },
                 events_out: events_out_ref,
             };
 

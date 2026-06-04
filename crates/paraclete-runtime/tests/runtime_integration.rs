@@ -690,6 +690,100 @@ impl Node for AudioSinkNode {
     }
 }
 
+// ── Signal routing test helpers ───────────────────────────────────────────────
+
+/// A node that writes a constant value to its modulation output port.
+struct ModOutputNode {
+    ports: [PortDescriptor; 1],
+    value: f32,
+}
+
+impl ModOutputNode {
+    fn new(value: f32) -> Self {
+        Self {
+            ports: [PortDescriptor { id: 0, name: "mod_out".into(), direction: PortDirection::Output, port_type: PortType::Modulation }],
+            value,
+        }
+    }
+}
+
+impl Node for ModOutputNode {
+    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
+        let out = output.mod_output_mut(0);
+        out.fill(self.value);
+    }
+}
+
+/// A node that reads its modulation input and records the first sample.
+struct ModInputNode {
+    ports: [PortDescriptor; 1],
+    received: Arc<Mutex<Option<f32>>>,
+}
+
+impl ModInputNode {
+    fn new(received: Arc<Mutex<Option<f32>>>) -> Self {
+        Self {
+            ports: [PortDescriptor { id: 0, name: "mod_in".into(), direction: PortDirection::Input, port_type: PortType::Modulation }],
+            received,
+        }
+    }
+}
+
+impl Node for ModInputNode {
+    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn process(&mut self, input: &ProcessInput, _output: &mut ProcessOutput) {
+        let mod_in = input.modulation(0);
+        if !mod_in.is_empty() {
+            *self.received.lock().unwrap() = Some(mod_in[0]);
+        }
+    }
+}
+
+/// P6.5 Commit 3: executor allocates signal output buffers for nodes with signal output ports.
+/// Registers a ModOutputNode (which calls output.mod_output_mut()) and verifies it
+/// does not panic — confirming the executor pre-allocated the modulation output slot.
+#[test]
+fn signal_port_executor_allocates_mod_output() {
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+    conf.add_node(1, Box::new(ModOutputNode::new(0.5)));
+    let mut exec = conf.build_executor();
+    let mut out = vec![0.0f32; 64 * 2];
+    exec.process(&mut out, 2); // must not panic
+}
+
+/// P6.5 Commit 3 done criterion: signal routing delivers upstream mod output to
+/// downstream mod input. ModOutputNode writes 0.5 to its output; ModInputNode
+/// reads it via input.modulation(0).
+#[test]
+fn signal_routing_mod_output_reaches_mod_input() {
+    let received = Arc::new(Mutex::new(None::<f32>));
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+    conf.add_node(1, Box::new(ModOutputNode::new(0.5)));
+    conf.add_node(2, Box::new(ModInputNode::new(received.clone())));
+    conf.connect(1, 0, 2, 0).unwrap();
+    let mut exec = conf.build_executor();
+    let mut out = vec![0.0f32; 64 * 2];
+    exec.process(&mut out, 2);
+    let val = *received.lock().unwrap();
+    assert!(val.is_some(), "mod input should receive data from connected upstream");
+    assert!((val.unwrap() - 0.5).abs() < 1e-6, "mod input value should match upstream output");
+}
+
+/// P6.5 Commit 3: unconnected signal input reads all-zeros (silence).
+#[test]
+fn signal_port_unconnected_returns_silence() {
+    let received = Arc::new(Mutex::new(None::<f32>));
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+    conf.add_node(1, Box::new(ModInputNode::new(received.clone())));
+    let mut exec = conf.build_executor();
+    let mut out = vec![0.0f32; 64 * 2];
+    exec.process(&mut out, 2);
+    let val = received.lock().unwrap();
+    // modulation() returns SILENCE[..block_size] for unconnected ports → first sample = 0.0
+    assert_eq!(*val, Some(0.0), "unconnected mod input should read 0.0");
+}
+
 /// P4.5 Fix 4 done criterion: downstream node receives non-empty audio_inputs when
 /// wired to an upstream audio source. Covers the FilterNode scenario — FilterNode
 /// uses audio_inputs identically to AudioSinkNode here; the wiring mechanism is the same.
