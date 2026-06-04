@@ -24,8 +24,9 @@ cargo build
 # Build release
 cargo build --release
 
-# Run the app (P5 graph: 8-track drum machine at 140 BPM + reverb on master bus)
-# WAV files samples/track0.wav–track7.wav are used by Sampler[0–7].
+# Run the app (P6 graph: tracks 0/1/2 = AnalogEngine Kick/Snare/HiHat,
+# tracks 3-6 = Sampler, track 7 = FmEngine Bass. 140 BPM + ReverbNode on master bus.)
+# WAV files samples/track3.wav–track6.wav are used by Sampler[3–6].
 # Hardware devices (Launchpad, Digitakt, Keystep) opened if present; falls back gracefully.
 # Profile scripts loaded from profiles/ if present.
 cargo run
@@ -110,6 +111,26 @@ The core trait is `Node` in `paraclete-node-api`. Three engagement levels:
 
 **ParameterBank** — any node that declares parameters in `capability_document()` should use `ParameterBank` (shipped, in L2). Build it at `activate()` time; call `bank.handle_commands(input.commands())` before DSP in `process()`. It handles `CMD_SET_PARAM` and `CMD_BUMP_PARAM` allocation-free, with clamping and silent ignore for unknown IDs.
 
+**ParamLock pattern for generator nodes** — nodes that support per-step parameter locks (AnalogEngine, FmEngine, any future instrument node) must NOT route `ParamLock` events through `bank.handle_commands()`. That permanently mutates the bank and bleeds the locked value into subsequent steps. The correct pattern (ADR-019):
+```rust
+// In the struct:
+node_locks: Vec<(u32, f64)>,  // cleared at top of every process() call
+
+// In process(), first thing after bank.handle_commands:
+self.node_locks.clear();
+
+// In the event loop, ParamLock branch:
+Event::ParamLock(pl) => self.node_locks.push((pl.param_id, pl.value)),
+
+// Parameter read helper — checks per-cycle overrides before falling back to bank:
+fn get_param(&self, param_id: u32) -> f32 {
+    for &(id, val) in &self.node_locks { if id == param_id { return val as f32; } }
+    self.bank.get(param_id) as f32
+}
+```
+
+**Parameter naming convention** (ADR-019 amendment) — parameters representing the same concept must use the same name string across all nodes. A hardware encoder mapped to `id_for_name("cutoff")` reaches every node that declares `"cutoff"`, and only those nodes. Node-type-specific prefixes (`"ladder_cutoff"`) are wrong. Canonical names: `"cutoff"`, `"resonance"`, `"drive"`, `"wet"`, `"dry"`, `"decay"`, `"attack"`, `"release"`, `"tune"`. Parameter names are long-term contracts — renaming after crates.io publication is a breaking change.
+
 **AudioEffect marker** — effect nodes (distortion, filter, reverb) are plain `Node` implementations with audio ports. Wet/dry and bypass are parameters, lockable by the sequencer. Optionally implement the `AudioEffect` marker trait (no required methods) so profile scripts can discover them by querying `CapabilityDocument.extensions` for `"paraclete.effect"`.
 
 Four convenience super-traits exist in `paraclete-node-api::templates` as contribution scaffolding for third-party authors:
@@ -181,7 +202,11 @@ The app hard-codes these IDs; profile scripts use them as injected constants:
 | 1 | `InternalClock` |
 | 2 | `MixNode` |
 | 10–17 | `Sequencer[0–7]` |
-| 20–27 | `Sampler[0–7]` |
+| 20 | `AnalogEngine::kick()` |
+| 21 | `AnalogEngine::snare()` |
+| 22 | `AnalogEngine::hihat()` |
+| 23–26 | `Sampler[3–6]` (WAV files) |
+| 27 | `FmEngine::bass()` |
 | 30–37 | `DistortionNode[0–7]` |
 | 40–47 | `FilterNode[0–7]` |
 | 101 | `LaunchpadEmulator` (fallback) |
@@ -221,18 +246,25 @@ Sequencer publishes to the state bus each cycle:
 
 P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, default 0.0). Swing is applied at emit time to odd-indexed steps.
 
-## Current Phase: P5 Complete — P6 Next
+## Current Phase: P6 Complete — P6.5 In Progress
 
-**P4.5 shipped** (fixes committed alongside P5): LED routing, gateway device_id tagging, Sampler ParameterBank, audio_inputs wiring. All four spec done criteria passed. See `design/phases/p5-report.md`.
+**P6 shipped**: OscillatorNode (5 waveforms, polyBLEP), EnvelopeNode (ADSR/AD/Looping AD), LfoNode (5 shapes, S&H), LadderFilterNode (4-pole Moog). AnalogEngine (Kick/Snare/HiHat machines), FmEngine (Kick/Bell/Bass machines). Sampler: symphonia WAV/FLAC/AIFF/OGG/MP3, rubato load-time resampling, attack/release envelope DSP. L2 context API: `mod_output_mut`, `logic_output_mut`, fixed signal inputs. 285 tests, 0 failures. See `design/phases/p6-report.md`.
 
-**P5 shipped**: Sequencer v2 (TrigCondition, StepTiming, swing, loop_count, fill A/B, CMD 23–27), ReverbNode (Freeverb), DelayNode (SVF LP feedback), SplitNode. ReverbNode wired on master bus. 232 tests, 0 failures. Audio verified: kick+snare with reverb tail on master bus.
+**P6.5 in progress** (four commits, blocking P7):
+1. EnvelopeNode Looping AD bug fix — autonomous loop without gate (→ `Attack` not `Idle` after Decay)
+2. LadderFilterNode parameter rename — `"ladder_cutoff"` → `"cutoff"`, `"ladder_resonance"` → `"resonance"`, `"ladder_drive"` → `"drive"` (ADR-019 naming convention)
+3. Signal port executor allocation — `NodeExecutor` pre-allocates buffers for Mod/Logic/Cv/Pitch/Phase output ports; primitive nodes (EnvelopeNode, LfoNode, OscillatorNode) become wireable in graphs
+4. Docs/housekeeping — architecture-evolving.md P6 entry, roadmap update, comments
 
-**Known deferred items (not blocking P6):**
+**Known deferred items (P7+):**
 - Step period is 241 ticks (not 240) — off-by-one in transport start model.
 - `ConnectionAgreement::baseline()` hardcodes `sample_rate=44100.0` and `block_size=512`.
 - `paraclete-hal` depends on `paraclete-runtime` (layer violation, deferred until StateBusHandle moves to L2).
-- SplitNode gain_1 output is a stub — executor provides one audio_out per slot; multi-output audio is P6+.
-- Sampler attack/release parameters declared but no envelope DSP — takes effect at P6.
+- Per-voice real-time rubato pitch resampling in Sampler (load-time only at P6).
+- AnalogEngine/FmEngine polyphony (monophonic with retrigger at P6).
+- Signed micro-timing in Sequencer (negative offset not yet distinct from positive).
+- `published_state()` allocates Vec per cycle — OQ-9, targeted P7.
+- LadderFilter HP/BP modes, LFO tempo sync: P7.
 
 ## Dependencies Added Per Phase
 
@@ -248,6 +280,11 @@ P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, defa
 
 **P5:**
 - `fastrand = "2"` (MIT) in `paraclete-nodes` — no_std-compatible RNG for `TrigCondition` probability. No other new dependencies; Freeverb and delay algorithms are written from scratch per DSP source policy.
+
+**P6:**
+- `symphonia = "0.5"` (MIT/Apache) with `features = ["all"]` in `paraclete-nodes` — replaces `hound` for audio file loading. Supports WAV/FLAC/AIFF/OGG/MP3.
+- `rubato = "0.15"` (MIT) in `paraclete-nodes` — load-time sinc resampling (SincFixedIn) when sample native rate ≠ output rate.
+- `hound` removed from `paraclete-nodes` (retained in `gen-samples` tool only).
 
 ## DSP Source Policy
 
@@ -287,8 +324,10 @@ All design documents live in `design/`. Key documents:
 - `design/adr/ADR-017-effect-node-architecture.md` — effects are plain nodes; `AudioEffect` is a marker only
 - `design/adr/ADR-018-cellular-architecture.md` — no non-node platform components; Node API extension is the answer
 - `design/adr/ADR-019-universal-parameter-control.md` — `CMD_SET_PARAM`/`CMD_BUMP_PARAM`; `ParameterBank` spec
-- `design/adr/ADR-022-node-portability.md` — portability rule: nodes link L2 only; machine bank architecture; machine variant pattern
+- `design/adr/ADR-022-node-portability.md` — portability rule: nodes link L2 only; machine bank architecture; machine variant pattern; signal port portability note (P6.5 amendment)
 - `design/adr/ADR-023-instrument-encapsulation.md` — `GraphNode` primitive (P9); composition hierarchy from primitives to instruments; public framing rules
+- `design/adr/ADR-024-clap-wrapper.md` — CLAP plugin adapter design (hand-rolled, P7 target); `paraclete-clap` crate; `ClapParamBridge`; DAW transport → `TransportInfo` translation; `nih-plug` removed
+- `design/adr/ADR-025-project-file-format.md` — RON project file format (P7 target); `NodeSnapshot`; save/load path; versioning; what is not persisted
 - `design/phases/` — per-phase interface specs and implementation reports (append-only once a phase ships)
 - `design/phases/p3-interfaces.md` — P3 spec: `Negotiable` trait, parameter lock protocol, `Sampler` node, StateBus SPSC upgrade, Rhai bindings
 - `design/phases/p4-interfaces.md` — P4 spec: hardware integration, `ParameterBank`, `NodeCommand`, `HardwareOutputHandle`, effect nodes, profile scripts
@@ -296,5 +335,7 @@ All design documents live in `design/`. Key documents:
 - `design/phases/p5-interfaces.md` — P4.5 + P5 spec: foundation fixes + Sequencer v2, ReverbNode, DelayNode, SplitNode
 - `design/phases/p5-report.md` — P5 implementation report: what shipped, deviations, test counts
 - `design/phases/p6-interfaces.md` — P6 spec: synthesis primitive vocabulary, OscillatorNode, EnvelopeNode, LfoNode, LadderFilterNode, AnalogEngine (Kick/Snare/HiHat machines), FmEngine (Kick/Bell/Bass machines), Sampler audio quality (rubato + symphonia + envelope DSP); includes full DSP pseudocode and per-commit test lists
+- `design/phases/p6-report.md` — P6 implementation report: what shipped per commit, post-ship code review findings and fixes, test counts (285 total)
+- `design/phases/p6.5-plan.md` — P6.5 scope: 4 commits (Looping AD fix, LadderFilter param rename, signal port executor allocation, docs); pre-P7 gate criteria
 - `design/review/` — post-phase code review reports (`p4-code-review.md`, `p4-fixes-review.md`, etc.)
 - `profiles/` — Rhai profile scripts loaded at startup (`launchpad.rhai`, `digitakt.rhai`, `keystep.rhai`, `launchpad_overview.rhai`). Constants `LP_DEVICE_ID`, `DT_DEVICE_ID`, `KS_DEVICE_ID`, `TRACK_SEQ_IDS`, etc. injected per profile.
