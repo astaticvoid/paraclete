@@ -35,6 +35,7 @@ pub struct AnalogEngine {
     current_hz:  f32,
     active:      bool,
     node_id:     u32,
+    node_locks:  Vec<(u32, f64)>,
 
     render_l:    Vec<f32>,
     render_r:    Vec<f32>,
@@ -65,6 +66,7 @@ impl AnalogEngine {
             current_hz:  65.41, // C2
             active:      false,
             node_id:     0,
+            node_locks:  Vec::new(),
             render_l:    Vec::new(),
             render_r:    Vec::new(),
             ports: [
@@ -78,6 +80,13 @@ impl AnalogEngine {
     pub fn kick()  -> Self { Self::new(AnalogMachine::Kick)  }
     pub fn snare() -> Self { Self::new(AnalogMachine::Snare) }
     pub fn hihat() -> Self { Self::new(AnalogMachine::HiHat) }
+
+    fn get_param(&self, param_id: u32) -> f32 {
+        for &(id, val) in &self.node_locks {
+            if id == param_id { return val as f32; }
+        }
+        self.bank.get(param_id) as f32
+    }
 
     fn build_doc(machine: AnalogMachine) -> CapabilityDocument {
         let params = match machine {
@@ -117,23 +126,21 @@ impl AnalogEngine {
     }
 
     fn retrigger(&mut self, note: u8) {
-        let tune = self.bank.get(ap("tune")) as f32;
+        let tune = self.get_param(ap("tune"));
         self.current_hz = note_to_hz(note, tune);
         self.pitch_env.trigger();
         self.amp_env.trigger();
         self.body_env.trigger();
         self.noise_env.trigger();
         self.osc_phase = 0.0;
-        self.svf_low   = 0.0;
-        self.svf_band  = 0.0;
         self.active    = true;
     }
 
     fn process_kick(&mut self, block_size: usize) {
-        let punch    = self.bank.get(ap("punch")) as f32;
-        let decay_s  = self.bank.get(ap("decay")) as f32;
-        let drive    = self.bank.get(ap("drive")) as f32;
-        let tone_hz  = self.bank.get(ap("tone"))  as f32;
+        let punch    = self.get_param(ap("punch"));
+        let decay_s  = self.get_param(ap("decay"));
+        let drive    = self.get_param(ap("drive"));
+        let tone_hz  = self.get_param(ap("tone"));
         let sr = self.sample_rate;
 
         let pitch_attack_inc  = 1.0 / (0.002 * sr);
@@ -158,10 +165,10 @@ impl AnalogEngine {
     }
 
     fn process_snare(&mut self, block_size: usize) {
-        let snap_s   = self.bank.get(ap("snap"))  as f32;
-        let noise_lvl= self.bank.get(ap("noise")) as f32;
-        let decay_s  = self.bank.get(ap("decay")) as f32;
-        let tone_hz  = self.bank.get(ap("tone"))  as f32;
+        let snap_s   = self.get_param(ap("snap"));
+        let noise_lvl= self.get_param(ap("noise"));
+        let decay_s  = self.get_param(ap("decay"));
+        let tone_hz  = self.get_param(ap("tone"));
         let sr = self.sample_rate;
 
         let body_attack_inc   = 1.0 / (0.001 * sr);
@@ -190,9 +197,9 @@ impl AnalogEngine {
     }
 
     fn process_hihat(&mut self, block_size: usize) {
-        let tone_hz = self.bank.get(ap("tone"))  as f32;
-        let decay_s = self.bank.get(ap("decay")) as f32;
-        let open    = self.bank.get(ap("open"))  as f32;
+        let tone_hz = self.get_param(ap("tone"));
+        let decay_s = self.get_param(ap("decay"));
+        let open    = self.get_param(ap("open"));
         let sr = self.sample_rate;
 
         let effective_decay = decay_s * (1.0 + open * 7.0);
@@ -245,16 +252,15 @@ impl Node for AnalogEngine {
         for s in &mut self.render_l { *s = 0.0; }
         for s in &mut self.render_r { *s = 0.0; }
 
+        // Per-cycle param overrides from ParamLock events — cleared each cycle so
+        // locks from one step do not bleed into steps that carry no lock.
+        self.node_locks.clear();
+
         // Handle events: ParamLock before NoteOn (executor guarantees ordering).
         for timed in input.events {
             match timed.event {
                 Event::ParamLock(ref pl) if pl.node_id == self.node_id => {
-                    self.bank.handle_commands(&[paraclete_node_api::NodeCommand {
-                        target_id: self.node_id,
-                        type_id:   paraclete_node_api::CMD_SET_PARAM,
-                        arg0:      pl.param_id as i64,
-                        arg1:      pl.value as f64,
-                    }]);
+                    self.node_locks.push((pl.param_id, pl.value));
                 }
                 Event::Midi2(ref ump) => {
                     if let UmpMessage::ChannelVoice2(cv2) = ump {
@@ -489,6 +495,41 @@ mod tests {
         // Drive=1.0 should produce different (typically louder/more saturated) output.
         let differ = (rms(&out_lock) - rms(&out_no_lock)).abs() > 1e-5;
         assert!(differ, "param lock drive=1.0 should change output vs drive=0");
+    }
+
+    #[test]
+    fn analog_param_lock_does_not_bleed_to_next_cycle() {
+        let node_id = 42u32;
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        eng.set_node_id(node_id);
+
+        // Cycle 1: param lock drive=1.0 — must not permanently mutate the bank.
+        let lock = TimedEvent::new(0, Event::ParamLock(ParamLockEvent {
+            node_id, param_id: ap("drive"), value: 1.0,
+        }));
+        let _ = run_engine(&mut eng, &[lock, make_note_on(36)]);
+
+        // Bank drive should still be 0.0 (the default) — the lock goes to node_locks,
+        // not to the bank, so the base value is unchanged for subsequent cycles.
+        assert!((eng.bank.get(ap("drive")) - 0.0).abs() < 1e-9,
+            "bank drive should stay 0.0 after a locked cycle; got {:.4}", eng.bank.get(ap("drive")));
+
+        // Cycle 2: no lock — drive=0.0 (base), output should differ from locked drive=1.0.
+        let out_base = run_engine(&mut eng, &[make_note_on(36)]);
+        let out_locked = {
+            let mut e2 = AnalogEngine::kick();
+            e2.activate(44100.0, 512);
+            e2.set_node_id(node_id);
+            let lock2 = TimedEvent::new(0, Event::ParamLock(ParamLockEvent {
+                node_id, param_id: ap("drive"), value: 1.0,
+            }));
+            run_engine(&mut e2, &[lock2, make_note_on(36)])
+        };
+        let rms = |v: &[f32]| (v.iter().map(|&x| x*x).sum::<f32>() / v.len() as f32).sqrt();
+        assert!((rms(&out_base) - rms(&out_locked)).abs() > 1e-4,
+            "cycle 2 (no lock) should differ from locked drive=1.0; base={:.4} locked={:.4}",
+            rms(&out_base), rms(&out_locked));
     }
 
     #[test]

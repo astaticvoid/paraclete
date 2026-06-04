@@ -74,7 +74,7 @@ fn sampler_capability_document() -> CapabilityDocument {
             ParamDescriptor { id: param_hash("pan"),     name: "pan".into(),     min: -1.0,  max: 1.0,  default: 0.0,   stepped: false, unit: ParamUnit::Generic,   display: None },
             ParamDescriptor { id: param_hash("start"),   name: "start".into(),   min: 0.0,   max: 1.0,  default: 0.0,   stepped: false, unit: ParamUnit::Percent,   display: None },
             ParamDescriptor { id: param_hash("end"),     name: "end".into(),     min: 0.0,   max: 1.0,  default: 1.0,   stepped: false, unit: ParamUnit::Percent,   display: None },
-            ParamDescriptor { id: param_hash("attack"),  name: "attack".into(),  min: 0.0,   max: 1.0,  default: 0.005, stepped: false, unit: ParamUnit::Seconds,   display: None },
+            ParamDescriptor { id: param_hash("attack"),  name: "attack".into(),  min: 0.001, max: 1.0,  default: 0.005, stepped: false, unit: ParamUnit::Seconds,   display: None },
             ParamDescriptor { id: param_hash("release"), name: "release".into(), min: 0.0,   max: 4.0,  default: 0.1,   stepped: false, unit: ParamUnit::Seconds,   display: None },
         ],
         extensions: vec!["paraclete.instrument"],
@@ -576,7 +576,8 @@ fn load_wav(path: &str, target_rate: f32) -> Result<Vec<f32>, String> {
         .make(&codec_params, &Default::default())
         .map_err(|e| format!("codec: {e}"))?;
 
-    let native_rate = codec_params.sample_rate.unwrap_or(44100) as f32;
+    let native_rate = codec_params.sample_rate
+        .ok_or_else(|| "audio file has no sample rate in codec metadata".to_string())? as f32;
     let mut interleaved: Vec<f32> = Vec::new();
     let mut channels = 1usize;
 
@@ -612,6 +613,10 @@ fn load_wav(path: &str, target_rate: f32) -> Result<Vec<f32>, String> {
 }
 
 fn resample_sinc(samples: &[f32], from_rate: f32, to_rate: f32) -> Result<Vec<f32>, String> {
+    if samples.is_empty() {
+        return Ok(vec![]);
+    }
+
     use rubato::{
         Resampler, SincFixedIn, SincInterpolationType, SincInterpolationParameters,
         WindowFunction,

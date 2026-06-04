@@ -112,7 +112,11 @@ impl FmEngine {
         self.carrier_phase   = 0.0;
         self.modulator_phase = 0.0;
         self.prev_mod_out    = 0.0;
-        self.pitch_env.trigger();
+        // pitch_env is only ticked in process_kick; don't trigger it for Bell/Bass
+        // to prevent the AdState from accumulating stuck Attack state.
+        if self.machine == FmMachine::Kick {
+            self.pitch_env.trigger();
+        }
         self.mod_env.trigger();
         self.amp_env.trigger();
         self.active = true;
