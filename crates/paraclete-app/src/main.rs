@@ -1,14 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Paraclete — P4 entry point.
+//! Paraclete — P5 entry point.
 //!
 //! Graph:
 //!   InternalClock
 //!     ├──→ Sequencer[0..7] → Sampler[0..7] → Distortion[0..7] → Filter[0..7] ──┐
-//!     └─────────────────────────────────────────────────────────────────────────→ MixNode → AudioOutput
+//!     └─────────────────────────────────────────────────────────────────────────→ MixNode → ReverbNode → AudioOutput
 //!   LaunchpadNode (or emulator) ──→ ScriptingGatewayNode[LP] ──┐
 //!   DigitaktMidiNode             ──→ ScriptingGatewayNode[DT] ──┼──→ ScriptingEngine
 //!   KeystepNode                  ──→ ScriptingGatewayNode[KS] ──┘
 //!   KeystepNode → HardwareMappingNode → Sequencer[7] (bass)
+//!
+//! Audio topology: the executor sums all audio_out buffers. MixNode provides the
+//! dry mix; ReverbNode (dry=0.0, wet=0.3) adds a wet reverb tail. Combined output
+//! is the natural send/return of the graph's additive summation.
 //!
 //! Hardware is opened gracefully — missing devices fall back silently.
 //! Run with --dev-ui to enable state bus monitoring to stderr.
@@ -19,7 +23,7 @@ use std::time::Duration;
 use paraclete_hal::{AudioBackend, DigitaktMidiNode, KeystepNode, LaunchpadEmulator, LaunchpadNode};
 use paraclete_nodes::{
     DistortionNode, FilterNode, HardwareMappingNode, InternalClock,
-    MixNode, Sampler, ScriptEventConsumer, ScriptingGatewayNode, Sequencer, TRACKS,
+    MixNode, ReverbNode, Sampler, ScriptEventConsumer, ScriptingGatewayNode, Sequencer, TRACKS,
 };
 use paraclete_runtime::NodeConfigurator;
 use paraclete_scripting::ScriptingEngine;
@@ -44,6 +48,8 @@ const ID_MAPPER:   u32 = 105;
 const ID_GW_LP:    u32 = 110; // Launchpad (or emulator) gateway
 const ID_GW_DT:    u32 = 111; // Digitakt gateway
 const ID_GW_KS:    u32 = 112; // Keystep gateway
+// P5 effect nodes on master bus
+const ID_REVERB:   u32 = 200;
 
 fn seq_id(i: usize)  -> u32 { 10 + i as u32 }
 fn samp_id(i: usize) -> u32 { 20 + i as u32 }
@@ -53,7 +59,7 @@ fn filt_id(i: usize) -> u32 { 40 + i as u32 }
 fn main() {
     let dev_ui = env::args().any(|a| a == "--dev-ui");
 
-    eprintln!("[paraclete] booting P4");
+    eprintln!("[paraclete] booting P5");
 
     // ── L1: build graph ───────────────────────────────────────────────────────
     let mut conf = NodeConfigurator::new(SAMPLE_RATE, BLOCK_SIZE);
@@ -66,7 +72,12 @@ fn main() {
     // MixNode — 8 stereo inputs
     conf.add_node(ID_MIX, Box::new(MixNode::new(NUM_TRACKS)));
 
-    // AudioOutput is handled by the HAL — not a graph node at P4.
+    // ReverbNode on master bus — dry=0 (MixNode provides dry), wet=0.3 (reverb tail).
+    // Audio topology: executor sums all audio_out buffers. MixNode provides the dry
+    // mix; ReverbNode adds a wet tail. Together they form a send/return over summation.
+    conf.add_node(ID_REVERB, Box::new(ReverbNode::new()));
+
+    // AudioOutput is handled by the HAL — not a graph node at P5.
     // The executor sums all audio outputs into the HAL buffer.
 
     // 8 track chains — initial pattern from pattern::TRACKS
@@ -92,6 +103,11 @@ fn main() {
         conf.connect(filt_id(i),  FilterNode::PORT_AUDIO_OUT,
                      ID_MIX,      i as u32).expect("filt→mix");
     }
+
+    // Wire MixNode → ReverbNode (master bus reverb send).
+    // MixNode audio_out port id = num_inputs (8 inputs → port 8).
+    conf.connect(ID_MIX, NUM_TRACKS as u32,
+                 ID_REVERB, ReverbNode::PORT_AUDIO_IN).expect("mix→reverb");
 
     // ── Hardware: one ScriptingGateway per device ─────────────────────────────
     // Each gateway knows its device_id at construction — no multi-port fan-in,
@@ -162,7 +178,7 @@ fn main() {
 
     // ── Build executor and start audio ────────────────────────────────────────
     let executor = conf.build_executor();
-    eprintln!("[paraclete] graph built — {NUM_TRACKS} tracks at {BPM} BPM");
+    eprintln!("[paraclete] graph built — {NUM_TRACKS} tracks at {BPM} BPM + reverb on master bus");
 
     let _audio = match AudioBackend::start(executor) {
         Ok(b) => {
