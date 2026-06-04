@@ -13,6 +13,7 @@ pub mod pattern;
 pub mod reverb;
 pub mod sampler;
 pub mod sequencer;
+pub mod split;
 
 pub use delay::DelayNode;
 pub use distortion::DistortionNode;
@@ -26,6 +27,7 @@ pub use pattern::{apply_preset, TrackPreset, TRACKS};
 pub use reverb::ReverbNode;
 pub use sampler::Sampler;
 pub use sequencer::{Sequencer, Step, StepParamLock};
+pub use split::SplitNode;
 
 use paraclete_node_api::{
     CapabilityDocument, ConnectionAgreement, Node, PortDescriptor, PortDirection,
