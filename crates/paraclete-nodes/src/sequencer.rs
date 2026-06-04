@@ -4,6 +4,112 @@ use paraclete_node_api::{
     ProcessOutput, StateBusValue, TimedEvent, TransportEvent, Node, TICKS_PER_BEAT,
 };
 
+// ── Timing / Condition types ──────────────────────────────────────────────────
+
+/// Per-step timing offset in 1/96-beat units. Range: ±47.
+/// Positive = push forward (later). Negative = pull back (earlier).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct StepTiming {
+    pub micro_offset: i8,
+}
+
+impl StepTiming {
+    /// Returns the absolute sample displacement for this offset.
+    /// Returns 0 when micro_offset is 0. Caller must check micro_offset sign.
+    pub fn to_sample_offset(&self, samples_per_beat: f64) -> u32 {
+        if self.micro_offset == 0 {
+            return 0;
+        }
+        let frac = self.micro_offset as f64 / 96.0;
+        (frac * samples_per_beat).round().abs() as u32
+    }
+}
+
+/// Repeat gate: how often across loop iterations a trig fires.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RepeatCondition {
+    Always,
+    /// Fire on the nth repetition of every m loops (1-indexed n).
+    NthOfM { n: u8, m: u8 },
+}
+
+/// Fill gate: how fill buttons interact with a trig.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum FillCondition {
+    Ignore,
+    FillA,
+    FillB,
+    FillAny,
+    NoFill,
+    NotFillA,
+    NotFillB,
+}
+
+/// Per-loop state used by condition evaluation.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SequencerCycleState {
+    /// Increments each time the pattern completes (wrapping).
+    pub loop_count: u32,
+    pub fill_a:     bool,
+    pub fill_b:     bool,
+}
+
+/// Condition governing whether a trig fires on a given loop iteration.
+#[derive(Clone, Debug)]
+pub enum TrigCondition {
+    Simple {
+        repeat:      RepeatCondition,
+        fill:        FillCondition,
+        /// 0–100. 100 = always (no RNG). 0 = never.
+        probability: u8,
+    },
+}
+
+impl TrigCondition {
+    /// Evaluate the condition. Order: repeat gate → fill gate → probability roll.
+    pub fn evaluate(&self, cycle_state: &SequencerCycleState, rng: &mut fastrand::Rng) -> bool {
+        match self {
+            TrigCondition::Simple { repeat, fill, probability } => {
+                let repeat_pass = match repeat {
+                    RepeatCondition::Always => true,
+                    RepeatCondition::NthOfM { n, m } => {
+                        *m > 0 && (cycle_state.loop_count % *m as u32) == (*n as u32 - 1)
+                    }
+                };
+                if !repeat_pass { return false; }
+
+                let fill_pass = match fill {
+                    FillCondition::Ignore   => true,
+                    FillCondition::FillA    => cycle_state.fill_a,
+                    FillCondition::FillB    => cycle_state.fill_b,
+                    FillCondition::FillAny  => cycle_state.fill_a || cycle_state.fill_b,
+                    FillCondition::NoFill   => !cycle_state.fill_a && !cycle_state.fill_b,
+                    FillCondition::NotFillA => !cycle_state.fill_a,
+                    FillCondition::NotFillB => !cycle_state.fill_b,
+                };
+                if !fill_pass { return false; }
+
+                if *probability >= 100 { return true; }
+                if *probability == 0   { return false; }
+                rng.u8(0..100) < *probability
+            }
+        }
+    }
+}
+
+impl Default for TrigCondition {
+    fn default() -> Self {
+        TrigCondition::Simple {
+            repeat:      RepeatCondition::Always,
+            fill:        FillCondition::Ignore,
+            probability: 100,
+        }
+    }
+}
+
+/// Placeholder for future Script condition variant (P7+).
+pub struct ConditionId(pub u32);
+
 // ── Step ─────────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -13,6 +119,8 @@ pub struct Step {
     pub velocity:    u16,
     pub length:      f32,
     pub param_locks: Vec<StepParamLock>,
+    pub condition:   TrigCondition,
+    pub timing:      StepTiming,
 }
 
 #[derive(Clone, Debug)]
@@ -24,7 +132,15 @@ pub struct StepParamLock {
 
 impl Step {
     pub fn empty() -> Self {
-        Step { active: false, note: 60, velocity: 32768, length: 0.75, param_locks: Vec::new() }
+        Step {
+            active:      false,
+            note:        60,
+            velocity:    32768,
+            length:      0.75,
+            param_locks: Vec::new(),
+            condition:   TrigCondition::default(),
+            timing:      StepTiming::default(),
+        }
     }
 }
 
@@ -364,7 +480,8 @@ impl Node for Sequencer {
                 let value    = read_f64!();
                 param_locks.push(StepParamLock { node_id, param_id, value });
             }
-            steps.push(Step { active, note, velocity, length, param_locks });
+            steps.push(Step { active, note, velocity, length, param_locks,
+                             condition: TrigCondition::default(), timing: StepTiming::default() });
         }
 
         self.steps          = steps;
@@ -573,5 +690,111 @@ mod tests {
         restored.deserialize(&data);
         assert_eq!(restored.steps[3].note, 72);
         assert!(restored.steps[3].active);
+    }
+
+    // ── Condition / timing type tests ────────────────────────────────────────
+
+    #[test]
+    fn trig_condition_default_always_fires() {
+        let cond = TrigCondition::default();
+        let state = SequencerCycleState::default();
+        let mut rng = fastrand::Rng::with_seed(0);
+        assert!(cond.evaluate(&state, &mut rng), "default condition must always fire");
+    }
+
+    #[test]
+    fn trig_condition_probability_zero_never_fires() {
+        let cond = TrigCondition::Simple {
+            repeat: RepeatCondition::Always,
+            fill:   FillCondition::Ignore,
+            probability: 0,
+        };
+        let state = SequencerCycleState::default();
+        let mut rng = fastrand::Rng::with_seed(0);
+        for _ in 0..100 {
+            assert!(!cond.evaluate(&state, &mut rng));
+        }
+    }
+
+    #[test]
+    fn trig_condition_probability_100_always_fires() {
+        let cond = TrigCondition::Simple {
+            repeat: RepeatCondition::Always,
+            fill:   FillCondition::Ignore,
+            probability: 100,
+        };
+        let state = SequencerCycleState::default();
+        let mut rng = fastrand::Rng::with_seed(0);
+        for _ in 0..100 {
+            assert!(cond.evaluate(&state, &mut rng));
+        }
+    }
+
+    #[test]
+    fn trig_condition_nth_of_m_fires_on_correct_loop() {
+        let cond = TrigCondition::Simple {
+            repeat: RepeatCondition::NthOfM { n: 1, m: 2 },
+            fill:   FillCondition::Ignore,
+            probability: 100,
+        };
+        let mut rng = fastrand::Rng::with_seed(0);
+        // loop_count=0 → n=1, 0%2==0 == (1-1)=0 → fires
+        let state0 = SequencerCycleState { loop_count: 0, ..Default::default() };
+        assert!(cond.evaluate(&state0, &mut rng));
+        // loop_count=1 → 1%2==1 ≠ 0 → does not fire
+        let state1 = SequencerCycleState { loop_count: 1, ..Default::default() };
+        assert!(!cond.evaluate(&state1, &mut rng));
+    }
+
+    #[test]
+    fn trig_condition_fill_a_only_fires_when_fill_a_active() {
+        let cond = TrigCondition::Simple {
+            repeat: RepeatCondition::Always,
+            fill:   FillCondition::FillA,
+            probability: 100,
+        };
+        let mut rng = fastrand::Rng::with_seed(0);
+        let fill_on  = SequencerCycleState { fill_a: true,  ..Default::default() };
+        let fill_off = SequencerCycleState { fill_a: false, ..Default::default() };
+        assert!(cond.evaluate(&fill_on, &mut rng));
+        assert!(!cond.evaluate(&fill_off, &mut rng));
+    }
+
+    #[test]
+    fn trig_condition_no_fill_fires_when_neither_fill_active() {
+        let cond = TrigCondition::Simple {
+            repeat: RepeatCondition::Always,
+            fill:   FillCondition::NoFill,
+            probability: 100,
+        };
+        let mut rng = fastrand::Rng::with_seed(0);
+        let no_fill   = SequencerCycleState { fill_a: false, fill_b: false, ..Default::default() };
+        let fill_a_on = SequencerCycleState { fill_a: true,  fill_b: false, ..Default::default() };
+        assert!(cond.evaluate(&no_fill, &mut rng));
+        assert!(!cond.evaluate(&fill_a_on, &mut rng));
+    }
+
+    #[test]
+    fn step_timing_zero_offset_returns_zero() {
+        let t = StepTiming { micro_offset: 0 };
+        assert_eq!(t.to_sample_offset(44100.0 / 2.0), 0);
+    }
+
+    #[test]
+    fn step_timing_nonzero_offset_nonzero_samples() {
+        let t = StepTiming { micro_offset: 48 };
+        let spb = 44100.0 / 2.0_f64;
+        assert!(t.to_sample_offset(spb) > 0);
+    }
+
+    #[test]
+    fn step_empty_has_default_condition_and_timing() {
+        let step = Step::empty();
+        assert!(matches!(step.condition, TrigCondition::Simple {
+            repeat: RepeatCondition::Always,
+            fill:   FillCondition::Ignore,
+            probability: 100,
+        }));
+        assert_eq!(step.timing.micro_offset, 0);
     }
 }
