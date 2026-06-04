@@ -347,14 +347,24 @@ impl NodeConfigurator {
 
         let n = order.len();
         let mut event_routes: Vec<Vec<usize>> = vec![vec![]; n];
+        let mut audio_routes: Vec<Vec<usize>> = vec![vec![]; n];
 
         for slot_pos in 0..n {
             let ni = order[slot_pos];
             for edge in self.graph.edges(ni) {
-                if matches!(edge.weight().src_port_type, PortType::Event | PortType::Clock) {
-                    if let Some(&dst_pos) = idx_to_slot.get(&edge.target()) {
-                        event_routes[slot_pos].push(dst_pos);
+                match edge.weight().src_port_type {
+                    PortType::Event | PortType::Clock => {
+                        if let Some(&dst_pos) = idx_to_slot.get(&edge.target()) {
+                            event_routes[slot_pos].push(dst_pos);
+                        }
                     }
+                    PortType::Audio => {
+                        if let Some(&dst_pos) = idx_to_slot.get(&edge.target()) {
+                            // Record slot_pos as an audio source for dst_pos.
+                            audio_routes[dst_pos].push(slot_pos);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
@@ -370,6 +380,7 @@ impl NodeConfigurator {
         NodeExecutor::new(
             ordered,
             event_routes,
+            audio_routes,
             receiver,
             self.sample_rate,
             self.block_size,

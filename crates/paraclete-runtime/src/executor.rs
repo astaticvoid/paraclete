@@ -14,6 +14,9 @@ use crate::ring_buffer::Receiver;
 pub struct NodeExecutor {
     nodes: Vec<NodeSlot>,
     event_routes: Vec<Vec<usize>>,
+    /// For each slot position: the upstream slot indices that provide audio input.
+    /// Pre-computed at build_executor() time; never changes at runtime.
+    audio_routes: Vec<Vec<usize>>,
     incoming: Vec<Vec<TimedEvent>>,
     transport: TransportInfo,
     sample_rate: f32,
@@ -25,6 +28,9 @@ pub struct NodeExecutor {
     /// Per-node command buffer: node_id → Vec<NodeCommand>.
     /// Pre-allocated accumulator; cleared each cycle. No audio-thread allocation.
     pending_cmds: HashMap<u32, Vec<NodeCommand>>,
+    /// Scratch buffer for collecting audio input pointers each process() cycle.
+    /// Pre-allocated to the maximum number of audio sources any node has.
+    audio_input_scratch: Vec<*const AudioBuffer>,
 }
 
 struct NodeSlot {
@@ -76,10 +82,19 @@ impl NodeSlot {
     }
 }
 
+// SAFETY: NodeExecutor lives exclusively on the audio thread after being moved there.
+// The non-Send field is audio_input_scratch: Vec<*const AudioBuffer>. These pointers
+// are scratch-only: filled at the start of each slot's process() call and never read
+// outside of that call. All other fields are Send (rtrb channels, the ring buffer
+// Receiver, and the nodes themselves — which must have been Send to reach this point
+// since they are constructed on the main thread and moved across a thread boundary).
+unsafe impl Send for NodeExecutor {}
+
 impl NodeExecutor {
     pub(crate) fn new(
         nodes: Vec<(u32, NodeOrDevice)>,
         event_routes: Vec<Vec<usize>>,
+        audio_routes: Vec<Vec<usize>>,
         receiver: Receiver<ConfigMessage>,
         sample_rate: f32,
         block_size: usize,
@@ -98,9 +113,12 @@ impl NodeExecutor {
             }
         }).collect();
 
+        let max_audio_inputs = audio_routes.iter().map(|r| r.len()).max().unwrap_or(0);
+
         Self {
             nodes: slots,
             event_routes,
+            audio_routes,
             incoming: vec![vec![]; n],
             transport: TransportInfo::default(),
             sample_rate,
@@ -110,6 +128,7 @@ impl NodeExecutor {
             state_bus_producer,
             cmd_consumer,
             pending_cmds,
+            audio_input_scratch: Vec::with_capacity(max_audio_inputs.max(1)),
         }
     }
 
@@ -155,6 +174,23 @@ impl NodeExecutor {
         let slab = &self.extended_event_slab as *const ExtendedEventSlab;
 
         for slot_idx in 0..self.nodes.len() {
+            // Collect audio input pointers before the mutable borrow of self.nodes[slot_idx].
+            // audio_routes[slot_idx] contains only src_idx < slot_idx (topological order),
+            // so those nodes are already processed and their audio_out buffers are stable.
+            self.audio_input_scratch.clear();
+            for &src_idx in &self.audio_routes[slot_idx] {
+                self.audio_input_scratch.push(&self.nodes[src_idx].audio_out as *const AudioBuffer);
+            }
+            // SAFETY: *const AudioBuffer and &AudioBuffer have identical representation
+            // for sized types (both thin pointers). The referenced buffers remain valid
+            // and unmodified for the duration of this slot's process() call.
+            let audio_inputs: &[&AudioBuffer] = unsafe {
+                std::slice::from_raw_parts(
+                    self.audio_input_scratch.as_ptr() as *const &AudioBuffer,
+                    self.audio_input_scratch.len(),
+                )
+            };
+
             let slot = &mut self.nodes[slot_idx];
             slot.audio_out.clear();
             slot.events_out.clear();
@@ -195,7 +231,7 @@ impl NodeExecutor {
                 .unwrap_or(&[]);
 
             let input = ProcessInput {
-                audio_inputs: &[],
+                audio_inputs,
                 signal_inputs: &[],
                 events: &events,
                 transport: transport_ref,

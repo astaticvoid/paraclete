@@ -568,3 +568,88 @@ fn executor_delivers_param_lock_before_midi2_at_same_sample_offset() {
     assert_eq!(received[0], "param_lock", "ParamLock must arrive before Midi2");
     assert_eq!(received[1], "midi2");
 }
+
+// ── audio_inputs wiring (P4.5 Fix 4) ─────────────────────────────────────────
+
+/// A node that fills its audio output with a constant value.
+struct AudioSourceNode {
+    ports: [PortDescriptor; 1],
+    value: f32,
+}
+
+impl AudioSourceNode {
+    fn new(value: f32) -> Self {
+        Self {
+            ports: [PortDescriptor { id: 0, name: "audio_out".into(), direction: PortDirection::Output, port_type: PortType::Audio }],
+            value,
+        }
+    }
+}
+
+impl Node for AudioSourceNode {
+    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
+        if let Some(buf) = output.audio_outputs.first_mut() {
+            for ch in 0..buf.channels() { buf.channel_mut(ch).fill(self.value); }
+        }
+    }
+}
+
+/// A node that asserts audio_inputs is non-empty and records the first sample.
+struct AudioSinkNode {
+    ports: [PortDescriptor; 1],
+    received: Arc<Mutex<Option<f32>>>,
+}
+
+impl AudioSinkNode {
+    fn new(received: Arc<Mutex<Option<f32>>>) -> Self {
+        Self {
+            ports: [PortDescriptor { id: 0, name: "audio_in".into(), direction: PortDirection::Input, port_type: PortType::Audio }],
+            received,
+        }
+    }
+}
+
+impl Node for AudioSinkNode {
+    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn process(&mut self, input: &ProcessInput, _output: &mut ProcessOutput) {
+        if let Some(buf) = input.audio_inputs.first() {
+            if buf.channels() > 0 && !buf.channel(0).is_empty() {
+                *self.received.lock().unwrap() = Some(buf.channel(0)[0]);
+            }
+        }
+    }
+}
+
+#[test]
+fn audio_inputs_populated_from_upstream_audio_output() {
+    let received = Arc::new(Mutex::new(None::<f32>));
+
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+    conf.add_node(1, Box::new(AudioSourceNode::new(0.75)));
+    conf.add_node(2, Box::new(AudioSinkNode::new(received.clone())));
+    conf.connect(1, 0, 2, 0).unwrap();
+    let mut exec = conf.build_executor();
+
+    let mut out = vec![0.0f32; 64 * 2];
+    exec.process(&mut out, 2);
+
+    let val = *received.lock().unwrap();
+    assert!(val.is_some(), "audio_inputs should be non-empty when an audio edge exists");
+    assert!((val.unwrap() - 0.75).abs() < 1e-6, "audio_inputs should carry upstream output value");
+}
+
+#[test]
+fn audio_inputs_empty_when_no_audio_edge() {
+    let received = Arc::new(Mutex::new(None::<f32>));
+
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+    // AudioSinkNode added alone with no upstream connection
+    conf.add_node(1, Box::new(AudioSinkNode::new(received.clone())));
+    let mut exec = conf.build_executor();
+
+    let mut out = vec![0.0f32; 64 * 2];
+    exec.process(&mut out, 2);
+
+    assert!(received.lock().unwrap().is_none(), "audio_inputs should be empty with no audio edge");
+}
