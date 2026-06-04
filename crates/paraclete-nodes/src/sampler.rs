@@ -8,6 +8,11 @@ use paraclete_node_api::{
     midi::ChannelVoice2,
 };
 
+// ── Sampler envelope phase ─────────────────────────────────────────────────────
+
+#[derive(Clone, Copy)]
+enum EnvPhaseSimple { Attack, Release, Done }
+
 // ── param_hash ────────────────────────────────────────────────────────────────
 
 fn param_hash(name: &str) -> u32 {
@@ -29,6 +34,8 @@ struct Voice {
     playback_pos: f64,
     active_locks: HashMap<u32, ActiveParamLock>,
     triggered_at: u64,
+    env_value: f32,
+    env_phase: EnvPhaseSimple,
 }
 
 impl Voice {
@@ -39,6 +46,8 @@ impl Voice {
             playback_pos: 0.0,
             active_locks: HashMap::with_capacity(9), // pitch/vol/pan/start/end/attack/release/loop/slice
             triggered_at: 0,
+            env_value: 1.0,
+            env_phase: EnvPhaseSimple::Done,
         }
     }
 
@@ -215,6 +224,8 @@ impl Sampler {
         voice.playback_pos = 0.0;
         voice.triggered_at = self.cycle_counter;
         voice.active_locks.clear();
+        voice.env_value = 0.0;
+        voice.env_phase = EnvPhaseSimple::Attack;
 
         for (param_id, lock) in &self.node_locks {
             voice.active_locks.insert(*param_id, lock.clone());
@@ -380,6 +391,12 @@ impl Node for Sampler {
         let output_sr = self.output_sample_rate;
         let root_note = self.root_note;
 
+        // Envelope parameters — precomputed to avoid per-sample HashMap lookups.
+        let eff_attack_s  = self.effective_node(param_hash("attack"))  as f32;
+        let eff_release_s = self.effective_node(param_hash("release")) as f32;
+        let attack_inc    = 1.0 / (eff_attack_s  * output_sr).max(1.0);
+        let release_coeff = 0.001_f32.powf(1.0 / (eff_release_s * output_sr).max(1.0));
+
         // Take a shared slice of sample_data — coexists with the mutable
         // borrow of voices below since they are different fields.
         let sample_data = self.sample_data.as_slice();
@@ -394,6 +411,30 @@ impl Node for Sampler {
 
             let mut deactivate = false;
             for frame in 0..block_size {
+                // Advance envelope
+                let env = match voice.env_phase {
+                    EnvPhaseSimple::Attack => {
+                        voice.env_value += attack_inc;
+                        if voice.env_value >= 1.0 {
+                            voice.env_value = 1.0;
+                            voice.env_phase = EnvPhaseSimple::Release;
+                        }
+                        voice.env_value
+                    }
+                    EnvPhaseSimple::Release => {
+                        voice.env_value *= release_coeff;
+                        if voice.env_value < 1.0e-5 {
+                            voice.env_value = 0.0;
+                            voice.env_phase = EnvPhaseSimple::Done;
+                        }
+                        voice.env_value
+                    }
+                    EnvPhaseSimple::Done => {
+                        deactivate = true;
+                        break;
+                    }
+                };
+
                 let abs_pos = start_frame as f64 + voice.playback_pos;
                 if abs_pos < end_frame as f64 {
                     let idx = abs_pos as usize;
@@ -401,8 +442,8 @@ impl Node for Sampler {
                     let s0 = sample_data.get(idx).copied().unwrap_or(0.0);
                     let s1 = sample_data.get(idx + 1).copied().unwrap_or(0.0);
                     let sample = s0 + (s1 - s0) * frac;
-                    self.render_l[frame] += sample * vol * pan_l;
-                    self.render_r[frame] += sample * vol * pan_r;
+                    self.render_l[frame] += sample * vol * pan_l * env;
+                    self.render_r[frame] += sample * vol * pan_r * env;
                     voice.playback_pos += playback_rate;
                 } else if looping {
                     voice.playback_pos = 0.0;
@@ -511,53 +552,108 @@ impl Node for Sampler {
 
 impl Negotiable for Sampler {}
 
-// ── WAV loading ────────────────────────────────────────────────────────────────
+// ── Audio file loading via symphonia ─────────────────────────────────────────
+// Supports WAV, FLAC, AIFF, OGG Vorbis, MP3 (via symphonia "all" feature).
+// Load-time resampling uses rubato SincFixedIn for high quality when
+// native_rate != target_rate. Per-voice pitch resampling uses linear
+// interpolation in the render loop (per-voice rubato deferred to P7).
 
 fn load_wav(path: &str, target_rate: f32) -> Result<Vec<f32>, String> {
-    let mut reader = hound::WavReader::open(path)
-        .map_err(|e| format!("hound: {}", e))?;
+    use symphonia::core::audio::SampleBuffer;
+    use symphonia::core::io::MediaSourceStream;
+    use symphonia::core::probe::Hint;
 
-    let spec = reader.spec();
-    let native_rate = spec.sample_rate as f32;
+    let file = std::fs::File::open(path).map_err(|e| format!("open: {e}"))?;
+    let mss  = MediaSourceStream::new(Box::new(file), Default::default());
+    let hint = Hint::new(); // probe by magic bytes, not extension
+    let probed = symphonia::default::get_probe()
+        .format(&hint, mss, &Default::default(), &Default::default())
+        .map_err(|e| format!("probe: {e}"))?;
+    let mut reader = probed.format;
+    let track = reader.default_track().ok_or_else(|| "no audio track".to_string())?;
+    let codec_params = track.codec_params.clone();
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&codec_params, &Default::default())
+        .map_err(|e| format!("codec: {e}"))?;
 
-    let samples: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Float => {
-            reader.samples::<f32>().map(|s| s.unwrap_or(0.0)).collect()
+    let native_rate = codec_params.sample_rate.unwrap_or(44100) as f32;
+    let mut interleaved: Vec<f32> = Vec::new();
+    let mut channels = 1usize;
+
+    loop {
+        match reader.next_packet() {
+            Ok(packet) => {
+                let decoded = decoder.decode(&packet).map_err(|e| format!("decode: {e}"))?;
+                let spec = *decoded.spec();
+                channels = spec.channels.count();
+                let mut buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
+                buf.copy_interleaved_ref(decoded);
+                interleaved.extend_from_slice(buf.samples());
+            }
+            Err(symphonia::core::errors::Error::IoError(_)) => break,
+            Err(e) => return Err(format!("read: {e}")),
         }
-        hound::SampleFormat::Int => {
-            let bits = spec.bits_per_sample as f32;
-            let max = 2.0_f32.powf(bits - 1.0);
-            reader.samples::<i32>()
-                .map(|s| s.unwrap_or(0) as f32 / max)
-                .collect()
-        }
-    };
+    }
 
-    let mono: Vec<f32> = if spec.channels == 2 {
-        samples.chunks(2)
-            .map(|c| (c[0] + c.get(1).copied().unwrap_or(0.0)) * 0.5)
-            .collect()
+    // Deinterleave to mono
+    let mono: Vec<f32> = if channels == 1 {
+        interleaved
     } else {
-        samples
+        interleaved.chunks(channels)
+            .map(|frame| frame.iter().sum::<f32>() / channels as f32)
+            .collect()
     };
 
     if (native_rate - target_rate).abs() < 1.0 {
         Ok(mono)
     } else {
-        // Simple linear interpolation — TODO P6: replace with rubato (MIT).
-        let ratio = native_rate / target_rate;
-        let output_len = (mono.len() as f32 / ratio) as usize;
-        let mut resampled = Vec::with_capacity(output_len);
-        for i in 0..output_len {
-            let pos = i as f32 * ratio;
-            let idx = pos as usize;
-            let frac = pos - idx as f32;
-            let s0 = mono.get(idx).copied().unwrap_or(0.0);
-            let s1 = mono.get(idx + 1).copied().unwrap_or(0.0);
-            resampled.push(s0 + (s1 - s0) * frac);
-        }
-        Ok(resampled)
+        resample_sinc(&mono, native_rate, target_rate)
     }
+}
+
+fn resample_sinc(samples: &[f32], from_rate: f32, to_rate: f32) -> Result<Vec<f32>, String> {
+    use rubato::{
+        Resampler, SincFixedIn, SincInterpolationType, SincInterpolationParameters,
+        WindowFunction,
+    };
+
+    let ratio = to_rate as f64 / from_rate as f64;
+    let chunk = 512usize;
+    let params = SincInterpolationParameters {
+        sinc_len: 64,
+        f_cutoff: 0.95,
+        interpolation: SincInterpolationType::Linear,
+        oversampling_factor: 64,
+        window: WindowFunction::BlackmanHarris2,
+    };
+    let mut resampler = SincFixedIn::<f32>::new(ratio, 2.0, params, chunk, 1)
+        .map_err(|e| format!("rubato init: {e}"))?;
+
+    let expected = (samples.len() as f64 * ratio) as usize;
+    let mut output = Vec::with_capacity(expected + chunk);
+    let mut pos = 0;
+
+    loop {
+        let end = (pos + chunk).min(samples.len());
+        let mut buf_in = samples[pos..end].to_vec();
+        buf_in.resize(chunk, 0.0);
+
+        // rubato 0.15: process() returns Result<Vec<Vec<T>>>, no output arg.
+        match resampler.process(&[buf_in], None) {
+            Ok(out_channels) => {
+                if let Some(ch) = out_channels.into_iter().next() {
+                    output.extend_from_slice(&ch);
+                }
+            }
+            Err(e) => return Err(format!("rubato process: {e}")),
+        }
+
+        if end >= samples.len() { break; }
+        pos += chunk;
+    }
+
+    output.truncate(expected);
+    Ok(output)
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -914,5 +1010,150 @@ mod tests {
 
         let buf = run_sampler(&mut s, &[make_note_on(60)]);
         assert!(buf.channel(0).iter().all(|&x| x == 0.0), "volume=0 should silence output");
+    }
+
+    // ── P6: Envelope DSP tests ────────────────────────────────────────────────
+
+    #[test]
+    fn sampler_attack_nonzero_delays_onset() {
+        // With attack=0.1s, the first few samples should be quieter than with attack≈0.
+        let frames = 4096usize;
+
+        // Long attack
+        let mut s_slow = Sampler::new();
+        s_slow.set_node_id(1);
+        s_slow.bank.set(param_hash("attack"), 0.1);
+        load_test_sample(&mut s_slow, frames);
+        let buf_slow = run_sampler(&mut s_slow, &[make_note_on(60)]);
+
+        // Effectively-zero attack (1 sample at 44100 Hz)
+        let mut s_fast = Sampler::new();
+        s_fast.set_node_id(1);
+        s_fast.bank.set(param_hash("attack"), 0.001);
+        load_test_sample(&mut s_fast, frames);
+        let buf_fast = run_sampler(&mut s_fast, &[make_note_on(60)]);
+
+        // First sample: fast attack should be louder than slow attack.
+        assert!(buf_fast.channel(0)[0].abs() > buf_slow.channel(0)[0].abs(),
+            "slow attack should produce quieter onset than fast attack");
+    }
+
+    #[test]
+    fn sampler_release_nonzero_extends_tail_vs_zero() {
+        // Release shapes the envelope during playback. Use a long-enough sample
+        // (4096 frames) and a short attack (0.001s ≈ 44 samples at 44100 Hz) so
+        // the envelope enters Release quickly. Compare energy after several blocks.
+        //
+        // Slow release (0.5s): envelope stays near 1.0 during playback → high energy.
+        // Fast release (0.001s): envelope decays to near 0 quickly → low energy.
+        let frames = 4096usize;
+
+        // Slow release: after attack completes at ~44 samples, release=0.5s is slow.
+        let mut s_slow_rel = Sampler::new();
+        s_slow_rel.set_node_id(1);
+        s_slow_rel.bank.set(param_hash("attack"), 0.001);
+        s_slow_rel.bank.set(param_hash("release"), 0.5);
+        load_test_sample(&mut s_slow_rel, frames);
+        let _ = run_sampler(&mut s_slow_rel, &[make_note_on(60)]);
+        // After 5 more blocks (320 samples into Release), slow release is still active.
+        for _ in 0..4 { run_sampler(&mut s_slow_rel, &[]); }
+        let buf_slow = run_sampler(&mut s_slow_rel, &[]);
+        let energy_slow: f32 = buf_slow.channel(0).iter().map(|&x| x * x).sum();
+
+        // Fast release: after attack, release=0.001s ≈ 44 samples → decays very quickly.
+        let mut s_fast_rel = Sampler::new();
+        s_fast_rel.set_node_id(1);
+        s_fast_rel.bank.set(param_hash("attack"), 0.001);
+        s_fast_rel.bank.set(param_hash("release"), 0.001);
+        load_test_sample(&mut s_fast_rel, frames);
+        let _ = run_sampler(&mut s_fast_rel, &[make_note_on(60)]);
+        for _ in 0..4 { run_sampler(&mut s_fast_rel, &[]); }
+        let buf_fast = run_sampler(&mut s_fast_rel, &[]);
+        let energy_fast: f32 = buf_fast.channel(0).iter().map(|&x| x * x).sum();
+
+        assert!(energy_slow > energy_fast,
+            "slow release should have more energy than fast release after 5 blocks: slow={energy_slow:.6} fast={energy_fast:.6}");
+    }
+
+    #[test]
+    fn sampler_default_attack_0005_is_audibly_instantaneous() {
+        // Default attack = 0.005s = 220 samples at 44100 Hz.
+        // This is perceptually instant for drums. Verify output is non-zero early.
+        let mut s = Sampler::new();
+        s.set_node_id(1);
+        load_test_sample(&mut s, 4096);
+        let buf = run_sampler(&mut s, &[make_note_on(60)]);
+        // Samples beyond the attack period should be non-zero
+        let after_attack = &buf.channel(0)[30..]; // samples 30..64
+        assert!(after_attack.iter().any(|&x| x.abs() > 0.0),
+            "output should be non-zero after the very short default attack");
+    }
+
+    #[test]
+    fn sampler_rubato_pitch_up_12_semitones_produces_audio() {
+        // Pitch +12 semitones doubles the playback rate. Verify audio is produced.
+        let frames = 4096usize;
+        let mut s = Sampler::new();
+        s.set_node_id(1);
+        load_test_sample(&mut s, frames);
+        let bump = NodeCommand { target_id: 1, type_id: CMD_BUMP_PARAM, arg0: param_hash("pitch") as i64, arg1: 12.0 };
+        let _ = run_sampler_with_cmds(&mut s, &[], &[bump]);
+        let buf = run_sampler(&mut s, &[make_note_on(60)]);
+        assert!(buf.channel(0).iter().any(|&x| x.abs() > 0.0),
+            "pitch +12 should still produce audio");
+    }
+
+    // ── P6: Symphonia loading test ────────────────────────────────────────────
+
+    #[test]
+    fn sampler_symphonia_wav_loads_and_plays() {
+        // Write a minimal WAV file with a 440 Hz tone, load it via symphonia,
+        // verify the sample frames are populated and audio plays on NoteOn.
+        let tmp_path = std::env::temp_dir().join("paraclete_test_sample.wav");
+        write_minimal_wav(&tmp_path, 44100, 512);
+
+        let mut s = Sampler::with_path(tmp_path.to_str().unwrap());
+        s.activate(44100.0, 64);
+
+        assert!(s.sample_frames > 0,
+            "symphonia should load WAV; sample_frames={}", s.sample_frames);
+
+        let buf = run_sampler(&mut s, &[make_note_on(60)]);
+        assert!(buf.channel(0).iter().any(|&x| x.abs() > 0.0),
+            "should produce audio from loaded WAV");
+
+        let _ = std::fs::remove_file(&tmp_path);
+    }
+
+    fn write_minimal_wav(path: &std::path::Path, sample_rate: u32, frames: usize) {
+        // Write a minimal 16-bit mono WAV file with a 440 Hz tone.
+        let data_bytes = (frames * 2) as u32;
+        let mut buf = Vec::with_capacity(44 + data_bytes as usize);
+
+        // RIFF header
+        buf.extend_from_slice(b"RIFF");
+        buf.extend_from_slice(&(36 + data_bytes).to_le_bytes());
+        buf.extend_from_slice(b"WAVE");
+
+        // fmt chunk
+        buf.extend_from_slice(b"fmt ");
+        buf.extend_from_slice(&16u32.to_le_bytes()); // chunk size
+        buf.extend_from_slice(&1u16.to_le_bytes());  // PCM
+        buf.extend_from_slice(&1u16.to_le_bytes());  // mono
+        buf.extend_from_slice(&sample_rate.to_le_bytes());
+        buf.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
+        buf.extend_from_slice(&2u16.to_le_bytes());  // block align
+        buf.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+
+        // data chunk
+        buf.extend_from_slice(b"data");
+        buf.extend_from_slice(&data_bytes.to_le_bytes());
+        for i in 0..frames {
+            let v = (i as f32 * 440.0 / sample_rate as f32 * std::f32::consts::TAU).sin();
+            let s = (v * 16383.0) as i16;
+            buf.extend_from_slice(&s.to_le_bytes());
+        }
+
+        std::fs::write(path, buf).unwrap();
     }
 }

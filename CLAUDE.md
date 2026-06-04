@@ -184,12 +184,15 @@ The app hard-codes these IDs; profile scripts use them as injected constants:
 | 20–27 | `Sampler[0–7]` |
 | 30–37 | `DistortionNode[0–7]` |
 | 40–47 | `FilterNode[0–7]` |
-| 100 | `ScriptingGatewayNode` |
 | 101 | `LaunchpadEmulator` (fallback) |
 | 102 | `LaunchpadNode` |
 | 103 | `DigitaktMidiNode` |
 | 104 | `KeystepNode` |
 | 105 | `HardwareMappingNode` |
+| 110 | `ScriptingGatewayNode[LP]` (Launchpad or emulator gateway) |
+| 111 | `ScriptingGatewayNode[DT]` (Digitakt gateway, if connected) |
+| 112 | `ScriptingGatewayNode[KS]` (Keystep gateway, if connected) |
+| 200 | `ReverbNode` (master bus) |
 
 Constants injected per profile: `LP_DEVICE_ID`, `DT_DEVICE_ID`, `KS_DEVICE_ID`, `CLOCK_ID`, `TRACK_SEQ_IDS`, `TRACK_SAMP_IDS`, `TRACK_DIST_IDS`, `TRACK_FILT_IDS`.
 
@@ -256,6 +259,19 @@ All DSP algorithm implementations must be sourced from MIT/Apache-licensed code 
 
 Multi-track is a graph topology, not a node feature (ADR-016): 8 tracks = 8 `Sequencer` node instances connected in parallel to one `InternalClock`. Any hardware control can reach any parameter declared in `capability_document()` generically via `CMD_SET_PARAM`/`CMD_BUMP_PARAM` — type knowledge is not required (ADR-019).
 
+## Main Loop Sequence
+
+The app main loop (`paraclete-app/src/main.rs`) runs at ~1 ms intervals and must execute these steps in order each iteration:
+
+1. `conf.process_main_thread()` — drain state bus SPSC from audio thread; tick all `HardwareOutputHandle`s
+2. Drain per-device gateway SPSCs (`consumer_lp.drain()`, `consumer_dt.drain()`, `consumer_ks.drain()`) into a shared event buffer
+3. `scripting.dispatch_hardware_event(ev)` — dispatch each event to registered Rhai handlers
+4. `scripting.process_subscriptions(&bus)` — fire state bus subscription callbacks for changed paths
+5. `conf.send_command(cmd)` — flush `NodeCommand`s produced by scripts to the audio thread ring buffer
+6. `conf.deliver_script_output(led_output)` — route LED/output commands from scripts to hardware handles
+
+When adding a new hardware device, add a `ScriptingGatewayNode` for it (with its device ID) and drain its consumer in step 2. The gateway's `device_id` tags events so Rhai handlers can identify the source.
+
 ## Design Documents
 
 All design documents live in `design/`. Key documents:
@@ -279,5 +295,6 @@ All design documents live in `design/`. Key documents:
 - `design/phases/p4-report.md` — P4 implementation report: what shipped, node IDs, test coverage, deferred items, post-commit analysis
 - `design/phases/p5-interfaces.md` — P4.5 + P5 spec: foundation fixes + Sequencer v2, ReverbNode, DelayNode, SplitNode
 - `design/phases/p5-report.md` — P5 implementation report: what shipped, deviations, test counts
+- `design/phases/p6-interfaces.md` — P6 spec: synthesis primitive vocabulary, OscillatorNode, EnvelopeNode, LfoNode, LadderFilterNode, AnalogEngine (Kick/Snare/HiHat machines), FmEngine (Kick/Bell/Bass machines), Sampler audio quality (rubato + symphonia + envelope DSP); includes full DSP pseudocode and per-commit test lists
 - `design/review/` — post-phase code review reports (`p4-code-review.md`, `p4-fixes-review.md`, etc.)
 - `profiles/` — Rhai profile scripts loaded at startup (`launchpad.rhai`, `digitakt.rhai`, `keystep.rhai`, `launchpad_overview.rhai`). Constants `LP_DEVICE_ID`, `DT_DEVICE_ID`, `KS_DEVICE_ID`, `TRACK_SEQ_IDS`, etc. injected per profile.

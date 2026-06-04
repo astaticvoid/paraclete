@@ -1,5 +1,5 @@
 use crate::buffer::{
-    AudioBuffer, CvBuffer, LogicBuffer, ModBuffer, PhaseBuffer, PitchBuffer,
+    AudioBuffer, CvBuffer, PhaseBuffer, PitchBuffer,
 };
 use crate::command::NodeCommand;
 use crate::event::{ExtendedEventSlab, TimedEvent};
@@ -84,22 +84,36 @@ impl<'a> ProcessInput<'a> {
         SILENT.get_or_init(|| PhaseBuffer::new(0))
     }
 
-    /// Logic input for a connected port. **Not yet implemented (P5) — always returns silence.**
-    pub fn logic(&self, _port_id: u32) -> &LogicBuffer {
-        static SILENT: std::sync::OnceLock<LogicBuffer> = std::sync::OnceLock::new();
-        SILENT.get_or_init(|| LogicBuffer::new(0))
+    /// Logic (gate/trigger) input. Returns a block_size slice of 1.0/0.0 values.
+    /// Returns zeros if the port is unconnected (no `SignalInputSlot` with this id).
+    pub fn logic(&self, port_id: u32) -> &[f32] {
+        for slot in self.signal_inputs {
+            if slot.port_id == port_id && slot.kind == SignalPortKind::Logic {
+                // SAFETY: ptr is valid for the duration of this process() call.
+                return unsafe { std::slice::from_raw_parts(slot.ptr, slot.frames) };
+            }
+        }
+        static SILENCE: [f32; 4096] = [0.0; 4096];
+        &SILENCE[..self.block_size.min(4096)]
     }
 
-    /// Pitch input for a connected port. **Not yet implemented (P5) — always returns silence.**
+    /// Pitch input for a connected port. **Not yet wired in executor — always returns silence.**
     pub fn pitch(&self, _port_id: u32) -> &PitchBuffer {
         static SILENT: std::sync::OnceLock<PitchBuffer> = std::sync::OnceLock::new();
         SILENT.get_or_init(|| PitchBuffer::new(0))
     }
 
-    /// Modulation input for a connected port. **Not yet implemented (P5) — always returns silence.**
-    pub fn modulation(&self, _port_id: u32) -> &ModBuffer {
-        static SILENT: std::sync::OnceLock<ModBuffer> = std::sync::OnceLock::new();
-        SILENT.get_or_init(|| ModBuffer::new(0))
+    /// Modulation input. Returns a block_size slice of f32 values.
+    /// Returns zeros if the port is unconnected (no `SignalInputSlot` with this id).
+    pub fn modulation(&self, port_id: u32) -> &[f32] {
+        for slot in self.signal_inputs {
+            if slot.port_id == port_id && slot.kind == SignalPortKind::Modulation {
+                // SAFETY: ptr is valid for the duration of this process() call.
+                return unsafe { std::slice::from_raw_parts(slot.ptr, slot.frames) };
+            }
+        }
+        static SILENCE: [f32; 4096] = [0.0; 4096];
+        &SILENCE[..self.block_size.min(4096)]
     }
 }
 
@@ -123,29 +137,16 @@ impl<'a> ProcessOutput<'a> {
         panic!("no signal output with port_id {port_id}");
     }
 
-    /// **Not yet implemented (P5).**
-    pub fn cv_mut(&mut self, _port_id: u32) -> &mut CvBuffer {
-        unimplemented!("signal output views land at P5")
+    /// Write a Modulation port output. Returns a mutable slice of block_size values.
+    /// Panics in debug if port_id is not a registered Modulation output port.
+    pub fn mod_output_mut(&mut self, port_id: u32) -> &mut [f32] {
+        self.find_output(port_id, SignalPortKind::Modulation)
     }
 
-    /// **Not yet implemented (P5).**
-    pub fn phase_mut(&mut self, _port_id: u32) -> &mut PhaseBuffer {
-        unimplemented!("signal output views land at P5")
-    }
-
-    /// **Not yet implemented (P5).**
-    pub fn logic_mut(&mut self, _port_id: u32) -> &mut LogicBuffer {
-        unimplemented!("signal output views land at P5")
-    }
-
-    /// **Not yet implemented (P5).**
-    pub fn pitch_mut(&mut self, _port_id: u32) -> &mut PitchBuffer {
-        unimplemented!("signal output views land at P5")
-    }
-
-    /// **Not yet implemented (P5).**
-    pub fn modulation_mut(&mut self, _port_id: u32) -> &mut ModBuffer {
-        unimplemented!("signal output views land at P5")
+    /// Write a Logic port output. Returns a mutable slice of block_size values.
+    /// Panics in debug if port_id is not a registered Logic output port.
+    pub fn logic_output_mut(&mut self, port_id: u32) -> &mut [f32] {
+        self.find_output(port_id, SignalPortKind::Logic)
     }
 }
 
@@ -268,6 +269,41 @@ mod tests {
         };
         assert_eq!(input.audio_inputs.len(), 1);
         assert_eq!(input.block_size, 64);
+    }
+
+    #[test]
+    fn logic_input_unconnected_returns_zeros() {
+        let transport = TransportInfo::default();
+        let slab = ExtendedEventSlab::empty();
+        let input = ProcessInput {
+            audio_inputs: &[],
+            signal_inputs: &[],
+            events: &[],
+            transport: &transport,
+            sample_rate: 44100.0,
+            block_size: 64,
+            extended_events: &slab,
+            commands: &[],
+        };
+        let gate = input.logic(0);
+        assert_eq!(gate.len(), 64);
+        assert!(gate.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn mod_output_mut_returns_block_size_slice() {
+        let block = 64usize;
+        let mut out_buf = vec![0.0f32; block];
+        let mut events_out = EventOutputBuffer::new(16);
+        let mut out_slot = SignalOutputSlot::new(0, SignalPortKind::Modulation, &mut out_buf);
+        let mut sig_outs = [out_slot];
+        let mut output = ProcessOutput {
+            audio_outputs: &mut [],
+            signal_outputs: &mut sig_outs,
+            events_out: &mut events_out,
+        };
+        let slice = output.mod_output_mut(0);
+        assert_eq!(slice.len(), block);
     }
 
     #[test]

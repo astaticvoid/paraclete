@@ -1,11 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Paraclete L3 first-party nodes.
 
+pub mod analog_engine;
 pub mod delay;
 pub mod distortion;
+pub mod engine_dsp;
+pub mod envelope;
 pub mod filter;
+pub mod fm_engine;
 pub mod gateway;
 pub mod internal_clock;
+pub mod ladder;
+pub mod lfo;
 pub mod mapping;
 pub mod mix;
 pub mod oscillator;
@@ -15,14 +21,19 @@ pub mod sampler;
 pub mod sequencer;
 pub mod split;
 
+pub use analog_engine::{AnalogEngine, AnalogMachine};
 pub use delay::DelayNode;
 pub use distortion::DistortionNode;
+pub use envelope::EnvelopeNode;
 pub use filter::FilterNode;
+pub use fm_engine::{FmEngine, FmMachine};
 pub use gateway::{ScriptingGatewayNode, ScriptEventConsumer};
 pub use internal_clock::InternalClock;
+pub use ladder::LadderFilterNode;
+pub use lfo::LfoNode;
 pub use mapping::HardwareMappingNode;
 pub use mix::MixNode;
-pub use oscillator::{SineOscillator, midi_note_to_hz};
+pub use oscillator::{OscillatorNode, SineOscillator, midi_note_to_hz};
 pub use pattern::{apply_preset, TrackPreset, TRACKS};
 pub use reverb::ReverbNode;
 pub use sampler::Sampler;

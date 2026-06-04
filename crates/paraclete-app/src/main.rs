@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Paraclete — P5 entry point.
+//! Paraclete — P6 entry point.
 //!
 //! Graph:
 //!   InternalClock
-//!     ├──→ Sequencer[0..7] → Sampler[0..7] → Distortion[0..7] → Filter[0..7] ──┐
-//!     └─────────────────────────────────────────────────────────────────────────→ MixNode → ReverbNode → AudioOutput
+//!     ├──→ Sequencer[0] (Kick)  → AnalogEngine::kick()  → Distortion[0] → Filter[0] ──┐
+//!     ├──→ Sequencer[1] (Snare) → AnalogEngine::snare() → Distortion[1] → Filter[1] ──┤
+//!     ├──→ Sequencer[2] (HiHat) → AnalogEngine::hihat() → Distortion[2] → Filter[2] ──┤
+//!     ├──→ Sequencer[3..6]      → Sampler[3..6]         → Distortion    → Filter    ──┼→ MixNode → ReverbNode → AudioOutput
+//!     └──→ Sequencer[7] (Bass)  → FmEngine::bass()      → Distortion[7] → Filter[7] ──┘
 //!   LaunchpadNode (or emulator) ──→ ScriptingGatewayNode[LP] ──┐
 //!   DigitaktMidiNode             ──→ ScriptingGatewayNode[DT] ──┼──→ ScriptingEngine
 //!   KeystepNode                  ──→ ScriptingGatewayNode[KS] ──┘
-//!   KeystepNode → HardwareMappingNode → Sequencer[7] (bass)
+//!   KeystepNode → HardwareMappingNode → Sequencer[7] (FmBass melodic input)
 //!
-//! Audio topology: the executor sums all audio_out buffers. MixNode provides the
-//! dry mix; ReverbNode (dry=0.0, wet=0.3) adds a wet reverb tail. Combined output
-//! is the natural send/return of the graph's additive summation.
+//! Audio topology: executor sums all audio_out buffers. MixNode provides the dry mix;
+//! ReverbNode (wet=0.3) adds a reverb tail.
 //!
 //! Hardware is opened gracefully — missing devices fall back silently.
 //! Run with --dev-ui to enable state bus monitoring to stderr.
@@ -22,7 +24,7 @@ use std::time::Duration;
 
 use paraclete_hal::{AudioBackend, DigitaktMidiNode, KeystepNode, LaunchpadEmulator, LaunchpadNode};
 use paraclete_nodes::{
-    DistortionNode, FilterNode, HardwareMappingNode, InternalClock,
+    AnalogEngine, DistortionNode, FilterNode, FmEngine, HardwareMappingNode, InternalClock,
     MixNode, ReverbNode, Sampler, ScriptEventConsumer, ScriptingGatewayNode, Sequencer, TRACKS,
 };
 use paraclete_runtime::NodeConfigurator;
@@ -80,28 +82,62 @@ fn main() {
     // AudioOutput is handled by the HAL — not a graph node at P5.
     // The executor sums all audio outputs into the HAL buffer.
 
-    // 8 track chains — initial pattern from pattern::TRACKS
+    // 8 track chains — synthesis engines for tracks 0-2 and 7; Sampler for 3-6.
     for i in 0..NUM_TRACKS {
         let preset = &TRACKS[i];
-        let mut seq = Sequencer::with_name(preset.name);
-        // Preset disabled at startup — use LP pads to build your own pattern.
-        // Uncomment apply_preset to restore the default pattern:
-        // apply_preset(&mut seq, preset);
+        let seq = Sequencer::with_name(preset.name);
+
         conf.add_node(seq_id(i),  Box::new(seq));
-        conf.add_node(samp_id(i), Box::new(Sampler::with_path(&format!("samples/track{}.wav", i))));
         conf.add_node(dist_id(i), Box::new(DistortionNode::new()));
         conf.add_node(filt_id(i), Box::new(FilterNode::new()));
 
-        conf.connect(ID_CLOCK,    InternalClock::PORT_CLOCK_OUT,
-                     seq_id(i),   Sequencer::PORT_CLOCK_IN).expect("clock→seq");
-        conf.connect(seq_id(i),   Sequencer::PORT_EVENTS_OUT,
-                     samp_id(i),  Sampler::PORT_EVENTS_IN).expect("seq→samp");
-        conf.connect(samp_id(i),  Sampler::PORT_AUDIO_OUT_L,
-                     dist_id(i),  DistortionNode::PORT_AUDIO_IN).expect("samp→dist");
-        conf.connect(dist_id(i),  DistortionNode::PORT_AUDIO_OUT,
-                     filt_id(i),  FilterNode::PORT_AUDIO_IN).expect("dist→filt");
-        conf.connect(filt_id(i),  FilterNode::PORT_AUDIO_OUT,
-                     ID_MIX,      i as u32).expect("filt→mix");
+        // Synthesis engine selection:
+        //   0 = AnalogEngine::kick()   1 = AnalogEngine::snare()
+        //   2 = AnalogEngine::hihat()  3-6 = Sampler   7 = FmEngine::bass()
+        let events_in_port: u32;
+        let audio_out_port: u32;
+        match i {
+            0 => {
+                let eng = AnalogEngine::kick();
+                events_in_port = AnalogEngine::PORT_EVENTS_IN;
+                audio_out_port = AnalogEngine::PORT_AUDIO_OUT_L;
+                conf.add_node(samp_id(i), Box::new(eng));
+            }
+            1 => {
+                let eng = AnalogEngine::snare();
+                events_in_port = AnalogEngine::PORT_EVENTS_IN;
+                audio_out_port = AnalogEngine::PORT_AUDIO_OUT_L;
+                conf.add_node(samp_id(i), Box::new(eng));
+            }
+            2 => {
+                let eng = AnalogEngine::hihat();
+                events_in_port = AnalogEngine::PORT_EVENTS_IN;
+                audio_out_port = AnalogEngine::PORT_AUDIO_OUT_L;
+                conf.add_node(samp_id(i), Box::new(eng));
+            }
+            7 => {
+                let eng = FmEngine::bass();
+                events_in_port = FmEngine::PORT_EVENTS_IN;
+                audio_out_port = FmEngine::PORT_AUDIO_OUT_L;
+                conf.add_node(samp_id(i), Box::new(eng));
+            }
+            _ => {
+                events_in_port = Sampler::PORT_EVENTS_IN;
+                audio_out_port = Sampler::PORT_AUDIO_OUT_L;
+                conf.add_node(samp_id(i), Box::new(Sampler::with_path(&format!("samples/track{i}.wav"))));
+            }
+        }
+
+        conf.connect(ID_CLOCK,   InternalClock::PORT_CLOCK_OUT,
+                     seq_id(i),  Sequencer::PORT_CLOCK_IN).expect("clock→seq");
+        conf.connect(seq_id(i),  Sequencer::PORT_EVENTS_OUT,
+                     samp_id(i), events_in_port).expect("seq→engine");
+        conf.connect(samp_id(i), audio_out_port,
+                     dist_id(i), DistortionNode::PORT_AUDIO_IN).expect("engine→dist");
+        conf.connect(dist_id(i), DistortionNode::PORT_AUDIO_OUT,
+                     filt_id(i), FilterNode::PORT_AUDIO_IN).expect("dist→filt");
+        conf.connect(filt_id(i), FilterNode::PORT_AUDIO_OUT,
+                     ID_MIX,     i as u32).expect("filt→mix");
     }
 
     // Wire MixNode → ReverbNode (master bus reverb send).
@@ -178,7 +214,7 @@ fn main() {
 
     // ── Build executor and start audio ────────────────────────────────────────
     let executor = conf.build_executor();
-    eprintln!("[paraclete] graph built — {NUM_TRACKS} tracks at {BPM} BPM + reverb on master bus");
+    eprintln!("[paraclete] P6 graph built — kick/snare/hihat=AnalogEngine, bass=FmEngine, {NUM_TRACKS} tracks at {BPM} BPM");
 
     let _audio = match AudioBackend::start(executor) {
         Ok(b) => {

@@ -25,13 +25,15 @@ paraclete-hal       = { path = "crates/paraclete-hal" }
 paraclete-nodes     = { path = "crates/paraclete-nodes" }
 paraclete-scripting = { path = "crates/paraclete-scripting" }
 
-cpal     = "0.15"
-rhai     = "1"
-rtrb     = "0.3"
-hound    = "3.5"
-petgraph = "0.6"
-log      = "0.4"
-midi2    = "0.11"
-midir    = "0.9"
-ctrlc    = "3"
-fastrand = "2"
+cpal      = "0.15"
+rhai      = "1"
+rtrb      = "0.3"
+hound     = "3.5"
+petgraph  = "0.6"
+log       = "0.4"
+midi2     = "0.11"
+midir     = "0.9"
+ctrlc     = "3"
+fastrand  = "2"
+rubato    = "0.15"
+symphonia = { version = "0.5", features = ["all"] }
