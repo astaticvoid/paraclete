@@ -9,6 +9,7 @@ pub mod mapping;
 pub mod mix;
 pub mod oscillator;
 pub mod pattern;
+pub mod reverb;
 pub mod sampler;
 pub mod sequencer;
 
@@ -20,6 +21,7 @@ pub use mapping::HardwareMappingNode;
 pub use mix::MixNode;
 pub use oscillator::{SineOscillator, midi_note_to_hz};
 pub use pattern::{apply_preset, TrackPreset, TRACKS};
+pub use reverb::ReverbNode;
 pub use sampler::Sampler;
 pub use sequencer::{Sequencer, Step, StepParamLock};
 
