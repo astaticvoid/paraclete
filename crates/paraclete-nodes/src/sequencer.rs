@@ -167,6 +167,12 @@ pub struct Sequencer {
 
     group: u8,
     channel: u8,
+
+    cycle_state:    SequencerCycleState,
+    rng:            fastrand::Rng,
+    active_pattern: u8,
+    swing_amount:   f32,
+    sample_rate:    f32,
 }
 
 impl Sequencer {
@@ -175,9 +181,14 @@ impl Sequencer {
     pub const PORT_EVENTS_OUT: u32 = 2;
 
     /// Universal NodeCommand type IDs (node-specific, ≥ 16).
-    pub const CMD_TOGGLE_STEP: u32 = 16;
-    pub const CMD_SET_STEP:    u32 = 17;
-    pub const CMD_CLEAR:       u32 = 18;
+    pub const CMD_TOGGLE_STEP:        u32 = 16;
+    pub const CMD_SET_STEP:           u32 = 17;
+    pub const CMD_CLEAR:              u32 = 18;
+    pub const CMD_SET_FILL_A:         u32 = 23;
+    pub const CMD_SET_FILL_B:         u32 = 24;
+    pub const CMD_SET_STEP_TIMING:    u32 = 25;
+    pub const CMD_SET_STEP_CONDITION: u32 = 26;
+    pub const CMD_SET_PATTERN:        u32 = 27;
 
     pub fn new() -> Self {
         Self::with_name("")
@@ -205,6 +216,11 @@ impl Sequencer {
             bank: ParameterBank::empty(),
             group: 0,
             channel: 0,
+            cycle_state:    SequencerCycleState::default(),
+            rng:            fastrand::Rng::new(),
+            active_pattern: 0,
+            swing_amount:   0.0,
+            sample_rate:    44100.0,
         }
     }
 
@@ -252,12 +268,56 @@ impl Sequencer {
                         step.active = false;
                     }
                 }
+                Self::CMD_SET_FILL_A => {
+                    self.cycle_state.fill_a = cmd.arg0 != 0;
+                }
+                Self::CMD_SET_FILL_B => {
+                    self.cycle_state.fill_b = cmd.arg0 != 0;
+                }
+                Self::CMD_SET_STEP_TIMING => {
+                    let idx = cmd.arg0 as usize;
+                    if idx < self.steps.len() {
+                        self.steps[idx].timing.micro_offset = cmd.arg1 as i8;
+                    }
+                }
+                Self::CMD_SET_STEP_CONDITION => {
+                    let idx = cmd.arg0 as usize;
+                    if idx < self.steps.len() {
+                        let enc = cmd.arg1 as i64 as u64;
+                        let probability = (enc & 0xFF) as u8;
+                        let repeat_n    = ((enc >> 8) & 0xFF) as u8;
+                        let repeat_m    = ((enc >> 16) & 0xFF) as u8;
+                        let fill_disc   = ((enc >> 24) & 0xFF) as u8;
+
+                        let repeat = if repeat_n == 0 || repeat_m == 0 {
+                            RepeatCondition::Always
+                        } else {
+                            RepeatCondition::NthOfM { n: repeat_n, m: repeat_m }
+                        };
+                        let fill = match fill_disc {
+                            1 => FillCondition::FillA,
+                            2 => FillCondition::FillB,
+                            3 => FillCondition::FillAny,
+                            4 => FillCondition::NoFill,
+                            5 => FillCondition::NotFillA,
+                            6 => FillCondition::NotFillB,
+                            _ => FillCondition::Ignore,
+                        };
+                        self.steps[idx].condition = TrigCondition::Simple { repeat, fill, probability };
+                    }
+                }
+                Self::CMD_SET_PATTERN => {
+                    self.active_pattern = cmd.arg0 as u8;
+                    // stub: pattern bank not implemented until P6; always plays pattern 0
+                }
                 _ => {}
             }
         }
     }
 
     fn handle_transport(&mut self, k: &TransportEvent, sample_offset: u32, output: &mut ProcessOutput) {
+        let spb = 60.0 * self.sample_rate as f64 / k.bpm.max(1.0);
+
         if k.flags.sync_pulse {
             let bars_elapsed = (k.bar - 1).max(0) as u64;
             let total_ticks  = bars_elapsed * k.time_sig_num as u64 * TICKS_PER_BEAT as u64
@@ -273,21 +333,26 @@ impl Sequencer {
             // is entered via snap rather than via the normal boundary code path,
             // so emit_note_on is never called for it.
             if new_tick == 0 && self.playing && k.flags.playing {
-                let active = self.steps[self.current_step].active;
-                if active {
-                    if self.gate_open {
-                        self.emit_note_off(sample_offset, output);
-                    }
-                    self.emit_note_on(sample_offset, output);
-                    for lock in &self.steps[self.current_step].param_locks {
-                        output.events_out.push(TimedEvent::new(
-                            sample_offset,
-                            Event::ParamLock(ParamLockEvent {
-                                node_id:  lock.node_id,
-                                param_id: lock.param_id,
-                                value:    lock.value,
-                            }),
-                        ));
+                let step_active = self.steps[self.current_step].active;
+                if step_active {
+                    let cond = self.steps[self.current_step].condition.clone();
+                    let should_fire = cond.evaluate(&self.cycle_state, &mut self.rng);
+                    if should_fire {
+                        let note_off = sample_offset + self.step_sample_offset(self.current_step, spb);
+                        if self.gate_open {
+                            self.emit_note_off(sample_offset, output);
+                        }
+                        self.emit_note_on(note_off, output);
+                        for lock in &self.steps[self.current_step].param_locks {
+                            output.events_out.push(TimedEvent::new(
+                                note_off,
+                                Event::ParamLock(ParamLockEvent {
+                                    node_id:  lock.node_id,
+                                    param_id: lock.param_id,
+                                    value:    lock.value,
+                                }),
+                            ));
+                        }
                     }
                 }
             }
@@ -319,21 +384,32 @@ impl Sequencer {
         }
 
         if self.step_tick >= self.ticks_per_step {
+            let prev_step = self.current_step;
             self.step_tick    = 0;
             self.current_step = (self.current_step + 1) % self.pattern_length;
 
-            let active = self.steps[self.current_step].active;
-            if active {
-                self.emit_note_on(sample_offset, output);
-                for lock in &self.steps[self.current_step].param_locks {
-                    output.events_out.push(TimedEvent::new(
-                        sample_offset,
-                        Event::ParamLock(ParamLockEvent {
-                            node_id:  lock.node_id,
-                            param_id: lock.param_id,
-                            value:    lock.value,
-                        }),
-                    ));
+            // Increment loop_count each time the pattern wraps.
+            if self.current_step == 0 && prev_step == self.pattern_length - 1 {
+                self.cycle_state.loop_count = self.cycle_state.loop_count.wrapping_add(1);
+            }
+
+            let step_active = self.steps[self.current_step].active;
+            if step_active {
+                let cond = self.steps[self.current_step].condition.clone();
+                let should_fire = cond.evaluate(&self.cycle_state, &mut self.rng);
+                if should_fire {
+                    let note_off = sample_offset + self.step_sample_offset(self.current_step, spb);
+                    self.emit_note_on(note_off, output);
+                    for lock in &self.steps[self.current_step].param_locks {
+                        output.events_out.push(TimedEvent::new(
+                            note_off,
+                            Event::ParamLock(ParamLockEvent {
+                                node_id:  lock.node_id,
+                                param_id: lock.param_id,
+                                value:    lock.value,
+                            }),
+                        ));
+                    }
                 }
             }
         } else {
@@ -360,6 +436,17 @@ impl Sequencer {
             Event::Midi2(build_note_off(self.group, self.channel, self.active_note)),
         ));
     }
+
+    /// Compute the sample offset for a step, combining micro-timing and swing.
+    fn step_sample_offset(&self, step_idx: usize, samples_per_beat: f64) -> u32 {
+        let micro = self.steps[step_idx].timing.to_sample_offset(samples_per_beat);
+        let swing = if step_idx % 2 == 1 {
+            (self.swing_amount as f64 * samples_per_beat) as u32
+        } else {
+            0
+        };
+        micro + swing
+    }
 }
 
 impl Default for Sequencer {
@@ -377,7 +464,7 @@ impl Node for Sequencer {
         CapabilityDocument {
             name: "Sequencer",
             vendor: "Paraclete",
-            version: (0, 4, 0),
+            version: (0, 5, 0),
             ports: self.ports.to_vec(),
             params: vec![
                 ParamDescriptor {
@@ -392,17 +479,26 @@ impl Node for Sequencer {
                     min: 60.0, max: 3840.0, default: 240.0,
                     stepped: true, unit: ParamUnit::Generic, display: None,
                 },
+                ParamDescriptor {
+                    id: ParamDescriptor::id_for_name("swing"),
+                    name: "swing".into(),
+                    min: 0.0, max: 0.5, default: 0.0,
+                    stepped: false, unit: ParamUnit::Generic, display: None,
+                },
             ],
             extensions: vec!["paraclete.sequencer"],
         }
     }
 
-    fn activate(&mut self, _sr: f32, _block: usize) {
+    fn activate(&mut self, sr: f32, _block: usize) {
+        self.sample_rate = sr;
+        self.rng = fastrand::Rng::new();
         self.bank = ParameterBank::from_capability_document(&self.capability_document());
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
         self.handle_commands(input.commands);
+        self.swing_amount = self.bank.get(ParamDescriptor::id_for_name("swing")) as f32;
 
         for timed in input.events {
             match timed.event {
@@ -416,17 +512,21 @@ impl Node for Sequencer {
     }
 
     fn published_state(&self) -> Vec<(String, StateBusValue)> {
+        let id = self.node_id;
         let mut state = vec![
-            (format!("/node/{}/state/current_step",   self.node_id), StateBusValue::Int(self.current_step as i64)),
-            (format!("/node/{}/state/pattern_length", self.node_id), StateBusValue::Int(self.pattern_length as i64)),
-            (format!("/node/{}/state/playing",        self.node_id), StateBusValue::Bool(self.playing)),
-            (format!("/node/{}/state/steps",          self.node_id), StateBusValue::Text(self.steps_bitfield())),
-            (format!("/node/{}/state/last_trig",      self.node_id), StateBusValue::Int(self.trig_count as i64)),
-            (format!("/node/{}/state/last_fired_step", self.node_id), StateBusValue::Int(self.last_fired_step as i64)),
+            (format!("/node/{id}/state/current_step"),   StateBusValue::Int(self.current_step as i64)),
+            (format!("/node/{id}/state/pattern_length"), StateBusValue::Int(self.pattern_length as i64)),
+            (format!("/node/{id}/state/playing"),        StateBusValue::Bool(self.playing)),
+            (format!("/node/{id}/state/steps"),          StateBusValue::Text(self.steps_bitfield())),
+            (format!("/node/{id}/state/last_trig"),      StateBusValue::Int(self.trig_count as i64)),
+            (format!("/node/{id}/state/last_fired_step"), StateBusValue::Int(self.last_fired_step as i64)),
+            (format!("/node/{id}/state/loop_count"),     StateBusValue::Int(self.cycle_state.loop_count as i64)),
+            (format!("/node/{id}/state/fill_a"),         StateBusValue::Float(if self.cycle_state.fill_a { 1.0 } else { 0.0 })),
+            (format!("/node/{id}/state/fill_b"),         StateBusValue::Float(if self.cycle_state.fill_b { 1.0 } else { 0.0 })),
         ];
         if !self.track_name.is_empty() {
             state.push((
-                format!("/node/{}/state/track_name", self.node_id),
+                format!("/node/{id}/state/track_name"),
                 StateBusValue::Text(self.track_name.clone()),
             ));
         }
@@ -679,6 +779,141 @@ mod tests {
 
         assert!(fired_at_sync || fired_before_sync,
             "step 0 must fire: either via normal boundary before sync or via sync_pulse at bar boundary");
+    }
+
+    // ── Runtime command tests (Commit 7) ─────────────────────────────────────
+
+    #[test]
+    fn sequencer_cmd_set_fill_a_updates_cycle_state() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        assert!(!seq.cycle_state.fill_a);
+        run_seq_with_cmds(&mut seq, &[NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_FILL_A, arg0: 1, arg1: 0.0 }]);
+        assert!(seq.cycle_state.fill_a);
+        run_seq_with_cmds(&mut seq, &[NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_FILL_A, arg0: 0, arg1: 0.0 }]);
+        assert!(!seq.cycle_state.fill_a);
+    }
+
+    #[test]
+    fn sequencer_cmd_set_fill_b_updates_cycle_state() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_FILL_B, arg0: 1, arg1: 0.0 }]);
+        assert!(seq.cycle_state.fill_b);
+    }
+
+    #[test]
+    fn sequencer_cmd_set_step_timing_updates_micro_offset() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_STEP_TIMING, arg0: 3, arg1: 12.0 }]);
+        assert_eq!(seq.steps[3].timing.micro_offset, 12i8);
+    }
+
+    #[test]
+    fn sequencer_cmd_set_step_condition_encodes_correctly() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        // probability=75, repeat_n=1, repeat_m=2, fill=Ignore(0)
+        let enc: i64 = 75 | (1 << 8) | (2 << 16) | (0i64 << 24);
+        run_seq_with_cmds(&mut seq, &[NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_STEP_CONDITION, arg0: 5, arg1: enc as f64 }]);
+        assert!(matches!(&seq.steps[5].condition, TrigCondition::Simple {
+            repeat: RepeatCondition::NthOfM { n: 1, m: 2 },
+            fill:   FillCondition::Ignore,
+            probability: 75,
+        }));
+    }
+
+    #[test]
+    fn sequencer_cmd_set_pattern_is_stubbed() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_PATTERN, arg0: 3, arg1: 0.0 }]);
+        assert_eq!(seq.active_pattern, 3); // stored but has no playback effect
+    }
+
+    #[test]
+    fn sequencer_loop_count_increments_on_pattern_wrap() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        let tps = TICKS_PER_BEAT / 4;  // 240 ticks per step
+        // Known off-by-one: each step takes tps+1 ticks (the transport start model
+        // costs one extra tick at startup). One full 16-step pattern = 16*(tps+1).
+        let wrap_tick = 16 * (tps + 1);
+
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        assert_eq!(seq.cycle_state.loop_count, 0);
+
+        for t in 1..=wrap_tick {
+            run_seq(&mut seq, &[transport_tick(t, true, false, false, false)]);
+        }
+        assert_eq!(seq.cycle_state.loop_count, 1, "loop_count must increment after one full pattern");
+    }
+
+    #[test]
+    fn sequencer_published_state_includes_loop_count_and_fills() {
+        let mut seq = Sequencer::new();
+        seq.set_node_id(7);
+        seq.activate(44100.0, 64);
+        seq.cycle_state.loop_count = 5;
+        seq.cycle_state.fill_a = true;
+        let state = seq.published_state();
+
+        let lc = state.iter().find(|(k, _)| k.ends_with("/state/loop_count"));
+        assert!(matches!(lc, Some((_, StateBusValue::Int(5)))));
+
+        let fa = state.iter().find(|(k, _)| k.ends_with("/state/fill_a"));
+        assert!(matches!(fa, Some((_, StateBusValue::Float(v))) if *v == 1.0));
+
+        let fb = state.iter().find(|(k, _)| k.ends_with("/state/fill_b"));
+        assert!(matches!(fb, Some((_, StateBusValue::Float(v))) if *v == 0.0));
+    }
+
+    #[test]
+    fn sequencer_swing_param_in_capability_document() {
+        let seq = Sequencer::new();
+        let doc = seq.capability_document();
+        let swing_id = ParamDescriptor::id_for_name("swing");
+        let swing = doc.params.iter().find(|p| p.id == swing_id);
+        assert!(swing.is_some(), "swing param must be declared in capability_document");
+        assert_eq!(swing.unwrap().default, 0.0);
+        assert_eq!(swing.unwrap().max, 0.5);
+    }
+
+    #[test]
+    fn sequencer_swing_nonzero_shifts_odd_step_sample_offset() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.swing_amount = 0.25;
+        let spb = 60.0 * 44100.0f64 / 140.0;
+        assert_eq!(seq.step_sample_offset(0, spb), 0,  "even step: no swing");
+        assert!(seq.step_sample_offset(1, spb) > 0,    "odd step: swing pushes forward");
+    }
+
+    #[test]
+    fn sequencer_fill_condition_blocks_trig_when_fill_inactive() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        // Step 1 fires only when fill A is active
+        seq.steps[1].active = true;
+        seq.steps[1].condition = TrigCondition::Simple {
+            repeat:      RepeatCondition::Always,
+            fill:        FillCondition::FillA,
+            probability: 100,
+        };
+        seq.cycle_state.fill_a = false;
+
+        // Advance to step 1 boundary
+        let tps = TICKS_PER_BEAT / 4;
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        let mut fired = false;
+        for t in 1..=tps {
+            let events = run_seq(&mut seq, &[transport_tick(t, true, false, false, false)]);
+            if events.iter().any(|e| matches!(e, Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_))))) {
+                fired = true;
+            }
+        }
+        assert!(!fired, "step with FillA condition must not fire when fill_a is false");
     }
 
     #[test]
