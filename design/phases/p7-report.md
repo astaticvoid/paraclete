@@ -1,7 +1,7 @@
 Paraclete — P7 Implementation Report
 =====================================
 Date: June 2026
-Status: In progress — 307 tests, 0 failures (after Commit 4)
+Status: In progress — 310 tests, 0 failures (after Commit 5)
 
 Commits:
   de1db04  Paraclete P7 Commit 1 — type_name() + published_state() push-down (OQ-9)
@@ -372,17 +372,75 @@ Tests after: 307 (+8 from Commit 3)
     paraclete-runtime/tests/runtime_integration.rs (+1):
       transport_override_event_delivered_to_nodes
 
-    paraclete-runtime/tests/runtime_integration.rs (+1):
-      transport_override_event_delivered_to_nodes
+
+Commit 5 — SingleNodePlugin (paraclete-clap)
+Tests after: 310 (+3 from Commit 4)
+
+  process_input.rs — make_process_input() helper
+
+    Constructs a ProcessInput for a MIDI-effect node (no audio inputs).
+    Takes transport, events, commands, slab, sample_rate, block_size.
+    Used by SingleNodePlugin::process_block() and by the CLAP FFI callbacks
+    that will be added in Commit 6.
+
+  single_node.rs — SingleNodePlugin
+
+    Struct: node: Box<dyn Node>, bridge: ClapParamBridge, sample_rate,
+    block_size, events_out: EventOutputBuffer(256).
+
+    Safe API:
+      new(node)                    — wraps any Node; bridge starts empty
+      activate(sr, bs)             — activates node + rebuilds param bridge
+      deactivate()                 — delegates to node.deactivate()
+      process_block(transport, events, commands) → Vec<TimedEvent>
+                                   — runs one block; returns output events
+      state_save() → Vec<u8>       — delegates to node.serialize()
+      state_load(&[u8])            — delegates to node.deserialize()
+      bridge() → &ClapParamBridge  — exposes bridge for params extension
+
+    audio_outputs is an empty slice (`&mut []`) for MIDI-effect use.
+    The CLAP FFI callbacks and binary entry point are added in Commit 6
+    when clap-sys is introduced.
+
+    state_load() before activate(): CLAP hosts call load() between
+    deactivate() and activate() during session restore. For Sequencer this
+    is safe: deserialize() sets self.steps directly; activate() only resets
+    self.bank and self.rng (not self.steps), so the loaded steps survive.
+
+  bridge.rs — ClapParamBridge::empty()
+
+    Added empty() constructor returning a zero-entry bridge. Used in
+    SingleNodePlugin::new() before the capability document is available.
+
+  src/bin/sequencer.rs — stub binary
+
+    Placeholder binary target establishing the module structure.
+    The CLAP FFI entry point and cdylib build target are added in Commit 6.
+
+  tests/clap_validator.rs — ignored CI test
+
+    Tagged #[ignore] so it does not block cargo test runs. Validates the
+    Sequencer .clap binary with clap-validator when run explicitly:
+      cargo test --test clap_validator -- --ignored
+
+  Code review findings
+
+    Finding (DEFERRED): Sequencer::serialize() does not save the swing
+    bank parameter. A round-trip through state_save()/state_load()/activate()
+    silently loses any non-zero swing value (activate() resets the bank to
+    defaults). Pre-existing issue (same class as TrigCondition/StepTiming
+    noted in p6-report.md). Fixing requires bumping the serialize version
+    and an activate() change to re-apply saved bank params; deferred to P7.5.
+
+  Tests added (+3, all in paraclete-clap/tests/single_node_tests.rs)
+
+    single_node_plugin_init_activate_deactivate_no_panic
+    single_node_plugin_process_passes_transport_to_node
+    single_node_plugin_state_roundtrip
 
 
 PENDING
 -------
-
-Commit 5 — SingleNodePlugin (paraclete-clap)
-  Target: ~307 tests
-
-  (to be filled when Commit 5 lands)
 
 Commit 6 — SubgraphPlugin + machine bank binaries (paraclete-clap)
   Target: ~313 tests

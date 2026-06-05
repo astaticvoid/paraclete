@@ -25,6 +25,11 @@ pub struct ClapParamEntry {
 }
 
 impl ClapParamBridge {
+    /// Empty bridge — no parameters. Used before the capability document is known.
+    pub fn empty() -> Self {
+        ClapParamBridge { entries: vec![] }
+    }
+
     /// Build from a node's capability document.
     /// CLAP IDs are assigned sequentially (0, 1, 2, …) in parameter declaration order.
     pub fn from_capability_document(doc: &CapabilityDocument) -> Self {

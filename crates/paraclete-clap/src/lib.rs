@@ -7,6 +7,8 @@
 pub mod bridge;
 pub mod transport;
 
+pub use single_node::SingleNodePlugin;
+
 pub(crate) mod plugin;
 pub(crate) mod process_input;
 pub(crate) mod single_node;
