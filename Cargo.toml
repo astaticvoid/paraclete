@@ -8,6 +8,7 @@ members = [
     "crates/paraclete-nodes",
     "crates/paraclete-scripting",
     "crates/paraclete-app",
+    "crates/paraclete-clap",
     "tools/gen-samples",
     "tools/lpx-debug",
 ]

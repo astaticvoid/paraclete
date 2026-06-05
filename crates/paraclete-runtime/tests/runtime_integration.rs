@@ -6,7 +6,7 @@ use paraclete_node_api::{
     CapabilityDocument, ConnectionAgreement, ConnectionRecord, Event, HardwareDevice,
     HardwareEvent, HardwareOutput, HardwareOutputHandle, StateBusValue, Node,
     ParamLockEvent, PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput,
-    SurfaceDescriptor, TimedEvent,
+    SurfaceDescriptor, TimedEvent, TransportEvent, TransportFlags, TransportInfo,
 };
 use paraclete_runtime::{ConfigMessage, NodeConfigurator};
 
@@ -838,4 +838,35 @@ fn published_state_push_down_no_allocation_after_first_cycle() {
         cap_after_first, cap_after_second,
         "state_buf capacity must be stable after the first cycle (no reallocation)"
     );
+}
+
+/// Regression: transport override events must survive the incoming.clear() call.
+/// The executor clears all incoming queues early in process(); if override events are
+/// injected before that clear, nodes never see them. This test verifies the event
+/// reaches a downstream node.
+#[test]
+fn transport_override_event_delivered_to_nodes() {
+    let received = Arc::new(Mutex::new(vec![]));
+
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+    conf.add_node(1, Box::new(EventCapturingNode::new(received.clone(), PortDirection::Input)));
+    let mut exec = conf.build_executor();
+
+    let info = TransportInfo { playing: true, bpm: 130.0, ..TransportInfo::default() };
+    let event = TransportEvent {
+        domain_id: 0, bar: 1, beat: 0, tick: 0,
+        ticks_per_beat: paraclete_node_api::TICKS_PER_BEAT,
+        bpm: 130.0, time_sig_num: 4, time_sig_den: 4,
+        flags: TransportFlags { global_start: true, ..TransportFlags::default() },
+    };
+    exec.set_transport_override(info, Some(event));
+
+    let mut out = vec![0.0f32; 64 * 2];
+    exec.process(&mut out, 2);
+
+    let guard = received.lock().unwrap();
+    let found = guard.iter().any(|e| {
+        matches!(e, Event::Transport(te) if te.flags.global_start)
+    });
+    assert!(found, "set_transport_override event must reach nodes (not be cleared by incoming.clear())");
 }

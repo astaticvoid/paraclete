@@ -4,7 +4,7 @@ use paraclete_node_api::{
     AudioBuffer, Control, Event, EventOutputBuffer, HardwareOutput, ExtendedEventSlab,
     NodeCommand, ProcessInput, ProcessOutput, StateBusValue,
     SignalInputSlot, SignalOutputSlot, SignalPortKind,
-    TransportInfo, TimedEvent,
+    TransportInfo, TransportEvent, TimedEvent,
 };
 
 use crate::configurator::NodeOrDevice;
@@ -57,6 +57,13 @@ pub struct NodeExecutor {
     /// reallocates again. One SPSC-ownership-transfer allocation per cycle is
     /// unavoidable with the current protocol; a return channel would eliminate it.
     agg_state_buf: Vec<(String, StateBusValue)>,
+
+    /// DAW-provided transport override for the next `process()` call.
+    /// When `Some`, replaces `self.transport` at the start of the next cycle
+    /// and the optional event is injected into all slot event queues.
+    /// Cleared after each `process()` call. Not set in standalone mode
+    /// (InternalClock drives transport in that case). See ADR-024.
+    transport_override: Option<(TransportInfo, Option<TransportEvent>)>,
 }
 
 struct NodeSlot {
@@ -149,7 +156,7 @@ impl NodeExecutor {
             nodes: slots,
             event_routes,
             audio_routes,
-            incoming: vec![vec![]; n],
+            incoming: (0..n).map(|_| Vec::with_capacity(16)).collect(),
             transport: TransportInfo::default(),
             sample_rate,
             block_size,
@@ -167,7 +174,24 @@ impl NodeExecutor {
             // for slots that publish a small number of entries (most nodes publish ≤8).
             state_bufs: (0..n).map(|_| Vec::with_capacity(8)).collect(),
             agg_state_buf: Vec::with_capacity(64),
+            transport_override: None,
         }
+    }
+
+    /// Inject DAW transport for the next `process()` cycle.
+    ///
+    /// Called by the CLAP adapter before each `process()` callback. The
+    /// provided `TransportInfo` replaces the executor's internal transport for
+    /// that cycle only. If an event is supplied it is prepended to the incoming
+    /// event queue for every node slot.
+    ///
+    /// Not called in standalone mode — `InternalClock` drives transport there.
+    pub fn set_transport_override(
+        &mut self,
+        info:  TransportInfo,
+        event: Option<TransportEvent>,
+    ) {
+        self.transport_override = Some((info, event));
     }
 
     fn apply_messages(&mut self) {
@@ -206,6 +230,19 @@ impl NodeExecutor {
 
         for incoming in &mut self.incoming {
             incoming.clear();
+        }
+
+        // Applied after incoming.clear() so the injected TransportEvent survives
+        // into the per-slot loop; applied after apply_messages() so the CLAP
+        // transport wins over any ring-buffer messages.
+        if let Some((info, event)) = self.transport_override.take() {
+            self.transport = info;
+            if let Some(te) = event {
+                let timed = paraclete_node_api::TimedEvent::new(0, paraclete_node_api::Event::Transport(te));
+                for queue in &mut self.incoming {
+                    queue.push(timed);
+                }
+            }
         }
 
         let transport = &self.transport as *const TransportInfo;

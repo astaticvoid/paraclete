@@ -1,7 +1,7 @@
 Paraclete — P7 Implementation Report
 =====================================
 Date: June 2026
-Status: In progress — 295 tests, 0 failures (after Commit 2)
+Status: In progress — 307 tests, 0 failures (after Commit 4)
 
 Commits:
   de1db04  Paraclete P7 Commit 1 — type_name() + published_state() push-down (OQ-9)
@@ -272,18 +272,112 @@ Tests after: 299 (+4 from Commit 2)
       asserts Err(ProjectError::UnknownVersion(99)).
 
 
+Commit 4 — paraclete-clap infrastructure (paraclete-clap new crate, paraclete-runtime)
+Tests after: 307 (+8 from Commit 3)
+
+  New crate: paraclete-clap
+
+    Workspace member crates/paraclete-clap. Dependencies: paraclete-node-api,
+    paraclete-runtime, paraclete-nodes. No clap-sys yet — added in Commits 5/6
+    when actual plugin binaries land. Crate modules: bridge, transport (public);
+    plugin, process_input, single_node, subgraph (stubs for later commits).
+
+  ClapParamBridge (crates/paraclete-clap/src/bridge.rs)
+
+    Maps CLAP's sequential parameter IDs (0,1,2...) to Paraclete
+    content-addressed IDs (ParamDescriptor::id_for_name() hash). Built from a
+    CapabilityDocument; iterates doc.params in declaration order, assigning CLAP
+    IDs 0-based.
+
+      from_capability_document(&doc) — builds Vec<ClapParamEntry>
+      paraclete_id_for(clap_id) — returns Option<u32>
+      make_set_param_command(clap_id, value, target_id) — returns
+        Option<NodeCommand { type_id: CMD_SET_PARAM, target_id, arg0: paraclete_id as i64, arg1: value }>
+
+    arg0 is i64 (NodeCommand field type), not f64 — caught during test writing;
+    the spec pseudocode showed f64 but the actual NodeCommand struct uses i64 for
+    arg0 to carry param IDs.
+
+  translate_transport (crates/paraclete-clap/src/transport.rs)
+
+    Signature: translate_transport(flags: u32, tempo: f64, song_pos_beats: i64, prev_playing: bool)
+      -> (TransportInfo, Option<TransportEvent>)
+
+    Constants (corrected in code review):
+      CLAP_TRANSPORT_HAS_BEATS_TIMELINE=1<<1 (validity flag)
+      CLAP_TRANSPORT_IS_PLAYING=1<<4 (NOT 1<<0 — bits 0-3 are HAS_* flags in spec)
+      CLAP_TRANSPORT_IS_RECORDING=1<<5, CLAP_TRANSPORT_IS_LOOP_ACTIVE=1<<6
+      CLAP_BEATTIME_FACTOR: i64=1<<31
+
+    Takes raw scalar fields (not a clap-sys FFI struct) so it is testable in
+    pure Rust without a C ABI dependency. When clap-sys is added in Commit 5,
+    the CLAP process() callback extracts these scalars from the clap_event_transport_t
+    and calls this function.
+
+    Returns Some(TransportEvent) only on state transitions: global_start when
+    !prev_playing && playing, global_stop when prev_playing && !playing, None
+    otherwise. This prevents Sequencer step-counter resets (seq.current_step=0)
+    on every audio buffer while playing. The CLAP adapter in Commit 5 maintains
+    prev_playing state across calls.
+
+    song_pos_beats is only read when CLAP_TRANSPORT_HAS_BEATS_TIMELINE is set
+    (bit 1); defaults to bar=1,beat=0,tick=0 otherwise. Negative pre-roll
+    positions are clamped to 0 to avoid Rust's saturating f64→u64 cast.
+
+  NodeExecutor::set_transport_override (crates/paraclete-runtime/src/executor.rs)
+
+    Field: transport_override: Option<(TransportInfo, Option<TransportEvent>)>
+    Method: set_transport_override(&mut self, info: TransportInfo, event: Option<TransportEvent>)
+
+    Applied at the start of process(), AFTER apply_messages() and AFTER the
+    incoming.clear() loop. The after-clear placement is critical: if the event
+    were injected before incoming.clear(), it would be wiped before any node
+    sees it. The after-apply_messages() placement ensures the CLAP transport
+    override wins over any ring-buffer messages that may arrive in the same cycle.
+    Consumed via .take() so it applies exactly once per override.
+
+  incoming vec pre-allocation (executor.rs)
+
+    Changed `incoming: vec![vec![]; n]` to `(0..n).map(|_| Vec::with_capacity(16)).collect()`.
+    Without this, the first set_transport_override push on a zero-capacity Vec
+    triggers a heap allocation on the audio thread.
+
+  Code review findings and fixes
+
+    Finding 1 (FIXED): transport override events cleared before delivery.
+      Moved override block to AFTER incoming.clear(). Regression test:
+      transport_override_event_delivered_to_nodes.
+    Finding 2 (FIXED): wrong CLAP flag bits — IS_PLAYING was 1<<0, correct
+      value is 1<<4 (bits 0-3 are HAS_* validity flags in spec). Wrong bits
+      caused playing=false every cycle regardless of DAW state.
+    Finding 3 (FIXED): global_start emitted every cycle while playing would
+      reset Sequencer step counter to 0 each buffer. Fixed by adding prev_playing
+      parameter and only emitting on state transitions.
+    Finding 4 (FIXED): incoming[i].push() could allocate on audio thread when
+      vecs had capacity 0. Fixed by pre-allocating with_capacity(16) at build time.
+    Finding 5 (FIXED): song_pos_beats used unconditionally; added HAS_BEATS_TIMELINE
+      validity check and pre-roll clamp.
+
+  Tests added (+8)
+
+    paraclete-clap/tests/infrastructure_tests.rs (+7):
+      bridge_from_cap_doc_assigns_sequential_ids
+      bridge_unknown_clap_id_returns_none
+      bridge_make_set_param_command_correct
+      translate_transport_start_transition_emits_global_start
+      translate_transport_no_event_when_already_playing
+      translate_transport_stop_transition_emits_global_stop
+      translate_transport_no_event_when_already_stopped
+
+    paraclete-runtime/tests/runtime_integration.rs (+1):
+      transport_override_event_delivered_to_nodes
+
+    paraclete-runtime/tests/runtime_integration.rs (+1):
+      transport_override_event_delivered_to_nodes
+
+
 PENDING
 -------
-
-Commit 4 — paraclete-clap infrastructure (paraclete-clap new crate, paraclete-runtime)
-  Target: ~304 tests
-
-  (to be filled when Commit 4 lands)
-
-Commit 4 — paraclete-clap infrastructure (paraclete-clap new crate, paraclete-runtime)
-  Target: ~304 tests
-
-  (to be filled when Commit 4 lands)
 
 Commit 5 — SingleNodePlugin (paraclete-clap)
   Target: ~307 tests

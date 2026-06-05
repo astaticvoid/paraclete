@@ -923,6 +923,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "paraclete-clap"
+version = "0.1.0"
+dependencies = [
+ "paraclete-node-api",
+ "paraclete-nodes",
+ "paraclete-runtime",
+]
+
+[[package]]
 name = "paraclete-hal"
 version = "0.1.0"
 dependencies = [

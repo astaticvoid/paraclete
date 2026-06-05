@@ -1,0 +1,17 @@
+[package]
+name        = "paraclete-clap"
+description = "Paraclete CLAP plugin adapter — infrastructure and plugin binaries (ADR-024)"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+license     = "GPL-3.0-or-later"
+
+[lib]
+name = "paraclete_clap"
+path = "src/lib.rs"
+
+[dependencies]
+paraclete-node-api = { workspace = true }
+paraclete-runtime  = { workspace = true }
+paraclete-nodes    = { workspace = true }
