@@ -208,6 +208,23 @@ fn register_builtins(engine: &mut Engine, state: Rc<RefCell<ScriptState>>) {
         });
     }
 
+    // ── publish_context(encoder_key, node_id, param_name) ────────────────────
+    {
+        let s = Rc::clone(&state);
+        engine.register_fn("publish_context", move |encoder_key: &str, node_id: i64, param_name: &str| {
+            use paraclete_node_api::ParamDescriptor;
+            let param_hash = ParamDescriptor::id_for_name(param_name) as f64;
+            let node_path  = format!("/context/{}/node",  encoder_key);
+            let param_path = format!("/context/{}/param", encoder_key);
+            let st = s.borrow();
+            if let Some(bus) = &st.state_bus {
+                let mut bus = bus.borrow_mut();
+                bus.write(&node_path,  StateBusValue::Float(node_id as f64));
+                bus.write(&param_path, StateBusValue::Float(param_hash));
+            }
+        });
+    }
+
     // ── send_cmd(node_id, type_id, arg0, arg1) ────────────────────────────────
     {
         let s = Rc::clone(&state);
@@ -792,5 +809,56 @@ mod tests {
         assert!(out.contains_key(&1));
         assert_eq!(out[&1].led_updates[0].control_id, 5);
         assert_eq!(out[&1].led_updates[0].color.r, 64);
+    }
+
+    #[test]
+    fn publish_context_writes_node_and_param_to_state_bus() {
+        use paraclete_node_api::ParamDescriptor;
+        let (mut engine, handle) = make_engine_with_bus();
+        engine.eval_str(r#"publish_context("encoder_0", 42, "decay");"#)
+            .expect("publish_context failed");
+        assert_eq!(
+            handle.borrow().read("/context/encoder_0/node"),
+            Some(&StateBusValue::Float(42.0)),
+        );
+        assert_eq!(
+            handle.borrow().read("/context/encoder_0/param"),
+            Some(&StateBusValue::Float(ParamDescriptor::id_for_name("decay") as f64)),
+        );
+    }
+
+    #[test]
+    fn publish_context_overwrites_previous_mapping() {
+        use paraclete_node_api::ParamDescriptor;
+        let (mut engine, handle) = make_engine_with_bus();
+        engine.eval_str(r#"
+            publish_context("encoder_0", 42, "decay");
+            publish_context("encoder_0", 99, "cutoff");
+        "#).expect("publish_context failed");
+        assert_eq!(
+            handle.borrow().read("/context/encoder_0/node"),
+            Some(&StateBusValue::Float(99.0)),
+        );
+        assert_eq!(
+            handle.borrow().read("/context/encoder_0/param"),
+            Some(&StateBusValue::Float(ParamDescriptor::id_for_name("cutoff") as f64)),
+        );
+    }
+
+    #[test]
+    fn publish_context_different_keys_do_not_collide() {
+        let (mut engine, handle) = make_engine_with_bus();
+        engine.eval_str(r#"
+            publish_context("encoder_0", 10, "decay");
+            publish_context("encoder_1", 20, "cutoff");
+        "#).expect("publish_context failed");
+        assert_eq!(
+            handle.borrow().read("/context/encoder_0/node"),
+            Some(&StateBusValue::Float(10.0)),
+        );
+        assert_eq!(
+            handle.borrow().read("/context/encoder_1/node"),
+            Some(&StateBusValue::Float(20.0)),
+        );
     }
 }
