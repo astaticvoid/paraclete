@@ -84,6 +84,8 @@ impl SubgraphPlugin {
     /// Run one audio block.
     ///
     /// * `transport` — current host transport state.
+    /// * `transport_event` — pre-computed transition event from `translate_transport`,
+    ///   or `None` to compute it automatically from `prev_playing()`.
     /// * `external_events` — MIDI events from the host, delivered directly to
     ///   the generator (bypasses the internal Sequencer).
     /// * `commands` — `NodeCommand`s targeting the generator (host param
@@ -92,12 +94,22 @@ impl SubgraphPlugin {
     /// Returns the interleaved stereo output for this block.
     pub fn process_block(
         &mut self,
-        transport:       &TransportInfo,
-        external_events: &[TimedEvent],
-        commands:        &[NodeCommand],
+        transport:        &TransportInfo,
+        transport_event:  Option<&TransportEvent>,
+        external_events:  &[TimedEvent],
+        commands:         &[NodeCommand],
     ) -> &[f32] {
-        let event = transport_transition_event(transport, self.prev_playing);
-        self.prev_playing = transport.playing;
+        let event = match transport_event {
+            Some(ev) => {
+                self.prev_playing = transport.playing;
+                Some(*ev)
+            }
+            None => {
+                let ev = transport_transition_event(transport, self.prev_playing);
+                self.prev_playing = transport.playing;
+                ev
+            }
+        };
 
         self.executor.set_transport_override(*transport, event);
 
@@ -155,6 +167,7 @@ impl SubgraphPlugin {
     pub fn gen_id(&self) -> u32 { self.gen_id }
     pub fn sample_rate(&self) -> f32 { self.sample_rate }
     pub fn block_size(&self) -> usize { self.block_size }
+    pub fn prev_playing(&self) -> bool { self.prev_playing }
 }
 
 /// Build an executor containing InternalClock(1) → Sequencer(2) → generator(gen_id).

@@ -9,6 +9,11 @@ members = [
     "crates/paraclete-scripting",
     "crates/paraclete-app",
     "crates/paraclete-clap",
+    "crates/paraclete-machine-kick",
+    "crates/paraclete-machine-snare",
+    "crates/paraclete-machine-fm-kick",
+    "crates/paraclete-machine-fm-bell",
+    "crates/paraclete-machine-fm-bass",
     "tools/gen-samples",
     "tools/lpx-debug",
 ]
@@ -25,6 +30,8 @@ paraclete-runtime   = { path = "crates/paraclete-runtime" }
 paraclete-hal       = { path = "crates/paraclete-hal" }
 paraclete-nodes     = { path = "crates/paraclete-nodes" }
 paraclete-scripting = { path = "crates/paraclete-scripting" }
+paraclete-clap      = { path = "crates/paraclete-clap" }
+clap-sys            = "0.5"
 
 cpal      = "0.15"
 rhai      = "1"

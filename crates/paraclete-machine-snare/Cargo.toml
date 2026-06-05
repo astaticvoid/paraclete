@@ -1,0 +1,16 @@
+[package]
+name        = "paraclete-machine-snare"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+license     = "GPL-3.0-or-later"
+
+[lib]
+name = "paraclete_machine_snare"
+crate-type = ["cdylib"]
+
+[dependencies]
+paraclete-clap  = { workspace = true }
+paraclete-nodes = { workspace = true }
+clap-sys        = { workspace = true }

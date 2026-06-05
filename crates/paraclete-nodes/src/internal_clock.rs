@@ -161,6 +161,17 @@ impl Node for InternalClock {
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
+        for timed in input.events {
+            if let Event::Transport(te) = timed.event {
+                if te.flags.global_stop {
+                    self.playing = false;
+                } else if te.flags.global_start && !self.playing {
+                    self.playing = true;
+                    self.first_tick = true;
+                }
+            }
+        }
+
         if !self.playing { return; }
 
         // BPM modulation via signal port is deferred to P9 (signal port wiring).
@@ -210,6 +221,14 @@ mod tests {
     };
 
     fn run_internal_clock(node: &mut InternalClock, block_size: usize) -> Vec<Event> {
+        run_internal_clock_with_events(node, block_size, &[])
+    }
+
+    fn run_internal_clock_with_events(
+        node: &mut InternalClock,
+        block_size: usize,
+        in_events: &[paraclete_node_api::TimedEvent],
+    ) -> Vec<Event> {
         let mut audio = AudioBuffer::new(2, block_size);
         let mut events_out = EventOutputBuffer::new(256);
         let transport = TransportInfo::default();
@@ -222,7 +241,7 @@ mod tests {
         let input = ProcessInput {
             audio_inputs: &[],
             signal_inputs: &[],
-            events: &[],
+            events: in_events,
             transport: &transport,
             sample_rate: 44100.0,
             block_size,
@@ -293,5 +312,58 @@ mod tests {
         if let Some((_, v)) = bpm_entry {
             assert!(matches!(v, paraclete_node_api::StateBusValue::Float(_)));
         }
+    }
+
+    #[test]
+    fn internal_clock_stops_on_global_stop_event() {
+        use paraclete_node_api::{TimedEvent, TransportEvent, TransportFlags, TICKS_PER_BEAT};
+
+        let mut node = InternalClock::new();
+        node.activate(44100.0, 512);
+
+        let first = run_internal_clock(&mut node, 512);
+        assert!(!first.is_empty(), "clock must emit ticks before stop");
+
+        let stop_event = TimedEvent::new(0, Event::Transport(TransportEvent {
+            domain_id: 0, bar: 1, beat: 0, tick: 0,
+            ticks_per_beat: TICKS_PER_BEAT, bpm: 120.0,
+            time_sig_num: 4, time_sig_den: 4,
+            flags: TransportFlags { global_stop: true, ..TransportFlags::default() },
+        }));
+        let second = run_internal_clock_with_events(&mut node, 512, &[stop_event]);
+        assert!(
+            second.is_empty(),
+            "clock must not emit ticks after GlobalStop (got {} events)",
+            second.len()
+        );
+    }
+
+    #[test]
+    fn internal_clock_resumes_after_global_stop_then_global_start() {
+        use paraclete_node_api::{TimedEvent, TransportEvent, TransportFlags, TICKS_PER_BEAT};
+
+        let mut node = InternalClock::new();
+        node.activate(44100.0, 512);
+
+        let stop_event = TimedEvent::new(0, Event::Transport(TransportEvent {
+            domain_id: 0, bar: 1, beat: 0, tick: 0,
+            ticks_per_beat: TICKS_PER_BEAT, bpm: 120.0,
+            time_sig_num: 4, time_sig_den: 4,
+            flags: TransportFlags { global_stop: true, ..TransportFlags::default() },
+        }));
+        let silent = run_internal_clock_with_events(&mut node, 512, &[stop_event]);
+        assert!(silent.is_empty(), "must be silent after stop");
+
+        let start_event = TimedEvent::new(0, Event::Transport(TransportEvent {
+            domain_id: 0, bar: 1, beat: 0, tick: 0,
+            ticks_per_beat: TICKS_PER_BEAT, bpm: 120.0,
+            time_sig_num: 4, time_sig_den: 4,
+            flags: TransportFlags { global_start: true, playing: true, ..TransportFlags::default() },
+        }));
+        let resumed = run_internal_clock_with_events(&mut node, 512, &[start_event]);
+        assert!(
+            !resumed.is_empty(),
+            "clock must emit ticks after GlobalStart following a stop"
+        );
     }
 }

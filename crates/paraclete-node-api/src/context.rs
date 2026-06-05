@@ -58,6 +58,10 @@ impl SignalOutputSlot {
     }
 }
 
+/// Module-level silence buffer shared by `logic()` and `modulation()` fallback paths.
+/// Large enough for any expected block size; capacity is asserted at call time.
+static SILENCE: [f32; 65536] = [0.0; 65536];
+
 // ── ProcessInput ──────────────────────────────────────────────────────────────
 
 /// Everything a node reads during `process()`. Immutable.
@@ -100,8 +104,13 @@ impl<'a> ProcessInput<'a> {
                 return unsafe { std::slice::from_raw_parts(slot.ptr, slot.frames) };
             }
         }
-        static SILENCE: [f32; 4096] = [0.0; 4096];
-        &SILENCE[..self.block_size.min(4096)]
+        assert!(
+            self.block_size <= SILENCE.len(),
+            "block_size {} exceeds SILENCE buffer capacity {}",
+            self.block_size,
+            SILENCE.len(),
+        );
+        &SILENCE[..self.block_size]
     }
 
     /// Pitch input for a connected port. **Not yet wired in executor — always returns silence.**
@@ -119,8 +128,13 @@ impl<'a> ProcessInput<'a> {
                 return unsafe { std::slice::from_raw_parts(slot.ptr, slot.frames) };
             }
         }
-        static SILENCE: [f32; 4096] = [0.0; 4096];
-        &SILENCE[..self.block_size.min(4096)]
+        assert!(
+            self.block_size <= SILENCE.len(),
+            "block_size {} exceeds SILENCE buffer capacity {}",
+            self.block_size,
+            SILENCE.len(),
+        );
+        &SILENCE[..self.block_size]
     }
 }
 

@@ -1,0 +1,16 @@
+[package]
+name        = "paraclete-machine-fm-bass"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+license     = "GPL-3.0-or-later"
+
+[lib]
+name = "paraclete_machine_fm_bass"
+crate-type = ["cdylib"]
+
+[dependencies]
+paraclete-clap  = { workspace = true }
+paraclete-nodes = { workspace = true }
+clap-sys        = { workspace = true }

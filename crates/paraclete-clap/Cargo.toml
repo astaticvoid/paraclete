@@ -15,3 +15,8 @@ path = "src/lib.rs"
 paraclete-node-api = { workspace = true }
 paraclete-runtime  = { workspace = true }
 paraclete-nodes    = { workspace = true }
+clap-sys           = { workspace = true }
+
+[[bin]]
+name = "sequencer"
+path = "src/bin/sequencer.rs"

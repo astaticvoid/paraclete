@@ -5,6 +5,7 @@
 //! in Commits 5 and 6 (`single_node.rs`, `subgraph.rs`). See ADR-024.
 
 pub mod bridge;
+pub mod ffi;
 pub mod transport;
 
 pub use single_node::SingleNodePlugin;

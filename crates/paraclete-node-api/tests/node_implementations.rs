@@ -278,3 +278,23 @@ fn test_node_process_receives_sample_rate_and_block_size() {
     assert_eq!(node.last_block_size, 256);
     assert_eq!(node.process_call_count, 1);
 }
+
+#[test]
+fn silence_buffer_at_max_block_size_is_all_zeros() {
+    use paraclete_node_api::{ExtendedEventSlab, ProcessInput, TransportInfo};
+    let transport = TransportInfo::default();
+    let slab = ExtendedEventSlab::empty();
+    let input = ProcessInput {
+        audio_inputs:   &[],
+        signal_inputs:  &[],
+        events:         &[],
+        transport:      &transport,
+        sample_rate:    44100.0,
+        block_size:     65536,
+        extended_events: &slab,
+        commands:       &[],
+    };
+    let silence = input.logic(999);
+    assert_eq!(silence.len(), 65536);
+    assert!(silence.iter().all(|&s| s == 0.0));
+}

@@ -1,3 +1,4 @@
+use paraclete_clap::ffi;
 use paraclete_clap::bridge::ClapParamBridge;
 use paraclete_clap::transport::{
     translate_transport, CLAP_TRANSPORT_IS_PLAYING, CLAP_TRANSPORT_HAS_BEATS_TIMELINE,
@@ -142,4 +143,19 @@ fn translate_transport_no_event_when_already_stopped() {
 
     assert!(!info.playing);
     assert!(event.is_none(), "no event when stopped state unchanged");
+}
+
+#[test]
+fn machine_bank_ffi_entry_not_null() {
+    let vtable = ffi::plugin_class();
+    assert!(vtable.init.is_some(),             "plugin.init must be non-null");
+    assert!(vtable.destroy.is_some(),          "plugin.destroy must be non-null");
+    assert!(vtable.activate.is_some(),         "plugin.activate must be non-null");
+    assert!(vtable.deactivate.is_some(),       "plugin.deactivate must be non-null");
+    assert!(vtable.start_processing.is_some(), "plugin.start_processing must be non-null");
+    assert!(vtable.stop_processing.is_some(),  "plugin.stop_processing must be non-null");
+    assert!(vtable.reset.is_some(),            "plugin.reset must be non-null");
+    assert!(vtable.process.is_some(),          "plugin.process must be non-null");
+    assert!(vtable.get_extension.is_some(),    "plugin.get_extension must be non-null");
+    assert!(vtable.on_main_thread.is_some(),   "plugin.on_main_thread must be non-null");
 }

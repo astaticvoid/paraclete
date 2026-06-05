@@ -59,10 +59,10 @@ fn subgraph_plugin_direct_note_on_produces_audio() {
     let transport = playing_transport();
 
     // Block 1: inject note-on directly to the generator.
-    let _ = plugin.process_block(&transport, &[note_on], &[]);
+    let _ = plugin.process_block(&transport, None, &[note_on], &[]);
     // Blocks 2–3: let the synthesis run.
-    let _ = plugin.process_block(&transport, &[], &[]);
-    let out = plugin.process_block(&transport, &[], &[]);
+    let _ = plugin.process_block(&transport, None, &[], &[]);
+    let out = plugin.process_block(&transport, None, &[], &[]);
 
     let max_sample = out.iter().map(|s| s.abs()).fold(0.0_f32, f32::max);
     assert!(
@@ -88,7 +88,7 @@ fn subgraph_plugin_state_roundtrip() {
         arg1:      0.0,
     });
     // Run one block so the command is processed (injected into pending_cmds).
-    plugin1.process_block(&stopped_transport(), &[], &[]);
+    plugin1.process_block(&stopped_transport(), None, &[], &[]);
 
     let saved = plugin1.state_save();
 
@@ -123,7 +123,7 @@ fn subgraph_plugin_seq_command_reaches_sequencer() {
         arg0:      4,
         arg1:      0.0,
     });
-    plugin.process_block(&stopped_transport(), &[], &[]);
+    plugin.process_block(&stopped_transport(), None, &[], &[]);
 
     let bytes_after = plugin.state_save();
 
@@ -151,7 +151,7 @@ fn subgraph_plugin_gen_command_reaches_generator() {
     };
 
     // Must not panic.
-    let _ = plugin.process_block(&stopped_transport(), &[], &[cmd]);
+    let _ = plugin.process_block(&stopped_transport(), None, &[], &[cmd]);
 }
 
 /// Spec: subgraph_plugin_fm_engine_variant_no_panic
@@ -167,6 +167,6 @@ fn subgraph_plugin_fm_engine_variant_no_panic() {
     let transport = playing_transport();
 
     // Must not panic.
-    let _ = plugin.process_block(&transport, &[note_on], &[]);
-    let _ = plugin.process_block(&transport, &[], &[]);
+    let _ = plugin.process_block(&transport, None, &[note_on], &[]);
+    let _ = plugin.process_block(&transport, None, &[], &[]);
 }
