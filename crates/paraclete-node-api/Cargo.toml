@@ -1,11 +1,15 @@
 [package]
 name        = "paraclete-node-api"
-description = "Paraclete L2 Node API — the universal node contract (LGPL-3.0)"
+description = "Node API for the Paraclete audio processing platform"
 version.workspace     = true
 edition.workspace     = true
 authors.workspace     = true
 rust-version.workspace = true
 license     = "LGPL-3.0-or-later"
+repository  = "https://github.com/paraclete-audio/paraclete"
+keywords    = ["audio", "dsp", "plugin", "clap", "node"]
+categories  = ["multimedia::audio", "api-bindings"]
+readme      = "README.md"
 
 [dependencies]
 midi2.workspace = true

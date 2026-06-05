@@ -548,10 +548,55 @@ Tests after: 316 (+6 from Commit 5)
     subgraph_plugin_fm_engine_variant_no_panic — FmEngine::bass() variant
 
 
-PENDING
--------
-
 Commit 7 — crates.io publication prep (paraclete-node-api v0.1.0)
-  Target: ≥316 tests
+Tests after: 317, 0 failures
 
-  (to be filled when Commit 7 lands)
+  Cargo.toml (paraclete-node-api):
+    Added: repository, keywords, categories, readme fields.
+    Updated description to crates.io-friendly phrasing.
+    License field was already LGPL-3.0-or-later; no change needed.
+
+  crates/paraclete-node-api/README.md (new):
+    GainNode quick-start example showing the canonical ports-as-field pattern,
+    architecture overview table, and parameter naming table from ADR-019.
+    `ports` stored as Vec<PortDescriptor> field in GainNode::new(); returned
+    by reference from ports() — the correct L2 idiom.
+
+  src/capability.rs — id_for_name promoted to `const fn`:
+    Changed from `pub fn` to `pub const fn`. Body rewritten from
+    `for byte in name.bytes()` to `while i < bytes.len()` — required because
+    `for` loops are not usable in `const fn` at MSRV 1.75.
+    Hash output is bit-for-bit identical.
+    Added inline comment explaining the while-loop constraint.
+    Doctest added: `const CUTOFF_ID: u32 = ParamDescriptor::id_for_name("cutoff")`
+    — proves const-ness at compile time.
+    Added doc comment to `ParamDisplayAdapter`.
+
+  src/context.rs — documentation:
+    Added doc comment to `SignalPortKind` enum and all five variants.
+    Added doc comment to `ProcessOutput` struct.
+    Fixed "Panics in debug" misleading phrasing in mod_output_mut / logic_output_mut
+    doc comments — panic! is unconditional; corrected to "Panics if...".
+
+  src/parameter.rs — documentation:
+    Fixed stale `input.commands()` (method-call syntax) in two doc comments to
+    `input.commands` (field access) — matches the actual ProcessInput struct.
+
+  `cargo publish --dry-run --allow-dirty -p paraclete-node-api` exits 0.
+  `cargo doc --no-deps -p paraclete-node-api` exits cleanly.
+
+  Code review findings (Commit 7):
+    CONFIRMED: "Panics in debug" doc on mod_output_mut/logic_output_mut —
+      panic! is unconditional. Fixed to "Panics if...".
+    CONFIRMED: while+index loop in id_for_name had no explanatory comment.
+      Added: "for loops are not usable in const fn at MSRV 1.75; use while+index."
+    REFUTED: README.md untracked → cargo silently omits it. (cargo package
+      includes dirty/untracked files; the real constraint is git-committing
+      before real publish, which this commit satisfies.)
+    REFUTED: input.commands field access in README — is correct; commands is
+      a public field on ProcessInput, not a method.
+    PLAUSIBLE: SILENCE array 4096-frame truncation in context.rs — latent,
+      pre-existing, block_size hardcoded to 512. Deferred to P7 hardening.
+
+
+Status: P7 COMPLETE — 317 tests, 0 failures

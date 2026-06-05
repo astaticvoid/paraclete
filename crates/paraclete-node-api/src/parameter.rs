@@ -14,7 +14,7 @@ struct ParameterSlot {
 /// Pre-allocated parameter storage built from a node's capability document.
 ///
 /// Handles `CMD_SET_PARAM` and `CMD_BUMP_PARAM` with zero audio-thread allocation.
-/// Build at `activate()` time; call `handle_commands(input.commands())` before
+/// Build at `activate()` time; call `handle_commands(input.commands)` before
 /// any DSP logic in `process()`.
 ///
 /// Linear scan over slots is correct and efficient for typical parameter counts
@@ -43,7 +43,7 @@ impl ParameterBank {
         Self { slots: Vec::new() }
     }
 
-    /// Apply `CMD_SET_PARAM` and `CMD_BUMP_PARAM` from `input.commands()`.
+    /// Apply `CMD_SET_PARAM` and `CMD_BUMP_PARAM` from `input.commands`.
     /// All other `type_id` values are silently ignored.
     /// Allocation-free. Call before any DSP logic in `process()`.
     pub fn handle_commands(&mut self, commands: &[NodeCommand]) {

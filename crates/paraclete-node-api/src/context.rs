@@ -7,12 +7,19 @@ use crate::transport::TransportInfo;
 
 // ── Signal slot types ─────────────────────────────────────────────────────────
 
+/// Distinguishes between the five signal port types used in Paraclete's signal graph.
+/// Signal ports carry per-sample f32 data between nodes; each kind has distinct semantics.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SignalPortKind {
+    /// Control voltage — generic 0–1 (or ±1) modulation signal.
     Cv,
+    /// Phase accumulator — 0.0–1.0 ramp used to drive oscillators.
     Phase,
+    /// Gate or trigger — 1.0 = active, 0.0 = inactive per sample.
     Logic,
+    /// MIDI pitch (0–127 range, can be fractional for pitch-bend).
     Pitch,
+    /// LFO or envelope modulation — typically ±1.0 or 0.0–1.0.
     Modulation,
 }
 
@@ -119,6 +126,11 @@ impl<'a> ProcessInput<'a> {
 
 // ── ProcessOutput ─────────────────────────────────────────────────────────────
 
+/// Everything a node writes during `process()`. Mutable.
+///
+/// Provides access to audio output buffers, signal output slots, and the
+/// outgoing event queue. The runtime pre-allocates all buffers; nodes write
+/// into them without allocating.
 pub struct ProcessOutput<'a> {
     pub audio_outputs: &'a mut [&'a mut AudioBuffer],
     pub signal_outputs: &'a mut [SignalOutputSlot],
@@ -138,13 +150,13 @@ impl<'a> ProcessOutput<'a> {
     }
 
     /// Write a Modulation port output. Returns a mutable slice of block_size values.
-    /// Panics in debug if port_id is not a registered Modulation output port.
+    /// Panics if port_id is not a registered Modulation output port.
     pub fn mod_output_mut(&mut self, port_id: u32) -> &mut [f32] {
         self.find_output(port_id, SignalPortKind::Modulation)
     }
 
     /// Write a Logic port output. Returns a mutable slice of block_size values.
-    /// Panics in debug if port_id is not a registered Logic output port.
+    /// Panics if port_id is not a registered Logic output port.
     pub fn logic_output_mut(&mut self, port_id: u32) -> &mut [f32] {
         self.find_output(port_id, SignalPortKind::Logic)
     }

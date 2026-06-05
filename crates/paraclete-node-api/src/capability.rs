@@ -29,6 +29,12 @@ pub trait ParamDisplay: Send + Sync {
     fn parse(&self, s: &str) -> Option<f64>;
 }
 
+/// Holds either a static or heap-allocated `ParamDisplay` implementation.
+///
+/// Used in `ParamDescriptor::display` to override how a parameter's value is
+/// formatted and parsed. Prefer `Static` for compile-time constants (zero
+/// allocation); use `Dynamic` only for label sets that are not known at compile
+/// time (e.g. per-sample-slot names in a sampler).
 pub enum ParamDisplayAdapter {
     /// Baked into the binary at compile time. Zero allocation.
     Static(&'static dyn ParamDisplay),
@@ -78,14 +84,27 @@ pub struct ParamDescriptor {
 
 impl ParamDescriptor {
     /// Compute the stable parameter ID from a name string.
-    /// Uses FNV-1a 32-bit hash for determinism and compile-time usability.
-    pub fn id_for_name(name: &str) -> u32 {
+    ///
+    /// Uses FNV-1a 32-bit hash. The result is deterministic and stable across
+    /// versions — `id_for_name("cutoff")` always produces the same value.
+    /// Canonical parameter names are defined in ADR-019.
+    ///
+    /// `const fn` so IDs can be used in `const` initialisers:
+    /// ```rust
+    /// use paraclete_node_api::capability::ParamDescriptor;
+    /// const CUTOFF_ID: u32 = ParamDescriptor::id_for_name("cutoff");
+    /// ```
+    pub const fn id_for_name(name: &str) -> u32 {
         const FNV_OFFSET: u32 = 2_166_136_261;
         const FNV_PRIME: u32 = 16_777_619;
+        let bytes = name.as_bytes();
         let mut hash = FNV_OFFSET;
-        for byte in name.bytes() {
-            hash ^= byte as u32;
+        let mut i = 0;
+        // `for` loops are not usable in `const fn` at MSRV 1.75; use while+index.
+        while i < bytes.len() {
+            hash ^= bytes[i] as u32;
             hash = hash.wrapping_mul(FNV_PRIME);
+            i += 1;
         }
         hash
     }
