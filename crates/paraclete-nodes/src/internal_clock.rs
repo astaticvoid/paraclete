@@ -182,29 +182,12 @@ impl Node for InternalClock {
         }
     }
 
-    fn published_state(&self) -> Vec<(String, StateBusValue)> {
-        vec![
-            (
-                format!("/transport/bpm"),
-                StateBusValue::Float(self.bpm),
-            ),
-            (
-                format!("/transport/bar"),
-                StateBusValue::Int(self.bar as i64),
-            ),
-            (
-                format!("/transport/beat"),
-                StateBusValue::Int(self.beat as i64),
-            ),
-            (
-                format!("/transport/tick"),
-                StateBusValue::Int(self.tick as i64),
-            ),
-            (
-                format!("/transport/playing"),
-                StateBusValue::Bool(self.playing),
-            ),
-        ]
+    fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
+        buf.push(("/transport/bpm".to_string(),     StateBusValue::Float(self.bpm)));
+        buf.push(("/transport/bar".to_string(),     StateBusValue::Int(self.bar as i64)));
+        buf.push(("/transport/beat".to_string(),    StateBusValue::Int(self.beat as i64)));
+        buf.push(("/transport/tick".to_string(),    StateBusValue::Int(self.tick as i64)));
+        buf.push(("/transport/playing".to_string(), StateBusValue::Bool(self.playing)));
     }
 }
 
@@ -294,9 +277,17 @@ mod tests {
     }
 
     #[test]
+    fn node_type_name_default_is_nonempty() {
+        let node = InternalClock::new();
+        let name = node.type_name();
+        assert!(!name.is_empty(), "type_name() must return a non-empty string");
+    }
+
+    #[test]
     fn internal_clock_published_state_includes_bpm() {
         let node = InternalClock::new();
-        let state = node.published_state();
+        let mut state = Vec::new();
+        node.published_state(&mut state);
         let bpm_entry = state.iter().find(|(k, _)| k == "/transport/bpm");
         assert!(bpm_entry.is_some());
         if let Some((_, v)) = bpm_entry {

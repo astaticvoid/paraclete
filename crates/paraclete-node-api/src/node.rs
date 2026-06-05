@@ -73,17 +73,30 @@ pub trait Node: Send {
     /// Default is a no-op. Override in nodes that publish state.
     fn set_node_id(&mut self, _id: u32) {}
 
-    /// Publish named values to the StateBus.
+    /// Returns a human-readable type label for this node.
     ///
-    /// Called by the executor after each process cycle. Returns key-value
-    /// pairs to be written to the StateBus snapshot. Keys should use the
-    /// convention `/node/{id}/state/{key}`.
+    /// Used in project file snapshots (`NodeSnapshot.type_name`) and in
+    /// diagnostic output. Not used for dispatch — project load is by `NodeId`.
     ///
-    /// Default returns empty — only nodes implementing `StatePublisher` override this.
-    /// Allocation is permitted here (not on the hot audio path).
-    fn published_state(&self) -> Vec<(String, StateBusValue)> {
-        vec![]
+    /// Default: `std::any::type_name::<Self>()`. Override to provide a stable
+    /// name that does not change with module path refactors (e.g. `"AnalogEngine"`
+    /// rather than `"paraclete_nodes::analog_engine::AnalogEngine"`).
+    fn type_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
     }
+
+    /// Publish runtime state to the state bus.
+    ///
+    /// Called by the executor at the end of each audio process cycle (audio
+    /// thread). Push zero or more `(key, value)` pairs into `buf`. `buf` is
+    /// pre-allocated by the runtime and cleared before each call; the node
+    /// must not call `buf.clear()` itself.
+    ///
+    /// Key strings follow the `/node/{id}/state/` convention. The runtime
+    /// does not prepend anything — nodes are responsible for full paths.
+    ///
+    /// Default: no-op (nodes that publish no state do nothing).
+    fn published_state(&self, _buf: &mut Vec<(String, StateBusValue)>) {}
 
     // ── Level 3 — override for smart nodes ───────────────────────────────────
 

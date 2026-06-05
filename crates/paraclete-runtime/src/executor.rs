@@ -45,6 +45,18 @@ pub struct NodeExecutor {
     /// Scratch slices for per-slot signal I/O — no audio-thread allocation.
     signal_out_scratch: Vec<SignalOutputSlot>,
     signal_in_scratch:  Vec<SignalInputSlot>,
+
+    /// Pre-allocated state output buffer, one per node slot.
+    /// Cleared before each `published_state()` call; capacity is retained across cycles.
+    state_bufs: Vec<Vec<(String, StateBusValue)>>,
+
+    /// Pre-allocated aggregate buffer for SPSC transfer.
+    /// Filled each cycle by extending from each slot's `state_bufs` entry.
+    /// `mem::take`'d into `StateBusUpdate` before pushing; leaves a zero-capacity
+    /// Vec that grows back to stable size within a few cycles and then never
+    /// reallocates again. One SPSC-ownership-transfer allocation per cycle is
+    /// unavoidable with the current protocol; a return channel would eliminate it.
+    agg_state_buf: Vec<(String, StateBusValue)>,
 }
 
 struct NodeSlot {
@@ -68,10 +80,10 @@ impl NodeSlot {
         }
     }
 
-    fn published_state(&self) -> Vec<(String, StateBusValue)> {
+    fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         match &self.kind {
-            NodeOrDevice::Node(m) => m.published_state(),
-            NodeOrDevice::Device(d) => d.published_state(),
+            NodeOrDevice::Node(m) => m.published_state(buf),
+            NodeOrDevice::Device(d) => d.published_state(buf),
         }
     }
 
@@ -151,6 +163,10 @@ impl NodeExecutor {
             signal_input_routes,
             signal_out_scratch: Vec::with_capacity(max_signal_outs.max(1)),
             signal_in_scratch:  Vec::with_capacity(max_signal_ins.max(1)),
+            // Pre-seed with capacity 8 so the first audio cycle does not allocate
+            // for slots that publish a small number of entries (most nodes publish ≤8).
+            state_bufs: (0..n).map(|_| Vec::with_capacity(8)).collect(),
+            agg_state_buf: Vec::with_capacity(64),
         }
     }
 
@@ -175,7 +191,7 @@ impl NodeExecutor {
         }
     }
 
-    fn build_hardware_output(&self, _entries: &[(String, StateBusValue)]) -> HardwareOutput {
+    fn build_hardware_output(&self) -> HardwareOutput {
         // LED output is now owned by the scripting layer via deliver_script_output().
         // The executor no longer auto-generates step indicators.
         HardwareOutput::empty()
@@ -329,18 +345,26 @@ impl NodeExecutor {
             }
         }
 
-        let entries: Vec<(String, StateBusValue)> = self.nodes.iter()
-            .flat_map(|s| s.published_state())
-            .collect();
+        // Collect published state into pre-allocated per-slot buffers. Vec::clear()
+        // retains capacity so per-slot buffers never reallocate after the first cycle.
+        self.agg_state_buf.clear();
+        for (slot_idx, slot) in self.nodes.iter().enumerate() {
+            self.state_bufs[slot_idx].clear();
+            slot.published_state(&mut self.state_bufs[slot_idx]);
+            self.agg_state_buf.extend_from_slice(&self.state_bufs[slot_idx]);
+        }
 
         // Devices that implement take_output_handle() handle their own output on the
         // main thread; the legacy update_output() path serves the remaining devices.
-        let hw_out = self.build_hardware_output(&entries);
+        let hw_out = self.build_hardware_output();
         for slot in &mut self.nodes {
             slot.hw_update(&hw_out);
         }
 
-        if !entries.is_empty() {
+        if !self.agg_state_buf.is_empty() {
+            // mem::take transfers ownership to the StateBusUpdate without a collect().
+            // agg_state_buf grows back to stable capacity within a few cycles.
+            let entries = std::mem::take(&mut self.agg_state_buf);
             let _ = self.state_bus_producer.push(StateBusUpdate { entries });
         }
 
@@ -360,6 +384,12 @@ impl NodeExecutor {
 
     pub fn transport(&self) -> &TransportInfo {
         &self.transport
+    }
+
+    /// Returns the capacity of the pre-allocated state buffer for slot `idx`.
+    /// Used by tests to verify no reallocation occurs after the first cycle.
+    pub fn state_buf_capacity(&self, idx: usize) -> usize {
+        self.state_bufs[idx].capacity()
     }
 }
 

@@ -431,8 +431,8 @@ impl PublishingNode {
 impl Node for PublishingNode {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
     fn process(&mut self, _: &ProcessInput, _: &mut ProcessOutput) {}
-    fn published_state(&self) -> Vec<(String, StateBusValue)> {
-        vec![(self.key.clone(), StateBusValue::Int(42))]
+    fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
+        buf.push((self.key.clone(), StateBusValue::Int(42)));
     }
 }
 
@@ -819,4 +819,23 @@ fn audio_inputs_empty_when_no_audio_edge() {
     exec.process(&mut out, 2);
 
     assert!(received.lock().unwrap().is_none(), "audio_inputs should be empty with no audio edge");
+}
+
+#[test]
+fn published_state_push_down_no_allocation_after_first_cycle() {
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+    conf.add_node(1, Box::new(PublishingNode::new("/bus/cap/value")));
+    let mut exec = conf.build_executor();
+
+    let mut out = vec![0.0f32; 64 * 2];
+    exec.process(&mut out, 2);
+    let cap_after_first = exec.state_buf_capacity(0);
+
+    exec.process(&mut out, 2);
+    let cap_after_second = exec.state_buf_capacity(0);
+
+    assert_eq!(
+        cap_after_first, cap_after_second,
+        "state_buf capacity must be stable after the first cycle (no reallocation)"
+    );
 }

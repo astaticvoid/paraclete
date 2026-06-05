@@ -511,26 +511,20 @@ impl Node for Sequencer {
         }
     }
 
-    fn published_state(&self) -> Vec<(String, StateBusValue)> {
+    fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         let id = self.node_id;
-        let mut state = vec![
-            (format!("/node/{id}/state/current_step"),   StateBusValue::Int(self.current_step as i64)),
-            (format!("/node/{id}/state/pattern_length"), StateBusValue::Int(self.pattern_length as i64)),
-            (format!("/node/{id}/state/playing"),        StateBusValue::Bool(self.playing)),
-            (format!("/node/{id}/state/steps"),          StateBusValue::Text(self.steps_bitfield())),
-            (format!("/node/{id}/state/last_trig"),      StateBusValue::Int(self.trig_count as i64)),
-            (format!("/node/{id}/state/last_fired_step"), StateBusValue::Int(self.last_fired_step as i64)),
-            (format!("/node/{id}/state/loop_count"),     StateBusValue::Int(self.cycle_state.loop_count as i64)),
-            (format!("/node/{id}/state/fill_a"),         StateBusValue::Float(if self.cycle_state.fill_a { 1.0 } else { 0.0 })),
-            (format!("/node/{id}/state/fill_b"),         StateBusValue::Float(if self.cycle_state.fill_b { 1.0 } else { 0.0 })),
-        ];
+        buf.push((format!("/node/{id}/state/current_step"),    StateBusValue::Int(self.current_step as i64)));
+        buf.push((format!("/node/{id}/state/pattern_length"),  StateBusValue::Int(self.pattern_length as i64)));
+        buf.push((format!("/node/{id}/state/playing"),         StateBusValue::Bool(self.playing)));
+        buf.push((format!("/node/{id}/state/steps"),           StateBusValue::Text(self.steps_bitfield())));
+        buf.push((format!("/node/{id}/state/last_trig"),       StateBusValue::Int(self.trig_count as i64)));
+        buf.push((format!("/node/{id}/state/last_fired_step"), StateBusValue::Int(self.last_fired_step as i64)));
+        buf.push((format!("/node/{id}/state/loop_count"),      StateBusValue::Int(self.cycle_state.loop_count as i64)));
+        buf.push((format!("/node/{id}/state/fill_a"),          StateBusValue::Float(if self.cycle_state.fill_a { 1.0 } else { 0.0 })));
+        buf.push((format!("/node/{id}/state/fill_b"),          StateBusValue::Float(if self.cycle_state.fill_b { 1.0 } else { 0.0 })));
         if !self.track_name.is_empty() {
-            state.push((
-                format!("/node/{id}/state/track_name"),
-                StateBusValue::Text(self.track_name.clone()),
-            ));
+            buf.push((format!("/node/{id}/state/track_name"), StateBusValue::Text(self.track_name.clone())));
         }
-        state
     }
 
     fn serialize(&self) -> Vec<u8> {
@@ -656,7 +650,8 @@ mod tests {
     #[test]
     fn sequencer_new_has_16_empty_steps() {
         let seq = Sequencer::new();
-        let state = seq.published_state();
+        let mut state = Vec::new();
+        seq.published_state(&mut state);
         let len = state.iter().find(|(k, _)| k.ends_with("/state/pattern_length"));
         assert!(matches!(len, Some((_, StateBusValue::Int(16)))));
     }
@@ -718,7 +713,8 @@ mod tests {
         seq.set_node_id(5);
         seq.set_step(0, 60, 32768, true);
         seq.set_step(2, 60, 32768, true);
-        let state = seq.published_state();
+        let mut state = Vec::new();
+        seq.published_state(&mut state);
         let steps = state.iter().find(|(k, _)| k.ends_with("/state/steps"));
         assert!(matches!(steps, Some((_, StateBusValue::Text(s))) if s.starts_with("10100")));
     }
@@ -727,7 +723,8 @@ mod tests {
     fn sequencer_published_state_has_track_name_when_set() {
         let mut seq = Sequencer::with_name("Kick");
         seq.set_node_id(1);
-        let state = seq.published_state();
+        let mut state = Vec::new();
+        seq.published_state(&mut state);
         let name = state.iter().find(|(k, _)| k.ends_with("/state/track_name"));
         assert!(matches!(name, Some((_, StateBusValue::Text(n))) if n == "Kick"));
     }
@@ -857,7 +854,8 @@ mod tests {
         seq.activate(44100.0, 64);
         seq.cycle_state.loop_count = 5;
         seq.cycle_state.fill_a = true;
-        let state = seq.published_state();
+        let mut state = Vec::new();
+        seq.published_state(&mut state);
 
         let lc = state.iter().find(|(k, _)| k.ends_with("/state/loop_count"));
         assert!(matches!(lc, Some((_, StateBusValue::Int(5)))));
