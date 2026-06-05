@@ -1,7 +1,7 @@
 Paraclete — P7 Implementation Report
 =====================================
 Date: June 2026
-Status: In progress — 310 tests, 0 failures (after Commit 5)
+Status: In progress — 316 tests, 0 failures (after Commit 6)
 
 Commits:
   de1db04  Paraclete P7 Commit 1 — type_name() + published_state() push-down (OQ-9)
@@ -439,15 +439,119 @@ Tests after: 310 (+3 from Commit 4)
     single_node_plugin_state_roundtrip
 
 
+Commit 6 — SubgraphPlugin + machine bank binaries (paraclete-clap)
+Tests after: 316 (+6 from Commit 5)
+
+  NodeExecutor additions (crates/paraclete-runtime/src/executor.rs)
+
+    Three new fields on NodeExecutor:
+      node_id_to_slot: HashMap<u32, usize>  — reverse map computed at construction
+        from the ordered (user_id, NodeOrDevice) list; never changes at runtime.
+      extra_events: Vec<(usize, TimedEvent)>  — pre-allocated (cap 64); drained
+        into incoming[slot_idx] after incoming.clear() and transport_override.
+      extra_cmds: Vec<NodeCommand>  — pre-allocated (cap 64); drained into
+        pending_cmds after drain_commands() clears the map.
+
+    Four new public methods on NodeExecutor:
+      inject_event_for_node(node_id, event) — guards unknown node_id at push time
+        (early-return if !node_id_to_slot.contains_key); debug_assert at capacity.
+      inject_node_command(cmd) — guards unknown target_id at push time (prevents
+        capacity-exceeding pushes for invalid IDs on the audio thread); debug_assert.
+      serialize_node(node_id) → Vec<u8> — delegates to Node::serialize() for the
+        slot at node_id; returns empty Vec for unknown IDs.
+      deserialize_node(node_id, data) — delegates to Node::deserialize(); no-op for
+        unknown IDs.
+
+    process() ordering: extra_cmds drained inside drain_commands() (after SPSC pop
+    but still before slot processing); extra_events drained after transport_override
+    block (events survive the incoming.clear() cycle boundary).
+
+  SubgraphPlugin (crates/paraclete-clap/src/subgraph.rs)
+
+    Struct: executor: NodeExecutor, gen_id: u32, bridge: ClapParamBridge,
+    sample_rate, block_size, prev_playing: bool, audio_out: Vec<f32>.
+
+    Internal topology: InternalClock(id=1) → Sequencer(id=2) → generator(gen_id).
+    The InternalClock runs autonomously at its preset BPM (120 default), driving
+    Sequencer tick events. External MIDI events from process_block() are injected
+    directly to the generator, bypassing the Sequencer; CLAP param automation
+    commands are routed to the generator via inject_node_command.
+
+    Generator event input port is discovered dynamically (first Event Input port
+    from generator.ports()) rather than hardcoded to 0; any future generator
+    with a non-zero event port will work correctly.
+
+    Safe API:
+      new(generator, gen_id, sample_rate, block_size) — discovers event port,
+        builds param bridge, calls build_machine_subgraph()
+      activate(sr, bs) — updates stored values + resizes audio_out if needed
+      deactivate() — resets prev_playing
+      process_block(transport, external_events, commands) → &[f32]
+                                     — emits global_start/stop on transition
+                                       only (prevents Sequencer step-counter resets);
+                                       routes external events to generator;
+                                       routes commands to generator; runs executor
+      send_command(cmd) — routes any NodeCommand to any subgraph node (used by
+        tests to program Sequencer steps)
+      state_save() → Vec<u8> — format: [seq_len: u32 LE][seq_bytes][gen_bytes]
+      state_load(&[u8]) — silently ignores data shorter than 4 bytes or truncated
+        seq section
+      bridge/seq_id/gen_id/sample_rate/block_size accessors
+
+    build_machine_subgraph() — private; creates NodeConfigurator, adds nodes,
+    connects clock→seq (Clock port) and seq→gen (Event port), calls build_executor().
+
+    transport_transition_event() — private; returns global_start on false→true,
+    global_stop on true→false, None on stable state.
+
+  Machine bank stub binaries (crates/paraclete-clap/src/bin/)
+
+    kick.rs, snare.rs, fm_kick.rs, fm_bell.rs, fm_bass.rs — stub binary targets.
+    Each becomes a .clap binary (cdylib) when clap-sys is introduced. The CLAP
+    FFI entry points (clap_plugin_entry, extern "C" lifecycle callbacks) are added
+    at that time. The stubs establish the binary target names in the workspace.
+
+  Code review findings and fixes
+
+    Finding 1 (FIXED): inject_node_command did not guard unknown target_id at push
+      time. Commands with invalid IDs could fill extra_cmds past capacity, causing
+      allocation on the audio thread. Fixed: early-return if
+      !self.node_id_to_slot.contains_key(&cmd.target_id).
+    Finding 2 (FIXED): generator event port hardcoded as literal 0. Any future
+      generator with PORT_EVENTS_IN != 0 would panic at construction. Fixed: discover
+      the first Event Input port from generator.ports() before moving the generator
+      into the graph.
+    Finding 3 (FIXED): state_roundtrip test did not assert saved bytes differ from
+      default. Added assert_ne!(saved, kick_plugin().state_save()) so a constant
+      serialize() would fail the test.
+    Finding 4 (NOTED, P8): InternalClock always plays in CLAP mode — it initialises
+      playing=true and ignores global_stop from input.events. Sequencer correctly
+      stops on global_stop; InternalClock keeps ticking. The double global_start
+      (InternalClock's first_tick + DAW override) is idempotent. Architectural fix
+      (InternalClock responds to Transport input events) deferred to P8.
+    Finding 5 (FIXED): extra_events/extra_cmds capacity limit undocumented. Added
+      debug_assert! at capacity in both inject methods to catch overflows in debug
+      builds before they reach the audio thread.
+    Finding 6 (FIXED): SEQ_ID declared pub inside pub(crate) module with dead pub
+      annotation. Changed to pub(crate); SUBGRAPH_SEQ_ID re-export removed from
+      lib.rs (tests use a local const = 2 instead).
+
+  Tests added (+6, all in crates/paraclete-clap/tests/subgraph_tests.rs)
+
+    subgraph_plugin_init_activate_deactivate_no_panic
+    subgraph_plugin_direct_note_on_produces_audio — external NoteOn injected to
+      generator; asserts non-silent output (max > 1e-5) after 3 blocks
+    subgraph_plugin_state_roundtrip — step 1 enabled; save/load round-trip;
+      assert saved != default AND save == restore
+    subgraph_plugin_seq_command_reaches_sequencer — CMD_TOGGLE_STEP changes bytes
+    subgraph_plugin_gen_command_reaches_generator — CMD_SET_PARAM to generator
+    subgraph_plugin_fm_engine_variant_no_panic — FmEngine::bass() variant
+
+
 PENDING
 -------
 
-Commit 6 — SubgraphPlugin + machine bank binaries (paraclete-clap)
-  Target: ~313 tests
-
-  (to be filled when Commit 6 lands)
-
 Commit 7 — crates.io publication prep (paraclete-node-api v0.1.0)
-  Target: ≥310 tests (310 was the original spec target; Commit 6 may overshoot)
+  Target: ≥316 tests
 
   (to be filled when Commit 7 lands)

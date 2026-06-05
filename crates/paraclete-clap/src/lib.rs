@@ -8,6 +8,7 @@ pub mod bridge;
 pub mod transport;
 
 pub use single_node::SingleNodePlugin;
+pub use subgraph::SubgraphPlugin;
 
 pub(crate) mod plugin;
 pub(crate) mod process_input;

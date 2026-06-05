@@ -64,6 +64,19 @@ pub struct NodeExecutor {
     /// Cleared after each `process()` call. Not set in standalone mode
     /// (InternalClock drives transport in that case). See ADR-024.
     transport_override: Option<(TransportInfo, Option<TransportEvent>)>,
+
+    /// Reverse map: node user_id → slot index. Computed at construction; never changes.
+    node_id_to_slot: HashMap<u32, usize>,
+
+    /// Per-node events staged by `inject_event_for_node()`.
+    /// Pairs of (slot_idx, event) applied to `incoming` after `incoming.clear()`.
+    /// Pre-allocated; drained each cycle.
+    extra_events: Vec<(usize, TimedEvent)>,
+
+    /// NodeCommands staged by `inject_node_command()`.
+    /// Applied to `pending_cmds` after `drain_commands()`.
+    /// Pre-allocated; drained each cycle.
+    extra_cmds: Vec<NodeCommand>,
 }
 
 struct NodeSlot {
@@ -136,6 +149,10 @@ impl NodeExecutor {
         state_bus_producer: rtrb::Producer<StateBusUpdate>,
         cmd_consumer: rtrb::Consumer<NodeCommand>,
     ) -> Self {
+        let node_id_to_slot: HashMap<u32, usize> = nodes.iter().enumerate()
+            .map(|(idx, (id, _))| (*id, idx))
+            .collect();
+
         let n = nodes.len();
         let mut pending_cmds = HashMap::new();
         let slots = nodes.into_iter().map(|(id, kind)| {
@@ -175,6 +192,9 @@ impl NodeExecutor {
             state_bufs: (0..n).map(|_| Vec::with_capacity(8)).collect(),
             agg_state_buf: Vec::with_capacity(64),
             transport_override: None,
+            node_id_to_slot,
+            extra_events: Vec::with_capacity(64),
+            extra_cmds:   Vec::with_capacity(64),
         }
     }
 
@@ -194,6 +214,63 @@ impl NodeExecutor {
         self.transport_override = Some((info, event));
     }
 
+    /// Stage a `TimedEvent` for delivery to `node_id` in the next `process()` call.
+    ///
+    /// The event is placed into the target node's incoming queue **after**
+    /// `incoming.clear()` (and after any transport override event), so it
+    /// survives the start-of-cycle reset. No-op if `node_id` is not in the graph.
+    pub fn inject_event_for_node(&mut self, node_id: u32, event: TimedEvent) {
+        if let Some(&slot_idx) = self.node_id_to_slot.get(&node_id) {
+            debug_assert!(
+                self.extra_events.len() < self.extra_events.capacity(),
+                "extra_events at capacity ({}); next push will allocate on the audio thread",
+                self.extra_events.capacity(),
+            );
+            self.extra_events.push((slot_idx, event));
+        }
+    }
+
+    /// Stage a `NodeCommand` for delivery in the next `process()` call.
+    ///
+    /// The command is inserted into `pending_cmds` **after** `drain_commands()`
+    /// clears the map, so it is not wiped on the cycle boundary. No-op if
+    /// `cmd.target_id` is not in the graph.
+    pub fn inject_node_command(&mut self, cmd: NodeCommand) {
+        if !self.node_id_to_slot.contains_key(&cmd.target_id) {
+            return;
+        }
+        debug_assert!(
+            self.extra_cmds.len() < self.extra_cmds.capacity(),
+            "extra_cmds at capacity ({}); next push will allocate on the audio thread",
+            self.extra_cmds.capacity(),
+        );
+        self.extra_cmds.push(cmd);
+    }
+
+    /// Serialise a node's private state. Returns the byte blob from `Node::serialize()`.
+    /// Returns an empty `Vec` if `node_id` is not in the graph.
+    pub fn serialize_node(&self, node_id: u32) -> Vec<u8> {
+        if let Some(&slot_idx) = self.node_id_to_slot.get(&node_id) {
+            match &self.nodes[slot_idx].kind {
+                crate::configurator::NodeOrDevice::Node(n)   => n.serialize(),
+                crate::configurator::NodeOrDevice::Device(d) => d.serialize(),
+            }
+        } else {
+            vec![]
+        }
+    }
+
+    /// Deserialise a node's private state from a previously saved byte blob.
+    /// No-op if `node_id` is not in the graph.
+    pub fn deserialize_node(&mut self, node_id: u32, data: &[u8]) {
+        if let Some(&slot_idx) = self.node_id_to_slot.get(&node_id) {
+            match &mut self.nodes[slot_idx].kind {
+                crate::configurator::NodeOrDevice::Node(n)   => n.deserialize(data),
+                crate::configurator::NodeOrDevice::Device(d) => d.deserialize(data),
+            }
+        }
+    }
+
     fn apply_messages(&mut self) {
         while let Some(msg) = self.receiver.try_recv() {
             match msg {
@@ -209,6 +286,13 @@ impl NodeExecutor {
             cmds.clear();
         }
         while let Ok(cmd) = self.cmd_consumer.pop() {
+            if let Some(cmds) = self.pending_cmds.get_mut(&cmd.target_id) {
+                cmds.push(cmd);
+            }
+        }
+        // Apply commands staged by inject_node_command() — after clearing so they
+        // survive the cycle boundary.
+        for cmd in self.extra_cmds.drain(..) {
             if let Some(cmds) = self.pending_cmds.get_mut(&cmd.target_id) {
                 cmds.push(cmd);
             }
@@ -242,6 +326,14 @@ impl NodeExecutor {
                 for queue in &mut self.incoming {
                     queue.push(timed);
                 }
+            }
+        }
+
+        // Apply per-node events staged by inject_event_for_node() — after
+        // transport_override so injected events land alongside (not before) it.
+        for (slot_idx, event) in self.extra_events.drain(..) {
+            if slot_idx < self.incoming.len() {
+                self.incoming[slot_idx].push(event);
             }
         }
 
