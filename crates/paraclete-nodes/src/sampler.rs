@@ -1,5 +1,10 @@
 use std::collections::HashMap;
 
+use rubato::{
+    Resampler, SincFixedIn, SincFixedOut, SincInterpolationParameters, SincInterpolationType,
+    WindowFunction,
+};
+
 use paraclete_node_api::{
     CapabilityDocument, ConnectionAgreement, ConnectionRecord, Event, LockableParam,
     Negotiable, Node, ParamDescriptor, ParamUnit,
@@ -26,6 +31,55 @@ struct ActiveParamLock {
     locked_value: f64,
 }
 
+// ── Per-voice sinc resampler (P7) ─────────────────────────────────────────────
+
+/// Maximum ratio change relative to the initial ratio (1.0).
+/// Covers ±4 octaves (ratio range [1/16, 16]). Notes outside this range are
+/// clamped to the limit rather than falling back to linear interpolation.
+const RUBATO_MAX_RATIO: f64 = 16.0;
+
+struct VoiceResampler {
+    rs: SincFixedOut<f32>,
+    input: Vec<Vec<f32>>,
+    output: Vec<Vec<f32>>,
+    ratio: f64,
+}
+
+impl VoiceResampler {
+    fn new(block_size: usize) -> Self {
+        let rs = SincFixedOut::<f32>::new(
+            1.0,
+            RUBATO_MAX_RATIO,
+            SincInterpolationParameters {
+                sinc_len: 256,
+                f_cutoff: 0.95,
+                interpolation: SincInterpolationType::Linear,
+                oversampling_factor: 256,
+                window: WindowFunction::BlackmanHarris2,
+            },
+            block_size,
+            1,
+        ).expect("SincFixedOut init");
+        let max_in = rs.input_frames_max();
+        Self {
+            input: vec![vec![0.0_f32; max_in]; 1],
+            output: vec![vec![0.0_f32; block_size]; 1],
+            ratio: 1.0,
+            rs,
+        }
+    }
+
+    fn set_ratio(&mut self, ratio: f64) {
+        let clamped = ratio.clamp(1.0 / RUBATO_MAX_RATIO, RUBATO_MAX_RATIO);
+        // reset() must precede set_resample_ratio(): reset() restores ratio to original (1.0)
+        // and recalculates needed_input_size from that baseline; set_resample_ratio() then
+        // applies the new ratio and updates needed_input_size correctly.
+        self.rs.reset();
+        let _ = self.rs.set_resample_ratio(clamped, false);
+        self.ratio = clamped;
+    }
+}
+
 // ── Voice ──────────────────────────────────────────────────────────────────────
 
 struct Voice {
@@ -36,6 +90,7 @@ struct Voice {
     triggered_at: u64,
     env_value: f32,
     env_phase: EnvPhaseSimple,
+    resampler: Option<VoiceResampler>,
 }
 
 impl Voice {
@@ -44,10 +99,11 @@ impl Voice {
             active: false,
             note: 0,
             playback_pos: 0.0,
-            active_locks: HashMap::with_capacity(9), // pitch/vol/pan/start/end/attack/release/loop/slice
+            active_locks: HashMap::with_capacity(9),
             triggered_at: 0,
             env_value: 1.0,
             env_phase: EnvPhaseSimple::Done,
+            resampler: None,
         }
     }
 
@@ -55,6 +111,38 @@ impl Voice {
         self.active_locks.get(&param_id)
             .map(|l| l.locked_value)
             .unwrap_or(base)
+    }
+}
+
+// ── Envelope helper ───────────────────────────────────────────────────────────
+
+/// Advance the per-voice envelope by one sample frame.
+/// Returns `Some(env_value)` while playing, `None` when the voice should deactivate.
+#[inline]
+fn advance_envelope(
+    env_phase: &mut EnvPhaseSimple,
+    env_value: &mut f32,
+    attack_inc: f32,
+    release_coeff: f32,
+) -> Option<f32> {
+    match env_phase {
+        EnvPhaseSimple::Attack => {
+            *env_value += attack_inc;
+            if *env_value >= 1.0 {
+                *env_value = 1.0;
+                *env_phase = EnvPhaseSimple::Release;
+            }
+            Some(*env_value)
+        }
+        EnvPhaseSimple::Release => {
+            *env_value *= release_coeff;
+            if *env_value < 1.0e-5 {
+                *env_value = 0.0;
+                *env_phase = EnvPhaseSimple::Done;
+            }
+            Some(*env_value)
+        }
+        EnvPhaseSimple::Done => None,
     }
 }
 
@@ -66,16 +154,17 @@ fn sampler_capability_document() -> CapabilityDocument {
     CapabilityDocument {
         name: "Sampler",
         vendor: "Paraclete",
-        version: (0, 4, 0),
+        version: (0, 5, 0),
         ports: vec![],
         params: vec![
-            ParamDescriptor { id: param_hash("pitch"),   name: "pitch".into(),   min: -24.0, max: 24.0, default: 0.0,   stepped: false, unit: ParamUnit::Semitones, display: None },
-            ParamDescriptor { id: param_hash("volume"),  name: "volume".into(),  min: 0.0,   max: 1.0,  default: 1.0,   stepped: false, unit: ParamUnit::Generic,   display: None },
-            ParamDescriptor { id: param_hash("pan"),     name: "pan".into(),     min: -1.0,  max: 1.0,  default: 0.0,   stepped: false, unit: ParamUnit::Generic,   display: None },
-            ParamDescriptor { id: param_hash("start"),   name: "start".into(),   min: 0.0,   max: 1.0,  default: 0.0,   stepped: false, unit: ParamUnit::Percent,   display: None },
-            ParamDescriptor { id: param_hash("end"),     name: "end".into(),     min: 0.0,   max: 1.0,  default: 1.0,   stepped: false, unit: ParamUnit::Percent,   display: None },
-            ParamDescriptor { id: param_hash("attack"),  name: "attack".into(),  min: 0.001, max: 1.0,  default: 0.005, stepped: false, unit: ParamUnit::Seconds,   display: None },
-            ParamDescriptor { id: param_hash("release"), name: "release".into(), min: 0.0,   max: 4.0,  default: 0.1,   stepped: false, unit: ParamUnit::Seconds,   display: None },
+            ParamDescriptor { id: param_hash("pitch"),     name: "pitch".into(),     min: -24.0, max: 24.0,  default: 0.0,   stepped: false, unit: ParamUnit::Semitones, display: None },
+            ParamDescriptor { id: param_hash("volume"),    name: "volume".into(),    min: 0.0,   max: 1.0,   default: 1.0,   stepped: false, unit: ParamUnit::Generic,   display: None },
+            ParamDescriptor { id: param_hash("pan"),       name: "pan".into(),       min: -1.0,  max: 1.0,   default: 0.0,   stepped: false, unit: ParamUnit::Generic,   display: None },
+            ParamDescriptor { id: param_hash("start"),     name: "start".into(),     min: 0.0,   max: 1.0,   default: 0.0,   stepped: false, unit: ParamUnit::Percent,   display: None },
+            ParamDescriptor { id: param_hash("end"),       name: "end".into(),       min: 0.0,   max: 1.0,   default: 1.0,   stepped: false, unit: ParamUnit::Percent,   display: None },
+            ParamDescriptor { id: param_hash("attack"),    name: "attack".into(),    min: 0.001, max: 1.0,   default: 0.005, stepped: false, unit: ParamUnit::Seconds,   display: None },
+            ParamDescriptor { id: param_hash("release"),   name: "release".into(),   min: 0.0,   max: 4.0,   default: 0.1,   stepped: false, unit: ParamUnit::Seconds,   display: None },
+            ParamDescriptor { id: param_hash("root_note"), name: "root_note".into(), min: 0.0,   max: 127.0, default: 60.0,  stepped: true,  unit: ParamUnit::Generic,   display: None },
         ],
         extensions: vec!["paraclete.instrument"],
     }
@@ -115,7 +204,6 @@ pub struct Sampler {
     last_triggered_note: u8,
 
     output_sample_rate: f32,
-    root_note: u8,
 
     sample_path: Option<String>,
     pub(crate) connection_records: Vec<ConnectionRecord>,
@@ -163,7 +251,6 @@ impl Sampler {
             samp_trig_count: 0,
             last_triggered_note: 0,
             output_sample_rate: 44100.0,
-            root_note: 60,
             sample_path,
             connection_records: Vec::new(),
             render_l: Vec::new(),
@@ -179,6 +266,7 @@ impl Sampler {
             || param_id == param_hash("end")
             || param_id == param_hash("attack")
             || param_id == param_hash("release")
+            || param_id == param_hash("root_note")
             || param_id == param_hash("loop")
             || param_id == param_hash("slice")
     }
@@ -192,6 +280,7 @@ impl Sampler {
             || param_id == param_hash("end")
             || param_id == param_hash("attack")
             || param_id == param_hash("release")
+            || param_id == param_hash("root_note")
         {
             return self.bank.get(param_id);
         }
@@ -218,6 +307,13 @@ impl Sampler {
                     .unwrap_or(0)
             });
 
+        // Compute rubato ratio for this trigger.
+        let root_note = self.bank.get(param_hash("root_note"));
+        let pitch_offset = self.effective_node(param_hash("pitch"));
+        let note_diff = note as f64 - root_note + pitch_offset;
+        let pitch_factor = 2.0_f64.powf(note_diff / 12.0);
+        let ratio = self.output_sample_rate as f64 / (self.sample_rate_native as f64 * pitch_factor);
+
         let voice = &mut self.voices[voice_idx];
         voice.active = true;
         voice.note = note;
@@ -226,6 +322,10 @@ impl Sampler {
         voice.active_locks.clear();
         voice.env_value = 0.0;
         voice.env_phase = EnvPhaseSimple::Attack;
+
+        if let Some(ref mut vrs) = voice.resampler {
+            vrs.set_ratio(ratio);
+        }
 
         for (param_id, lock) in &self.node_locks {
             voice.active_locks.insert(*param_id, lock.clone());
@@ -300,6 +400,12 @@ impl Node for Sampler {
             }
         } else {
             self.slices = vec![(0, self.sample_frames.max(1))];
+        }
+
+        // Pre-allocate per-voice sinc resamplers. SincFixedOut::new() allocates the
+        // filter coefficients on the main thread; process() never reallocates.
+        for voice in &mut self.voices {
+            voice.resampler = Some(VoiceResampler::new(block_size));
         }
     }
 
@@ -387,7 +493,7 @@ impl Node for Sampler {
 
         let native_sr = self.sample_rate_native;
         let output_sr = self.output_sample_rate;
-        let root_note = self.root_note;
+        let root_note = self.bank.get(param_hash("root_note")) as u8;
 
         // Envelope parameters — precomputed to avoid per-sample HashMap lookups.
         let eff_attack_s  = self.effective_node(param_hash("attack"))  as f32;
@@ -402,58 +508,115 @@ impl Node for Sampler {
         for voice in self.voices.iter_mut() {
             if !voice.active { continue; }
 
+            // Recompute note pitch each block so live CMD_BUMP_PARAM changes take effect.
             let voice_pitch = voice.effective(param_hash("pitch"), node_pitch) + pitch_mod;
             let note_diff = voice.note as f64 - root_note as f64 + voice_pitch;
-            let playback_rate = 2.0_f64.powf(note_diff / 12.0)
-                * native_sr as f64 / output_sr as f64;
+            let pitch_factor = 2.0_f64.powf(note_diff / 12.0);
+            let current_ratio = (output_sr as f64 / (native_sr as f64 * pitch_factor))
+                .clamp(1.0 / RUBATO_MAX_RATIO, RUBATO_MAX_RATIO);
 
-            let mut deactivate = false;
-            for frame in 0..block_size {
-                // Advance envelope
-                let env = match voice.env_phase {
-                    EnvPhaseSimple::Attack => {
-                        voice.env_value += attack_inc;
-                        if voice.env_value >= 1.0 {
-                            voice.env_value = 1.0;
-                            voice.env_phase = EnvPhaseSimple::Release;
-                        }
-                        voice.env_value
-                    }
-                    EnvPhaseSimple::Release => {
-                        voice.env_value *= release_coeff;
-                        if voice.env_value < 1.0e-5 {
-                            voice.env_value = 0.0;
-                            voice.env_phase = EnvPhaseSimple::Done;
-                        }
-                        voice.env_value
-                    }
-                    EnvPhaseSimple::Done => {
-                        deactivate = true;
-                        break;
-                    }
-                };
-
-                let abs_pos = start_frame as f64 + voice.playback_pos;
-                if abs_pos < end_frame as f64 {
-                    let idx = abs_pos as usize;
-                    let frac = (abs_pos - idx as f64) as f32;
-                    let s0 = sample_data.get(idx).copied().unwrap_or(0.0);
-                    let s1 = sample_data.get(idx + 1).copied().unwrap_or(0.0);
-                    let sample = s0 + (s1 - s0) * frac;
-                    self.render_l[frame] += sample * vol * pan_l * env;
-                    self.render_r[frame] += sample * vol * pan_r * env;
-                    voice.playback_pos += playback_rate;
-                } else if looping {
-                    voice.playback_pos = 0.0;
-                } else {
-                    deactivate = true;
-                    break;
+            // Push ratio update to rubato if pitch changed since last block (no reset — mid-voice).
+            if let Some(ref mut vrs) = voice.resampler {
+                if (current_ratio - vrs.ratio).abs() > 1e-6 {
+                    let _ = vrs.rs.set_resample_ratio(current_ratio, false);
+                    vrs.ratio = current_ratio;
                 }
             }
 
-            if deactivate {
-                voice.active = false;
-                voice.active_locks.clear();
+            let use_rubato = (current_ratio - 1.0).abs() > 1e-4 && voice.resampler.is_some();
+
+            if use_rubato {
+                // ── Rubato path: block-rate sinc resampling ──────────────────
+                let (new_pos, past_end) = {
+                    let vrs = voice.resampler.as_mut().unwrap();
+                    let needed = vrs.rs.input_frames_next();
+                    vrs.input[0].resize(needed, 0.0);
+                    for i in 0..needed {
+                        let abs = start_frame as f64 + voice.playback_pos + i as f64;
+                        if abs < end_frame as f64 {
+                            let idx = abs as usize;
+                            let frac = (abs - idx as f64) as f32;
+                            let s0 = sample_data.get(idx).copied().unwrap_or(0.0);
+                            let s1 = sample_data.get(idx + 1).copied().unwrap_or(0.0);
+                            vrs.input[0][i] = s0 + (s1 - s0) * frac;
+                        } else {
+                            vrs.input[0][i] = 0.0;
+                        }
+                    }
+                    let _ = Resampler::process_into_buffer(
+                        &mut vrs.rs,
+                        vrs.input.as_slice(),
+                        vrs.output.as_mut_slice(),
+                        None,
+                    );
+                    let new_pos = voice.playback_pos + needed as f64;
+                    let past_end = start_frame as f64 + new_pos >= end_frame as f64;
+                    (new_pos, past_end)
+                };
+
+                let mut deactivate = false;
+                if past_end {
+                    if looping { voice.playback_pos = 0.0; } else { deactivate = true; }
+                } else {
+                    voice.playback_pos = new_pos;
+                }
+
+                if !deactivate {
+                    let out = &voice.resampler.as_ref().unwrap().output[0];
+                    for frame in 0..block_size {
+                        let Some(env) = advance_envelope(
+                            &mut voice.env_phase, &mut voice.env_value,
+                            attack_inc, release_coeff,
+                        ) else {
+                            deactivate = true;
+                            break;
+                        };
+                        let sample = out.get(frame).copied().unwrap_or(0.0);
+                        self.render_l[frame] += sample * vol * pan_l * env;
+                        self.render_r[frame] += sample * vol * pan_r * env;
+                    }
+                }
+
+                if deactivate {
+                    voice.active = false;
+                    voice.active_locks.clear();
+                }
+            } else {
+                // ── Bypass path: linear interpolation ────────────────────────
+                let playback_rate = pitch_factor * native_sr as f64 / output_sr as f64;
+
+                let mut deactivate = false;
+                for frame in 0..block_size {
+                    let Some(env) = advance_envelope(
+                        &mut voice.env_phase, &mut voice.env_value,
+                        attack_inc, release_coeff,
+                    ) else {
+                        deactivate = true;
+                        break;
+                    };
+
+                    let abs_pos = start_frame as f64 + voice.playback_pos;
+                    if abs_pos < end_frame as f64 {
+                        let idx = abs_pos as usize;
+                        let frac = (abs_pos - idx as f64) as f32;
+                        let s0 = sample_data.get(idx).copied().unwrap_or(0.0);
+                        let s1 = sample_data.get(idx + 1).copied().unwrap_or(0.0);
+                        let sample = s0 + (s1 - s0) * frac;
+                        self.render_l[frame] += sample * vol * pan_l * env;
+                        self.render_r[frame] += sample * vol * pan_r * env;
+                        voice.playback_pos += playback_rate;
+                    } else if looping {
+                        voice.playback_pos = 0.0;
+                    } else {
+                        deactivate = true;
+                        break;
+                    }
+                }
+
+                if deactivate {
+                    voice.active = false;
+                    voice.active_locks.clear();
+                }
             }
         }
 
@@ -486,12 +649,11 @@ impl Node for Sampler {
     }
 
     fn serialize(&self) -> Vec<u8> {
-        let mut buf = vec![2u8]; // version 2: bank-based params
+        let mut buf = vec![3u8]; // version 3: bank-based params including root_note
         let path = self.sample_path.as_deref().unwrap_or("");
         let path_bytes = path.as_bytes();
         buf.extend_from_slice(&(path_bytes.len() as u16).to_le_bytes());
         buf.extend_from_slice(path_bytes);
-        buf.push(self.root_note);
         for &val in &[
             self.bank.get(param_hash("pitch")),
             self.bank.get(param_hash("volume")),
@@ -500,6 +662,7 @@ impl Node for Sampler {
             self.bank.get(param_hash("end")),
             self.bank.get(param_hash("attack")),
             self.bank.get(param_hash("release")),
+            self.bank.get(param_hash("root_note")),
         ] {
             buf.extend_from_slice(&val.to_le_bytes());
         }
@@ -509,7 +672,9 @@ impl Node for Sampler {
     }
 
     fn deserialize(&mut self, data: &[u8]) {
-        if data.is_empty() || data[0] != 2 { return; }
+        if data.is_empty() { return; }
+        let version = data[0];
+        if version != 2 && version != 3 { return; }
         let mut cur = 1usize;
 
         if cur + 2 > data.len() { return; }
@@ -521,15 +686,19 @@ impl Node for Sampler {
         cur += path_len;
         self.sample_path = if path.is_empty() { None } else { Some(path) };
 
-        if cur >= data.len() { return; }
-        self.root_note = data[cur]; cur += 1;
-
         macro_rules! read_f64 {
             () => {{
                 if cur + 8 > data.len() { return; }
                 let v = f64::from_le_bytes(data[cur..cur + 8].try_into().unwrap());
                 cur += 8; v
             }};
+        }
+
+        if version == 2 {
+            // v2: root_note was stored as a raw byte before the f64 params.
+            if cur >= data.len() { return; }
+            let root_note_byte = data[cur].min(127) as f64; cur += 1;
+            self.bank.set(param_hash("root_note"), root_note_byte);
         }
 
         self.bank.set(param_hash("pitch"),   read_f64!());
@@ -539,6 +708,10 @@ impl Node for Sampler {
         self.bank.set(param_hash("end"),     read_f64!());
         self.bank.set(param_hash("attack"),  read_f64!());
         self.bank.set(param_hash("release"), read_f64!());
+
+        if version == 3 {
+            self.bank.set(param_hash("root_note"), read_f64!());
+        }
 
         if cur >= data.len() { return; }
         self.base_loop = data[cur] != 0; cur += 1;
@@ -614,11 +787,6 @@ fn resample_sinc(samples: &[f32], from_rate: f32, to_rate: f32) -> Result<Vec<f3
     if samples.is_empty() {
         return Ok(vec![]);
     }
-
-    use rubato::{
-        Resampler, SincFixedIn, SincInterpolationType, SincInterpolationParameters,
-        WindowFunction,
-    };
 
     let ratio = to_rate as f64 / from_rate as f64;
     let chunk = 512usize;
@@ -760,10 +928,10 @@ mod tests {
     }
 
     #[test]
-    fn sampler_capability_document_has_7_params() {
-        // pitch, volume, pan, start, end, attack, release
+    fn sampler_capability_document_has_8_params() {
+        // pitch, volume, pan, start, end, attack, release, root_note
         let s = Sampler::new();
-        assert_eq!(s.capability_document().params.len(), 7);
+        assert_eq!(s.capability_document().params.len(), 8);
     }
 
     #[test]
@@ -773,11 +941,11 @@ mod tests {
     }
 
     #[test]
-    fn sampler_negotiate_returns_7_lockable_params() {
+    fn sampler_negotiate_returns_8_lockable_params() {
         let mut s = Sampler::new();
         let their_doc = CapabilityDocument::from_ports(&[]);
         let agreement = s.negotiate(&their_doc);
-        assert_eq!(agreement.lockable_params.len(), 7);
+        assert_eq!(agreement.lockable_params.len(), 8);
     }
 
     #[test]
@@ -884,32 +1052,32 @@ mod tests {
     #[test]
     fn sampler_serialize_deserialize_round_trip() {
         let mut s = Sampler::new();
-        s.bank.set(param_hash("pitch"),  2.0);
-        s.bank.set(param_hash("volume"), 0.5);
-        s.bank.set(param_hash("pan"),   -0.3);
-        s.bank.set(param_hash("start"),  0.1);
-        s.bank.set(param_hash("end"),    0.9);
-        s.bank.set(param_hash("attack"), 0.05);
-        s.bank.set(param_hash("release"), 0.8);
+        s.bank.set(param_hash("pitch"),     2.0);
+        s.bank.set(param_hash("volume"),    0.5);
+        s.bank.set(param_hash("pan"),      -0.3);
+        s.bank.set(param_hash("start"),     0.1);
+        s.bank.set(param_hash("end"),       0.9);
+        s.bank.set(param_hash("attack"),    0.05);
+        s.bank.set(param_hash("release"),   0.8);
+        s.bank.set(param_hash("root_note"), 69.0);
         s.base_loop = true;
         s.base_slice = 3;
-        s.root_note = 69;
         s.sample_path = Some("samples/kick.wav".to_string());
 
         let data = s.serialize();
         let mut t = Sampler::new();
         t.deserialize(&data);
 
-        assert!((t.bank.get(param_hash("pitch"))   - 2.0).abs() < 1e-9);
-        assert!((t.bank.get(param_hash("volume"))  - 0.5).abs() < 1e-9);
-        assert!((t.bank.get(param_hash("pan"))     - (-0.3)).abs() < 1e-9);
-        assert!((t.bank.get(param_hash("start"))   - 0.1).abs() < 1e-9);
-        assert!((t.bank.get(param_hash("end"))     - 0.9).abs() < 1e-9);
-        assert!((t.bank.get(param_hash("attack"))  - 0.05).abs() < 1e-9);
-        assert!((t.bank.get(param_hash("release")) - 0.8).abs() < 1e-9);
+        assert!((t.bank.get(param_hash("pitch"))     - 2.0).abs() < 1e-9);
+        assert!((t.bank.get(param_hash("volume"))    - 0.5).abs() < 1e-9);
+        assert!((t.bank.get(param_hash("pan"))       - (-0.3)).abs() < 1e-9);
+        assert!((t.bank.get(param_hash("start"))     - 0.1).abs() < 1e-9);
+        assert!((t.bank.get(param_hash("end"))       - 0.9).abs() < 1e-9);
+        assert!((t.bank.get(param_hash("attack"))    - 0.05).abs() < 1e-9);
+        assert!((t.bank.get(param_hash("release"))   - 0.8).abs() < 1e-9);
+        assert!((t.bank.get(param_hash("root_note")) - 69.0).abs() < 1e-9);
         assert!(t.base_loop);
         assert_eq!(t.base_slice, 3);
-        assert_eq!(t.root_note, 69);
         assert_eq!(t.sample_path.as_deref(), Some("samples/kick.wav"));
     }
 
@@ -1104,6 +1272,109 @@ mod tests {
         let buf = run_sampler(&mut s, &[make_note_on(60)]);
         assert!(buf.channel(0).iter().any(|&x| x.abs() > 0.0),
             "pitch +12 should still produce audio");
+    }
+
+    // ── P7: Per-voice rubato tests ────────────────────────────────────────────
+
+    #[test]
+    fn sampler_rubato_nonunity_pitch_produces_audio() {
+        // pitch=+6 semitones → ratio ≠ 1.0 → rubato path; verify audio is emitted.
+        let frames = 4096usize;
+        let mut s = Sampler::new();
+        s.set_node_id(1);
+        load_test_sample(&mut s, frames);
+        let bump = NodeCommand { target_id: 1, type_id: CMD_BUMP_PARAM, arg0: param_hash("pitch") as i64, arg1: 6.0 };
+        let _ = run_sampler_with_cmds(&mut s, &[], &[bump]);
+        let buf = run_sampler(&mut s, &[make_note_on(60)]);
+        assert!(buf.channel(0).iter().any(|&x| x.abs() > 0.0),
+            "pitch+6 (rubato path) should produce audio");
+    }
+
+    #[test]
+    fn sampler_rubato_pitch_down_12_semitones_voice_survives_more_blocks() {
+        // pitch=-12 → half-speed playback (ratio≈2.0 in rubato terms).
+        // The sinc filter (sinc_len=256) has a warmup cost of ~sinc_len/2=128 frames on
+        // the first call, so samples must be much longer than a single block to remain
+        // active across multiple blocks.
+        // Use a 512-frame sample with block=64.
+        let frames = 512usize;
+
+        let mut s_fast = Sampler::new();
+        s_fast.set_node_id(1);
+        s_fast.sample_data = vec![0.5; frames];
+        s_fast.sample_rate_native = 44100.0;
+        s_fast.sample_frames = frames;
+        s_fast.slices = vec![(0, frames)];
+        s_fast.activate(44100.0, 64);
+        let _ = run_sampler(&mut s_fast, &[make_note_on(60)]);  // block 1
+        let _ = run_sampler(&mut s_fast, &[]);                   // block 2
+        let active_fast = s_fast.voices.iter().filter(|v| v.active).count();
+
+        let mut s_slow = Sampler::new();
+        s_slow.set_node_id(1);
+        s_slow.sample_data = vec![0.5; frames];
+        s_slow.sample_rate_native = 44100.0;
+        s_slow.sample_frames = frames;
+        s_slow.slices = vec![(0, frames)];
+        s_slow.activate(44100.0, 64);
+        let bump = NodeCommand { target_id: 1, type_id: CMD_BUMP_PARAM, arg0: param_hash("pitch") as i64, arg1: -12.0 };
+        let _ = run_sampler_with_cmds(&mut s_slow, &[], &[bump]);
+        let _ = run_sampler(&mut s_slow, &[make_note_on(60)]);  // block 1
+        let _ = run_sampler(&mut s_slow, &[]);                   // block 2
+        let active_slow = s_slow.voices.iter().filter(|v| v.active).count();
+
+        assert!(active_slow >= active_fast,
+            "pitch=-12 voice should survive at least as long as pitch=0: slow_active={active_slow} fast_active={active_fast}");
+    }
+
+    #[test]
+    fn sampler_root_note_param_affects_playback_ratio() {
+        // root_note=72 (C5) with note=60 gives note_diff=-12 → half-speed (rubato ratio=2.0).
+        // root_note=60 (C4) with note=60 gives note_diff=0  → unity speed (bypass path).
+        // Use a 512-frame sample; sinc warmup needs ~160 frames so must exceed that.
+        let frames = 512usize;
+
+        let mut s_unity = Sampler::new();
+        s_unity.set_node_id(1);
+        s_unity.sample_data = vec![0.5; frames];
+        s_unity.sample_rate_native = 44100.0;
+        s_unity.sample_frames = frames;
+        s_unity.slices = vec![(0, frames)];
+        s_unity.bank.set(param_hash("root_note"), 60.0); // default
+        s_unity.activate(44100.0, 64);
+        let _ = run_sampler(&mut s_unity, &[make_note_on(60)]);
+        let _ = run_sampler(&mut s_unity, &[]);
+        let active_unity = s_unity.voices.iter().filter(|v| v.active).count();
+
+        let mut s_slow = Sampler::new();
+        s_slow.set_node_id(1);
+        s_slow.sample_data = vec![0.5; frames];
+        s_slow.sample_rate_native = 44100.0;
+        s_slow.sample_frames = frames;
+        s_slow.slices = vec![(0, frames)];
+        s_slow.bank.set(param_hash("root_note"), 72.0); // one octave higher root → note 60 plays slow
+        s_slow.activate(44100.0, 64);
+        let _ = run_sampler(&mut s_slow, &[make_note_on(60)]);
+        let _ = run_sampler(&mut s_slow, &[]);
+        let active_slow = s_slow.voices.iter().filter(|v| v.active).count();
+
+        assert!(active_slow >= active_unity,
+            "root_note=72 should yield slower playback than root_note=60: slow={active_slow} unity={active_unity}");
+    }
+
+    #[test]
+    fn sampler_serialize_v3_root_note_round_trip() {
+        let mut s = Sampler::new();
+        s.bank.set(param_hash("root_note"), 48.0); // C3
+        s.sample_path = Some("kick.wav".to_string());
+        let data = s.serialize();
+        assert_eq!(data[0], 3, "version byte should be 3");
+
+        let mut t = Sampler::new();
+        t.deserialize(&data);
+        assert!((t.bank.get(param_hash("root_note")) - 48.0).abs() < 1e-9,
+            "v3 round-trip should preserve root_note");
+        assert_eq!(t.sample_path.as_deref(), Some("kick.wav"));
     }
 
     // ── P6: Symphonia loading test ────────────────────────────────────────────
