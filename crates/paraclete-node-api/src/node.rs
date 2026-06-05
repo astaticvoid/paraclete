@@ -63,7 +63,13 @@ pub trait Node: Send {
 
     /// Receive back private state from a project load.
     /// `data` is the blob previously returned by `serialize()`.
-    /// Called on the main thread before `activate()`.
+    ///
+    /// Called on the main thread after `activate()`. Implementations that use
+    /// `ParameterBank` must call `bank.set()` here (not in `activate()`) so
+    /// that loaded values overwrite the defaults that `activate()` establishes.
+    /// Implementations that allocate DSP state in `activate()` (delay lines,
+    /// resamplers) should not re-allocate in `deserialize()` — `activate()` has
+    /// already done that; `deserialize()` only restores *values*.
     fn deserialize(&mut self, _data: &[u8]) {}
 
     /// Called by the runtime immediately after registration to inform this

@@ -7,6 +7,10 @@ authors.workspace      = true
 rust-version.workspace = true
 license     = "GPL-3.0-or-later"
 
+[lib]
+name = "paraclete_app"
+path = "src/lib.rs"
+
 [[bin]]
 name = "paraclete"
 path = "src/main.rs"
@@ -17,6 +21,8 @@ paraclete-runtime   = { workspace = true }
 paraclete-hal       = { workspace = true }
 paraclete-nodes     = { workspace = true }
 paraclete-scripting = { workspace = true }
-log  = { workspace = true }
+log   = { workspace = true }
 rhai  = { workspace = true }
 ctrlc = { workspace = true }
+ron   = { workspace = true }
+serde = { workspace = true }

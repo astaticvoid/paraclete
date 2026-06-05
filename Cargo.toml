@@ -37,3 +37,5 @@ ctrlc     = "3"
 fastrand  = "2"
 rubato    = "0.15"
 symphonia = { version = "0.5", features = ["all"] }
+ron   = "0.8"
+serde = { version = "1", features = ["derive"] }

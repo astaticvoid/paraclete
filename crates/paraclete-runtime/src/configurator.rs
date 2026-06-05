@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use petgraph::stable_graph::NodeIndex;
-use petgraph::visit::EdgeRef;
+use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 
 use paraclete_node_api::{
     CapabilityDocument, ConnectionAgreement, ConnectionRecord,
@@ -21,6 +21,15 @@ use crate::ring_buffer;
 const RING_CAPACITY: usize = 256;
 const STATE_BUS_RING_CAPACITY: usize = 256;
 const NODE_CMD_RING_CAPACITY: usize = 512;
+
+/// A snapshot of one graph edge, used by `save_project()` for validation.
+#[derive(Debug, Clone)]
+pub struct EdgeView {
+    pub src_node: u32,
+    pub src_port: u32,
+    pub dst_node: u32,
+    pub dst_port: u32,
+}
 
 /// Holds either a regular node or a hardware device.
 pub(crate) enum NodeOrDevice {
@@ -68,6 +77,21 @@ impl NodeOrDevice {
         match self {
             NodeOrDevice::Node(m) => m.set_connection_record(record),
             NodeOrDevice::Device(d) => d.set_connection_record(record),
+        }
+    }
+
+    pub(crate) fn as_node_ref(&self) -> &dyn Node {
+        match self {
+            NodeOrDevice::Node(n) => &**n,
+            // HardwareDevice: Node; trait upcasting stabilised in Rust 1.86.
+            NodeOrDevice::Device(d) => &**d as &dyn Node,
+        }
+    }
+
+    pub(crate) fn as_node_mut(&mut self) -> &mut dyn Node {
+        match self {
+            NodeOrDevice::Node(n) => &mut **n,
+            NodeOrDevice::Device(d) => &mut **d as &mut dyn Node,
         }
     }
 }
@@ -176,6 +200,37 @@ impl NodeConfigurator {
             }
             self.graph.remove_node(idx);
         }
+    }
+
+    /// Iterate all registered nodes in registration order (by user_id).
+    /// Yields `(user_id, &dyn Node)`. Only valid before `build_executor()` — after
+    /// that call, nodes have been moved to the executor and this returns nothing.
+    pub fn all_nodes(&self) -> impl Iterator<Item = (u32, &dyn Node)> + '_ {
+        let mut pairs: Vec<(u32, &dyn Node)> = self.id_to_index.iter()
+            .filter_map(|(&user_id, idx)| {
+                self.nodes.get(idx).map(|slot| (user_id, slot.as_node_ref()))
+            })
+            .collect();
+        pairs.sort_by_key(|(id, _)| *id);
+        pairs.into_iter()
+    }
+
+    /// Iterate all edges in the graph. Yields `EdgeView` records in arbitrary order.
+    pub fn all_edges(&self) -> impl Iterator<Item = EdgeView> + '_ {
+        self.graph.edge_references().map(|er| EdgeView {
+            src_node: self.graph[er.source()].user_id,
+            src_port: er.weight().src_port,
+            dst_node: self.graph[er.target()].user_id,
+            dst_port: er.weight().dst_port,
+        })
+    }
+
+    /// Mutable access to a registered node by user_id for deserialisation.
+    /// Returns `None` if the id is not registered or the node has been moved
+    /// to the executor via `build_executor()`.
+    pub fn node_mut(&mut self, id: u32) -> Option<&mut dyn Node> {
+        let idx = *self.id_to_index.get(&id)?;
+        self.nodes.get_mut(&idx).map(|slot| slot.as_node_mut())
     }
 
     pub fn connect(

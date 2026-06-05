@@ -20,7 +20,10 @@
 //! Run with --dev-ui to enable state bus monitoring to stderr.
 
 use std::env;
+use std::path::PathBuf;
 use std::time::Duration;
+
+use paraclete_app::project::{save_project, load_project, ProjectMetadata, ProfileBinding};
 
 use paraclete_hal::{AudioBackend, DigitaktMidiNode, KeystepNode, LaunchpadEmulator, LaunchpadNode};
 use paraclete_nodes::{
@@ -60,6 +63,14 @@ fn filt_id(i: usize) -> u32 { 40 + i as u32 }
 
 fn main() {
     let dev_ui = env::args().any(|a| a == "--dev-ui");
+
+    let save_path: Option<PathBuf> = env::args()
+        .find(|a| a.starts_with("--save="))
+        .and_then(|a| a.splitn(2, '=').nth(1).filter(|s| !s.is_empty()).map(PathBuf::from));
+
+    let load_path: Option<PathBuf> = env::args()
+        .find(|a| a.starts_with("--load="))
+        .and_then(|a| a.splitn(2, '=').nth(1).filter(|s| !s.is_empty()).map(PathBuf::from));
 
     eprintln!("[paraclete] booting P5");
 
@@ -209,6 +220,34 @@ fn main() {
             } else {
                 eprintln!("[paraclete] profile {profile} loaded");
             }
+        }
+    }
+
+    // ── Project load (before executor — nodes still owned by configurator) ────
+    if let Some(ref path) = load_path {
+        match load_project(path, &mut conf) {
+            Ok(warnings) => {
+                for w in &warnings { eprintln!("[paraclete] WARN: {w}"); }
+                eprintln!("[paraclete] project loaded: {}", path.display());
+            }
+            Err(e) => eprintln!("[paraclete] load failed: {e}"),
+        }
+    }
+
+    // ── Project save (before executor — snapshot state from configurator) ────
+    if let Some(ref path) = save_path {
+        let meta = ProjectMetadata {
+            name:    path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("paraclete")
+                        .to_string(),
+            bpm:     BPM as f32,
+            created: "".to_string(),
+        };
+        let profiles = ProfileBinding { active: vec![] };
+        match save_project(path, &conf, meta, profiles) {
+            Ok(())  => eprintln!("[paraclete] project saved: {}", path.display()),
+            Err(e)  => eprintln!("[paraclete] save failed: {e}"),
         }
     }
 

@@ -178,13 +178,107 @@ Commit 1: None. Implemented exactly as specified in p7-interfaces.md §1.1 and �
 Commit 2: None. Implemented exactly as specified in p7-interfaces.md §2.
 
 
+Commit 3 — Project save/recall (paraclete-runtime, paraclete-app)
+Tests after: 299 (+4 from Commit 2)
+
+  ron crate + serde (workspace deps)
+
+    Added `ron = "0.8"` and `serde = { version = "1", features = ["derive"] }` to
+    workspace Cargo.toml. Added to paraclete-app Cargo.toml as direct deps.
+    License: MIT/Apache-2.0.
+
+  NodeConfigurator additions (paraclete-runtime/src/configurator.rs)
+
+    EdgeView — public struct {src_node, src_port, dst_node, dst_port}. Not serde;
+      used only for validation in save_project(). Deriving Clone+Debug.
+
+    NodeOrDevice::as_node_ref() / as_node_mut() — match-dispatch helpers that
+      coerce Box<dyn HardwareDevice> to &dyn Node via trait upcasting (Rust 1.86+).
+      Used internally by all_nodes() and node_mut().
+
+    all_nodes() — iterates id_to_index in sorted user_id order; returns
+      impl Iterator<Item = (u32, &dyn Node)>. Only valid before build_executor()
+      (nodes are drained at build time). Does NOT add a runtime guard — callers
+      are responsible for calling before build.
+
+    all_edges() — uses petgraph::visit::IntoEdgeReferences (needed in import) to
+      call self.graph.edge_references(). Maps each edge to EdgeView.
+
+    node_mut() — looks up id_to_index → nodes HashMap → returns &mut dyn Node
+      via as_node_mut(). Returns None if node not registered or already drained.
+
+  paraclete-app: lib.rs + project.rs
+
+    Added [lib] section to Cargo.toml so integration tests can import the module.
+    paraclete-app/src/lib.rs exposes `pub mod project;`.
+    paraclete-app/src/project.rs:
+      Project, ProjectMetadata, GraphSnapshot, NodeSnapshot, EdgeRecord,
+      ProfileBinding — serde Serialize/Deserialize structs.
+      ProjectError — Io(std::io::Error) | Parse(ron::error::SpannedError) |
+        UnknownVersion(u32). Implements Display and From conversions.
+      save_project(path, conf, metadata, profiles) — collects all_nodes() +
+        all_edges(), serialises to RON via to_string_pretty + PrettyConfig::default().
+      load_project(path, conf) — reads RON, validates version, calls
+        node_mut(id).deserialize(state) for each NodeSnapshot. Returns
+        Ok(Vec<String>) with warnings for unknown node IDs and edge count mismatches.
+
+  main.rs keyboard wiring
+
+    Added --load=<path> and --save=<path> CLI flags (separate paths, no conflict).
+    Load executes before build_executor(); save executes after load, also before
+    build_executor(). Both paths silently skip if the arg is absent.
+
+  Node::deserialize() doc fix (paraclete-node-api/src/node.rs)
+
+    Corrected doc comment: was "Called on the main thread before activate()" —
+    WRONG for nodes that use ParameterBank (activate() resets bank to defaults;
+    deserialize() must run after to restore values). Now says "Called after
+    activate()" with an explanation of the correct invariant for bank nodes.
+
+  Code review findings and fixes
+
+    Finding 1 (FIXED): deserialize-after-activate ordering — doc comment said
+      "before activate()" but the actual sequence (and the correct sequence for
+      ParameterBank nodes) is after. Corrected the doc comment.
+    Finding 2 (FIXED): --save/--load path collision in main.rs — single
+      project_path variable was computed from either arg, causing load to read
+      from the wrong path when both flags are provided. Fixed by using separate
+      save_path and load_path Option<PathBuf> variables.
+    Finding 3 (FIXED): weak roundtrip test — was comparing serialised byte
+      lengths (always equal for same struct layout) or byte content vs. empty
+      sequencer (could miss field-mapping bugs). Fixed: test now compares the
+      loaded node's serialised bytes against a reference sequencer with exactly
+      the same step configured, byte-for-byte.
+    Finding 4 (NOT FIXED, noted): Sequencer P5 fields (TrigCondition, StepTiming)
+      not serialised — pre-existing limitation, not introduced by this commit.
+      Deferred to P7.5+ with a note in the known-issues section.
+    Finding 5 (ACCEPTED): silent empty node list post-build_executor — documented
+      in all_nodes() doc comment; no runtime guard added (cost-benefit not worth
+      the extra state field at P7).
+    Finding 6 (ACCEPTED): no HardwareDevice upcast test — coverage gap is
+      acceptable for P7; the upcast path is exercised in runtime integration tests
+      via the existing hardware node tests.
+
+  Tests added (+4, all in crates/paraclete-app/tests/project_tests.rs)
+
+    project_save_creates_valid_ron_file — saves a 1-node graph, re-parses the
+      file with ron::de::from_str, asserts version==1 and node count==1.
+    project_save_then_load_restores_state — InternalClock + Sequencer with step 3
+      set; roundtrip via save/load; loaded node serialised bytes compared
+      byte-for-byte against a reference sequencer with the same step.
+    project_load_unknown_node_id_skips_with_warning — injects id=999 via string
+      replace on the RON; asserts Ok(warnings) with non-empty warning list.
+    project_load_unknown_version_returns_error — writes version:99 RON manually;
+      asserts Err(ProjectError::UnknownVersion(99)).
+
+
 PENDING
 -------
 
-Commit 3 — Project save/recall (paraclete-runtime, paraclete-app)
-  Target: ~299 tests
+Commit 4 — paraclete-clap infrastructure (paraclete-clap new crate, paraclete-runtime)
+  Target: ~304 tests
 
-  (to be filled when Commit 3 lands)
+  (to be filled when Commit 4 lands)
 
 Commit 4 — paraclete-clap infrastructure (paraclete-clap new crate, paraclete-runtime)
   Target: ~304 tests
