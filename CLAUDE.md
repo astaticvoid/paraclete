@@ -24,7 +24,7 @@ cargo build
 # Build release
 cargo build --release
 
-# Run the app (P6 graph: tracks 0/1/2 = AnalogEngine Kick/Snare/HiHat,
+# Run the app (P7 graph: tracks 0/1/2 = AnalogEngine Kick/Snare/HiHat,
 # tracks 3-6 = Sampler, track 7 = FmEngine Bass. 140 BPM + ReverbNode on master bus.)
 # WAV files samples/track3.wav–track6.wav are used by Sampler[3–6].
 # Hardware devices (Launchpad, Digitakt, Keystep) opened if present; falls back gracefully.
@@ -33,6 +33,15 @@ cargo run
 
 # Run with developer UI (prints step position + 16-char pattern bitfield to stderr each second)
 cargo run -- --dev-ui
+
+# Load/save project state (RON format, ADR-025; --load runs before build_executor, --save after)
+cargo run -- --load=project.ron --save=project.ron
+
+# Build machine bank CLAP plugins (paraclete-clap crate; output: target/debug/*.clap)
+cargo build -p paraclete-clap
+
+# Validate a .clap binary (requires clap-validator installed; test is tagged #[ignore])
+cargo test --test clap_validator -- --ignored
 
 # Run all tests
 cargo test
@@ -78,6 +87,13 @@ No layer may reach across another layer's boundary. This is a hard constraint.
 
 **The LGPL3 boundary at L2 is intentional:** third parties can write closed-source nodes by implementing the L2 Node API without being forced to open-source their implementations.
 
+Two additional platform crates live outside the five-layer model:
+
+| Crate | License | Role |
+|-------|---------|------|
+| `paraclete-clap` | GPL3 | Paraclete-as-CLAP-plugin adapter (ADR-024). `ClapParamBridge`, `translate_transport`, `SingleNodePlugin` (MIDI effect wrapping one node), `SubgraphPlugin` (InternalClock+Sequencer+generator graph). Machine bank binaries (`kick`, `snare`, `fm_kick`, `fm_bell`, `fm_bass`) are cdylibs. |
+| `paraclete-clap-host` | GPL3 | Paraclete-as-CLAP-host (ADR-027, P8 target). `PluginLibrary` loads `.clap` files; `PluginNode` wraps a loaded plugin as a `Node`. |
+
 ## Configurator API
 
 `NodeConfigurator` has three distinct `add_*` methods — use the correct one:
@@ -96,6 +112,12 @@ The runtime splits into two halves to keep the audio thread allocation-free:
 - **`NodeExecutor`** — audio thread. Receives `ConfigMessage`s from the ring buffer, executes nodes in topological order, sums audio output. Never allocates, blocks, or takes a mutex.
 
 The graph enforces a DAG (cycles rejected at `connect()` time per ADR-005). `build_executor()` drains nodes from the configurator in topological order — it can only be called once.
+
+`NodeExecutor` (P7) exposes injection methods for CLAP plugin use — safe to call before `process()` in the same audio callback:
+- `set_transport_override(info, event)` — overrides the transport for one cycle (consumed via `.take()`); must be injected *after* `incoming.clear()` to survive the cycle boundary
+- `inject_event_for_node(node_id, event)` — routes a `TimedEvent` to a specific node's incoming slot; guards unknown IDs at push time
+- `inject_node_command(cmd)` — routes a `NodeCommand` to the executor's pending queue; guards unknown target IDs
+- `serialize_node(node_id)` / `deserialize_node(node_id, data)` — delegates to the node's serialize/deserialize
 
 ## The Node Contract
 
@@ -130,6 +152,16 @@ fn get_param(&self, param_id: u32) -> f32 {
 ```
 
 **Parameter naming convention** (ADR-019 amendment) — parameters representing the same concept must use the same name string across all nodes. A hardware encoder mapped to `id_for_name("cutoff")` reaches every node that declares `"cutoff"`, and only those nodes. Node-type-specific prefixes (`"ladder_cutoff"`) are wrong. Canonical names: `"cutoff"`, `"resonance"`, `"drive"`, `"wet"`, `"dry"`, `"decay"`, `"attack"`, `"release"`, `"tune"`. Parameter names are long-term contracts — renaming after crates.io publication is a breaking change.
+
+**`Node::type_name()`** — returns a stable string label for the node type. Default impl returns `std::any::type_name::<Self>()` (fully-qualified Rust path). Override to return a string literal for project file readability after module renames: `fn type_name(&self) -> &'static str { "AnalogEngine" }`. Required by ADR-025: `NodeSnapshot.type_name` stores this label.
+
+**`Node::published_state()` push-down signature** — accepts `&mut Vec<(String, StateBusValue)>` rather than returning a `Vec`. The executor clears the buffer before calling; nodes push into it. This is the pattern to use — the old returning signature was OQ-9 (allocates per cycle).
+
+**`Node::set_initial_params()` (P8)** — default no-op; called with `HashMap<String, f64>` from the instrument definition file before `activate()`. ParameterBank nodes override it to store values and apply them at `activate()`.
+
+**`Node::deserialize()` ordering** — must be called *after* `activate()` for nodes that use `ParameterBank`. `activate()` resets the bank to defaults; `deserialize()` re-applies saved values on top. The doc comment in `paraclete-node-api/src/node.rs` was corrected in P7 to reflect this.
+
+**`ParamDescriptor::id_for_name()` is `const fn`** — promoted in P7 Commit 7. Use `const CUTOFF_ID: u32 = ParamDescriptor::id_for_name("cutoff");` to get zero-cost compile-time IDs.
 
 **AudioEffect marker** — effect nodes (distortion, filter, reverb) are plain `Node` implementations with audio ports. Wet/dry and bypass are parameters, lockable by the sequencer. Optionally implement the `AudioEffect` marker trait (no required methods) so profile scripts can discover them by querying `CapabilityDocument.extensions` for `"paraclete.effect"`.
 
@@ -246,25 +278,30 @@ Sequencer publishes to the state bus each cycle:
 
 P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, default 0.0). Swing is applied at emit time to odd-indexed steps.
 
-## Current Phase: P6 Complete — P6.5 In Progress
+## Current Phase: P7 Complete — P8 Planned
 
-**P6 shipped**: OscillatorNode (5 waveforms, polyBLEP), EnvelopeNode (ADSR/AD/Looping AD), LfoNode (5 shapes, S&H), LadderFilterNode (4-pole Moog). AnalogEngine (Kick/Snare/HiHat machines), FmEngine (Kick/Bell/Bass machines). Sampler: symphonia WAV/FLAC/AIFF/OGG/MP3, rubato load-time resampling, attack/release envelope DSP. L2 context API: `mod_output_mut`, `logic_output_mut`, fixed signal inputs. 285 tests, 0 failures. See `design/phases/p6-report.md`.
+**P7 shipped** (317 tests, 0 failures): `Node::type_name()` — stable string label for project files. `published_state()` push-down (OQ-9 resolved) — nodes push into a caller-owned `Vec`, eliminating per-cycle heap allocation. Per-voice rubato pitch resampling in Sampler — `VoiceResampler` wraps `SincFixedOut<f32>`; `root_note` moved to ParameterBank; serialize v3. Project save/recall — RON format (ADR-025); `save_project()`/`load_project()` in `paraclete-app/src/project.rs`; `--load`/`--save` CLI flags. `paraclete-clap` crate — `ClapParamBridge`, `translate_transport`, `SingleNodePlugin`, `SubgraphPlugin`, machine bank stub binaries. `paraclete-node-api` v0.1.0 publication prep; `id_for_name` promoted to `const fn`. See `design/phases/p7-report.md`.
 
-**P6.5 in progress** (four commits, blocking P7):
-1. EnvelopeNode Looping AD bug fix — autonomous loop without gate (→ `Attack` not `Idle` after Decay)
-2. LadderFilterNode parameter rename — `"ladder_cutoff"` → `"cutoff"`, `"ladder_resonance"` → `"resonance"`, `"ladder_drive"` → `"drive"` (ADR-019 naming convention)
-3. Signal port executor allocation — `NodeExecutor` pre-allocates buffers for Mod/Logic/Cv/Pitch/Phase output ports; primitive nodes (EnvelopeNode, LfoNode, OscillatorNode) become wireable in graphs
-4. Docs/housekeeping — architecture-evolving.md P6 entry, roadmap update, comments
+**P8 scope** (six commits; gated at Commit 1):
+1. P7 residuals: `InternalClock` transport stop response; machine bank real CLAP FFI (`clap-sys`); SILENCE buffer fix (4096 → 65536)
+2. `publish_context()` Rhai API — writes `/context/{encoder_key}/node` and `param` to state bus for TUI
+3. Instrument definition file (YAML, `serde_yaml`) — declarative graph topology; `build_from_instrument()`; `Node::set_initial_params()`
+4. `paraclete-tui` crate — `ratatui` terminal UI; transport bar, encoder row, step row; ~30 Hz refresh
+5. `paraclete-clap-host` crate — `PluginLibrary` / `PluginNode`; third-party `.clap` as graph nodes; `clack` crate
+6. App wiring — assembles TUI + instrument file + CLAP host; `--instrument=<path>` CLI flag
 
-**Known deferred items (P7+):**
+**Known deferred items (P8+):**
 - Step period is 241 ticks (not 240) — off-by-one in transport start model.
 - `ConnectionAgreement::baseline()` hardcodes `sample_rate=44100.0` and `block_size=512`.
 - `paraclete-hal` depends on `paraclete-runtime` (layer violation, deferred until StateBusHandle moves to L2).
-- Per-voice real-time rubato pitch resampling in Sampler (load-time only at P6).
-- AnalogEngine/FmEngine polyphony (monophonic with retrigger at P6).
+- AnalogEngine/FmEngine polyphony (monophonic with retrigger).
 - Signed micro-timing in Sequencer (negative offset not yet distinct from positive).
-- `published_state()` allocates Vec per cycle — OQ-9, targeted P7.
-- LadderFilter HP/BP modes, LFO tempo sync: P7.
+- LadderFilter HP/BP modes, LFO tempo sync.
+- `Sequencer::serialize()` does not save P5 fields (TrigCondition, StepTiming) or swing.
+- `InternalClock` always plays in CLAP `SubgraphPlugin` context (fixed in P8 Commit 1).
+- `agg_state_buf` in executor does one allocation per cycle via `mem::take()` — full elimination requires a return channel (P8+).
+- Effect-type CLAP plugins (audio input → output) via `PluginNode` — deferred to P9.
+- `GraphNode` primitive (ADR-023) — P9.
 
 ## Dependencies Added Per Phase
 
@@ -285,6 +322,11 @@ P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, defa
 - `symphonia = "0.5"` (MIT/Apache) with `features = ["all"]` in `paraclete-nodes` — replaces `hound` for audio file loading. Supports WAV/FLAC/AIFF/OGG/MP3.
 - `rubato = "0.15"` (MIT) in `paraclete-nodes` — load-time sinc resampling (SincFixedIn) when sample native rate ≠ output rate.
 - `hound` removed from `paraclete-nodes` (retained in `gen-samples` tool only).
+
+**P7:**
+- `ron = "0.8"` (MIT/Apache) in workspace + `paraclete-app` — RON serialisation for project save/recall (ADR-025).
+- `serde = { version = "1", features = ["derive"] }` in workspace + `paraclete-app` — required by `ron`.
+- `paraclete-clap` crate added — `ClapParamBridge`, `translate_transport`, `SingleNodePlugin`, `SubgraphPlugin`; no `clap-sys` yet (added in P8 Commit 1 for real CLAP FFI).
 
 ## DSP Source Policy
 
@@ -326,8 +368,10 @@ All design documents live in `design/`. Key documents:
 - `design/adr/ADR-019-universal-parameter-control.md` — `CMD_SET_PARAM`/`CMD_BUMP_PARAM`; `ParameterBank` spec
 - `design/adr/ADR-022-node-portability.md` — portability rule: nodes link L2 only; machine bank architecture; machine variant pattern; signal port portability note (P6.5 amendment)
 - `design/adr/ADR-023-instrument-encapsulation.md` — `GraphNode` primitive (P9); composition hierarchy from primitives to instruments; public framing rules
-- `design/adr/ADR-024-clap-wrapper.md` — CLAP plugin adapter design (hand-rolled, P7 target); `paraclete-clap` crate; `ClapParamBridge`; DAW transport → `TransportInfo` translation; `nih-plug` removed
-- `design/adr/ADR-025-project-file-format.md` — RON project file format (P7 target); `NodeSnapshot`; save/load path; versioning; what is not persisted
+- `design/adr/ADR-024-clap-wrapper.md` — CLAP plugin adapter design (hand-rolled, P7); `paraclete-clap` crate; `ClapParamBridge`; DAW transport → `TransportInfo` translation; `nih-plug` removed
+- `design/adr/ADR-025-project-file-format.md` — RON project file format (P7); `NodeSnapshot`; save/load path; versioning; what is not persisted
+- `design/adr/ADR-026-instrument-definition-tui.md` — declarative YAML instrument file (P8); terminal UI as primary feedback surface; `publish_context()` Rhai API; macro pre-population
+- `design/adr/ADR-027-clap-host.md` — Paraclete as CLAP host (P8); `paraclete-clap-host` crate; `PluginLibrary` / `PluginNode`; generator plugins only at P8; `clack` crate
 - `design/phases/` — per-phase interface specs and implementation reports (append-only once a phase ships)
 - `design/phases/p3-interfaces.md` — P3 spec: `Negotiable` trait, parameter lock protocol, `Sampler` node, StateBus SPSC upgrade, Rhai bindings
 - `design/phases/p4-interfaces.md` — P4 spec: hardware integration, `ParameterBank`, `NodeCommand`, `HardwareOutputHandle`, effect nodes, profile scripts
@@ -337,5 +381,9 @@ All design documents live in `design/`. Key documents:
 - `design/phases/p6-interfaces.md` — P6 spec: synthesis primitive vocabulary, OscillatorNode, EnvelopeNode, LfoNode, LadderFilterNode, AnalogEngine (Kick/Snare/HiHat machines), FmEngine (Kick/Bell/Bass machines), Sampler audio quality (rubato + symphonia + envelope DSP); includes full DSP pseudocode and per-commit test lists
 - `design/phases/p6-report.md` — P6 implementation report: what shipped per commit, post-ship code review findings and fixes, test counts (285 total)
 - `design/phases/p6.5-plan.md` — P6.5 scope: 4 commits (Looping AD fix, LadderFilter param rename, signal port executor allocation, docs); pre-P7 gate criteria
+- `design/phases/p6.5-report.md` — P6.5 implementation report
+- `design/phases/p7-interfaces.md` — P7 spec: type_name(), published_state() push-down, per-voice Sampler resampling, project save/recall, paraclete-clap infrastructure, crates.io prep
+- `design/phases/p7-report.md` — P7 implementation report: 317 tests, 0 failures; CLAP flag bug fixes; rubato reset/set_ratio ordering; code review findings
+- `design/phases/p8-interfaces.md` — P8 spec: P7 residuals (gate), publish_context(), instrument YAML, paraclete-tui, paraclete-clap-host, app wiring
 - `design/review/` — post-phase code review reports (`p4-code-review.md`, `p4-fixes-review.md`, etc.)
 - `profiles/` — Rhai profile scripts loaded at startup (`launchpad.rhai`, `digitakt.rhai`, `keystep.rhai`, `launchpad_overview.rhai`). Constants `LP_DEVICE_ID`, `DT_DEVICE_ID`, `KS_DEVICE_ID`, `TRACK_SEQ_IDS`, etc. injected per profile.
