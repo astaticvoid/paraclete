@@ -15,6 +15,7 @@ members = [
     "crates/paraclete-machine-fm-bell",
     "crates/paraclete-machine-fm-bass",
     "crates/paraclete-tui",
+    "crates/paraclete-clap-host",
     "tools/gen-samples",
     "tools/lpx-debug",
 ]
@@ -32,7 +33,9 @@ paraclete-hal       = { path = "crates/paraclete-hal" }
 paraclete-nodes     = { path = "crates/paraclete-nodes" }
 paraclete-scripting = { path = "crates/paraclete-scripting" }
 paraclete-clap      = { path = "crates/paraclete-clap" }
+paraclete-clap-host = { path = "crates/paraclete-clap-host" }
 clap-sys            = "0.5"
+libloading          = "0.8"
 
 cpal      = "0.15"
 rhai      = "1"

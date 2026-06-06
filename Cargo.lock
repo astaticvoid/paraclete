@@ -1021,6 +1021,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "paraclete-clap-host"
+version = "0.1.0"
+dependencies = [
+ "clap-sys",
+ "libloading",
+ "paraclete-node-api",
+]
+
+[[package]]
 name = "paraclete-hal"
 version = "0.1.0"
 dependencies = [

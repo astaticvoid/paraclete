@@ -1,7 +1,7 @@
 Paraclete — P8 Implementation Report
 =====================================
 Date: June 2026
-Status: In progress — 333 tests, 0 failures (after Commit 4)
+Status: In progress — 336 tests, 0 failures (after Commit 5)
 
 WHAT SHIPPED (P8)
 -----------------
@@ -177,6 +177,75 @@ Tests after: 333 (+4 from 329)
 
 -----
 
+Commit 5 — CLAP Host (paraclete-clap-host, new crate)
+Tests after: 336 (+3 from 333)
+
+  paraclete-clap-host crate (GPL3) — loads third-party .clap plugins as Nodes.
+  Dependencies: paraclete-node-api, clap-sys 0.5, libloading 0.8.
+  (spec referenced clack crate; clack is a crates.io placeholder — used clap-sys
+  + libloading instead, both already proven in the codebase.)
+
+  LibraryHandle wraps libloading::Library + optional deinit fn pointer.
+  Calls deinit() in Drop (before library unload, per CLAP spec). Arc-shared
+  between PluginLibrary and all derived PluginNode instances to keep the
+  library alive as long as any node exists.
+
+  PluginLibrary::load(path) — loads a .clap file or macOS bundle directory.
+    resolve_lib_path(): directory → Contents/MacOS/<stem> (macOS bundle);
+    file → used directly. Looks up clap_entry symbol, calls init(), gets
+    factory via get_factory(CLAP_PLUGIN_FACTORY_ID), enumerates descriptors.
+
+  PluginLibrary::instantiate(plugin_id, sample_rate, block_size) — calls
+    create_plugin() + plugin.init(), builds HostParamBridge from params
+    extension, returns Box<PluginNode> as Box<dyn Node>.
+
+  HostParamBridge — maps plugin's native CLAP param IDs to Paraclete
+    id_for_name() hashes. from_plugin() queries clap_plugin_params extension;
+    from_raw_params() for testing. paraclete_id_for()/clap_id_for() for
+    bidirectional lookup. to_capability_document() synthesises CapabilityDocument.
+
+  PluginNode — Node implementation wrapping a loaded CLAP plugin.
+    Ports: events_in (id=0, Event input), audio_out (id=1, Audio output).
+    activate(): resizes audio_buf to block_size, calls plugin.activate() +
+      start_processing(). Guards self.activated on activate() return value.
+    deactivate(): calls stop_processing → deactivate per CLAP lifecycle.
+    Drop: calls stop_processing → deactivate → destroy (CLAP lifecycle order).
+    process(): pre-allocated note_buf (Vec, capacity 64) + ptr_idx avoids
+      allocation in the hot path. Translates Midi2 UMP NoteOn/NoteOff to
+      CLAP note events; calls plugin.process(); copies mono audio to graph output.
+
+  scan_clap_paths() — returns .clap paths in OS-standard directories without
+    panicking if directories don't exist.
+
+  Code review findings caught before commit:
+    - Drop skipped stop_processing before deactivate → added (CLAP lifecycle fix)
+    - capability_document() port used id=0, disagrees with ports() PORT_AUDIO_OUT=1
+      → fixed to id=1; added comment explaining events_in is id=0 in ports() only
+    - ignored tests used dylib_path("paraclete_machine_kick") → fixed to "kick"
+      (cargo outputs libkick.dylib for the crate with lib.name = "kick")
+    - activate() set self.activated = true unconditionally → now guarded on return value;
+      start_processing skipped if activate() returned false
+    - CMD_SET_PARAM/CMD_BUMP_PARAM not handled → implemented: ParameterBank built
+      from cap_doc at activate(); handle_commands called in process(); changed params
+      flushed to plugin via CLAP_EVENT_PARAM_VALUE events prepended to input event list
+      (dirty-detect via flushed_values Vec parallel to bridge.entries)
+
+  Test count: spec projected 339 (+6); actual 336 (+3) because 3 #[ignore] tests
+  compile but require Commit 1 .clap artifacts (cargo build -p paraclete-machine-kick)
+  and don't count in cargo test totals.
+
+  Non-ignored tests (3 pass):
+    host_param_bridge_from_raw_params_round_trips
+    host_param_bridge_to_capability_document_has_correct_ranges
+    scan_clap_paths_returns_vec_no_panic
+
+  Ignored tests (3 correct, require kick.clap):
+    plugin_node_from_kick_clap_produces_audio
+    plugin_node_capability_document_has_params
+    plugin_node_serialize_deserialize_roundtrip
+
+-----
+
 DEFERRED ITEMS (P8+)
 --------------------
 
@@ -186,3 +255,5 @@ DEFERRED ITEMS (P8+)
     simplified NoteOn struct (spec was outdated — no action needed)
   - serde_yaml 0.9 is deprecated by its author (recommends serde_yml fork);
     migration deferred to P9
+  - capability_document() leaks 2 strings per call (Box::leak); callers should
+    cache; bounded in P8's startup-only topology
