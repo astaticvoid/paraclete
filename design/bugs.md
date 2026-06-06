@@ -78,6 +78,16 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** line and 
 
 ---
 
+### BUG-008 — set_initial_params re-applied on every activate() — overwrites deserialized state on re-activate
+
+**Severity:** Medium — data loss on project load after dynamic topology change  
+**Phase found:** P9 C2  
+**Description:** All six ParameterBank nodes that implement `set_initial_params()` store the params map in `pending_initial_params` and apply it inside `activate()`. `activate()` is called again whenever dynamic topology rebuilds the executor (P9 C4). After a project load, `deserialize()` sets the bank to saved values; if `activate()` fires a second time before the next save, `pending_initial_params` is non-empty and overwrites the deserialized values. The pending map is never cleared after first use.  
+**Location:** `crates/paraclete-nodes/src/analog_engine.rs`, `fm_engine.rs`, `sampler.rs`, `reverb.rs`, `distortion.rs`, `filter.rs` — `activate()` in each  
+**Fix direction:** Call `std::mem::take(&mut self.pending_initial_params)` at the end of `activate()` so the map is cleared after first application. Subsequent `activate()` calls (re-activate) apply no params, leaving deserialized values intact.
+
+---
+
 ## Resolved
 
 _(none yet)_

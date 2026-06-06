@@ -422,6 +422,7 @@ All design documents live in `design/`. Key documents:
 - `design/architecture-evolving.md` — append-only phase log; records what shipped and what was found per phase
 - `design/roadmap.md` — living: current phase scope, known provisional implementations, open questions
 - `design/instrument-vision.md` — the concrete instrument being built; design tiebreaker for ambiguous decisions
+- `design/bugs.md` — **append-only** known bug tracker; BUG-001 through BUG-007 currently open; add new bugs at the bottom with severity, phase found, location, and fix direction; mark resolved with commit reference
 - `design/adr/` — all Architecture Decision Records (**append-only** — never edit a past ADR, add a new one to supersede it)
 - `design/adr/ADR-005-scheduler-cycles.md` — why the graph must be a DAG (cycle rejection)
 - `design/adr/ADR-008-node-api-level.md` — the three engagement levels
