@@ -59,13 +59,6 @@ impl NodeOrDevice {
         }
     }
 
-    pub(crate) fn capability_document(&self) -> CapabilityDocument {
-        match self {
-            NodeOrDevice::Node(m) => m.capability_document(),
-            NodeOrDevice::Device(d) => d.capability_document(),
-        }
-    }
-
     pub(crate) fn negotiate(&mut self, their_doc: &CapabilityDocument) -> ConnectionAgreement {
         match self {
             NodeOrDevice::Node(m) => m.negotiate(their_doc),
@@ -117,6 +110,10 @@ pub struct NodeConfigurator {
     /// Stored as (device_id, handle) so script LED output can be routed by device_id.
     output_handles: Vec<(u32, Box<dyn HardwareOutputHandle>)>,
 
+    /// Capability documents cached at `add_node()` time — keyed by user_id.
+    /// Persists after `build_executor()`.
+    cap_doc_cache: HashMap<u32, CapabilityDocument>,
+
     sample_rate: f32,
     block_size: usize,
     sender: ring_buffer::Sender<ConfigMessage>,
@@ -140,6 +137,7 @@ impl NodeConfigurator {
             node_cmd_producer: cmd_prod,
             node_cmd_consumer_pending: Some(cmd_cons),
             output_handles: Vec::new(),
+            cap_doc_cache: HashMap::new(),
             sample_rate,
             block_size,
             sender,
@@ -157,6 +155,8 @@ impl NodeConfigurator {
             NodeOrDevice::Device(d) => d.set_node_id(user_id),
         }
         slot.activate(self.sample_rate, self.block_size);
+        let cap_doc = slot.as_node_ref().capability_document();
+        self.cap_doc_cache.insert(user_id, cap_doc);
         let idx = self.graph.add_node(NodeMeta { user_id });
         self.id_to_index.insert(user_id, idx);
         self.nodes.insert(idx, slot);
@@ -199,6 +199,7 @@ impl NodeConfigurator {
                 slot.deactivate();
             }
             self.graph.remove_node(idx);
+            self.cap_doc_cache.remove(&user_id);
         }
     }
 
@@ -234,11 +235,10 @@ impl NodeConfigurator {
     }
 
     /// Returns the `CapabilityDocument` for the node at `node_id`.
-    /// Only valid before `build_executor()` — nodes are moved into the executor
-    /// at that point, and this returns `None` afterwards.
+    /// Served from cache populated at `add_node()` time — remains valid after
+    /// `build_executor()`.
     pub fn get_node_cap_doc(&self, node_id: u32) -> Option<CapabilityDocument> {
-        let idx = *self.id_to_index.get(&node_id)?;
-        self.nodes.get(&idx).map(|slot| slot.as_node_ref().capability_document())
+        self.cap_doc_cache.get(&node_id).cloned()
     }
 
     pub fn sample_rate(&self) -> f32   { self.sample_rate }
@@ -294,8 +294,8 @@ impl NodeConfigurator {
             ));
         }
 
-        let src_doc = self.nodes[&src].capability_document();
-        let dst_doc = self.nodes[&dst].capability_document();
+        let src_doc = self.cap_doc_cache[&src_id].clone();
+        let dst_doc = self.cap_doc_cache[&dst_id].clone();
 
         let src_agreement = self.nodes.get_mut(&src).unwrap().negotiate(&dst_doc);
         let dst_agreement = self.nodes.get_mut(&dst).unwrap().negotiate(&src_doc);

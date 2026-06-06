@@ -34,7 +34,7 @@ pub struct InstrumentIds {
 pub fn parse_instrument_definition(
     text: &str,
 ) -> Result<InstrumentDefinition, InstrumentError> {
-    let def: InstrumentDefinition = serde_yaml::from_str(text)?;
+    let def: InstrumentDefinition = serde_yml::from_str(text)?;
     if def.format_version != 1 {
         return Err(InstrumentError::UnknownVersion(def.format_version));
     }
@@ -205,17 +205,17 @@ fn classify_node(node_def: &NodeDef, ids: &mut InstrumentIds) {
 
 fn resolve_port(
     node_id: u32,
-    value: &serde_yaml::Value,
+    value: &serde_yml::Value,
     port_map: Option<&HashMap<String, u32>>,
 ) -> Result<u32, InstrumentError> {
     match value {
-        serde_yaml::Value::Number(n) => {
+        serde_yml::Value::Number(n) => {
             n.as_u64().map(|v| v as u32).ok_or_else(|| InstrumentError::UnknownPort {
                 node: node_id,
                 port: format!("{n:?}"),
             })
         }
-        serde_yaml::Value::String(s) => {
+        serde_yml::Value::String(s) => {
             let lower = s.to_ascii_lowercase();
             if let Ok(n) = lower.parse::<u32>() {
                 return Ok(n);
@@ -240,10 +240,10 @@ fn resolve_port(
     }
 }
 
-fn yaml_to_u32(v: &serde_yaml::Value) -> Option<u32> {
+fn yaml_to_u32(v: &serde_yml::Value) -> Option<u32> {
     match v {
-        serde_yaml::Value::Number(n) => n.as_u64().map(|v| v as u32),
-        serde_yaml::Value::String(s) => s.parse::<u32>().ok(),
+        serde_yml::Value::Number(n) => n.as_u64().map(|v| v as u32),
+        serde_yml::Value::String(s) => s.parse::<u32>().ok(),
         _ => None,
     }
 }

@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use paraclete_node_api::{
     CapabilityDocument, Event, Node, ParamDescriptor, ParamUnit, ParameterBank,
     PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
@@ -40,6 +42,8 @@ pub struct AnalogEngine {
     render_l:    Vec<f32>,
     render_r:    Vec<f32>,
 
+    pending_initial_params: HashMap<String, f64>,
+
     ports: [PortDescriptor; 3],
 }
 
@@ -69,6 +73,7 @@ impl AnalogEngine {
             node_locks:  Vec::new(),
             render_l:    Vec::new(),
             render_r:    Vec::new(),
+            pending_initial_params: HashMap::new(),
             ports: [
                 PortDescriptor { id: Self::PORT_EVENTS_IN,   name: "events_in".into(),   direction: PortDirection::Input,  port_type: PortType::Event },
                 PortDescriptor { id: Self::PORT_AUDIO_OUT_L, name: "audio_out_l".into(), direction: PortDirection::Output, port_type: PortType::Audio },
@@ -226,13 +231,23 @@ impl Node for AnalogEngine {
     fn set_node_id(&mut self, id: u32) { self.node_id = id; }
     fn capability_document(&self) -> CapabilityDocument { Self::build_doc(self.machine) }
 
+    fn set_initial_params(&mut self, params: &HashMap<String, f64>) {
+        self.pending_initial_params = params.clone();
+    }
+
     fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
     }
 
     fn activate(&mut self, sample_rate: f32, block_size: usize) {
         self.sample_rate = sample_rate;
-        self.bank        = ParameterBank::from_capability_document(&Self::build_doc(self.machine));
+        let doc = Self::build_doc(self.machine);
+        self.bank        = ParameterBank::from_capability_document(&doc);
+        for (name, value) in &self.pending_initial_params {
+            if let Some(param) = doc.params.iter().find(|p| p.name.as_str() == name.as_str()) {
+                self.bank.set(param.id, *value);
+            }
+        }
         self.render_l    = vec![0.0; block_size];
         self.render_r    = vec![0.0; block_size];
         self.osc_phase   = 0.0;
@@ -553,5 +568,29 @@ mod tests {
         assert!(decay_entry.is_some(), "published_state should contain a /decay entry");
         assert!(matches!(decay_entry.unwrap().1, paraclete_node_api::StateBusValue::Float(_)),
             "decay entry should be StateBusValue::Float");
+    }
+
+    #[test]
+    fn analog_engine_set_initial_params_applied() {
+        let mut eng = AnalogEngine::kick();
+        eng.set_node_id(1);
+        eng.set_initial_params(&[("decay".to_string(), 0.9)].into_iter().collect());
+        eng.activate(44100.0, 256);
+        let mut buf: Vec<(String, paraclete_node_api::StateBusValue)> = Vec::new();
+        eng.published_state(&mut buf);
+        let entry = buf.iter().find(|(k, _)| k.ends_with("/decay"));
+        assert!(entry.is_some(), "published_state should contain /decay");
+        if let paraclete_node_api::StateBusValue::Float(v) = entry.unwrap().1 {
+            assert!((v - 0.9).abs() < 1e-9, "decay should be 0.9, got {v}");
+        } else {
+            panic!("decay entry should be Float");
+        }
+    }
+
+    #[test]
+    fn set_initial_params_unknown_key_ignored() {
+        let mut eng = AnalogEngine::snare();
+        eng.set_initial_params(&[("nonexistent_param".to_string(), 99.0)].into_iter().collect());
+        eng.activate(44100.0, 256); // must not panic
     }
 }

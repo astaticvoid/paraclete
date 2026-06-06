@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap_sys::entry::clap_plugin_entry;
+use clap_sys::ext::audio_ports::{clap_plugin_audio_ports, CLAP_EXT_AUDIO_PORTS};
 use clap_sys::factory::plugin_factory::{clap_plugin_factory, CLAP_PLUGIN_FACTORY_ID};
 use clap_sys::plugin::clap_plugin;
 
@@ -170,6 +171,25 @@ impl PluginLibrary {
             }
         }
 
+        // Detect whether the plugin has audio input ports (effect vs generator).
+        let has_audio_input = unsafe {
+            if let Some(get_ext) = (*plugin).get_extension {
+                let ap_ptr = get_ext(plugin, CLAP_EXT_AUDIO_PORTS.as_ptr());
+                if !ap_ptr.is_null() {
+                    let ap = &*(ap_ptr as *const clap_plugin_audio_ports);
+                    if let Some(count_fn) = ap.count {
+                        count_fn(plugin, true) > 0 // is_input = true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+
         // Build param bridge from the plugin's params extension.
         let bridge = unsafe { HostParamBridge::from_plugin(plugin) };
         let cap_doc = bridge.to_capability_document(&desc.name, &desc.vendor);
@@ -181,6 +201,7 @@ impl PluginLibrary {
             bridge,
             sample_rate,
             block_size,
+            has_audio_input,
         )))
     }
 }

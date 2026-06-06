@@ -12,6 +12,8 @@
 //!   width        — 0.0–1.0,   default 1.0
 //!   pre_delay_ms — 0.0–100.0, default 0.0
 
+use std::collections::HashMap;
+
 use paraclete_node_api::{
     CapabilityDocument, Node, ParameterBank, ParamDescriptor, ParamUnit,
     PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
@@ -92,6 +94,7 @@ pub struct ReverbNode {
     pre_delay_r:   Vec<f32>,
     pre_delay_pos: usize,
     sample_rate:   f32,
+    pending_initial_params: HashMap<String, f64>,
 }
 
 impl ReverbNode {
@@ -124,6 +127,7 @@ impl ReverbNode {
             pre_delay_r:   vec![0.0; 1],
             pre_delay_pos: 0,
             sample_rate:   44100.0,
+            pending_initial_params: HashMap::new(),
         }
     }
 
@@ -158,6 +162,10 @@ impl Node for ReverbNode {
     fn set_node_id(&mut self, id: u32) { self.node_id = id; }
     fn capability_document(&self) -> CapabilityDocument { Self::default_doc() }
 
+    fn set_initial_params(&mut self, params: &HashMap<String, f64>) {
+        self.pending_initial_params = params.clone();
+    }
+
     fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
     }
@@ -189,7 +197,13 @@ impl Node for ReverbNode {
         self.pre_delay_r   = vec![0.0; max_pre_delay];
         self.pre_delay_pos = 0;
 
-        self.bank = ParameterBank::from_capability_document(&Self::default_doc());
+        let doc = Self::default_doc();
+        self.bank = ParameterBank::from_capability_document(&doc);
+        for (name, value) in &self.pending_initial_params {
+            if let Some(param) = doc.params.iter().find(|p| p.name.as_str() == name.as_str()) {
+                self.bank.set(param.id, *value);
+            }
+        }
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
@@ -359,5 +373,22 @@ mod tests {
         assert_eq!(r.ports().len(), 2);
         assert_eq!(r.ports()[0].direction, PortDirection::Input);
         assert_eq!(r.ports()[1].direction, PortDirection::Output);
+    }
+
+    #[test]
+    fn reverb_node_set_initial_params_applied() {
+        let mut r = ReverbNode::new();
+        r.set_node_id(1);
+        r.set_initial_params(&[("wet".to_string(), 0.25)].into_iter().collect());
+        r.activate(44100.0, 256);
+        let mut buf: Vec<(String, paraclete_node_api::StateBusValue)> = Vec::new();
+        r.published_state(&mut buf);
+        let entry = buf.iter().find(|(k, _)| k.ends_with("/wet"));
+        assert!(entry.is_some(), "published_state should contain /wet");
+        if let paraclete_node_api::StateBusValue::Float(v) = entry.unwrap().1 {
+            assert!((v - 0.25).abs() < 1e-9, "wet should be 0.25, got {v}");
+        } else {
+            panic!("wet entry should be Float");
+        }
     }
 }

@@ -870,3 +870,37 @@ fn transport_override_event_delivered_to_nodes() {
     });
     assert!(found, "set_transport_override event must reach nodes (not be cleared by incoming.clear())");
 }
+
+// ── cap_doc_cache tests (P9 Commit 2) ────────────────────────────────────────
+
+#[test]
+fn cap_doc_cache_populated_on_add_node() {
+    use paraclete_nodes::DistortionNode;
+    let mut conf = NodeConfigurator::new(44100.0, 256);
+    conf.add_node(42, Box::new(DistortionNode::new()));
+    let doc = conf.get_node_cap_doc(42);
+    assert!(doc.is_some(), "cap doc should be present after add_node");
+    let doc = doc.unwrap();
+    assert!(
+        doc.params.iter().any(|p| p.name.as_str() == "drive"),
+        "DistortionNode cap doc should contain 'drive' param"
+    );
+}
+
+#[test]
+fn cap_doc_cache_hit_no_additional_leak() {
+    use paraclete_nodes::FilterNode;
+    let mut conf = NodeConfigurator::new(44100.0, 256);
+    conf.add_node(7, Box::new(FilterNode::new()));
+    let doc1 = conf.get_node_cap_doc(7).expect("first call should return Some");
+    let doc2 = conf.get_node_cap_doc(7).expect("second call should return Some");
+    let doc3 = conf.get_node_cap_doc(7).expect("third call should return Some");
+    assert_eq!(
+        doc1.params.len(), doc2.params.len(),
+        "param count must be identical across calls"
+    );
+    assert_eq!(
+        doc2.params.len(), doc3.params.len(),
+        "param count must be identical across calls"
+    );
+}

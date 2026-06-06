@@ -42,6 +42,18 @@ pub enum ParamDisplayAdapter {
     Dynamic(Box<dyn ParamDisplay>),
 }
 
+impl Clone for ParamDisplayAdapter {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Static(s) => Self::Static(*s),
+            Self::Dynamic(_) => panic!(
+                "ParamDisplayAdapter::Dynamic cannot be cloned; \
+                 use Static for capability document caching"
+            ),
+        }
+    }
+}
+
 impl ParamDisplayAdapter {
     pub fn format(&self, value: f64) -> String {
         match self {
@@ -63,6 +75,7 @@ impl ParamDisplayAdapter {
 /// Describes one parameter exposed by a node.
 /// Used by the sequencer for parameter-lock discovery, by the GUI for display,
 /// and by the scripting layer for automation.
+#[derive(Clone)]
 pub struct ParamDescriptor {
     /// Hash of `name`. Stable per node type — same name always produces the same id.
     /// Parameter locks survive capability renegotiation as long as the name is present.
@@ -114,6 +127,7 @@ impl ParamDescriptor {
 
 /// A node's complete self-description. Returned by `Node::capability_document()`.
 /// Built on the main thread — allocation is fine here.
+#[derive(Clone)]
 pub struct CapabilityDocument {
     pub name: &'static str,
     pub vendor: &'static str,

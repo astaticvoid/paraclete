@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use paraclete_node_api::{
     CapabilityDocument, Event, Node, ParamDescriptor, ParamUnit, ParameterBank,
     PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
@@ -38,6 +40,8 @@ pub struct FmEngine {
     render_l: Vec<f32>,
     render_r: Vec<f32>,
 
+    pending_initial_params: HashMap<String, f64>,
+
     ports: [PortDescriptor; 3],
 }
 
@@ -63,6 +67,7 @@ impl FmEngine {
             node_id:    0,
             render_l:   Vec::new(),
             render_r:   Vec::new(),
+            pending_initial_params: HashMap::new(),
             ports: [
                 PortDescriptor { id: Self::PORT_EVENTS_IN,   name: "events_in".into(),   direction: PortDirection::Input,  port_type: PortType::Event },
                 PortDescriptor { id: Self::PORT_AUDIO_OUT_L, name: "audio_out_l".into(), direction: PortDirection::Output, port_type: PortType::Audio },
@@ -227,13 +232,23 @@ impl Node for FmEngine {
     fn set_node_id(&mut self, id: u32) { self.node_id = id; }
     fn capability_document(&self) -> CapabilityDocument { Self::build_doc(self.machine) }
 
+    fn set_initial_params(&mut self, params: &HashMap<String, f64>) {
+        self.pending_initial_params = params.clone();
+    }
+
     fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
     }
 
     fn activate(&mut self, sample_rate: f32, block_size: usize) {
         self.sample_rate    = sample_rate;
-        self.bank           = ParameterBank::from_capability_document(&Self::build_doc(self.machine));
+        let doc = Self::build_doc(self.machine);
+        self.bank           = ParameterBank::from_capability_document(&doc);
+        for (name, value) in &self.pending_initial_params {
+            if let Some(param) = doc.params.iter().find(|p| p.name.as_str() == name.as_str()) {
+                self.bank.set(param.id, *value);
+            }
+        }
         self.render_l       = vec![0.0; block_size];
         self.render_r       = vec![0.0; block_size];
         self.carrier_phase   = 0.0;
@@ -485,5 +500,22 @@ mod tests {
         let mut eng = FmEngine::kick();
         eng.activate(44100.0, 512);
         assert!(!eng.ports().is_empty());
+    }
+
+    #[test]
+    fn fm_engine_set_initial_params_applied() {
+        let mut eng = FmEngine::bass();
+        eng.set_node_id(1);
+        eng.set_initial_params(&[("index".to_string(), 4.0)].into_iter().collect());
+        eng.activate(44100.0, 256);
+        let mut buf: Vec<(String, paraclete_node_api::StateBusValue)> = Vec::new();
+        eng.published_state(&mut buf);
+        let entry = buf.iter().find(|(k, _)| k.ends_with("/index"));
+        assert!(entry.is_some(), "published_state should contain /index");
+        if let paraclete_node_api::StateBusValue::Float(v) = entry.unwrap().1 {
+            assert!((v - 4.0).abs() < 1e-9, "index should be 4.0, got {v}");
+        } else {
+            panic!("index entry should be Float");
+        }
     }
 }

@@ -21,8 +21,10 @@ use paraclete_node_api::{Event, Node, UmpMessage};
 use crate::bridge::HostParamBridge;
 use crate::library::LibraryHandle;
 
-const PORT_EVENTS_IN: u32 = 0;
-const PORT_AUDIO_OUT: u32 = 1;
+const PORT_EVENTS_IN:        u32 = 0;
+const PORT_AUDIO_IN:         u32 = 1; // only present when has_audio_input
+const PORT_AUDIO_OUT:        u32 = 1; // generator (no audio input)
+const PORT_AUDIO_OUT_EFFECT: u32 = 2; // effect (has audio input)
 
 /// Maximum number of note events translated per process() block.
 const MAX_EVENTS: usize = 64;
@@ -54,31 +56,36 @@ unsafe extern "C" fn out_events_nop(
 
 /// A loaded CLAP plugin instance wrapped as a Paraclete `Node`.
 ///
-/// P8 scope: generator plugins (audio output only). Audio inputs deferred to P9.
+/// Generator plugins (no audio input): ports 0=events_in, 1=audio_out.
+/// Effect plugins (has audio input):   ports 0=events_in, 1=audio_in, 2=audio_out.
 pub struct PluginNode {
     /// Keeps the shared library loaded as long as this node exists.
-    _lib:           Arc<LibraryHandle>,
+    _lib:            Arc<LibraryHandle>,
     /// Raw CLAP plugin handle.
-    plugin:         *mut clap_plugin,
-    cap_doc:        CapabilityDocument,
-    bridge:         HostParamBridge,
+    plugin:          *mut clap_plugin,
+    cap_doc:         CapabilityDocument,
+    bridge:          HostParamBridge,
     /// Cached port list returned from ports().
-    port_list:      Vec<PortDescriptor>,
+    port_list:       Vec<PortDescriptor>,
     /// Pre-allocated audio output buffer — block_size samples.
-    audio_buf:      Vec<f32>,
+    audio_buf:       Vec<f32>,
+    /// Pre-allocated audio input buffer — non-empty only when has_audio_input.
+    audio_in_buf:    Vec<f32>,
+    /// Whether this plugin has an audio input port (effect) or not (generator).
+    has_audio_input: bool,
     /// Pre-allocated note event pool — cleared and filled each process() call.
-    note_buf:       Vec<clap_event_note>,
+    note_buf:        Vec<clap_event_note>,
     /// Pre-allocated param value event pool — one slot per bridge entry.
-    param_buf:      Vec<clap_event_param_value>,
+    param_buf:       Vec<clap_event_param_value>,
     /// Unified pointer index over param_buf then note_buf — rebuilt each call.
-    ptr_idx:        Vec<*const clap_event_header>,
+    ptr_idx:         Vec<*const clap_event_header>,
     /// Last values flushed to the plugin — parallel to bridge.entries.
-    flushed_values: Vec<f64>,
+    flushed_values:  Vec<f64>,
     /// Local parameter bank; handles CMD_SET_PARAM / CMD_BUMP_PARAM.
-    local_bank:     ParameterBank,
-    sample_rate:    f32,
-    block_size:     usize,
-    activated:      bool,
+    local_bank:      ParameterBank,
+    sample_rate:     f32,
+    block_size:      usize,
+    activated:       bool,
 }
 
 // SAFETY: The CLAP threading model matches Paraclete's:
@@ -89,42 +96,60 @@ unsafe impl Send for PluginNode {}
 
 impl PluginNode {
     pub(crate) fn new(
-        lib:        Arc<LibraryHandle>,
-        plugin:     *mut clap_plugin,
-        cap_doc:    CapabilityDocument,
-        bridge:     HostParamBridge,
-        sample_rate: f32,
-        block_size:  usize,
+        lib:             Arc<LibraryHandle>,
+        plugin:          *mut clap_plugin,
+        cap_doc:         CapabilityDocument,
+        bridge:          HostParamBridge,
+        sample_rate:     f32,
+        block_size:      usize,
+        has_audio_input: bool,
     ) -> Self {
-        let port_list = vec![
+        let mut port_list = vec![
             PortDescriptor {
                 id:        PORT_EVENTS_IN,
                 name:      PortName::Static("events_in"),
                 direction: PortDirection::Input,
                 port_type: PortType::Event,
             },
-            PortDescriptor {
+        ];
+        if has_audio_input {
+            port_list.push(PortDescriptor {
+                id:        PORT_AUDIO_IN,
+                name:      PortName::Static("audio_in"),
+                direction: PortDirection::Input,
+                port_type: PortType::Audio,
+            });
+            port_list.push(PortDescriptor {
+                id:        PORT_AUDIO_OUT_EFFECT,
+                name:      PortName::Static("audio_out"),
+                direction: PortDirection::Output,
+                port_type: PortType::Audio,
+            });
+        } else {
+            port_list.push(PortDescriptor {
                 id:        PORT_AUDIO_OUT,
                 name:      PortName::Static("audio_out"),
                 direction: PortDirection::Output,
                 port_type: PortType::Audio,
-            },
-        ];
+            });
+        }
         Self {
-            _lib:           lib,
+            _lib:            lib,
             plugin,
             cap_doc,
             bridge,
             port_list,
-            audio_buf:      Vec::new(),
-            note_buf:       Vec::with_capacity(MAX_EVENTS),
-            param_buf:      Vec::new(),   // allocated at activate()
-            ptr_idx:        Vec::with_capacity(MAX_EVENTS),
-            flushed_values: Vec::new(),   // allocated at activate()
-            local_bank:     ParameterBank::empty(),
+            audio_buf:       Vec::new(),
+            audio_in_buf:    Vec::new(),
+            has_audio_input,
+            note_buf:        Vec::with_capacity(MAX_EVENTS),
+            param_buf:       Vec::new(),   // allocated at activate()
+            ptr_idx:         Vec::with_capacity(MAX_EVENTS),
+            flushed_values:  Vec::new(),   // allocated at activate()
+            local_bank:      ParameterBank::empty(),
             sample_rate,
             block_size,
-            activated:      false,
+            activated:       false,
         }
     }
 
@@ -155,9 +180,12 @@ impl Node for PluginNode {
     }
 
     fn activate(&mut self, sample_rate: f32, block_size: usize) {
-        self.sample_rate = sample_rate;
-        self.block_size  = block_size;
-        self.audio_buf   = vec![0.0f32; block_size];
+        self.sample_rate  = sample_rate;
+        self.block_size   = block_size;
+        self.audio_buf    = vec![0.0f32; block_size];
+        if self.has_audio_input {
+            self.audio_in_buf = vec![0.0f32; block_size];
+        }
 
         // Build bank from cap_doc; init flushed_values to plugin defaults.
         self.local_bank    = ParameterBank::from_capability_document(&self.cap_doc);
@@ -270,9 +298,35 @@ impl Node for PluginNode {
         let frames = self.block_size;
         self.audio_buf.fill(0.0);
         let ch_ptr: *mut f32 = self.audio_buf.as_mut_ptr();
-        let mut ch_ptrs: [*mut f32; 1] = [ch_ptr];
+        let mut out_ch_ptrs: [*mut f32; 1] = [ch_ptr];
         let mut out_audio = clap_audio_buffer {
-            data32:        ch_ptrs.as_mut_ptr(),
+            data32:        out_ch_ptrs.as_mut_ptr(),
+            data64:        std::ptr::null_mut(),
+            channel_count: 1,
+            latency:       0,
+            constant_mask: 0,
+        };
+
+        // Effect path: copy graph audio input into audio_in_buf.
+        // Must happen before building the clap_process struct so the buffer
+        // contents are ready when the plugin reads them.
+        if self.has_audio_input {
+            if let Some(audio_in) = input.audio_inputs.first() {
+                let copy_len = self.audio_in_buf.len().min(audio_in.channel(0).len());
+                self.audio_in_buf[..copy_len].copy_from_slice(&audio_in.channel(0)[..copy_len]);
+            }
+        }
+        // Declare audio input buffer structs here so they outlive the
+        // clap_process passed to process_fn below. For generator plugins
+        // (has_audio_input=false), audio_inputs is null and the plugin never
+        // reads in_audio; for effect plugins the pointer is valid.
+        //
+        // SAFETY: cast *const→*mut required by the C API; CLAP plugins treat
+        // audio_inputs as read-only (no mutation through this pointer).
+        let in_ch_ptr: *const f32 = self.audio_in_buf.as_ptr();
+        let mut in_ch_ptrs: [*mut f32; 1] = [in_ch_ptr as *mut f32];
+        let in_audio = clap_audio_buffer {
+            data32:        in_ch_ptrs.as_mut_ptr(),
             data64:        std::ptr::null_mut(),
             channel_count: 1,
             latency:       0,
@@ -280,12 +334,12 @@ impl Node for PluginNode {
         };
 
         let proc = clap_process {
-            steady_time:       -1,
-            frames_count:      frames as u32,
-            transport:         std::ptr::null(),
-            audio_inputs:      std::ptr::null(),
-            audio_outputs:     &mut out_audio,
-            audio_inputs_count:  0,
+            steady_time:         -1,
+            frames_count:        frames as u32,
+            transport:           std::ptr::null(),
+            audio_inputs:        if self.has_audio_input { &in_audio } else { std::ptr::null() },
+            audio_inputs_count:  self.has_audio_input as u32,
+            audio_outputs:       &mut out_audio,
             audio_outputs_count: 1,
             in_events:  &in_events,
             out_events: &out_events,
@@ -305,11 +359,7 @@ impl Node for PluginNode {
     }
 
     fn capability_document(&self) -> CapabilityDocument {
-        // CapabilityDocument is not Clone, so rebuild from bridge.
-        self.bridge.to_capability_document(
-            self.cap_doc.name,
-            self.cap_doc.vendor,
-        )
+        self.cap_doc.clone()
     }
 
     fn type_name(&self) -> &'static str { "PluginNode" }
@@ -322,6 +372,23 @@ impl Node for PluginNode {
     fn deserialize(&mut self, data: &[u8]) {
         // CLAP state extension deferred to P9.
         let _ = data;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore = "requires an effect .clap binary"]
+    fn plugin_node_effect_has_audio_in_port() {
+        // Would load an effect plugin and assert ports() contains an Audio/Input port.
+        // Skipped: no effect binary available in CI.
+    }
+
+    #[test]
+    #[ignore = "requires a generator .clap binary"]
+    fn plugin_node_generator_no_audio_in_port() {
+        // Would load a generator and assert no Audio/Input port.
+        // Skipped: no binary available in CI.
     }
 }
 

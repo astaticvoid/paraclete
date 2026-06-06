@@ -30,8 +30,8 @@ pub struct NodeDef {
 
 #[derive(Deserialize, Debug)]
 pub struct EdgeDef {
-    pub from: (serde_yaml::Value, serde_yaml::Value),
-    pub to:   (serde_yaml::Value, serde_yaml::Value),
+    pub from: (serde_yml::Value, serde_yml::Value),
+    pub to:   (serde_yml::Value, serde_yml::Value),
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -44,7 +44,7 @@ pub struct MacroDef {
 #[derive(Debug)]
 pub enum InstrumentError {
     Io(std::io::Error),
-    Parse(serde_yaml::Error),
+    Parse(serde_yml::Error),
     UnknownVersion(u32),
     UnknownNodeType { type_tag: String },
     UnknownPort     { node: u32, port: String },
@@ -74,8 +74,8 @@ impl From<std::io::Error> for InstrumentError {
     fn from(e: std::io::Error) -> Self { Self::Io(e) }
 }
 
-impl From<serde_yaml::Error> for InstrumentError {
-    fn from(e: serde_yaml::Error) -> Self { Self::Parse(e) }
+impl From<serde_yml::Error> for InstrumentError {
+    fn from(e: serde_yml::Error) -> Self { Self::Parse(e) }
 }
 
 impl std::error::Error for InstrumentError {}

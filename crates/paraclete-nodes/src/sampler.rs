@@ -211,6 +211,8 @@ pub struct Sampler {
     // Pre-allocated render buffers — no audio-thread allocation.
     render_l: Vec<f32>,
     render_r: Vec<f32>,
+
+    pending_initial_params: HashMap<String, f64>,
 }
 
 impl Sampler {
@@ -255,6 +257,7 @@ impl Sampler {
             connection_records: Vec::new(),
             render_l: Vec::new(),
             render_r: Vec::new(),
+            pending_initial_params: HashMap::new(),
         }
     }
 
@@ -368,6 +371,10 @@ impl Node for Sampler {
 
     fn set_node_id(&mut self, id: u32) { self.node_id = id; }
 
+    fn set_initial_params(&mut self, params: &HashMap<String, f64>) {
+        self.pending_initial_params = params.clone();
+    }
+
     fn published_state(&self, buf: &mut Vec<(String, paraclete_node_api::StateBusValue)>) {
         paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
         buf.push((format!("/node/{}/state/trig",      self.node_id), paraclete_node_api::StateBusValue::Int(self.samp_trig_count as i64)));
@@ -384,6 +391,14 @@ impl Node for Sampler {
         self.output_sample_rate = sample_rate;
         self.render_l = vec![0.0; block_size];
         self.render_r = vec![0.0; block_size];
+
+        // Apply initial params (from instrument definition file) to the bank.
+        let doc = sampler_capability_document();
+        for (name, value) in &self.pending_initial_params {
+            if let Some(param) = doc.params.iter().find(|p| p.name.as_str() == name.as_str()) {
+                self.bank.set(param.id, *value);
+            }
+        }
 
         if let Some(ref path) = self.sample_path.clone() {
             match load_wav(path, sample_rate) {
@@ -1430,5 +1445,22 @@ mod tests {
         }
 
         std::fs::write(path, buf).unwrap();
+    }
+
+    #[test]
+    fn sampler_set_initial_params_applied() {
+        let mut samp = Sampler::new();
+        samp.set_node_id(1);
+        samp.set_initial_params(&[("attack".to_string(), 0.5)].into_iter().collect());
+        samp.activate(44100.0, 256);
+        let mut buf: Vec<(String, paraclete_node_api::StateBusValue)> = Vec::new();
+        samp.published_state(&mut buf);
+        let entry = buf.iter().find(|(k, _)| k.ends_with("/attack"));
+        assert!(entry.is_some(), "published_state should contain /attack");
+        if let paraclete_node_api::StateBusValue::Float(v) = entry.unwrap().1 {
+            assert!((v - 0.5).abs() < 1e-9, "attack should be 0.5, got {v}");
+        } else {
+            panic!("attack entry should be Float");
+        }
     }
 }
