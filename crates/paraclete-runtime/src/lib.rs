@@ -11,7 +11,7 @@ pub mod state_bus;
 pub mod message;
 pub(crate) mod ring_buffer;
 
-pub use configurator::NodeConfigurator;
+pub use configurator::{ConnectError, NodeConfigurator};
 pub use executor::NodeExecutor;
 pub use graph::NodeId;
 pub use message::ConfigMessage;

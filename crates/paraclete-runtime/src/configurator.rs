@@ -22,6 +22,47 @@ const RING_CAPACITY: usize = 256;
 const STATE_BUS_RING_CAPACITY: usize = 256;
 const NODE_CMD_RING_CAPACITY: usize = 512;
 
+/// Error returned by `NodeConfigurator::connect()`.
+#[derive(Debug)]
+pub enum ConnectError {
+    /// A port or node ID was not found, or the connection is invalid (type mismatch, wrong direction).
+    InvalidConnection(String),
+    /// A cycle was detected with no `LoopBreakNode` to sanction it (ADR-028).
+    MissingLoopBreak {
+        /// The node user IDs participating in the unsanctioned cycle.
+        cycle: Vec<u32>,
+    },
+    /// A cycle was detected with more than one `LoopBreakNode` (ADR-028).
+    TooManyLoopBreaks {
+        /// The node user IDs participating in the cycle.
+        cycle: Vec<u32>,
+        /// Number of `LoopBreakNode`s found in the cycle.
+        count: usize,
+    },
+}
+
+impl std::fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidConnection(msg) => write!(f, "{msg}"),
+            Self::MissingLoopBreak { cycle } => write!(
+                f,
+                "cycle detected involving nodes {:?} with no LoopBreakNode; \
+                 add a LoopBreakNode in the cycle to sanction it (ADR-028)",
+                cycle
+            ),
+            Self::TooManyLoopBreaks { cycle, count } => write!(
+                f,
+                "cycle detected involving nodes {:?} with {count} LoopBreakNodes; \
+                 exactly one is required per cycle (ADR-028)",
+                cycle
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ConnectError {}
+
 /// A snapshot of one graph edge, used by `save_project()` for validation.
 #[derive(Debug, Clone)]
 pub struct EdgeView {
@@ -29,6 +70,23 @@ pub struct EdgeView {
     pub src_port: u32,
     pub dst_node: u32,
     pub dst_port: u32,
+}
+
+/// Records a sanctioned feedback loop back-edge (ADR-028).
+///
+/// Stored in `NodeConfigurator` and propagated to `NodeExecutor` at build time.
+/// The edge runs from the `LoopBreakNode`'s output port to the downstream node's
+/// input port. It is excluded from topological sort but included in signal routing.
+#[derive(Debug, Clone)]
+pub struct LoopBackEdge {
+    /// Node ID of the `LoopBreakNode`.
+    pub lb_id: u32,
+    /// Output port on the `LoopBreakNode` (always 1 for `LoopBreakNode`).
+    pub lb_out_port: u32,
+    /// Node ID of the downstream node that receives the delayed signal.
+    pub dst_id: u32,
+    /// Input port on the downstream node.
+    pub dst_in_port: u32,
 }
 
 /// Holds either a regular node or a hardware device.
@@ -87,6 +145,7 @@ impl NodeOrDevice {
             NodeOrDevice::Device(d) => &mut **d as &mut dyn Node,
         }
     }
+
 }
 
 /// Runs on the main thread. Owns the graph topology and manages node lifecycle.
@@ -114,6 +173,12 @@ pub struct NodeConfigurator {
     /// Persists after `build_executor()`.
     cap_doc_cache: HashMap<u32, CapabilityDocument>,
 
+    /// Sanctioned feedback loop back-edges (ADR-028).
+    /// Edges that form a cycle with exactly one `LoopBreakNode` are accepted and
+    /// stored here. They are excluded from topological sort but included in signal
+    /// routing at `build_executor()` time.
+    back_edges: Vec<LoopBackEdge>,
+
     sample_rate: f32,
     block_size: usize,
     sender: ring_buffer::Sender<ConfigMessage>,
@@ -138,6 +203,7 @@ impl NodeConfigurator {
             node_cmd_consumer_pending: Some(cmd_cons),
             output_handles: Vec::new(),
             cap_doc_cache: HashMap::new(),
+            back_edges: Vec::new(),
             sample_rate,
             block_size,
             sender,
@@ -250,48 +316,127 @@ impl NodeConfigurator {
         src_port: u32,
         dst_id: u32,
         dst_port: u32,
-    ) -> Result<(), String> {
+    ) -> Result<(), ConnectError> {
         let src = *self.id_to_index.get(&src_id)
-            .ok_or_else(|| format!("no node with id {src_id}"))?;
+            .ok_or_else(|| ConnectError::InvalidConnection(format!("no node with id {src_id}")))?;
         let dst = *self.id_to_index.get(&dst_id)
-            .ok_or_else(|| format!("no node with id {dst_id}"))?;
+            .ok_or_else(|| ConnectError::InvalidConnection(format!("no node with id {dst_id}")))?;
 
         let src_port_desc = self.nodes[&src]
             .ports().iter().find(|p| p.id == src_port)
-            .ok_or_else(|| format!("node {src_id} has no port {src_port}"))?;
+            .ok_or_else(|| ConnectError::InvalidConnection(format!("node {src_id} has no port {src_port}")))?;
         let src_port_type = src_port_desc.port_type;
         if src_port_desc.direction != PortDirection::Output {
-            return Err(format!(
+            return Err(ConnectError::InvalidConnection(format!(
                 "port {src_port} on node {src_id} is an Input — source port must be Output"
-            ));
+            )));
         }
 
         let dst_port_desc = self.nodes[&dst]
             .ports().iter().find(|p| p.id == dst_port)
-            .ok_or_else(|| format!("node {dst_id} has no port {dst_port}"))?;
+            .ok_or_else(|| ConnectError::InvalidConnection(format!("node {dst_id} has no port {dst_port}")))?;
         if dst_port_desc.direction != PortDirection::Input {
-            return Err(format!(
+            return Err(ConnectError::InvalidConnection(format!(
                 "port {dst_port} on node {dst_id} is an Output — destination port must be Input"
-            ));
+            )));
         }
         if dst_port_desc.port_type != src_port_type {
-            return Err(format!(
+            return Err(ConnectError::InvalidConnection(format!(
                 "type mismatch: port {src_port} on node {src_id} is {:?}, \
                  port {dst_port} on node {dst_id} is {:?}",
                 src_port_type, dst_port_desc.port_type
-            ));
+            )));
         }
 
         self.graph.add_edge(src, dst, EdgeMeta { src_port, dst_port, src_port_type });
 
         if petgraph::algo::is_cyclic_directed(&self.graph) {
-            if let Some(edge) = self.graph.find_edge(src, dst) {
-                self.graph.remove_edge(edge);
+            // Find SCCs — any SCC with >1 node (or a self-loop) is a cycle.
+            let sccs = petgraph::algo::tarjan_scc(&self.graph);
+            let cycle_nodes: Vec<NodeIndex> = sccs
+                .into_iter()
+                .filter(|scc| scc.len() > 1 || self.graph.contains_edge(scc[0], scc[0]))
+                .flatten()
+                .collect();
+
+            // Map graph indices to user IDs.
+            let cycle_user_ids: Vec<u32> = cycle_nodes.iter()
+                .map(|ni| self.graph[*ni].user_id)
+                .collect();
+
+            // Count LoopBreakNodes in the cycle.
+            let lb_count = cycle_nodes.iter()
+                .filter(|ni| {
+                    if let Some(slot) = self.nodes.get(ni) {
+                        slot.as_node_ref().is_loop_break()
+                    } else {
+                        false
+                    }
+                })
+                .count();
+
+            match lb_count {
+                0 => {
+                    if let Some(edge) = self.graph.find_edge(src, dst) {
+                        self.graph.remove_edge(edge);
+                    }
+                    return Err(ConnectError::MissingLoopBreak { cycle: cycle_user_ids });
+                }
+                1 => {
+                    // Find the LoopBreakNode's graph index.
+                    let lb_ni = *cycle_nodes.iter()
+                        .find(|ni| self.nodes.get(ni)
+                            .map_or(false, |s| s.as_node_ref().is_loop_break()))
+                        .unwrap();
+                    let lb_user_id = self.graph[lb_ni].user_id;
+
+                    // Collect LB's outgoing edges to cycle members BEFORE removing src→dst,
+                    // so we capture the edge even if src is LB (src→dst may be LB's out edge).
+                    let cycle_set: std::collections::HashSet<NodeIndex> =
+                        cycle_nodes.iter().copied().collect();
+                    let lb_out_info: Vec<(NodeIndex, u32, u32)> = self.graph
+                        .edges_directed(lb_ni, petgraph::Direction::Outgoing)
+                        .filter(|e| cycle_set.contains(&e.target()))
+                        .map(|e| (e.target(), e.weight().src_port, e.weight().dst_port))
+                        .collect();
+
+                    // Remove src→dst from sort graph.
+                    if let Some(edge) = self.graph.find_edge(src, dst) {
+                        self.graph.remove_edge(edge);
+                    }
+
+                    // Remove LB's outgoing cycle edges from sort graph and record them.
+                    // If src→dst was LB's outgoing edge (lb_ni==src), it is already removed.
+                    let mut src_dst_was_lb_out = false;
+                    for (out_dst_ni, lb_out_port, dst_in_port) in &lb_out_info {
+                        let out_dst_user_id = self.graph[*out_dst_ni].user_id;
+                        self.back_edges.push(LoopBackEdge {
+                            lb_id:       lb_user_id,
+                            lb_out_port: *lb_out_port,
+                            dst_id:      out_dst_user_id,
+                            dst_in_port: *dst_in_port,
+                        });
+                        if lb_ni == src && *out_dst_ni == dst {
+                            src_dst_was_lb_out = true; // already removed above
+                        } else if let Some(eid) = self.graph.find_edge(lb_ni, *out_dst_ni) {
+                            self.graph.remove_edge(eid);
+                        }
+                    }
+
+                    // If the cycle-closing edge (src→dst) was NOT LB's outgoing edge,
+                    // it is a valid forward edge (e.g., A→LB). Re-add it to the sort graph.
+                    if !src_dst_was_lb_out {
+                        self.graph.add_edge(src, dst, EdgeMeta { src_port, dst_port, src_port_type });
+                    }
+                    // Fall through to connection negotiation below.
+                }
+                count => {
+                    if let Some(edge) = self.graph.find_edge(src, dst) {
+                        self.graph.remove_edge(edge);
+                    }
+                    return Err(ConnectError::TooManyLoopBreaks { cycle: cycle_user_ids, count });
+                }
             }
-            return Err(format!(
-                "connecting node {src_id}:{src_port} → {dst_id}:{dst_port} \
-                 would create a cycle. Loop-break nodes are required (P9)."
-            ));
         }
 
         let src_doc = self.cap_doc_cache[&src_id].clone();
@@ -459,6 +604,24 @@ impl NodeConfigurator {
             }
         }
 
+        // Add sanctioned back-edges (ADR-028) to signal_input_routes.
+        // These edges were removed from the sort graph but must still participate in
+        // signal routing: the downstream node reads the LoopBreakNode's output buffer
+        // (pre-populated by the pre-execution phase) via signal_in_scratch.
+        for be in &self.back_edges {
+            if let (Some(&lb_slot), Some(&dst_slot)) = (
+                self.id_to_index.get(&be.lb_id).and_then(|ni| idx_to_slot.get(ni)),
+                self.id_to_index.get(&be.dst_id).and_then(|ni| idx_to_slot.get(ni)),
+            ) {
+                signal_input_routes[dst_slot].push((
+                    be.dst_in_port,
+                    SignalPortKind::Cv,
+                    lb_slot,
+                    be.lb_out_port,
+                ));
+            }
+        }
+
         let mut ordered: Vec<(u32, NodeOrDevice)> = Vec::with_capacity(n);
         for ni in &order {
             if let Some(slot) = self.nodes.remove(ni) {
@@ -481,6 +644,8 @@ impl NodeConfigurator {
             }
         }
 
+        let back_edges = self.back_edges.clone();
+
         NodeExecutor::new(
             ordered,
             event_routes,
@@ -492,6 +657,7 @@ impl NodeConfigurator {
             self.block_size,
             state_bus_producer,
             cmd_consumer,
+            back_edges,
         )
     }
 }

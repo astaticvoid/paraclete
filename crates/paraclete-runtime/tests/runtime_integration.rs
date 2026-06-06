@@ -8,7 +8,7 @@ use paraclete_node_api::{
     ParamLockEvent, PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput,
     SurfaceDescriptor, TimedEvent, TransportEvent, TransportFlags, TransportInfo,
 };
-use paraclete_runtime::{ConfigMessage, NodeConfigurator};
+use paraclete_runtime::{ConfigMessage, ConnectError, NodeConfigurator};
 
 // ── Test node helpers ─────────────────────────────────────────────────────────
 
@@ -903,4 +903,331 @@ fn cap_doc_cache_hit_no_additional_leak() {
         doc2.params.len(), doc3.params.len(),
         "param count must be identical across calls"
     );
+}
+
+// ── P9 Commit 3: Feedback loop break (ADR-028) ───────────────────────────────
+
+/// Helper node with Cv input and Cv output. Passes input to output and records
+/// the first sample received.
+struct CvPassthroughNode {
+    ports: [PortDescriptor; 2],
+    received: Arc<Mutex<Vec<f32>>>,
+}
+
+impl CvPassthroughNode {
+    const PORT_CV_IN:  u32 = 0;
+    const PORT_CV_OUT: u32 = 1;
+
+    fn new(received: Arc<Mutex<Vec<f32>>>) -> Self {
+        Self {
+            ports: [
+                PortDescriptor {
+                    id: Self::PORT_CV_IN,
+                    name: "cv_in".into(),
+                    direction: PortDirection::Input,
+                    port_type: PortType::Cv,
+                },
+                PortDescriptor {
+                    id: Self::PORT_CV_OUT,
+                    name: "cv_out".into(),
+                    direction: PortDirection::Output,
+                    port_type: PortType::Cv,
+                },
+            ],
+            received,
+        }
+    }
+}
+
+impl Node for CvPassthroughNode {
+    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
+        let cv_in = input.cv_signal(Self::PORT_CV_IN);
+        if !cv_in.is_empty() {
+            self.received.lock().unwrap().push(cv_in[0]);
+        }
+        let cv_out = output.cv_signal_output_mut(Self::PORT_CV_OUT);
+        cv_out.copy_from_slice(cv_in);
+    }
+}
+
+/// ADR-028: A cycle with no LoopBreakNode must be rejected with MissingLoopBreak.
+#[test]
+fn connect_cycle_no_loop_break_returns_error() {
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+    conf.add_node(1, Box::new(CvPassthroughNode::new(Arc::new(Mutex::new(vec![])))));
+    conf.add_node(2, Box::new(CvPassthroughNode::new(Arc::new(Mutex::new(vec![])))));
+
+    // Connect 1 → 2 (valid)
+    conf.connect(1, CvPassthroughNode::PORT_CV_OUT, 2, CvPassthroughNode::PORT_CV_IN).unwrap();
+
+    // Connect 2 → 1 (closes a cycle with no LoopBreakNode)
+    let result = conf.connect(2, CvPassthroughNode::PORT_CV_OUT, 1, CvPassthroughNode::PORT_CV_IN);
+    assert!(
+        matches!(result, Err(ConnectError::MissingLoopBreak { .. })),
+        "expected MissingLoopBreak, got: {:?}", result
+    );
+}
+
+/// ADR-028: A cycle with exactly one LoopBreakNode must be accepted.
+#[test]
+fn connect_cycle_one_loop_break_accepted() {
+    use paraclete_nodes::LoopBreakNode;
+
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+    // Node A: Cv output (port 0) and Cv input (port 1)
+    conf.add_node(1, Box::new(CvPassthroughNode::new(Arc::new(Mutex::new(vec![])))));
+    // LoopBreakNode L: cv_in (0), cv_out (1)
+    conf.add_node(2, Box::new(LoopBreakNode::new()));
+
+    // Forward edge: A.cv_out → L.cv_in
+    conf.connect(1, CvPassthroughNode::PORT_CV_OUT, 2, 0).unwrap();
+    // Back edge: L.cv_out → A.cv_in (closes cycle with 1 LoopBreakNode)
+    let result = conf.connect(2, 1, 1, CvPassthroughNode::PORT_CV_IN);
+    assert!(
+        result.is_ok(),
+        "cycle with exactly one LoopBreakNode must be accepted, got: {:?}", result
+    );
+}
+
+/// ADR-028: A cycle with two LoopBreakNodes must be rejected with TooManyLoopBreaks.
+#[test]
+fn connect_cycle_two_loop_breaks_rejected() {
+    use paraclete_nodes::LoopBreakNode;
+
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+    // A: Cv in (1) and Cv out (0)
+    conf.add_node(1, Box::new(CvPassthroughNode::new(Arc::new(Mutex::new(vec![])))));
+    // L1 and L2: two LoopBreakNodes
+    conf.add_node(2, Box::new(LoopBreakNode::new()));
+    conf.add_node(3, Box::new(LoopBreakNode::new()));
+
+    // Build chain: A(out) → L1(in), L1(out) → L2(in)
+    conf.connect(1, CvPassthroughNode::PORT_CV_OUT, 2, 0).unwrap();
+    conf.connect(2, 1, 3, 0).unwrap();
+    // Close cycle: L2(out) → A(in) — cycle contains 2 LoopBreakNodes
+    let result = conf.connect(3, 1, 1, CvPassthroughNode::PORT_CV_IN);
+    assert!(
+        matches!(result, Err(ConnectError::TooManyLoopBreaks { count: 2, .. })),
+        "expected TooManyLoopBreaks(2), got: {:?}", result
+    );
+}
+
+/// ADR-028: After two process() cycles, the downstream node in a sanctioned
+/// feedback loop receives the LoopBreakNode's previous-cycle output, confirming
+/// the pre-execution phase correctly injects the delayed signal.
+#[test]
+fn loop_break_executor_pre_phase_injects_prev() {
+    use paraclete_nodes::LoopBreakNode;
+
+    // Graph: CvOutputNode(1, value=1.0) → LoopBreakNode(2) → CvPassthroughNode(3)
+    //                                          ↑___________________________|
+    // (back edge: 3.cv_out → 2.cv_in)
+    //
+    // Cycle 1: LB.prev=[0,0,...], so 3 receives 0.0 on cv_in (from LB pre-phase)
+    //          CvOutputNode writes 1.0 to... wait, CvOutputNode is not connected to 3.
+    //
+    // Let's simplify:
+    //   Node A (id=1): CvPassthroughNode, records what it receives on cv_in
+    //   LoopBreakNode L (id=2)
+    //   Connect A.cv_out → L.cv_in
+    //   Connect L.cv_out → A.cv_in (back edge)
+    //
+    // In this graph A runs before L (A feeds L).
+    // Cycle 1: A reads LB.prev=[0,0,...] from pre-phase → records 0.0
+    //          A outputs [0,...] to L.cv_in
+    //          L captures [0,...] to next, outputs prev=[0,...] to cv_out buf
+    //          Post-phase: swap prev/next → prev=[0,...], next=[0,...]
+    //
+    // Now feed a source value. Let's use a CvOutputNode that feeds A too.
+    // Actually for simplicity just use a CvOutputNode feeding L directly:
+    //
+    // CvOutputNode(1, 1.0) → A(2, records cv_in)
+    // A.cv_out → L(3)
+    // L.cv_out → A.cv_in (back edge)
+    //
+    // Topology: 1 → A → L, L ⤴ A (back edge)
+    // Cycle 1: pre-phase: LB.prev=[0], injected into A's cv_in signal buf
+    //          A processes: receives cv_in=0 from LB AND... wait, A also receives from 1?
+    //          No - A.cv_in is only connected to L's back edge. Node 1 feeds L directly?
+    //
+    // Let me use a cleaner setup:
+    //   CvSourceNode(1, value=1.0): cv_out (port 0)
+    //   LoopBreakNode(2): cv_in (port 0), cv_out (port 1)
+    //   CvRecorderNode(3): cv_in (port 0), cv_out (port 1)
+    //   Edges: 1→2(fwd), 2→3(fwd), 3→2(back)
+    //
+    // Topology order: 1, 3, 2 (since 3←2 is back edge, so 3 before 2 in toposort)
+    // Wait no: edges in the graph are: 1→2, 2→3. Back edge 3→2 removed from graph.
+    // Toposort of {1→2, 2→3}: 1, 2, 3.
+    // Pre-phase: inject LB.prev into signal_output_bufs[2_slot][cv_out].
+    //   2_slot = slot of node 2 (LB). LB is last in order (1,2,3).
+    //   But signal_input_routes for node 3 includes back edge (3.cv_in ← LB.cv_out).
+    //   Node 3 builds signal_in_scratch from signal_output_bufs[lb_slot][cv_out].
+    //   Pre-phase writes LB.prev to that buf before node 3 processes.
+    //
+    // So the order is: 1, 2, 3 (from toposort of forward edges).
+    // Node 3 is AFTER node 2. That's a problem: by the time node 3 processes,
+    // node 2 (LB) has ALREADY run and updated its signal_output_buf.
+    //
+    // So pre-phase must write BEFORE the slot loop. It does.
+    // But then node 2 (LB) runs and OVERWRITES its output buf with prev again.
+    // And then node 3 processes and reads from LB's buf (which = prev from this cycle).
+    //
+    // Actually this works fine! The pre-phase writes prev into LB's buf, then LB.process()
+    // also writes prev into LB's buf (same data), then node 3 reads it.
+    //
+    // Cycle 1: prev=[0,0,4]; CvSource(1) writes 1.0; LB.process: next=[1.0], out=[prev=0];
+    //   Node 3 reads cv_in from LB's buf = 0.0. Records 0.0.
+    //   Post-phase: swap → prev=[1.0], next=[0].
+    // Cycle 2: pre-phase writes prev=[1.0] to LB's buf.
+    //   Node 1 runs (writes 1.0 to its buf).
+    //   Node 2 (LB) runs: captures input (from node 1? No - node 1 is not connected to LB in this setup!)
+    //
+    // I'm overcomplicating this. Let me use the simplest setup:
+    //
+    //   CvPassthrough A (id=1): has cv_in (port 0) and cv_out (port 1)
+    //   LoopBreakNode L (id=2): has cv_in (port 0) and cv_out (port 1)
+    //   Forward edge: A.cv_out(1) → L.cv_in(0)  [A before L in toposort]
+    //   Back edge:    L.cv_out(1) → A.cv_in(0)  [sanctioned, removed from sort graph]
+    //
+    // Initial state: LB.prev = [0,0,0,0]
+    //
+    // Cycle 1:
+    //   Pre-phase: writes LB.prev=[0,0,0,0] to LB's signal_output_bufs[port 1]
+    //   Node A processes: signal_in from LB's buf = [0,0,0,0]. Records 0.0.
+    //                     A.cv_out = [0,0,0,0] (passes through cv_in)
+    //   Node L processes: cv_in = A.cv_out = [0,0,0,0]. next=[0,0,0,0]. out=[prev=0,0,0,0]
+    //   Post-phase: swap → prev=[0,0,0,0], next=[0,0,0,0].
+    //
+    // Hmm, A reads 0 and passes 0 to L, which captures 0 and gives back 0. Not useful.
+    //
+    // I need an external signal source. Let me inject via inject_event or just use a
+    // fixed-value node that only has cv_out:
+    //
+    //   CvSource S (id=1, value=1.0): cv_out(0)
+    //   LoopBreakNode L (id=2): cv_in(0), cv_out(1)
+    //   CvRecorder R (id=3): cv_in(0) - records what it gets
+    //   Forward edges: S(0)→L(0), L(1)→R(0)
+    //   Back edge: R would need a cv_out to feed L... R doesn't have a loop back.
+    //
+    // For a meaningful feedback test, the simplest feedback loop is:
+    //   Node A: cv_in feeds its cv_out (passthrough). So A accumulates.
+    //   L: delays A's output by one cycle.
+    //   Edge: A.out → L.in, L.out → A.in (back).
+    //   A starts at 0. Cycle 1: A reads LB.prev=0, outputs 0, L captures 0.
+    //   Not useful to show lag.
+    //
+    // Better: have a source ALSO feed A, and observe that A's cv_in from LB is delayed:
+    //   S(id=1, fixed=2.0) → A(id=2, records cv_in) via A's cv_in port
+    //   A has cv_out connected to L.cv_in (forward edge)
+    //   L.cv_out connected to A.cv_in (back edge)
+    //   A reads BOTH S and LB? No - each port can only be connected from one source.
+    //
+    // The cleanest test: have A feed L directly (forward), L feeds A (back).
+    // A outputs its cv_in to cv_out. Initial cv_in = [from LB] = 0.
+    // After cycle 1 + swap: LB.prev = [0] (what A output = what A received = 0).
+    // This is a fixed point at 0 - not useful.
+    //
+    // Use a CvOutputNode(fixed=5.0) whose output gets MERGED into A's input?
+    // Signal ports typically have one-to-one routing.
+    //
+    // SIMPLEST approach: just verify that in cycle 2, A receives what LB captured in cycle 1.
+    // Use A = CvOutputNode (always outputs 7.0), L = LB.
+    //   S(id=1, out=7.0) → L(id=2, cv_in) [forward]
+    //   L.cv_out → R(id=3, cv_in) [back edge? No, this would be back edge only if there's a cycle]
+    //
+    // For a real cycle: S→L→R→S? S needs both cv_out and cv_in. But S is a fixed source.
+    //
+    // I'll use this setup:
+    //   A = CvRecorderNode (records cv_in, also has cv_out that just passes cv_in)
+    //   L = LoopBreakNode
+    //   Forward: A.cv_out → L.cv_in
+    //   Back: L.cv_out → A.cv_in (sanctioned cycle)
+    //   External: nothing feeds A's cv_in except L's back edge.
+    //
+    // But now we need A to output something meaningful for L to capture.
+    // Use A as a source that ALSO records what it receives (so it can observe the lag):
+    //
+    // A outputs CONSTANT 1.0 regardless of input. L captures 1.0 each cycle.
+    // A's cv_in gets LB's prev. Cycle 1: A reads 0 from LB.prev. Cycle 2: A reads 1.0.
+    // That's the test! A records what its cv_in was, which should be 0 then 1.0.
+
+    // Setup: A with fixed output 1.0, cv_in connected to LB's back edge (records what it receives)
+    let received = Arc::new(Mutex::new(vec![]));
+    let mut conf = NodeConfigurator::new(44100.0, 4);
+
+    // Node A: fixed cv_out of 1.0, records cv_in values
+    conf.add_node(1, Box::new(CvPassthroughAndEmit::new(received.clone(), 1.0)));
+    // LoopBreakNode
+    conf.add_node(2, Box::new(LoopBreakNode::new()));
+
+    // Forward edge: A.cv_out(1) → L.cv_in(0)
+    conf.connect(1, CvPassthroughAndEmit::PORT_CV_OUT, 2, 0).unwrap();
+    // Back edge: L.cv_out(1) → A.cv_in(0)
+    conf.connect(2, 1, 1, CvPassthroughAndEmit::PORT_CV_IN).unwrap();
+
+    let mut exec = conf.build_executor();
+    let mut out = vec![0.0f32; 4 * 2];
+
+    // Cycle 1: A receives LB.prev=[0,0,0,0] from pre-phase.
+    exec.process(&mut out, 2);
+    // Post-phase: LB.prev = [1.0,1.0,1.0,1.0] (what A output this cycle)
+
+    // Cycle 2: A receives LB.prev=[1.0,1.0,1.0,1.0] from pre-phase.
+    exec.process(&mut out, 2);
+
+    let vals = received.lock().unwrap();
+    // Cycle 1: cv_in[0] = 0.0 (LB.prev starts zeroed)
+    // Cycle 2: cv_in[0] = 1.0 (LB.prev = what A output in cycle 1)
+    assert!(vals.len() >= 2, "expected at least 2 recorded values, got {}", vals.len());
+    assert_eq!(vals[0], 0.0, "cycle 1: A should receive 0.0 (LB.prev is zeroed), got {}", vals[0]);
+    assert_eq!(vals[1], 1.0, "cycle 2: A should receive 1.0 (LB.prev = cycle 1 output), got {}", vals[1]);
+}
+
+/// A node with Cv input (records values) and Cv output (fixed value).
+struct CvPassthroughAndEmit {
+    ports: [PortDescriptor; 2],
+    received: Arc<Mutex<Vec<f32>>>,
+    emit_value: f32,
+}
+
+impl CvPassthroughAndEmit {
+    const PORT_CV_IN:  u32 = 0;
+    const PORT_CV_OUT: u32 = 1;
+
+    fn new(received: Arc<Mutex<Vec<f32>>>, emit_value: f32) -> Self {
+        Self {
+            ports: [
+                PortDescriptor {
+                    id: Self::PORT_CV_IN,
+                    name: "cv_in".into(),
+                    direction: PortDirection::Input,
+                    port_type: PortType::Cv,
+                },
+                PortDescriptor {
+                    id: Self::PORT_CV_OUT,
+                    name: "cv_out".into(),
+                    direction: PortDirection::Output,
+                    port_type: PortType::Cv,
+                },
+            ],
+            received,
+            emit_value,
+        }
+    }
+}
+
+impl Node for CvPassthroughAndEmit {
+    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
+        // Record the first sample of cv_in
+        let cv_in = input.cv_signal(Self::PORT_CV_IN);
+        if !cv_in.is_empty() {
+            self.received.lock().unwrap().push(cv_in[0]);
+        }
+        // Emit fixed value regardless of input
+        let cv_out = output.cv_signal_output_mut(Self::PORT_CV_OUT);
+        cv_out.fill(self.emit_value);
+    }
 }

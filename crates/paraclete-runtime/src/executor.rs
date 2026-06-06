@@ -7,10 +7,29 @@ use paraclete_node_api::{
     TransportInfo, TransportEvent, TimedEvent,
 };
 
-use crate::configurator::NodeOrDevice;
+use crate::configurator::{LoopBackEdge, NodeOrDevice};
 use crate::state_bus::StateBusUpdate;
 use crate::message::ConfigMessage;
 use crate::ring_buffer::Receiver;
+
+/// Resolved loop-back edge in slot-index space. Used by the executor for the
+/// pre/post execution phases (ADR-028).
+struct ResolvedLoopBackEdge {
+    /// Slot index of the `LoopBreakNode`.
+    lb_slot: usize,
+    /// Output port id on the `LoopBreakNode`.
+    lb_out_port: u32,
+    /// Slot index of the downstream node that receives the delayed signal.
+    /// Stored for completeness and future diagnostics; not read by the current
+    /// pre/post phases (signal routing via `signal_input_routes` handles delivery).
+    #[allow(dead_code)]
+    dst_slot: usize,
+    /// Input port id on the downstream node.
+    /// Stored for completeness and future diagnostics; not read by the current
+    /// pre/post phases.
+    #[allow(dead_code)]
+    dst_in_port: u32,
+}
 
 pub struct NodeExecutor {
     nodes: Vec<NodeSlot>,
@@ -77,6 +96,11 @@ pub struct NodeExecutor {
     /// Applied to `pending_cmds` after `drain_commands()`.
     /// Pre-allocated; drained each cycle.
     extra_cmds: Vec<NodeCommand>,
+
+    /// Sanctioned feedback loop back-edges (ADR-028), resolved to slot indices.
+    /// Used in pre/post execution phases to inject delayed signal values and
+    /// rotate buffers.
+    back_edges: Vec<ResolvedLoopBackEdge>,
 }
 
 struct NodeSlot {
@@ -148,6 +172,7 @@ impl NodeExecutor {
         block_size: usize,
         state_bus_producer: rtrb::Producer<StateBusUpdate>,
         cmd_consumer: rtrb::Consumer<NodeCommand>,
+        raw_back_edges: Vec<LoopBackEdge>,
     ) -> Self {
         let node_id_to_slot: HashMap<u32, usize> = nodes.iter().enumerate()
             .map(|(idx, (id, _))| (*id, idx))
@@ -164,6 +189,20 @@ impl NodeExecutor {
                 events_out: EventOutputBuffer::new(256),
             }
         }).collect();
+
+        // Resolve back-edge user IDs to slot indices.
+        let back_edges: Vec<ResolvedLoopBackEdge> = raw_back_edges.into_iter()
+            .filter_map(|be| {
+                let lb_slot  = *node_id_to_slot.get(&be.lb_id)?;
+                let dst_slot = *node_id_to_slot.get(&be.dst_id)?;
+                Some(ResolvedLoopBackEdge {
+                    lb_slot,
+                    lb_out_port: be.lb_out_port,
+                    dst_slot,
+                    dst_in_port: be.dst_in_port,
+                })
+            })
+            .collect();
 
         let max_audio_inputs  = audio_routes.iter().map(|r| r.len()).max().unwrap_or(0);
         let max_signal_outs   = signal_output_bufs.iter().map(|v| v.len()).max().unwrap_or(0);
@@ -196,6 +235,7 @@ impl NodeExecutor {
             node_id_to_slot,
             extra_events: Vec::with_capacity(64),
             extra_cmds:   Vec::with_capacity(64),
+            back_edges,
         }
     }
 
@@ -341,6 +381,31 @@ impl NodeExecutor {
         let transport = &self.transport as *const TransportInfo;
         let slab = &self.extended_event_slab as *const ExtendedEventSlab;
 
+        // Pre-execution phase (ADR-028): for each sanctioned back-edge, copy the
+        // LoopBreakNode's "previous cycle" slice into its signal output buffer.
+        // This ensures the downstream node reads the correct delayed value when its
+        // signal_in_scratch is built from signal_input_routes, which points to this buffer.
+        for be in &self.back_edges {
+            let lb_slot  = be.lb_slot;
+            let out_port = be.lb_out_port;
+            // Obtain the prev slice from the LoopBreakNode via the trait method.
+            // SAFETY: we borrow nodes[lb_slot] immutably here; it is not aliased by
+            // any other borrow at this point (we are outside the main process loop).
+            let prev_data: &[f32] = match &self.nodes[lb_slot].kind {
+                NodeOrDevice::Node(n) => n.loop_break_prev(),
+                NodeOrDevice::Device(d) => d.loop_break_prev(),
+            };
+            // Copy into signal_output_bufs[lb_slot] for the matching port.
+            if let Some(buf_entry) = self.signal_output_bufs[lb_slot]
+                .iter_mut()
+                .find(|(port_id, _, _)| *port_id == out_port)
+            {
+                let out_buf = &mut buf_entry.2;
+                let len = prev_data.len().min(out_buf.len());
+                out_buf[..len].copy_from_slice(&prev_data[..len]);
+            }
+        }
+
         for slot_idx in 0..self.nodes.len() {
             // Collect audio input pointers before the mutable borrow of self.nodes[slot_idx].
             // audio_routes[slot_idx] contains only src_idx < slot_idx (topological order),
@@ -472,6 +537,18 @@ impl NodeExecutor {
                 for &dst_idx in &self.event_routes[slot_idx] {
                     self.incoming[dst_idx].extend_from_slice(unsafe { &*outgoing });
                 }
+            }
+        }
+
+        // Post-execution phase (ADR-028): swap the LoopBreakNode's prev/next buffers
+        // for each sanctioned back-edge. This makes the data captured during this
+        // cycle's process() call (in `next`) available via `loop_break_prev()` in
+        // the next cycle's pre-execution phase.
+        for be in &self.back_edges {
+            let lb_slot = be.lb_slot;
+            match &mut self.nodes[lb_slot].kind {
+                NodeOrDevice::Node(n) => n.loop_break_swap(),
+                NodeOrDevice::Device(d) => d.loop_break_swap(),
             }
         }
 

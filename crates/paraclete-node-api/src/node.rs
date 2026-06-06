@@ -110,6 +110,30 @@ pub trait Node: Send {
     /// Default: no-op (nodes that publish no state do nothing).
     fn published_state(&self, _buf: &mut Vec<(String, StateBusValue)>) {}
 
+    // ── Loop break protocol (ADR-028) ─────────────────────────────────────────
+
+    /// Returns `true` if this node is a feedback loop break node (ADR-028).
+    ///
+    /// Only `LoopBreakNode` overrides this to return `true`. The runtime uses
+    /// this to sanction cycles that contain exactly one loop-break node.
+    ///
+    /// Default: `false`.
+    fn is_loop_break(&self) -> bool { false }
+
+    /// Returns the "previous cycle" output slice stored inside the loop-break node.
+    ///
+    /// Called by the executor in the pre-execution phase to inject the previous
+    /// cycle's signal into the downstream node's input buffer before any
+    /// `process()` call. Returns an empty slice from the default implementation.
+    fn loop_break_prev(&self) -> &[f32] { &[] }
+
+    /// Swaps the "previous" and "next" internal buffers.
+    ///
+    /// Called by the executor in the post-execution phase, after all nodes have
+    /// been processed. Makes the data captured in `next` (this cycle's input)
+    /// available via `loop_break_prev()` in the next cycle. Default is a no-op.
+    fn loop_break_swap(&mut self) {}
+
     // ── Level 3 — override for smart nodes ───────────────────────────────────
 
     /// Returns `true` if this node actively participates in the connection

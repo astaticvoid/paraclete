@@ -116,7 +116,7 @@ pub fn build_from_instrument(
         )?;
 
         conf.connect(from_node_id, from_port, to_node_id, to_port)
-            .map_err(InstrumentError::ConnectionError)?;
+            .map_err(|e| InstrumentError::ConnectionError(e.to_string()))?;
     }
 
     Ok(ids)

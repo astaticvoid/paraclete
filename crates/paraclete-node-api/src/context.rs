@@ -136,6 +136,25 @@ impl<'a> ProcessInput<'a> {
         );
         &SILENCE[..self.block_size]
     }
+
+    /// CV signal input (audio-rate CV). Returns a block_size slice of f32 values.
+    /// Returns zeros if the port is unconnected (no `SignalInputSlot` with this id).
+    /// Used by `LoopBreakNode` and other nodes that declare `PortType::Cv` ports.
+    pub fn cv_signal(&self, port_id: u32) -> &[f32] {
+        for slot in self.signal_inputs {
+            if slot.port_id == port_id && slot.kind == SignalPortKind::Cv {
+                // SAFETY: ptr is valid for the duration of this process() call.
+                return unsafe { std::slice::from_raw_parts(slot.ptr, slot.frames) };
+            }
+        }
+        assert!(
+            self.block_size <= SILENCE.len(),
+            "block_size {} exceeds SILENCE buffer capacity {}",
+            self.block_size,
+            SILENCE.len(),
+        );
+        &SILENCE[..self.block_size]
+    }
 }
 
 // ── ProcessOutput ─────────────────────────────────────────────────────────────
@@ -173,6 +192,13 @@ impl<'a> ProcessOutput<'a> {
     /// Panics if port_id is not a registered Logic output port.
     pub fn logic_output_mut(&mut self, port_id: u32) -> &mut [f32] {
         self.find_output(port_id, SignalPortKind::Logic)
+    }
+
+    /// Write a CV signal port output. Returns a mutable slice of block_size values.
+    /// Panics if port_id is not a registered Cv output port.
+    /// Used by `LoopBreakNode` and other nodes that declare `PortType::Cv` output ports.
+    pub fn cv_signal_output_mut(&mut self, port_id: u32) -> &mut [f32] {
+        self.find_output(port_id, SignalPortKind::Cv)
     }
 }
 
