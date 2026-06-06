@@ -14,6 +14,7 @@ members = [
     "crates/paraclete-machine-fm-kick",
     "crates/paraclete-machine-fm-bell",
     "crates/paraclete-machine-fm-bass",
+    "crates/paraclete-tui",
     "tools/gen-samples",
     "tools/lpx-debug",
 ]
@@ -48,3 +49,5 @@ symphonia = { version = "0.5", features = ["all"] }
 ron        = "0.8"
 serde      = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
+ratatui    = "0.26"
+crossterm  = "0.27"

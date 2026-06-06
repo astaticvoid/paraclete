@@ -1,7 +1,7 @@
 Paraclete — P8 Implementation Report
 =====================================
 Date: June 2026
-Status: In progress — 329 tests, 0 failures (after Commit 3)
+Status: In progress — 333 tests, 0 failures (after Commit 4)
 
 WHAT SHIPPED (P8)
 -----------------
@@ -134,6 +134,46 @@ Tests after: 329 (+5 from 324)
     - clap_plugin returned UnknownNodeType unconditionally → MissingField path added
     - InternalClock used add_node → fixed to add_tempo_source
     - connect() errors mapped to UnknownPort → ConnectionError variant added
+
+-----
+
+Commit 4 — Terminal UI (paraclete-tui, new crate)
+Tests after: 333 (+4 from 329)
+
+  paraclete-tui crate (GPL3) — ratatui + crossterm
+
+    TuiApp with tick(terminal) and tick_with_time(terminal, now_ms) for testing.
+    TuiState holds BPM, playing, current_step, steps[16], encoder slots, dirty flag.
+    EncoderSlot holds label/value/min/max/recently_changed/changed_at_ms.
+
+    tick() reads from the state bus each frame:
+      /transport/bpm         → state.bpm (Float)
+      /transport/playing     → state.playing (Bool — matches InternalClock output)
+      /node/{seq}/state/current_step → state.current_step (Int — matches Sequencer)
+      /node/{seq}/state/steps        → state.steps (Text bitfield)
+      /context/encoder_{i}/node+param → encoder slot label, value, min, max
+      /script/selected_track          → active_track
+
+    Only redraws when state.dirty; clears dirty after draw.
+    recently_changed set on value/node/param change; cleared after 500ms elapsed
+    (500ms starts from last change, not continuously reset while moving).
+
+    layout::render(): three-row terminal layout (transport bar, encoder row,
+    step row). Returns early with placeholder on terminals narrower than 40 cols.
+
+    Code review findings caught before commit:
+      - BPM path was /node/{id}/bpm → fixed to /transport/bpm
+      - playing path was /node/{id}/playing and matched Float → fixed to /transport/playing,
+        match Bool (InternalClock publishes StateBusValue::Bool, not Float)
+      - current_step matched Float → fixed to Int (Sequencer publishes Int)
+      - Tests updated to write the correct types to match actual published values
+
+    Encoder value path (/node/{id}/{param_name}) is correct per spec §4.5 but no
+    node currently publishes per-parameter values to the state bus — encoder values
+    will read as 0.0 in production until Commit 6 or node publishing is added (P9).
+
+  New tests: tui_state_updates_bpm_from_state_bus, tui_state_playing_flag_reflects_state_bus,
+  tui_encoder_slot_resolves_param_label_from_cap_doc, tui_recently_changed_clears_after_500ms.
 
 -----
 

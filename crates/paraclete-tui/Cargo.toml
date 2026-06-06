@@ -1,0 +1,13 @@
+[package]
+name        = "paraclete-tui"
+description = "Paraclete terminal UI — transport bar, encoder row, step row"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+license     = "GPL-3.0-or-later"
+
+[dependencies]
+ratatui           = { workspace = true }
+crossterm         = { workspace = true }
+paraclete-node-api = { workspace = true }
