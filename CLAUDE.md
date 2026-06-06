@@ -95,8 +95,9 @@ Three additional platform crates live outside the five-layer model:
 | Crate | License | Role |
 |-------|---------|------|
 | `paraclete-clap` | GPL3 | Paraclete-as-CLAP-plugin adapter (ADR-024). `ClapParamBridge`, `translate_transport`, `SingleNodePlugin` (MIDI effect wrapping one node), `SubgraphPlugin` (InternalClock+Sequencer+generator graph). Machine bank workspace crates (`paraclete-machine-kick/snare/fm-kick/fm-bell/fm-bass`) produce cdylibs via real CLAP FFI (`clap-sys`). |
-| `paraclete-clap-host` | GPL3 | Paraclete-as-CLAP-host (ADR-027, shipped P8). `PluginLibrary` loads `.clap` files (clap-sys + libloading); `PluginNode` wraps a loaded plugin as a `Node`. Arc-shared library handle keeps the .clap alive as long as any node exists. Generator plugins only at P8; effect plugins deferred to P9. |
+| `paraclete-clap-host` | GPL3 | Paraclete-as-CLAP-host (ADR-027, shipped P8). `PluginLibrary` loads `.clap` files (clap-sys + libloading); `PluginNode` wraps a loaded plugin as a `Node`. Arc-shared library handle keeps the .clap alive as long as any node exists. Generator plugins only at P8; effect plugins (audio_in port) in P9. |
 | `paraclete-tui` | GPL3 | `ratatui`-based terminal UI (ADR-026, shipped P8). `TuiApp` reads transport, encoder context, and step state from the StateBus each frame. Three-row layout: transport bar, encoder row, step row. |
+| `paraclete-graph-nodes` | GPL3 | Nodes that own a `NodeExecutor` inner graph (ADR-023, P9). The only crate permitted to depend on both `paraclete-nodes` and `paraclete-runtime`. `InnerGraphNode` is the initial concrete implementation. |
 
 ## Configurator API
 
@@ -104,7 +105,8 @@ Three additional platform crates live outside the five-layer model:
 
 | Method | Use when |
 |--------|----------|
-| `add_node(id, Box<dyn Node>)` | Standard node (oscillator, sequencer, mapper) |
+| `add_node(Box<dyn Node>)` | Standard node (oscillator, sequencer, mapper) |
+| `add_node_tagged(Box<dyn Node>, type_tag)` | Same as `add_node` but records the type_tag for v2 project file serialization. Preferred for all new call sites. |
 | `add_hardware_device(id, Box<dyn HardwareDevice>)` | Physical or emulated controller. Calls `take_output_handle()` at registration; if `Some`, the handle is ticked each main loop iteration instead of calling `update_output()` from the executor. |
 | `add_tempo_source(id, Box<dyn TempoSource>)` | Clock master; registers a clock domain, returns `(NodeId, domain_id)` |
 
@@ -115,12 +117,19 @@ The runtime splits into two halves to keep the audio thread allocation-free:
 - **`NodeConfigurator`** — main thread. Owns the graph topology (via petgraph DAG), manages node lifecycle, sends incremental changes over a lock-free ring buffer.
 - **`NodeExecutor`** — audio thread. Receives `ConfigMessage`s from the ring buffer, executes nodes in topological order, sums audio output. Never allocates, blocks, or takes a mutex.
 
-The graph enforces a DAG (cycles rejected at `connect()` time per ADR-005). `build_executor()` drains nodes from the configurator in topological order — it can only be called once.
+The graph enforces a DAG (cycles rejected at `connect()` time per ADR-005), with one exception: a cycle containing exactly one `LoopBreakNode` is accepted (ADR-028). `build_executor()` drains nodes from the configurator in topological order. `rebuild_executor()` (P9) is the non-consuming equivalent — callable multiple times for dynamic topology (ADR-029).
 
-`NodeConfigurator` (P8) exposes three additional accessors needed by the instrument builder and CLAP host:
-- `get_node_cap_doc(node_id)` → `Option<CapabilityDocument>` — queries a pre-executor node's capability document; used to populate the cap_docs map for TuiApp
+`NodeConfigurator` (P8) exposes additional accessors:
+- `get_node_cap_doc(node_id)` → `Option<&CapabilityDocument>` — returns the cached capability document (P9: cached at `add_node()` time to avoid `Box::leak` per call); used to populate the cap_docs map for TuiApp
 - `sample_rate()` → `f32` — exposes the configured sample rate for CLAP plugin instantiation
 - `block_size()` → `usize` — exposes the configured block size for CLAP plugin instantiation
+
+`NodeConfigurator` (P9) adds dynamic topology methods:
+- `remove_node(id)` → `Result<Box<dyn Node>, ConfigError>` — removes a node and severs all connected edges
+- `disconnect(src, src_port, dst, dst_port)` → `Result<(), ConfigError>` — removes a specific edge
+- `rebuild_executor()` → `NodeExecutor` — non-consuming build; callable multiple times
+- `type_tag_for(node_id)` → `Option<&str>` — returns the stored type_tag for project file serialization
+- `cap_doc_cache: HashMap<u32, CapabilityDocument>` — `capability_document()` called once per node per session
 
 `NodeExecutor` (P7) exposes injection methods for CLAP plugin use — safe to call before `process()` in the same audio callback:
 - `set_transport_override(info, event)` — overrides the transport for one cycle (consumed via `.take()`); must be injected *after* `incoming.clear()` to survive the cycle boundary
@@ -166,11 +175,23 @@ fn get_param(&self, param_id: u32) -> f32 {
 
 **`Node::published_state()` push-down signature** — accepts `&mut Vec<(String, StateBusValue)>` rather than returning a `Vec`. The executor clears the buffer before calling; nodes push into it. This is the pattern to use — the old returning signature was OQ-9 (allocates per cycle).
 
-**`Node::set_initial_params()` (P8)** — default no-op; called with `HashMap<String, f64>` from the instrument definition file before `activate()`. ParameterBank nodes override it to store values and apply them at `activate()`.
+**`Node::set_initial_params()` (P8)** — default no-op; called with `HashMap<String, f64>` from the instrument definition file before `activate()`. ParameterBank nodes override it to store values and apply them at `activate()`. P9 extends coverage to AnalogEngine, FmEngine, Sampler, ReverbNode.
+
+**`Node::set_node_id()` (P9)** — default no-op; called by `NodeConfigurator::add_node()` after assigning the ID. Nodes that publish named state (via `publish_bank_state()`) store this ID and use it to format state bus paths like `/node/{id}/{param_name}`.
+
+**`Node::is_loop_break()` / `loop_break_prev()` / `loop_break_swap()` (P9)** — three default no-op methods for the feedback loop break protocol (ADR-028). Only `LoopBreakNode` overrides them. The executor calls `loop_break_prev()` in a pre-execution phase and `loop_break_swap()` in a post-execution phase for each back edge recorded at connection time.
+
+**`publish_bank_state()` free function (P9)** — in `paraclete-node-api`; iterates a `ParameterBank` and pushes one `StateBusValue::Float` entry per declared parameter into the `published_state()` output buffer using path `/node/{node_id}/{param_name}`. The TUI reads these paths for live encoder value display.
+
+**`ParameterSlot::name` field (P9)** — `ParameterSlot` gains a `name: String` field storing the canonical ADR-019 parameter name. `ParameterBank::iter_values()` yields `(&str, f64)` pairs for use by `publish_bank_state()`. No call-site change to `declare_param()`.
 
 **`Node::deserialize()` ordering** — must be called *after* `activate()` for nodes that use `ParameterBank`. `activate()` resets the bank to defaults; `deserialize()` re-applies saved values on top. The doc comment in `paraclete-node-api/src/node.rs` was corrected in P7 to reflect this.
 
 **`ParamDescriptor::id_for_name()` is `const fn`** — promoted in P7 Commit 7. Use `const CUTOFF_ID: u32 = ParamDescriptor::id_for_name("cutoff");` to get zero-cost compile-time IDs.
+
+**`GraphNode` marker trait (P9)** — in `paraclete-node-api` (LGPL3); identifies nodes that contain an inner `NodeExecutor`. No required methods beyond `Node`. Implemented by `InnerGraphNode` in `paraclete-graph-nodes`. Inner graph patching at runtime is deferred to P10; the inner graph is rebuilt as a unit on outer graph patch.
+
+**`LoopBreakNode` (P9)** — in `paraclete-nodes`; CvSignal-only, two ports (`cv_in`/`cv_out`). Holds one block of samples from the previous cycle, introducing exactly one buffer of latency in the feedback path. The only node that overrides `is_loop_break()` → `true`. Type-tag: `"loop_break"`. Not a general-purpose delay; use `DelayNode` for configurable timing.
 
 **AudioEffect marker** — effect nodes (distortion, filter, reverb) are plain `Node` implementations with audio ports. Wet/dry and bypass are parameters, lockable by the sequencer. Optionally implement the `AudioEffect` marker trait (no required methods) so profile scripts can discover them by querying `CapabilityDocument.extensions` for `"paraclete.effect"`.
 
@@ -287,13 +308,23 @@ Sequencer publishes to the state bus each cycle:
 
 P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, default 0.0). Swing is applied at emit time to odd-indexed steps.
 
-## Current Phase: P8 Complete — P9 Planned
+**Sequencer as CV source (P9):** `Sequencer::with_cv_outputs(n)` adds `n` CvSignal output ports (`cv_out_0`, `cv_out_1`, … at port IDs `2+i`). Each `Step` gains `cv_locks: Vec<(u16, f32)>` for per-step CV value locks (sample-and-hold: value held from step fire until next step fire). `"sequencer_cv"` type-tag is `Sequencer::with_cv_outputs(1)`. cv_locks are serialized in the project file; P5 fields (TrigCondition, StepTiming) are still not serialized.
+
+## Current Phase: P9 In Progress
 
 **P7 shipped** (317 tests, 0 failures): `Node::type_name()` — stable string label for project files. `published_state()` push-down (OQ-9 resolved) — nodes push into a caller-owned `Vec`, eliminating per-cycle heap allocation. Per-voice rubato pitch resampling in Sampler — `VoiceResampler` wraps `SincFixedOut<f32>`; `root_note` moved to ParameterBank; serialize v3. Project save/recall — RON format (ADR-025); `save_project()`/`load_project()` in `paraclete-app/src/project.rs`; `--load`/`--save` CLI flags. `paraclete-clap` crate — `ClapParamBridge`, `translate_transport`, `SingleNodePlugin`, `SubgraphPlugin`, machine bank stub binaries. `paraclete-node-api` v0.1.0 publication prep; `id_for_name` promoted to `const fn`. See `design/phases/p7-report.md`.
 
 **P8 shipped** (340 tests, 0 failures): P7 residuals — `InternalClock` transport stop/resume; machine bank real CLAP FFI (`clap-sys`), five workspace crates (`paraclete-machine-kick/snare/fm-kick/fm-bell/fm-bass`); SILENCE buffer 4096 → 65536. `publish_context()` Rhai builtin — writes `/context/{encoder_key}/node` and `param` to state bus. Instrument definition YAML (`serde_yaml`, ADR-026) — `build_from_instrument()`; `Node::set_initial_params()` (DistortionNode, FilterNode); `AudioOutputNode`. `paraclete-tui` crate — `ratatui` terminal UI; transport bar, encoder row, step row; 500 ms encoder highlight decay. `paraclete-clap-host` crate — `PluginLibrary` / `PluginNode` (clap-sys + libloading; `clack` crate was a crates.io placeholder); ParameterBank + `CLAP_EVENT_PARAM_VALUE` flush; `Arc<PluginLibrary>` for multi-plugin bundle safety; generator plugins only. App wiring (`--instrument`, `--no-tui` flags; 14-step startup sequence; instrument-file-driven graph). See `design/phases/p8-report.md`.
 
-**Known deferred items (P9+):**
+**P9 planned — 6 commits** (target ≥ 389 tests):
+- **Commit 1 (GATED):** Encoder value publishing — `ParameterSlot::name`, `ParameterBank::iter_values()`, `publish_bank_state()`, `Node::set_node_id()`. All nodes with ParameterBank override `published_state()` to push live values. TUI encoder row shows real values.
+- **Commit 2:** Housekeeping — `cap_doc_cache` in NodeConfigurator (prerequisite for Commit 4); `serde_yaml` → `serde_yml`; `set_initial_params()` coverage for AnalogEngine, FmEngine, Sampler, ReverbNode; effect-type CLAP plugins in `PluginNode`.
+- **Commit 3:** Feedback loop break — `LoopBreakNode` (CvSignal only), `is_loop_break()`/`loop_break_prev()`/`loop_break_swap()` Node trait methods, executor pre/post phases, amended cycle detection (ADR-028).
+- **Commit 4:** Dynamic topology — `NodeRegistry`, `TopologyChange`, `apply_patch()` (pause-rebuild-resume, ~5 ms silence), `AudioEngine::pause()`/`wait_paused()`/`resume_with_executor()`, project file format v2 with `type_tag` (ADR-029). Requires Commit 2 merged first.
+- **Commit 5:** Sequencer as CV source — `Sequencer::with_cv_outputs(n)`, `cv_out_{i}` ports (CvSignal), `Step::cv_locks`, sample-and-hold output. `"sequencer_cv"` registered in NodeRegistry.
+- **Commit 6:** GraphNode — `GraphNode` marker trait (LGPL3), `paraclete-graph-nodes` crate (new), `InnerGraphNode` (inner executor: clock→sequencer→kick→mix→audio_out), `"inner_graph"` registered in NodeRegistry.
+
+**Known deferred items (P10+):**
 - Step period is 241 ticks (not 240) — off-by-one in transport start model.
 - `ConnectionAgreement::baseline()` hardcodes `sample_rate=44100.0` and `block_size=512`.
 - `paraclete-hal` depends on `paraclete-runtime` (layer violation, deferred until StateBusHandle moves to L2).
@@ -301,12 +332,13 @@ P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, defa
 - Signed micro-timing in Sequencer (negative offset not yet distinct from positive).
 - LadderFilter HP/BP modes, LFO tempo sync.
 - `Sequencer::serialize()` does not save P5 fields (TrigCondition, StepTiming) or swing.
-- `set_initial_params()` not yet overridden in AnalogEngine, FmEngine, Sampler, ReverbNode (DistortionNode and FilterNode implemented as proof of mechanism).
 - `agg_state_buf` in executor does one allocation per cycle via `mem::take()` — full elimination requires a return channel.
-- Effect-type CLAP plugins (audio input → output) via `PluginNode` — deferred to P9.
-- `GraphNode` primitive (ADR-023) — P9.
-- `serde_yaml 0.9` deprecated by author (recommends `serde_yml` fork) — migration deferred.
-- Encoder value path `/node/{id}/{param_name}` correct per spec but no node currently publishes per-parameter values to state bus — encoder values read as 0.0 until P9 node publishing is added.
+- AudioBuffer feedback cycles (requires OQ-7 oversampling strategy).
+- Inner GraphNode topology patching at runtime (Commit 4 patches outer graph only).
+- CLAP plugin nodes not in NodeRegistry (require PluginLibrary argument).
+- `InnerGraphNode::serialize()` returns empty — inner graph state not persisted at P9.
+- `SubgraphPlugin` machine slot swapping — depends on stable `GraphNode` API (P10).
+- CLAP GUI extension, note expressions, hot-reload (all still deferred).
 
 ## Dependencies Added Per Phase
 
@@ -343,6 +375,10 @@ P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, defa
 - `paraclete-clap-host` crate added — `PluginLibrary`, `PluginNode`, `HostParamBridge`, `scan_clap_paths()`.
 - Five `paraclete-machine-*` workspace crates added (replace `[[bin]]` stubs in `paraclete-clap`).
 
+**P9:**
+- `serde_yaml = "0.9"` removed; `serde_yml = "0.9"` (MIT/Apache) replaces it — upstream deprecation migration (Commit 2).
+- `paraclete-graph-nodes` crate added — GPL3; depends on `paraclete-node-api`, `paraclete-nodes`, `paraclete-runtime`; `InnerGraphNode` is the first implementation (Commit 6).
+
 ## DSP Source Policy
 
 All DSP algorithm implementations must be sourced from MIT/Apache-licensed code or written from scratch. Mutable Instruments firmware (MIT) is the primary DSP reference. HexoDSP may be studied as a GPL3-to-GPL3 reference but implementations must be independent.
@@ -366,6 +402,18 @@ The app main loop (`paraclete-app/src/main.rs`) runs at ~1 ms intervals and must
 
 When adding a new hardware device, add a `ScriptingGatewayNode` for it (with its device ID) and drain its consumer in step 2. The gateway's `device_id` tags events so Rhai handlers can identify the source.
 
+## Dynamic Topology (P9)
+
+**`NodeRegistry`** (in `paraclete-app`) maps type-tag strings to zero-argument constructors. `build_registry()` registers all first-party node types. `registry.build("filter")` returns `Box<dyn Node>`. CLAP plugin nodes are not registered (require `PluginLibrary` argument; inserted directly).
+
+**`apply_patch(changes, engine, conf, registry)`** (in `paraclete-app`) applies a batch of `TopologyChange` variants atomically via pause-rebuild-resume: `engine.pause()` → `engine.wait_paused()` → apply changes to `NodeConfigurator` → `conf.rebuild_executor()` → `engine.resume_with_executor(executor)`. One buffer of silence (~5 ms) on each call. Returns `Vec<u32>` (new node IDs for `AddNode` entries). Fails on unknown type_tag, cycle without `LoopBreakNode`, or unknown node ID. Prior changes in a failed batch are NOT rolled back.
+
+**`TopologyChange` variants:** `AddNode { type_tag, initial_params }`, `RemoveNode { id }`, `AddEdge { src, src_port, dst, dst_port }`, `RemoveEdge { src, src_port, dst, dst_port }`.
+
+**`AudioEngine` pause protocol:** `pause()` (non-blocking signal) → `wait_paused()` (blocks up to 500 ms; panics if exceeded — indicates hung audio thread) → `resume_with_executor(executor)` (swaps executor and resumes).
+
+**Project file format v2 (P9):** `NodeSnapshot` gains `type_tag: String` (construction key). Edges are now authoritative — v2 loads restore topology from the file. v1 files remain loadable (warning emitted; topology unchanged). `save_project()` writes version 2. `load_project()` reads both.
+
 ## Design Documents
 
 All design documents live in `design/`. Key documents:
@@ -386,7 +434,10 @@ All design documents live in `design/`. Key documents:
 - `design/adr/ADR-024-clap-wrapper.md` — CLAP plugin adapter design (hand-rolled, P7); `paraclete-clap` crate; `ClapParamBridge`; DAW transport → `TransportInfo` translation; `nih-plug` removed
 - `design/adr/ADR-025-project-file-format.md` — RON project file format (P7); `NodeSnapshot`; save/load path; versioning; what is not persisted
 - `design/adr/ADR-026-instrument-definition-tui.md` — declarative YAML instrument file (P8); terminal UI as primary feedback surface; `publish_context()` Rhai API; macro pre-population
-- `design/adr/ADR-027-clap-host.md` — Paraclete as CLAP host (P8); `paraclete-clap-host` crate; `PluginLibrary` / `PluginNode`; generator plugins only at P8; `clap-sys` + `libloading` (spec referenced `clack` which is a crates.io placeholder)
+- `design/adr/ADR-027-clap-host.md` — Paraclete as CLAP host (P8); `paraclete-clap-host` crate; `PluginLibrary` / `PluginNode`; generator plugins at P8, effect plugins at P9; `clap-sys` + `libloading` (spec referenced `clack` which is a crates.io placeholder); amended June 2026 to record P8 implementation findings
+- `design/adr/ADR-028-loop-break-node.md` — single-sample feedback loop break (P9); `LoopBreakNode`; executor pre/post phases; `MissingLoopBreak`/`TooManyLoopBreaks` error variants; CvSignal only; resolves OQ-5
+- `design/adr/ADR-029-dynamic-topology.md` — patchable node graph (P9); pause-rebuild-resume protocol; `NodeRegistry`; `apply_patch()`; `AudioEngine::pause()`/`wait_paused()`/`resume_with_executor()`; project file format v2 with `type_tag`; `cap_doc_cache` prerequisite
+- `design/architecture-evolving-append.md` — retroactive phase log entries for P4–P8 (append to `architecture-evolving.md`)
 - `design/phases/` — per-phase interface specs and implementation reports (append-only once a phase ships)
 - `design/phases/p3-interfaces.md` — P3 spec: `Negotiable` trait, parameter lock protocol, `Sampler` node, StateBus SPSC upgrade, Rhai bindings
 - `design/phases/p4-interfaces.md` — P4 spec: hardware integration, `ParameterBank`, `NodeCommand`, `HardwareOutputHandle`, effect nodes, profile scripts
@@ -401,5 +452,6 @@ All design documents live in `design/`. Key documents:
 - `design/phases/p7-report.md` — P7 implementation report: 317 tests, 0 failures; CLAP flag bug fixes; rubato reset/set_ratio ordering; code review findings
 - `design/phases/p8-interfaces.md` — P8 spec: P7 residuals (gate), publish_context(), instrument YAML, paraclete-tui, paraclete-clap-host, app wiring
 - `design/phases/p8-report.md` — P8 implementation report: 340 tests, 0 failures; CLAP FFI machine bank split; Arc<PluginLibrary> bundle fix; code review findings per commit
+- `design/phases/p9-interfaces.md` — P9 spec: encoder value publishing (gated Commit 1), housekeeping, loop break, dynamic topology, sequencer CV, GraphNode/InnerGraphNode; 389 test target
 - `design/review/` — post-phase code review reports (`p4-code-review.md`, `p4-fixes-review.md`, etc.)
 - `profiles/` — Rhai profile scripts loaded at startup (`launchpad.rhai`, `digitakt.rhai`, `keystep.rhai`, `launchpad_overview.rhai`). Constants `LP_DEVICE_ID`, `DT_DEVICE_ID`, `KS_DEVICE_ID`, `TRACK_SEQ_IDS`, etc. injected per profile.
