@@ -2,7 +2,7 @@ use std::f64::consts::TAU;
 
 use paraclete_node_api::{
     CapabilityDocument, Event, Node, ParamDescriptor, ParamUnit, ParameterBank,
-    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput,
+    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
     UmpMessage,
     midi::ChannelVoice2,
 };
@@ -33,6 +33,7 @@ pub struct OscillatorNode {
     phase:       f32,
     noise_state: u32,
     sample_rate: f32,
+    node_id:     u32,
     ports:       [PortDescriptor; 4],
 }
 
@@ -49,6 +50,7 @@ impl OscillatorNode {
             phase: 0.0,
             noise_state: 1,
             sample_rate: 44100.0,
+            node_id: 0,
             ports: [
                 PortDescriptor { id: Self::PORT_PITCH_CV,  name: "pitch_cv_in".into(), direction: PortDirection::Input,  port_type: PortType::Modulation },
                 PortDescriptor { id: Self::PORT_FM_IN,     name: "fm_in".into(),       direction: PortDirection::Input,  port_type: PortType::Modulation },
@@ -79,8 +81,12 @@ impl Default for OscillatorNode {
 
 impl Node for OscillatorNode {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
-
+    fn set_node_id(&mut self, id: u32) { self.node_id = id; }
     fn capability_document(&self) -> CapabilityDocument { Self::default_doc() }
+
+    fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
+        paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
+    }
 
     fn activate(&mut self, sample_rate: f32, _block_size: usize) {
         self.sample_rate = sample_rate;

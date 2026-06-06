@@ -369,6 +369,7 @@ impl Node for Sampler {
     fn set_node_id(&mut self, id: u32) { self.node_id = id; }
 
     fn published_state(&self, buf: &mut Vec<(String, paraclete_node_api::StateBusValue)>) {
+        paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
         buf.push((format!("/node/{}/state/trig",      self.node_id), paraclete_node_api::StateBusValue::Int(self.samp_trig_count as i64)));
         buf.push((format!("/node/{}/state/last_note", self.node_id), paraclete_node_api::StateBusValue::Int(self.last_triggered_note as i64)));
     }

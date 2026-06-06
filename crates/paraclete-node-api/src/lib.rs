@@ -68,4 +68,4 @@ pub use templates::{
 
 pub use command::{NodeCommand, CMD_BUMP_PARAM, CMD_SET_PARAM};
 
-pub use parameter::ParameterBank;
+pub use parameter::{publish_bank_state, ParameterBank};

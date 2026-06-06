@@ -1,7 +1,7 @@
 use paraclete_node_api::{
     CapabilityDocument, Event, Node, ParamDescriptor, ParamUnit, ParameterBank,
-    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, UmpMessage,
-    midi::ChannelVoice2,
+    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
+    UmpMessage, midi::ChannelVoice2,
 };
 
 use crate::engine_dsp::{AdState, note_to_hz, soft_clip, svf_lp_sample, xorshift};
@@ -224,8 +224,11 @@ impl AnalogEngine {
 impl Node for AnalogEngine {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
     fn set_node_id(&mut self, id: u32) { self.node_id = id; }
-
     fn capability_document(&self) -> CapabilityDocument { Self::build_doc(self.machine) }
+
+    fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
+        paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
+    }
 
     fn activate(&mut self, sample_rate: f32, block_size: usize) {
         self.sample_rate = sample_rate;
@@ -305,7 +308,7 @@ mod tests {
     use super::*;
     use paraclete_node_api::{
         AudioBuffer, Event, EventOutputBuffer, ExtendedEventSlab,
-        NodeCommand, CMD_BUMP_PARAM, CMD_SET_PARAM, ParamLockEvent, TimedEvent, TransportInfo,
+        NodeCommand, CMD_SET_PARAM, ParamLockEvent, TimedEvent, TransportInfo,
         UmpMessage, midi::{ChannelVoice2, Channeled, Grouped, NoteOn, u4, u7},
     };
 
@@ -537,5 +540,18 @@ mod tests {
         let mut eng = AnalogEngine::kick();
         eng.activate(44100.0, 512);
         assert!(!eng.ports().is_empty());
+    }
+
+    #[test]
+    fn analog_engine_published_state_contains_decay() {
+        let mut eng = AnalogEngine::kick();
+        eng.set_node_id(10);
+        eng.activate(44100.0, 256);
+        let mut buf: Vec<(String, paraclete_node_api::StateBusValue)> = Vec::new();
+        eng.published_state(&mut buf);
+        let decay_entry = buf.iter().find(|(k, _)| k.ends_with("/decay"));
+        assert!(decay_entry.is_some(), "published_state should contain a /decay entry");
+        assert!(matches!(decay_entry.unwrap().1, paraclete_node_api::StateBusValue::Float(_)),
+            "decay entry should be StateBusValue::Float");
     }
 }

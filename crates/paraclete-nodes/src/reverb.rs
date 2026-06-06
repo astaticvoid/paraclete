@@ -14,7 +14,7 @@
 
 use paraclete_node_api::{
     CapabilityDocument, Node, ParameterBank, ParamDescriptor, ParamUnit,
-    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput,
+    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
 };
 
 const PARAM_ROOM_SIZE: u32 = 0;
@@ -83,6 +83,7 @@ fn make_allpass_array(lens: &[usize; 4]) -> [AllpassFilter; 4] {
 pub struct ReverbNode {
     ports:         [PortDescriptor; 2],
     bank:          ParameterBank,
+    node_id:       u32,
     comb_l:        [CombFilter; 8],
     comb_r:        [CombFilter; 8],
     allpass_l:     [AllpassFilter; 4],
@@ -114,6 +115,7 @@ impl ReverbNode {
                 },
             ],
             bank:          ParameterBank::empty(),
+            node_id:       0,
             comb_l:        make_comb_array(&COMB_LENS),
             comb_r:        make_comb_array(&COMB_LENS),
             allpass_l:     make_allpass_array(&ALLPASS_LENS),
@@ -153,8 +155,12 @@ impl Default for ReverbNode {
 
 impl Node for ReverbNode {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
-
+    fn set_node_id(&mut self, id: u32) { self.node_id = id; }
     fn capability_document(&self) -> CapabilityDocument { Self::default_doc() }
+
+    fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
+        paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
+    }
 
     fn activate(&mut self, sr: f32, _block: usize) {
         self.sample_rate = sr;

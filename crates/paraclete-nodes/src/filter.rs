@@ -10,7 +10,7 @@ use std::collections::HashMap;
 
 use paraclete_node_api::{
     CapabilityDocument, Node, ParameterBank, ParamDescriptor, ParamUnit,
-    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput,
+    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
 };
 
 const PARAM_CUTOFF:      u32 = 0;
@@ -123,6 +123,10 @@ impl Node for FilterNode {
 
     fn set_initial_params(&mut self, params: &HashMap<String, f64>) {
         self.pending_initial_params = params.clone();
+    }
+
+    fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
+        paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
     }
 
     fn activate(&mut self, sr: f32, _block: usize) {
@@ -244,5 +248,16 @@ mod tests {
         f.activate(44100.0, 64); // re-activate clears state
         assert_eq!(f.low_l, 0.0);
         assert_eq!(f.band_l, 0.0);
+    }
+
+    #[test]
+    fn set_node_id_stored() {
+        let mut f = FilterNode::new();
+        f.set_node_id(99);
+        f.activate(44100.0, 64);
+        let mut buf: Vec<(String, StateBusValue)> = Vec::new();
+        f.published_state(&mut buf);
+        assert!(buf.iter().any(|(k, _)| k.starts_with("/node/99/")),
+            "published_state paths should start with /node/99/");
     }
 }

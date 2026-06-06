@@ -1,6 +1,6 @@
 use paraclete_node_api::{
     CapabilityDocument, Node, ParamDescriptor, ParamUnit, ParameterBank,
-    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput,
+    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
 };
 
 fn lad(name: &str) -> u32 { ParamDescriptor::id_for_name(name) }
@@ -12,6 +12,7 @@ pub struct LadderFilterNode {
     bank:        ParameterBank,
     stage:       [f32; 4],
     sample_rate: f32,
+    node_id:     u32,
     ports:       [PortDescriptor; 4],
 }
 
@@ -27,6 +28,7 @@ impl LadderFilterNode {
             bank:        ParameterBank::from_capability_document(&doc),
             stage:       [0.0; 4],
             sample_rate: 44100.0,
+            node_id:     0,
             ports: [
                 PortDescriptor { id: Self::PORT_AUDIO_IN,      name: "audio_in".into(),      direction: PortDirection::Input,  port_type: PortType::Mono },
                 PortDescriptor { id: Self::PORT_CUTOFF_MOD,    name: "cutoff_mod".into(),    direction: PortDirection::Input,  port_type: PortType::Modulation },
@@ -56,7 +58,12 @@ impl Default for LadderFilterNode {
 
 impl Node for LadderFilterNode {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn set_node_id(&mut self, id: u32) { self.node_id = id; }
     fn capability_document(&self) -> CapabilityDocument { Self::default_doc() }
+
+    fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
+        paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
+    }
 
     fn activate(&mut self, sample_rate: f32, _block_size: usize) {
         self.sample_rate = sample_rate;

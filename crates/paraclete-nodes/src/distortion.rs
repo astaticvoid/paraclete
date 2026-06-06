@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use paraclete_node_api::{
     CapabilityDocument, Node, ParameterBank, ParamDescriptor, ParamUnit,
-    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput,
+    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
 };
 
 // Sequential IDs rather than id_for_name() hashes. These must match the order
@@ -103,6 +103,10 @@ impl Node for DistortionNode {
         }
     }
 
+    fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
+        paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
+    }
+
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
         self.bank.handle_commands(input.commands);
 
@@ -188,5 +192,17 @@ mod tests {
         dist.bank.handle_commands(&[cmd]);
         let out = run_distortion(&mut dist, 10.0);
         assert!(out.abs() <= 1.1, "expected clipped output, got {out}");
+    }
+
+    #[test]
+    fn distortion_node_published_state_nonzero() {
+        let mut dist = DistortionNode::new();
+        dist.set_node_id(3);
+        dist.activate(44100.0, 64);
+        let mut buf: Vec<(String, StateBusValue)> = Vec::new();
+        dist.published_state(&mut buf);
+        let entry = buf.iter().find(|(k, _)| k == "/node/3/drive");
+        assert!(entry.is_some(), "expected /node/3/drive in published_state");
+        assert_eq!(entry.unwrap().1, StateBusValue::Float(0.0));
     }
 }

@@ -187,10 +187,11 @@ impl NodeExecutor {
             signal_input_routes,
             signal_out_scratch: Vec::with_capacity(max_signal_outs.max(1)),
             signal_in_scratch:  Vec::with_capacity(max_signal_ins.max(1)),
-            // Pre-seed with capacity 8 so the first audio cycle does not allocate
-            // for slots that publish a small number of entries (most nodes publish ≤8).
-            state_bufs: (0..n).map(|_| Vec::with_capacity(8)).collect(),
-            agg_state_buf: Vec::with_capacity(64),
+            // Pre-seed per-slot capacity at 16 (covers nodes with up to ~8 bank params
+            // plus a few state entries) and aggregate at 256 (covers ~32 nodes × 8
+            // entries each without a first-cycle reallocation).
+            state_bufs: (0..n).map(|_| Vec::with_capacity(16)).collect(),
+            agg_state_buf: Vec::with_capacity(256),
             transport_override: None,
             node_id_to_slot,
             extra_events: Vec::with_capacity(64),

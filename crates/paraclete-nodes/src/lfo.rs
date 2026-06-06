@@ -1,6 +1,6 @@
 use paraclete_node_api::{
     CapabilityDocument, Node, ParamDescriptor, ParamUnit, ParameterBank,
-    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput,
+    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
 };
 
 #[cfg(test)]
@@ -17,6 +17,7 @@ pub struct LfoNode {
     noise_state: u32,
     held_value:  f32,
     sample_rate: f32,
+    node_id:     u32,
     ports:       [PortDescriptor; 2],
 }
 
@@ -32,6 +33,7 @@ impl LfoNode {
             noise_state: 1,
             held_value:  0.0,
             sample_rate: 44100.0,
+            node_id:     0,
             ports: [
                 PortDescriptor { id: Self::PORT_SYNC_IN, name: "sync_in".into(), direction: PortDirection::Input,  port_type: PortType::Logic },
                 PortDescriptor { id: Self::PORT_MOD_OUT, name: "mod_out".into(), direction: PortDirection::Output, port_type: PortType::Modulation },
@@ -60,7 +62,12 @@ impl Default for LfoNode {
 
 impl Node for LfoNode {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn set_node_id(&mut self, id: u32) { self.node_id = id; }
     fn capability_document(&self) -> CapabilityDocument { Self::default_doc() }
+
+    fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
+        paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
+    }
 
     fn activate(&mut self, sample_rate: f32, _block_size: usize) {
         self.sample_rate = sample_rate;
@@ -127,7 +134,7 @@ fn run_lfo(lfo: &mut LfoNode, sync: Option<&[f32]>, blocks: usize) -> Vec<f32> {
             sig_ins.push(SignalInputSlot::new(LfoNode::PORT_SYNC_IN, SignalPortKind::Logic, &sync_data));
         }
 
-        let mut out_slot = SignalOutputSlot::new(LfoNode::PORT_MOD_OUT, SignalPortKind::Modulation, &mut out_buf);
+        let out_slot = SignalOutputSlot::new(LfoNode::PORT_MOD_OUT, SignalPortKind::Modulation, &mut out_buf);
         let mut sig_outs = [out_slot];
         let input = paraclete_node_api::ProcessInput {
             audio_inputs: &[], signal_inputs: &sig_ins, events: &[],

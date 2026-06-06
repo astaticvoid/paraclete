@@ -2,9 +2,11 @@
 
 use crate::capability::CapabilityDocument;
 use crate::command::{NodeCommand, CMD_BUMP_PARAM, CMD_SET_PARAM};
+use crate::state_bus::StateBusValue;
 
 struct ParameterSlot {
     param_id: u32,
+    name:     String,
     current:  f64,
     min:      f64,
     max:      f64,
@@ -30,6 +32,7 @@ impl ParameterBank {
     pub fn from_capability_document(doc: &CapabilityDocument) -> Self {
         let slots = doc.params.iter().map(|p| ParameterSlot {
             param_id: p.id,
+            name:     p.name.as_str().to_string(),
             current:  p.default,
             min:      p.min,
             max:      p.max,
@@ -83,6 +86,24 @@ impl ParameterBank {
         for s in &mut self.slots {
             s.current = s.default;
         }
+    }
+
+    /// Iterate declared parameters as (name, current_value) pairs.
+    /// Only yielded for declared slots.
+    pub fn iter_values(&self) -> impl Iterator<Item = (&str, f64)> + '_ {
+        self.slots.iter().map(|s| (s.name.as_str(), s.current))
+    }
+}
+
+/// Push one `/node/{node_id}/{param_name}` = Float(value) entry per declared slot.
+/// Appends to `buf`; does not clear it.
+pub fn publish_bank_state(
+    node_id: u32,
+    bank:    &ParameterBank,
+    buf:     &mut Vec<(String, StateBusValue)>,
+) {
+    for (name, value) in bank.iter_values() {
+        buf.push((format!("/node/{}/{}", node_id, name), StateBusValue::Float(value)));
     }
 }
 
@@ -182,5 +203,67 @@ mod tests {
         bank.handle_commands(&[cmd(CMD_SET_PARAM, cutoff_id(), 5000.0)]);
         bank.reset();
         assert_eq!(bank.get(cutoff_id()), 1000.0);
+    }
+
+    fn make_single_param_doc(name: &'static str, default: f64) -> CapabilityDocument {
+        use crate::capability::{ParamDescriptor, ParamUnit};
+        use crate::port::{PortDescriptor, PortDirection, PortType};
+        CapabilityDocument {
+            name: "Test", vendor: "Test", version: (0, 1, 0),
+            ports: vec![PortDescriptor { id: 0, name: "out".into(), direction: PortDirection::Output, port_type: PortType::Audio }],
+            params: vec![
+                ParamDescriptor { id: ParamDescriptor::id_for_name(name), name: name.into(), min: 0.0, max: 1.0, default, stepped: false, unit: ParamUnit::Generic, display: None },
+            ],
+            extensions: vec![],
+        }
+    }
+
+    #[test]
+    fn publish_bank_state_single_param() {
+        let doc = make_single_param_doc("cutoff", 0.7);
+        let bank = ParameterBank::from_capability_document(&doc);
+        let mut buf: Vec<(String, StateBusValue)> = Vec::new();
+        publish_bank_state(42, &bank, &mut buf);
+        assert_eq!(buf.len(), 1);
+        assert_eq!(buf[0].0, "/node/42/cutoff");
+        assert_eq!(buf[0].1, StateBusValue::Float(0.7));
+    }
+
+    #[test]
+    fn publish_bank_state_multi_param() {
+        // make_doc() has 2 params (cutoff_hz + resonance) → 2 entries in buf
+        let bank = ParameterBank::from_capability_document(&make_doc());
+        let mut buf: Vec<(String, StateBusValue)> = Vec::new();
+        publish_bank_state(7, &bank, &mut buf);
+        assert_eq!(buf.len(), 2);
+    }
+
+    #[test]
+    fn publish_bank_state_empty_bank() {
+        let bank = ParameterBank::empty();
+        let mut buf: Vec<(String, StateBusValue)> = Vec::new();
+        publish_bank_state(1, &bank, &mut buf);
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn parameter_slot_name_stored() {
+        let doc = make_single_param_doc("resonance", 0.5);
+        let bank = ParameterBank::from_capability_document(&doc);
+        let pairs: Vec<_> = bank.iter_values().collect();
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].0, "resonance");
+        assert!((pairs[0].1 - 0.5).abs() < 1e-12);
+    }
+
+    #[test]
+    fn iter_values_reflects_mutation() {
+        use crate::capability::ParamDescriptor;
+        let doc = make_single_param_doc("resonance", 0.5);
+        let res_id = ParamDescriptor::id_for_name("resonance");
+        let mut bank = ParameterBank::from_capability_document(&doc);
+        bank.handle_commands(&[cmd(CMD_SET_PARAM, res_id, 0.9)]);
+        let pairs: Vec<_> = bank.iter_values().collect();
+        assert!((pairs[0].1 - 0.9).abs() < 1e-12, "iter_values should reflect mutated value");
     }
 }

@@ -10,7 +10,7 @@
 
 use paraclete_node_api::{
     CapabilityDocument, Node, ParameterBank, ParamDescriptor, ParamUnit,
-    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput,
+    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
 };
 
 const PARAM_DELAY_TIME: u32 = 0;
@@ -22,6 +22,7 @@ const PARAM_FILTER_HZ:  u32 = 4;
 pub struct DelayNode {
     ports:     [PortDescriptor; 2],
     bank:      ParameterBank,
+    node_id:   u32,
     buf_l:     Vec<f32>,
     buf_r:     Vec<f32>,
     write_pos: usize,
@@ -55,6 +56,7 @@ impl DelayNode {
                 },
             ],
             bank:        ParameterBank::empty(),
+            node_id:     0,
             buf_l:       vec![0.0; 1],
             buf_r:       vec![0.0; 1],
             write_pos:   0,
@@ -94,8 +96,12 @@ impl Default for DelayNode {
 
 impl Node for DelayNode {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
-
+    fn set_node_id(&mut self, id: u32) { self.node_id = id; }
     fn capability_document(&self) -> CapabilityDocument { Self::default_doc() }
+
+    fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
+        paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
+    }
 
     fn activate(&mut self, sr: f32, _block: usize) {
         self.sample_rate = sr;
@@ -252,7 +258,6 @@ mod tests {
         assert!(all_zero, "delayed output must be zero for first block when delay=block_size");
 
         // Second block: silence input → should carry the delayed impulse at sample 0
-        let silence = vec![0.0f32; 64];
         let out_block2 = run_delay(&mut d, 0.0, 64);
         // The delayed echo from the impulse should appear somewhere in block 2
         let max = out_block2.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
