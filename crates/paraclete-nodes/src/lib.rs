@@ -100,3 +100,35 @@ impl Node for SilentNode {
         ConnectionAgreement::baseline()
     }
 }
+
+/// Audio output sink. Accepts an audio input; the HAL reads summed audio
+/// from the executor directly. This node is the graph terminus for audio
+/// signal flow declared in instrument definition files.
+pub struct AudioOutputNode {
+    ports: [PortDescriptor; 1],
+}
+
+impl AudioOutputNode {
+    pub const PORT_AUDIO_IN: u32 = 0;
+
+    pub fn new() -> Self {
+        Self {
+            ports: [PortDescriptor {
+                id: Self::PORT_AUDIO_IN,
+                name: PortName::Static("audio_in"),
+                direction: PortDirection::Input,
+                port_type: PortType::Audio,
+            }],
+        }
+    }
+}
+
+impl Default for AudioOutputNode {
+    fn default() -> Self { Self::new() }
+}
+
+impl Node for AudioOutputNode {
+    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn process(&mut self, _input: &ProcessInput, _output: &mut ProcessOutput) {}
+    fn type_name(&self) -> &'static str { "AudioOutputNode" }
+}

@@ -91,6 +91,12 @@ pub trait Node: Send {
         std::any::type_name::<Self>()
     }
 
+    /// Apply initial parameter values from the instrument definition file.
+    /// Called after node construction, before activate().
+    /// Nodes with ParameterBank should store the values and apply them
+    /// in activate() before returning (after bank construction).
+    fn set_initial_params(&mut self, _params: &std::collections::HashMap<String, f64>) {}
+
     /// Publish runtime state to the state bus.
     ///
     /// Called by the executor at the end of each audio process cycle (audio

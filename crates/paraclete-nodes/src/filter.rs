@@ -6,6 +6,8 @@
 //!   resonance   (id=1) — 0.1–4.0, default 0.7
 //!   filter_type (id=2) — 0=LP, 1=HP, 2=BP, 3=Notch, default 0
 
+use std::collections::HashMap;
+
 use paraclete_node_api::{
     CapabilityDocument, Node, ParameterBank, ParamDescriptor, ParamUnit,
     PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput,
@@ -19,6 +21,7 @@ pub struct FilterNode {
     ports: [PortDescriptor; 2],
     node_id: u32,
     bank: ParameterBank,
+    pending_initial_params: HashMap<String, f64>,
     // SVF state (stereo)
     low_l:   f32,
     band_l:  f32,
@@ -51,6 +54,7 @@ impl FilterNode {
             ],
             node_id: 0,
             bank: ParameterBank::empty(),
+            pending_initial_params: HashMap::new(),
             low_l:   0.0,
             band_l:  0.0,
             low_r:   0.0,
@@ -117,9 +121,19 @@ impl Node for FilterNode {
 
     fn capability_document(&self) -> CapabilityDocument { Self::default_doc() }
 
+    fn set_initial_params(&mut self, params: &HashMap<String, f64>) {
+        self.pending_initial_params = params.clone();
+    }
+
     fn activate(&mut self, sr: f32, _block: usize) {
         self.sr   = sr;
-        self.bank = ParameterBank::from_capability_document(&Self::default_doc());
+        let doc = Self::default_doc();
+        self.bank = ParameterBank::from_capability_document(&doc);
+        for (name, value) in &self.pending_initial_params {
+            if let Some(param) = doc.params.iter().find(|p| p.name.as_str() == name.as_str()) {
+                self.bank.set(param.id, *value);
+            }
+        }
         self.update_coefficients();
         self.low_l  = 0.0;
         self.band_l = 0.0;

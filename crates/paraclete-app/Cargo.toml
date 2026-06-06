@@ -24,5 +24,6 @@ paraclete-scripting = { workspace = true }
 log   = { workspace = true }
 rhai  = { workspace = true }
 ctrlc = { workspace = true }
-ron   = { workspace = true }
-serde = { workspace = true }
+ron        = { workspace = true }
+serde      = { workspace = true }
+serde_yaml = { workspace = true }

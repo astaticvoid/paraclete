@@ -9,6 +9,8 @@
 //! DSP: tanh(input × exp(drive × 4)) × db_to_linear(output_level)
 //! lerped with dry signal by `blend`.
 
+use std::collections::HashMap;
+
 use paraclete_node_api::{
     CapabilityDocument, Node, ParameterBank, ParamDescriptor, ParamUnit,
     PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput,
@@ -24,6 +26,7 @@ pub struct DistortionNode {
     ports: [PortDescriptor; 2],
     node_id: u32,
     bank: ParameterBank,
+    pending_initial_params: HashMap<String, f64>,
 }
 
 impl DistortionNode {
@@ -48,6 +51,7 @@ impl DistortionNode {
             ],
             node_id: 0,
             bank: ParameterBank::empty(),
+            pending_initial_params: HashMap::new(),
         }
     }
 
@@ -85,8 +89,18 @@ impl Node for DistortionNode {
 
     fn capability_document(&self) -> CapabilityDocument { Self::default_doc() }
 
+    fn set_initial_params(&mut self, params: &HashMap<String, f64>) {
+        self.pending_initial_params = params.clone();
+    }
+
     fn activate(&mut self, _sr: f32, _block: usize) {
-        self.bank = ParameterBank::from_capability_document(&Self::default_doc());
+        let doc = Self::default_doc();
+        self.bank = ParameterBank::from_capability_document(&doc);
+        for (name, value) in &self.pending_initial_params {
+            if let Some(param) = doc.params.iter().find(|p| p.name.as_str() == name.as_str()) {
+                self.bank.set(param.id, *value);
+            }
+        }
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
