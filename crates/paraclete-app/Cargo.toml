@@ -21,9 +21,13 @@ paraclete-runtime   = { workspace = true }
 paraclete-hal       = { workspace = true }
 paraclete-nodes     = { workspace = true }
 paraclete-scripting = { workspace = true }
-log   = { workspace = true }
-rhai  = { workspace = true }
-ctrlc = { workspace = true }
+paraclete-tui       = { path = "../paraclete-tui" }
+paraclete-clap-host = { path = "../paraclete-clap-host" }
+log       = { workspace = true }
+rhai      = { workspace = true }
+ctrlc     = { workspace = true }
+ratatui   = { workspace = true }
+crossterm = { workspace = true }
 ron        = { workspace = true }
 serde      = { workspace = true }
 serde_yaml = { workspace = true }

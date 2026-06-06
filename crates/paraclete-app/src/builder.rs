@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 use std::collections::{HashMap, HashSet};
+use std::sync::Arc;
 
+use paraclete_clap_host::PluginLibrary;
 use paraclete_nodes::{
     AnalogEngine, AudioOutputNode, DistortionNode, FilterNode, FmEngine, InternalClock, MixNode,
     ReverbNode, Sampler, Sequencer,
@@ -18,6 +20,9 @@ pub struct InstrumentIds {
     pub output:          u32,
     pub sequencers:      Vec<u32>,
     pub generators:      Vec<u32>,
+    pub samplers:        Vec<u32>,
+    pub distortions:     Vec<u32>,
+    pub filters:         Vec<u32>,
     pub effects:         Vec<u32>,
     pub all:             Vec<(String, u32)>,
 }
@@ -44,9 +49,12 @@ pub fn load_instrument_definition(
 }
 
 pub fn build_from_instrument(
-    def:  &InstrumentDefinition,
-    conf: &mut NodeConfigurator,
+    def:       &InstrumentDefinition,
+    conf:      &mut NodeConfigurator,
+    libraries: &HashMap<String, Arc<PluginLibrary>>,
 ) -> Result<InstrumentIds, InstrumentError> {
+    let sr    = conf.sample_rate();
+    let block = conf.block_size();
     let mut seen_ids: HashSet<u32> = HashSet::new();
     let mut ids = InstrumentIds {
         clock:           0,
@@ -55,6 +63,9 @@ pub fn build_from_instrument(
         output:          0,
         sequencers:      Vec::new(),
         generators:      Vec::new(),
+        samplers:        Vec::new(),
+        distortions:     Vec::new(),
+        filters:         Vec::new(),
         effects:         Vec::new(),
         all:             Vec::new(),
     };
@@ -66,7 +77,7 @@ pub fn build_from_instrument(
         if !seen_ids.insert(node_def.id) {
             return Err(InstrumentError::DuplicateNodeId(node_def.id));
         }
-        let mut node = construct_node(node_def, def.bpm)?;
+        let mut node = construct_node(node_def, def.bpm, sr, block, libraries)?;
         if !node_def.initial_params.is_empty() {
             node.set_initial_params(&node_def.initial_params);
         }
@@ -112,8 +123,11 @@ pub fn build_from_instrument(
 }
 
 fn construct_node(
-    node_def: &NodeDef,
-    bpm: f64,
+    node_def:   &NodeDef,
+    bpm:        f64,
+    sample_rate: f32,
+    block_size:  usize,
+    libraries:  &HashMap<String, Arc<PluginLibrary>>,
 ) -> Result<Box<dyn Node>, InstrumentError> {
     let tag = node_def.type_tag.as_str();
     let node: Box<dyn Node> = match tag {
@@ -141,16 +155,14 @@ fn construct_node(
         "audio_output" => Box::new(AudioOutputNode::new()),
         "reverb"       => Box::new(ReverbNode::new()),
         "clap_plugin" => {
-            // Validate required field even though the CLAP host is not wired at P8.
-            if node_def.plugin_id.is_none() {
-                return Err(InstrumentError::MissingField {
-                    node: node_def.id,
-                    field: "plugin_id",
-                });
-            }
-            return Err(InstrumentError::UnknownNodeType {
-                type_tag: tag.to_string(),
-            });
+            let plugin_id = node_def.plugin_id.as_deref()
+                .ok_or(InstrumentError::MissingField { node: node_def.id, field: "plugin_id" })?;
+            let lib = libraries.get(plugin_id)
+                .ok_or_else(|| InstrumentError::PluginNotFound {
+                    plugin_id: plugin_id.to_string(),
+                })?;
+            lib.instantiate(plugin_id, sample_rate, block_size)
+                .map_err(|e| InstrumentError::ConnectionError(e.to_string()))?
         }
         _ => return Err(InstrumentError::UnknownNodeType {
             type_tag: tag.to_string(),
@@ -175,10 +187,18 @@ fn classify_node(node_def: &NodeDef, ids: &mut InstrumentIds) {
         | "analog_engine:hihat"
         | "fm_engine:kick"
         | "fm_engine:bell"
-        | "fm_engine:bass" => ids.generators.push(node_def.id),
+        | "fm_engine:bass"
+        | "clap_plugin" => ids.generators.push(node_def.id),
         "distortion"
         | "filter"
         | "reverb" => ids.effects.push(node_def.id),
+        _ => {}
+    }
+    // Typed sub-lists (used for profile script constant injection).
+    match node_def.type_tag.as_str() {
+        "sampler"     => ids.samplers.push(node_def.id),
+        "distortion"  => ids.distortions.push(node_def.id),
+        "filter"      => ids.filters.push(node_def.id),
         _ => {}
     }
 }

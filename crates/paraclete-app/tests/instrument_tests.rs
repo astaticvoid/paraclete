@@ -48,7 +48,7 @@ edges:
 "#;
     let def = parse_instrument_definition(yaml).expect("should parse");
     let mut conf = NodeConfigurator::new(SR, BLOCK);
-    let ids = build_from_instrument(&def, &mut conf).expect("should build");
+    let ids = build_from_instrument(&def, &mut conf, &Default::default()).expect("should build");
     assert_ne!(ids.clock, 0);
     assert_eq!(ids.clock, 1);
     assert_eq!(ids.sequencers.len(), 1);
@@ -73,7 +73,7 @@ edges: []
 "#;
     let def = parse_instrument_definition(yaml).expect("should parse");
     let mut conf = NodeConfigurator::new(SR, BLOCK);
-    build_from_instrument(&def, &mut conf).expect("should build without error");
+    build_from_instrument(&def, &mut conf, &Default::default()).expect("should build without error");
 
     // Verify the initial param is applied by testing set_initial_params + activate directly.
     use paraclete_nodes::DistortionNode;
@@ -106,7 +106,7 @@ edges: []
 "#;
     let def = parse_instrument_definition(yaml).expect("should parse yaml");
     let mut conf = NodeConfigurator::new(SR, BLOCK);
-    let result = build_from_instrument(&def, &mut conf);
+    let result = build_from_instrument(&def, &mut conf, &Default::default());
     assert!(
         matches!(result, Err(InstrumentError::UnknownNodeType { .. })),
         "expected UnknownNodeType, got: {:?}",

@@ -997,13 +997,17 @@ dependencies = [
 name = "paraclete-app"
 version = "0.1.0"
 dependencies = [
+ "crossterm",
  "ctrlc",
  "log",
+ "paraclete-clap-host",
  "paraclete-hal",
  "paraclete-node-api",
  "paraclete-nodes",
  "paraclete-runtime",
  "paraclete-scripting",
+ "paraclete-tui",
+ "ratatui",
  "rhai",
  "ron",
  "serde",

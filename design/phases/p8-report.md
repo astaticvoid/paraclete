@@ -1,7 +1,7 @@
 Paraclete — P8 Implementation Report
 =====================================
 Date: June 2026
-Status: In progress — 336 tests, 0 failures (after Commit 5)
+Status: Complete — 340 tests, 0 failures (after Commit 6)
 
 WHAT SHIPPED (P8)
 -----------------
@@ -257,3 +257,74 @@ DEFERRED ITEMS (P8+)
     migration deferred to P9
   - capability_document() leaks 2 strings per call (Box::leak); callers should
     cache; bounded in P8's startup-only topology
+
+-----
+
+Commit 6 — App Wiring (paraclete-app)
+Tests after: 340 (+4 from 336)
+
+  build_from_instrument() now accepts a third &HashMap<String, Arc<PluginLibrary>>
+  argument (breaking change; existing callers in tests updated to pass
+  &Default::default()). clap_plugin type_tag now resolves to PluginNode via
+  the library map rather than returning UnknownNodeType. classify_node adds
+  clap_plugin to generators list.
+
+  NodeConfigurator gains two new methods (paraclete-runtime):
+    - get_node_cap_doc(node_id) → Option<CapabilityDocument>: calls
+      capability_document() on a pre-executor node; used to populate the
+      cap_docs map passed to TuiApp::new()
+    - sample_rate() / block_size(): expose values needed for CLAP instantiation
+      inside construct_node()
+
+  main.rs rewritten to use instrument-file-driven graph:
+    - --instrument=<path> flag (default: instrument.yaml)
+    - --no-tui flag skips terminal setup; TuiApp not constructed
+    - --load / --save / --dev-ui flags retained
+    - CLAP plugins declared in instrument file pre-loaded via PluginLibrary::load()
+      before build_from_instrument(); resolve_plugin_path() checks explicit
+      plugin_path first, then scans scan_clap_paths()
+    - Hardware devices (Launchpad, Digitakt, Keystep) opened as before
+    - Profiles from def.profiles evaluated with scripting.eval_file()
+    - Macros from def.macros pre-populated via scripting.eval_str()
+    - TUI started unless --no-tui; tick() called each main loop iteration
+    - TUI shutdown + terminal restore on exit
+
+  paraclete-app Cargo.toml: added paraclete-tui, paraclete-clap-host,
+  ratatui, crossterm dependencies.
+
+  lib.rs: exports tui_enabled(no_tui: bool) → bool for testability.
+
+  InstrumentIds gains typed sub-lists: samplers, distortions, filters (Vec<u32>).
+  classify_node() populates them alongside the existing generators/effects vecs.
+  These are injected as TRACK_SAMP_IDS, TRACK_DIST_IDS, TRACK_FILT_IDS constants
+  into profile scripts; the existing profiles reference all three.
+
+  Portability constraints verified:
+    - cargo tree -p paraclete-nodes: no paraclete-runtime/scripting/tui/clap-host
+    - cargo tree -p paraclete-node-api: no platform crates (LGPL3 boundary clean)
+
+  Code review findings caught before commit:
+    - save_project called after build_executor() → saves empty node list; moved to
+      before build_executor (steps 5→6 save, 7→8 executor per corrected ordering)
+    - TRACK_SAMP_IDS, TRACK_DIST_IDS, TRACK_FILT_IDS missing from profile script
+      constants → added typed sub-lists to InstrumentIds; injected via build_constants()
+    - resolve_plugin_path() loaded each .clap file twice for scanned plugins (init→deinit
+      in scan, then init again to keep) → replaced with load_plugin_libraries(): explicit-
+      path plugins loaded directly; scanned plugins kept on first match; non-matching files
+      loaded once for descriptor enumeration then dropped (unavoidable without CLAP manifest)
+    - try_borrow() in main loop cannot fail but silently swallowed errors → replaced with
+      borrow() inside a block (panics loudly if logic is wrong)
+    - bus_handle taken from conf before build_executor() (spec pseudocode said executor,
+      but NodeExecutor doesn't expose state_bus_handle; both share the same Rc<RefCell>)
+    - load_plugin_libraries() used find() to locate plugin IDs in scanned .clap bundles:
+      only the first matching plugin per bundle was loadable; multi-plugin bundles silently
+      dropped all but the first match. Fixed: wrap each loaded library in Arc::new(); insert
+      Arc::clone for every matching plugin ID. build_from_instrument() and construct_node()
+      parameter type updated from &HashMap<String, PluginLibrary> to
+      &HashMap<String, Arc<PluginLibrary>>.
+
+  New tests (4):
+    app_wiring_load_instrument_and_build_no_panic
+    app_wiring_macro_publish_context_populates_state_bus
+    app_wiring_no_tui_flag_skips_terminal_init
+    app_wiring_project_save_load_roundtrip

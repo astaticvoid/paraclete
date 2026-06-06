@@ -233,6 +233,17 @@ impl NodeConfigurator {
         self.nodes.get_mut(&idx).map(|slot| slot.as_node_mut())
     }
 
+    /// Returns the `CapabilityDocument` for the node at `node_id`.
+    /// Only valid before `build_executor()` — nodes are moved into the executor
+    /// at that point, and this returns `None` afterwards.
+    pub fn get_node_cap_doc(&self, node_id: u32) -> Option<CapabilityDocument> {
+        let idx = *self.id_to_index.get(&node_id)?;
+        self.nodes.get(&idx).map(|slot| slot.as_node_ref().capability_document())
+    }
+
+    pub fn sample_rate(&self) -> f32   { self.sample_rate }
+    pub fn block_size(&self)  -> usize { self.block_size  }
+
     pub fn connect(
         &mut self,
         src_id: u32,
