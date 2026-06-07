@@ -60,6 +60,7 @@ pub fn build_registry() -> NodeRegistry {
         FmEngine, InternalClock, LadderFilterNode, LfoNode, LoopBreakNode, MixNode,
         OscillatorNode, ReverbNode, Sampler, Sequencer, SplitNode,
     };
+    use paraclete_graph_nodes::InnerGraphNode;
 
     let mut r = NodeRegistry::new();
 
@@ -85,6 +86,7 @@ pub fn build_registry() -> NodeRegistry {
     r.register("fm_engine:kick",      || Box::new(FmEngine::kick()));
     r.register("fm_engine:bell",      || Box::new(FmEngine::bell()));
     r.register("fm_engine:bass",      || Box::new(FmEngine::bass()));
+    r.register("inner_graph",         || Box::new(InnerGraphNode::new()));
 
     r
 }

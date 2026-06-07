@@ -60,7 +60,7 @@ pub use capability::{
 
 pub use agreement::{ConnectionAgreement, ConnectionRecord, LockableParam};
 
-pub use node::{Negotiable, Node};
+pub use node::{GraphNode, Negotiable, Node};
 
 pub use templates::{
     ControllerNode, InstrumentNode, SequencerNode, SignalNode,

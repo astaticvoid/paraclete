@@ -1016,6 +1016,7 @@ dependencies = [
  "ctrlc",
  "log",
  "paraclete-clap-host",
+ "paraclete-graph-nodes",
  "paraclete-hal",
  "paraclete-node-api",
  "paraclete-nodes",
@@ -1046,6 +1047,15 @@ dependencies = [
  "clap-sys",
  "libloading",
  "paraclete-node-api",
+]
+
+[[package]]
+name = "paraclete-graph-nodes"
+version = "0.1.0"
+dependencies = [
+ "paraclete-node-api",
+ "paraclete-nodes",
+ "paraclete-runtime",
 ]
 
 [[package]]

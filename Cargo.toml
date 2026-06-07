@@ -16,6 +16,7 @@ members = [
     "crates/paraclete-machine-fm-bass",
     "crates/paraclete-tui",
     "crates/paraclete-clap-host",
+    "crates/paraclete-graph-nodes",
     "tools/gen-samples",
     "tools/lpx-debug",
 ]
@@ -27,13 +28,14 @@ authors      = ["Paraclete Contributors"]
 rust-version = "1.75"
 
 [workspace.dependencies]
-paraclete-node-api  = { path = "crates/paraclete-node-api" }
-paraclete-runtime   = { path = "crates/paraclete-runtime" }
-paraclete-hal       = { path = "crates/paraclete-hal" }
-paraclete-nodes     = { path = "crates/paraclete-nodes" }
-paraclete-scripting = { path = "crates/paraclete-scripting" }
-paraclete-clap      = { path = "crates/paraclete-clap" }
-paraclete-clap-host = { path = "crates/paraclete-clap-host" }
+paraclete-node-api    = { path = "crates/paraclete-node-api" }
+paraclete-runtime     = { path = "crates/paraclete-runtime" }
+paraclete-hal         = { path = "crates/paraclete-hal" }
+paraclete-nodes       = { path = "crates/paraclete-nodes" }
+paraclete-scripting   = { path = "crates/paraclete-scripting" }
+paraclete-clap        = { path = "crates/paraclete-clap" }
+paraclete-clap-host   = { path = "crates/paraclete-clap-host" }
+paraclete-graph-nodes = { path = "crates/paraclete-graph-nodes" }
 clap-sys            = "0.5"
 libloading          = "0.8"
 

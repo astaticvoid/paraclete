@@ -1,0 +1,13 @@
+[package]
+name        = "paraclete-graph-nodes"
+description = "Paraclete graph-node implementations — nodes that own an inner NodeExecutor"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+license     = "GPL-3.0-or-later"
+
+[dependencies]
+paraclete-node-api = { workspace = true }
+paraclete-nodes    = { workspace = true }
+paraclete-runtime  = { workspace = true }

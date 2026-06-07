@@ -4,13 +4,19 @@ use crate::context::{ProcessInput, ProcessOutput};
 use crate::state_bus::StateBusValue;
 use crate::port::PortDescriptor;
 
+/// Marker trait for nodes that contain an inner node graph.
+///
+/// Implementations must also implement [`Node`]. The inner graph is not
+/// directly accessible from outside the node — it is encapsulated.
+/// See ADR-023 for the design rationale.
+pub trait GraphNode: Node {}
+
 /// The universal node contract. Every Paraclete node implements this trait.
 ///
 /// Three implicit engagement levels (see ADR-008):
 /// - L1: implement only `ports()` and `process()` — passive signal processor.
 /// - L2: also override `capability_document()` and lifecycle hooks — instrument.
 /// - L3: also override `negotiate()` and `set_connection_record()` — smart node.
-///
 pub trait Node: Send {
     // ── Required ──────────────────────────────────────────────────────────────
 
