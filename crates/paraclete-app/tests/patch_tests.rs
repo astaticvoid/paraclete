@@ -40,6 +40,26 @@ fn node_registry_known_type_tags_contains_loop_break() {
     );
 }
 
+#[test]
+fn registry_contains_inner_graph() {
+    let registry = build_registry();
+    let node = registry.build("inner_graph");
+    assert!(node.is_some(), "expected inner_graph in registry");
+    let node = node.unwrap();
+    assert_eq!(node.type_name(), "InnerGraphNode");
+}
+
+#[test]
+fn registry_known_type_tags_contains_inner_graph() {
+    let registry = build_registry();
+    let tags = registry.known_type_tags();
+    assert!(
+        tags.contains(&"inner_graph"),
+        "expected inner_graph in {:?}",
+        tags
+    );
+}
+
 // ── apply_patch tests ──────────────────────────────────────────────────────
 
 #[test]
