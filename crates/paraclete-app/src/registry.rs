@@ -65,6 +65,7 @@ pub fn build_registry() -> NodeRegistry {
 
     r.register("internal_clock",      || Box::new(InternalClock::new()));
     r.register("sequencer",           || Box::new(Sequencer::new()));
+    r.register("sequencer_cv",        || Box::new(Sequencer::with_cv_outputs(1)));
     r.register("sampler",             || Box::new(Sampler::new()));
     r.register("loop_break",          || Box::new(LoopBreakNode::new()));
     r.register("distortion",          || Box::new(DistortionNode::new()));

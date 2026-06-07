@@ -1,6 +1,6 @@
 use paraclete_node_api::{
     CapabilityDocument, Event, NodeCommand, ParameterBank, ParamDescriptor,
-    ParamLockEvent, ParamUnit, PortDescriptor, PortDirection, PortType, ProcessInput,
+    ParamLockEvent, ParamUnit, PortDescriptor, PortDirection, PortName, PortType, ProcessInput,
     ProcessOutput, StateBusValue, TimedEvent, TransportEvent, Node, TICKS_PER_BEAT,
 };
 
@@ -121,6 +121,10 @@ pub struct Step {
     pub param_locks: Vec<StepParamLock>,
     pub condition:   TrigCondition,
     pub timing:      StepTiming,
+    /// Per-step CV value locks. Each entry is `(cv_port_index, value)`.
+    /// `cv_port_index` is 0-relative (cv_out_0 = index 0).
+    /// Out-of-range indices are silently ignored at process time.
+    pub cv_locks:    Vec<(u16, f32)>,
 }
 
 #[derive(Clone, Debug)]
@@ -140,6 +144,7 @@ impl Step {
             param_locks: Vec::new(),
             condition:   TrigCondition::default(),
             timing:      StepTiming::default(),
+            cv_locks:    Vec::new(),
         }
     }
 }
@@ -147,7 +152,7 @@ impl Step {
 // ── Sequencer ────────────────────────────────────────────────────────────────
 
 pub struct Sequencer {
-    ports: [PortDescriptor; 3],
+    ports: Vec<PortDescriptor>,
     node_id: u32,
     track_name: String,
 
@@ -173,12 +178,17 @@ pub struct Sequencer {
     active_pattern: u8,
     swing_amount:   f32,
     sample_rate:    f32,
+
+    cv_outputs:  usize,
+    current_cv:  Vec<f32>,
 }
 
 impl Sequencer {
     pub const PORT_CLOCK_IN:   u32 = 0;
     pub const PORT_EVENTS_IN:  u32 = 1;
     pub const PORT_EVENTS_OUT: u32 = 2;
+    /// First port ID used for CV output ports. cv_out_i is at port PORT_CV_OUT_BASE + i.
+    pub const PORT_CV_OUT_BASE: u32 = 3;
 
     /// Universal NodeCommand type IDs (node-specific, ≥ 16).
     pub const CMD_TOGGLE_STEP:        u32 = 16;
@@ -195,12 +205,31 @@ impl Sequencer {
     }
 
     pub fn with_name(name: &str) -> Self {
+        Self::with_name_and_cv(name, 0)
+    }
+
+    /// Construct a Sequencer with `n` CvSignal output ports.
+    /// `n = 0` is valid; behaves identically to `Sequencer::new()`.
+    pub fn with_cv_outputs(n: usize) -> Self {
+        Self::with_name_and_cv("", n)
+    }
+
+    fn with_name_and_cv(name: &str, cv_outputs: usize) -> Self {
+        let mut ports = vec![
+            PortDescriptor { id: Self::PORT_CLOCK_IN,   name: "clock_in".into(),   direction: PortDirection::Input,  port_type: PortType::Clock },
+            PortDescriptor { id: Self::PORT_EVENTS_IN,  name: "events_in".into(),  direction: PortDirection::Input,  port_type: PortType::Event },
+            PortDescriptor { id: Self::PORT_EVENTS_OUT, name: "events_out".into(), direction: PortDirection::Output, port_type: PortType::Event },
+        ];
+        for i in 0..cv_outputs {
+            ports.push(PortDescriptor {
+                id:         Self::PORT_CV_OUT_BASE + i as u32,
+                name:       PortName::Dynamic(format!("cv_out_{i}")),
+                direction:  PortDirection::Output,
+                port_type:  PortType::Cv,
+            });
+        }
         Self {
-            ports: [
-                PortDescriptor { id: Self::PORT_CLOCK_IN,   name: "clock_in".into(),   direction: PortDirection::Input,  port_type: PortType::Clock },
-                PortDescriptor { id: Self::PORT_EVENTS_IN,  name: "events_in".into(),  direction: PortDirection::Input,  port_type: PortType::Event },
-                PortDescriptor { id: Self::PORT_EVENTS_OUT, name: "events_out".into(), direction: PortDirection::Output, port_type: PortType::Event },
-            ],
+            ports,
             node_id: 0,
             track_name: name.to_string(),
             steps: vec![Step::empty(); 16],
@@ -221,6 +250,8 @@ impl Sequencer {
             active_pattern: 0,
             swing_amount:   0.0,
             sample_rate:    44100.0,
+            cv_outputs,
+            current_cv:  vec![0.0_f32; cv_outputs],
         }
     }
 
@@ -427,6 +458,12 @@ impl Sequencer {
             sample_offset,
             Event::Midi2(build_note_on(self.group, self.channel, step.note, step.velocity)),
         ));
+        // Apply per-step CV locks (sample-and-hold until next step fires).
+        for &(idx, val) in &step.cv_locks {
+            if (idx as usize) < self.cv_outputs {
+                self.current_cv[idx as usize] = val;
+            }
+        }
     }
 
     fn emit_note_off(&mut self, sample_offset: u32, output: &mut ProcessOutput) {
@@ -494,6 +531,7 @@ impl Node for Sequencer {
         self.sample_rate = sr;
         self.rng = fastrand::Rng::new();
         self.bank = ParameterBank::from_capability_document(&self.capability_document());
+        self.current_cv = vec![0.0_f32; self.cv_outputs];
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
@@ -508,6 +546,13 @@ impl Node for Sequencer {
                 }
                 _ => {}
             }
+        }
+
+        // Write sample-and-hold CV values to each CV output port every cycle.
+        for i in 0..self.cv_outputs {
+            let port_id = Self::PORT_CV_OUT_BASE + i as u32;
+            let buf = output.cv_signal_output_mut(port_id);
+            buf.fill(self.current_cv[i]);
         }
     }
 
@@ -529,7 +574,7 @@ impl Node for Sequencer {
 
     fn serialize(&self) -> Vec<u8> {
         let mut buf = Vec::new();
-        buf.push(1u8);
+        buf.push(2u8); // version 2: adds cv_locks per step
         buf.push(self.pattern_length as u8);
         buf.extend_from_slice(&self.ticks_per_step.to_le_bytes());
         for step in &self.steps {
@@ -543,12 +588,19 @@ impl Node for Sequencer {
                 buf.extend_from_slice(&lock.param_id.to_le_bytes());
                 buf.extend_from_slice(&lock.value.to_le_bytes());
             }
+            buf.push(step.cv_locks.len() as u8);
+            for &(idx, val) in &step.cv_locks {
+                buf.extend_from_slice(&idx.to_le_bytes());
+                buf.extend_from_slice(&val.to_le_bytes());
+            }
         }
         buf
     }
 
     fn deserialize(&mut self, data: &[u8]) {
-        if data.is_empty() || data[0] != 1 { return; }
+        if data.is_empty() { return; }
+        let version = data[0];
+        if version != 1 && version != 2 { return; }
         let mut cur = 1usize;
 
         macro_rules! read_u8  { () => {{ if cur >= data.len() { return; } let v = data[cur]; cur += 1; v }} }
@@ -574,8 +626,18 @@ impl Node for Sequencer {
                 let value    = read_f64!();
                 param_locks.push(StepParamLock { node_id, param_id, value });
             }
+            let mut cv_locks = Vec::new();
+            if version >= 2 {
+                let cv_count = read_u8!() as usize;
+                for _ in 0..cv_count {
+                    let idx = read_u16!();
+                    let val = read_f32!();
+                    cv_locks.push((idx, val));
+                }
+            }
             steps.push(Step { active, note, velocity, length, param_locks,
-                             condition: TrigCondition::default(), timing: StepTiming::default() });
+                             condition: TrigCondition::default(), timing: StepTiming::default(),
+                             cv_locks });
         }
 
         self.steps          = steps;
@@ -738,7 +800,7 @@ mod tests {
     // Step 0 was silently skipped every bar.
     #[test]
     fn step_0_fires_on_sync_pulse_at_bar_boundary() {
-        let tps = TICKS_PER_BEAT / 4;  // 240
+        let _tps = TICKS_PER_BEAT / 4;  // 240
         let bar_ticks = (4 * TICKS_PER_BEAT) as u64; // 3840 = one 4/4 bar
 
         let mut seq = Sequencer::new();
@@ -761,7 +823,7 @@ mod tests {
         // (Some implementations fire it before; this just checks the sync path.)
 
         // Send a sync_pulse at the bar boundary — step 0 must fire.
-        let sync_tick = bar_ticks as u32;
+        let _sync_tick = bar_ticks as u32;
         let sync_event = TimedEvent::new(0, Event::Transport(TransportEvent {
             domain_id: 0, bar: 2, beat: 0, tick: 0,
             ticks_per_beat: TICKS_PER_BEAT, bpm: 140.0,
@@ -1029,5 +1091,176 @@ mod tests {
             probability: 100,
         }));
         assert_eq!(step.timing.micro_offset, 0);
+    }
+
+    // ── CV output tests (Commit 5) ────────────────────────────────────────────
+
+    use paraclete_node_api::{SignalOutputSlot, SignalPortKind};
+
+    /// Run one process cycle and capture the CV output for port `cv_port_id`.
+    fn run_seq_with_cv(
+        seq: &mut Sequencer,
+        events: &[TimedEvent],
+        cv_port_id: u32,
+        block: usize,
+    ) -> Vec<f32> {
+        let mut audio = AudioBuffer::new(2, block);
+        let mut events_out = EventOutputBuffer::new(256);
+        let transport = TransportInfo::default();
+        let slab = ExtendedEventSlab::empty();
+        let audio_ptr: *mut AudioBuffer = &mut audio;
+        let audio_ref: &mut AudioBuffer = unsafe { &mut *audio_ptr };
+        let mut outs = [audio_ref];
+
+        let mut cv_buf = vec![0.0f32; block];
+        let cv_slot = SignalOutputSlot::new(cv_port_id, SignalPortKind::Cv, &mut cv_buf);
+        let mut sig_outs = [cv_slot];
+
+        let input = ProcessInput {
+            audio_inputs: &[], signal_inputs: &[], events,
+            transport: &transport, sample_rate: 44100.0, block_size: block,
+            extended_events: &slab, commands: &[],
+        };
+        let mut output = ProcessOutput {
+            audio_outputs: &mut outs,
+            signal_outputs: &mut sig_outs,
+            events_out: &mut events_out,
+        };
+        seq.process(&input, &mut output);
+        cv_buf
+    }
+
+    #[test]
+    fn sequencer_cv_output_ports_present() {
+        let seq = Sequencer::with_cv_outputs(2);
+        let ports = seq.ports();
+        let names: Vec<&str> = ports.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"cv_out_0"), "missing cv_out_0 in {:?}", names);
+        assert!(names.contains(&"cv_out_1"), "missing cv_out_1 in {:?}", names);
+        let cv_ports: Vec<_> = ports.iter()
+            .filter(|p| p.port_type == PortType::Cv && p.direction == PortDirection::Output)
+            .collect();
+        assert_eq!(cv_ports.len(), 2, "expected 2 CvSignal Output ports");
+    }
+
+    #[test]
+    fn sequencer_no_cv_no_extra_ports() {
+        let seq = Sequencer::new();
+        let cv_ports: Vec<_> = seq.ports().iter()
+            .filter(|p| p.port_type == PortType::Cv && p.direction == PortDirection::Output)
+            .collect();
+        assert!(cv_ports.is_empty(), "Sequencer::new() must have no CvSignal Output ports");
+    }
+
+    #[test]
+    fn sequencer_cv_output_initial_zero() {
+        let mut seq = Sequencer::with_cv_outputs(1);
+        seq.activate(44100.0, 256);
+        // No step fires — initial hold value must be 0.0.
+        let cv_port_id = Sequencer::PORT_CV_OUT_BASE;
+        let out = run_seq_with_cv(&mut seq, &[], cv_port_id, 256);
+        assert!(out.iter().all(|&v| v == 0.0), "CV output must be all zeros initially: {:?}", &out[..4]);
+    }
+
+    #[test]
+    fn sequencer_cv_lock_updates_on_step_fire() {
+        // After global_start, step_tick starts at 0. The first step boundary fires
+        // step 1 (current_step advances 0→1). So step 1 is the one to activate.
+        let mut seq = Sequencer::with_cv_outputs(1);
+        seq.activate(44100.0, 64);
+        seq.steps[1].active = true;
+        seq.steps[1].cv_locks = vec![(0, 0.75)];
+        let tps = TICKS_PER_BEAT / 4;
+        let cv_port_id = Sequencer::PORT_CV_OUT_BASE;
+
+        // global_start: current_step=0, step_tick=0→1
+        let _ = run_seq_with_cv(&mut seq, &[transport_tick(0, true, true, false, false)], cv_port_id, 64);
+
+        // Advance tps ticks: at t=tps the boundary fires and step 1 triggers.
+        let mut cv_after_fire = vec![0.0f32; 64];
+        for t in 1..=tps {
+            cv_after_fire = run_seq_with_cv(&mut seq, &[transport_tick(t, true, false, false, false)], cv_port_id, 64);
+        }
+        assert!(
+            cv_after_fire.iter().any(|&v| (v - 0.75).abs() < 1e-6),
+            "CV lock value 0.75 must appear after step 1 fires: {:?}",
+            &cv_after_fire[..4]
+        );
+    }
+
+    #[test]
+    fn sequencer_cv_lock_sample_and_hold() {
+        // Step 1 fires first (tps ticks after global_start), step 2 fires second.
+        let mut seq = Sequencer::with_cv_outputs(1);
+        seq.activate(44100.0, 64);
+        seq.steps[1].active = true;
+        seq.steps[1].cv_locks = vec![(0, 0.5)];
+        seq.steps[2].active = true;
+        // Step 2 has no cv_locks — held value from step 1 must persist.
+        let tps = TICKS_PER_BEAT / 4;
+        let cv_port_id = Sequencer::PORT_CV_OUT_BASE;
+
+        // global_start
+        let _ = run_seq_with_cv(&mut seq, &[transport_tick(0, true, true, false, false)], cv_port_id, 64);
+
+        // Advance 2*tps ticks: step 1 fires at tps, step 2 fires at 2*tps.
+        let mut after_step2 = vec![0.0f32; 64];
+        for t in 1..=(2 * tps) {
+            let out = run_seq_with_cv(&mut seq, &[transport_tick(t, true, false, false, false)], cv_port_id, 64);
+            if t == 2 * tps {
+                after_step2 = out;
+            }
+        }
+        // After step 2 fires (no cv_locks), the held value from step 1 must still be 0.5.
+        assert!(
+            after_step2.iter().all(|&v| (v - 0.5).abs() < 1e-6),
+            "Sample-and-hold: CV must still be 0.5 after step 2 (no cv_locks): {:?}",
+            &after_step2[..4]
+        );
+    }
+
+    #[test]
+    fn sequencer_cv_lock_out_of_range_ignored() {
+        // Step 1 fires first; give it an out-of-range cv_lock.
+        let mut seq = Sequencer::with_cv_outputs(1);
+        seq.activate(44100.0, 64);
+        seq.steps[1].active = true;
+        seq.steps[1].cv_locks = vec![(5, 9.9)]; // index 5 out of range for cv_outputs=1
+        let tps = TICKS_PER_BEAT / 4;
+        let cv_port_id = Sequencer::PORT_CV_OUT_BASE;
+
+        let _ = run_seq_with_cv(&mut seq, &[transport_tick(0, true, true, false, false)], cv_port_id, 64);
+        let mut final_out = vec![0.0f32; 64];
+        for t in 1..=tps {
+            final_out = run_seq_with_cv(&mut seq, &[transport_tick(t, true, false, false, false)], cv_port_id, 64);
+        }
+        // cv_out_0 must remain 0.0 — out-of-range index is silently ignored.
+        assert!(
+            final_out.iter().all(|&v| v == 0.0),
+            "Out-of-range cv_lock must not affect cv_out_0: {:?}",
+            &final_out[..4]
+        );
+    }
+
+    #[test]
+    fn sequencer_cv_step_lock_serialization_roundtrip() {
+        let mut seq = Sequencer::with_cv_outputs(2);
+        seq.activate(44100.0, 64);
+        seq.steps[0].active = true;
+        seq.steps[0].cv_locks = vec![(0, 0.3), (1, 0.7)];
+        seq.steps[3].active = true;
+        seq.steps[3].cv_locks = vec![(0, 1.0)];
+
+        let data = seq.serialize();
+
+        let mut seq2 = Sequencer::with_cv_outputs(2);
+        seq2.activate(44100.0, 64);
+        seq2.deserialize(&data);
+
+        assert_eq!(seq2.steps[0].cv_locks, vec![(0u16, 0.3f32), (1u16, 0.7f32)],
+            "step 0 cv_locks mismatch after roundtrip");
+        assert_eq!(seq2.steps[3].cv_locks, vec![(0u16, 1.0f32)],
+            "step 3 cv_locks mismatch after roundtrip");
+        assert!(seq2.steps[1].cv_locks.is_empty(), "step 1 cv_locks must be empty");
     }
 }

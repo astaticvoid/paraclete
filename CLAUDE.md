@@ -308,7 +308,7 @@ Sequencer publishes to the state bus each cycle:
 
 P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, default 0.0). Swing is applied at emit time to odd-indexed steps.
 
-**Sequencer as CV source (P9):** `Sequencer::with_cv_outputs(n)` adds `n` CvSignal output ports (`cv_out_0`, `cv_out_1`, … at port IDs `2+i`). Each `Step` gains `cv_locks: Vec<(u16, f32)>` for per-step CV value locks (sample-and-hold: value held from step fire until next step fire). `"sequencer_cv"` type-tag is `Sequencer::with_cv_outputs(1)`. cv_locks are serialized in the project file; P5 fields (TrigCondition, StepTiming) are still not serialized.
+**Sequencer as CV source (P9):** `Sequencer::with_cv_outputs(n)` adds `n` CvSignal output ports (`cv_out_0`, `cv_out_1`, … at port IDs `PORT_CV_OUT_BASE + i`, where `PORT_CV_OUT_BASE = 3`; ports 0–2 are the existing clock_in/events_in/events_out). Each `Step` gains `cv_locks: Vec<(u16, f32)>` for per-step CV value locks (sample-and-hold: value held from step fire until next step fire). `"sequencer_cv"` type-tag is `Sequencer::with_cv_outputs(1)`. cv_locks are serialized in the project file (serialization version 2); P5 fields (TrigCondition, StepTiming) are still not serialized.
 
 ## Current Phase: P9 In Progress
 
