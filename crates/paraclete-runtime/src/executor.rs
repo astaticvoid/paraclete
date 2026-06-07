@@ -593,6 +593,33 @@ impl NodeExecutor {
         &self.transport
     }
 
+    /// Extract all nodes from this executor and return them as `(user_id, NodeOrDevice)` pairs.
+    ///
+    /// Used by `apply_patch()` to return nodes to the `NodeConfigurator` before
+    /// rebuilding the executor with new topology. The executor is empty afterward
+    /// (any further `process()` calls would produce silence).
+    pub fn drain_nodes(mut self) -> Vec<(u32, NodeOrDevice)> {
+        // Build a reverse map: slot_idx → user_id from node_id_to_slot.
+        let mut slot_to_id: Vec<u32> = vec![0u32; self.nodes.len()];
+        for (&uid, &slot_idx) in &self.node_id_to_slot {
+            if slot_idx < slot_to_id.len() {
+                slot_to_id[slot_idx] = uid;
+            }
+        }
+        // `std::mem::take` leaves `self.nodes` empty. When `self` is later dropped,
+        // `Drop` iterates `self.nodes` (now empty) — no double-deactivation occurs.
+        // Nodes are returned still-activated; the configurator keeps them alive.
+        let slots: Vec<NodeSlot> = std::mem::take(&mut self.nodes);
+        slots
+            .into_iter()
+            .enumerate()
+            .map(|(idx, slot)| {
+                let user_id = if idx < slot_to_id.len() { slot_to_id[idx] } else { slot.id };
+                (user_id, slot.kind)
+            })
+            .collect()
+    }
+
     /// Returns the capacity of the pre-allocated state buffer for slot `idx`.
     /// Used by tests to verify no reallocation occurs after the first cycle.
     pub fn state_buf_capacity(&self, idx: usize) -> usize {

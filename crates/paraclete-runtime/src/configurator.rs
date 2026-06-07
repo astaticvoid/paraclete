@@ -90,7 +90,7 @@ pub struct LoopBackEdge {
 }
 
 /// Holds either a regular node or a hardware device.
-pub(crate) enum NodeOrDevice {
+pub enum NodeOrDevice {
     Node(Box<dyn Node>),
     Device(Box<dyn HardwareDevice>),
 }
@@ -154,6 +154,12 @@ pub struct NodeConfigurator {
     id_to_index: HashMap<u32, NodeIndex>,
     nodes: HashMap<NodeIndex, NodeOrDevice>,
 
+    /// Maps node user_id → type_tag string (set via `add_node_tagged()`).
+    type_tag_map: HashMap<u32, String>,
+
+    /// Auto-incrementing ID counter for `add_node_tagged()`.
+    next_auto_id: u32,
+
     tempo_source_domains: Vec<(u32, u32)>,
     next_domain_id: u32,
 
@@ -194,6 +200,8 @@ impl NodeConfigurator {
             graph: RuntimeGraph::new(),
             id_to_index: HashMap::new(),
             nodes: HashMap::new(),
+            type_tag_map: HashMap::new(),
+            next_auto_id: 1000,
             tempo_source_domains: Vec::new(),
             next_domain_id: 0,
             state_bus: Rc::new(RefCell::new(StateBusHandle::new())),
@@ -234,6 +242,35 @@ impl NodeConfigurator {
         self.register(user_id, NodeOrDevice::Node(node))
     }
 
+    /// Register a node and store its `type_tag` for project file v2 serialisation.
+    ///
+    /// Auto-assigns a new unique user ID (≥ 1000, incrementing). Returns the
+    /// assigned ID. Use this for all programmatically-created nodes that may need
+    /// to be reconstructed from a project file.
+    pub fn add_node_tagged(
+        &mut self,
+        node: Box<dyn Node>,
+        type_tag: impl Into<String>,
+    ) -> u32 {
+        let user_id = self.next_auto_id;
+        self.next_auto_id += 1;
+        self.register(user_id, NodeOrDevice::Node(node));
+        self.type_tag_map.insert(user_id, type_tag.into());
+        user_id
+    }
+
+    /// Returns the type_tag stored for `node_id` by `add_node_tagged()`.
+    /// Returns `None` if the node was registered via `add_node()` (no tag stored).
+    pub fn type_tag_for(&self, node_id: u32) -> Option<&str> {
+        self.type_tag_map.get(&node_id).map(|s| s.as_str())
+    }
+
+    /// Store a type_tag for a node that was added via `add_node()` (explicit ID).
+    /// Used by project load to associate the type_tag without changing the node ID.
+    pub fn set_type_tag_for(&mut self, node_id: u32, type_tag: impl Into<String>) {
+        self.type_tag_map.insert(node_id, type_tag.into());
+    }
+
     pub fn add_tempo_source(
         &mut self,
         user_id: u32,
@@ -259,13 +296,24 @@ impl NodeConfigurator {
         self.register(user_id, NodeOrDevice::Device(device))
     }
 
-    pub fn remove_node(&mut self, user_id: u32) {
-        if let Some(idx) = self.id_to_index.remove(&user_id) {
-            if let Some(mut slot) = self.nodes.remove(&idx) {
-                slot.deactivate();
-            }
-            self.graph.remove_node(idx);
-            self.cap_doc_cache.remove(&user_id);
+    /// Remove a node by ID, severing all connected edges.
+    ///
+    /// Returns the node's `Box<dyn Node>` on success, or an error string if the
+    /// ID was not found. Hardware devices cannot be removed via this method.
+    pub fn remove_node(&mut self, user_id: u32) -> Result<Box<dyn Node>, String> {
+        let idx = self.id_to_index.remove(&user_id)
+            .ok_or_else(|| format!("no node with id {user_id}"))?;
+        let mut slot = self.nodes.remove(&idx)
+            .ok_or_else(|| format!("node {user_id} not in nodes map"))?;
+        slot.deactivate();
+        self.graph.remove_node(idx);
+        self.cap_doc_cache.remove(&user_id);
+        self.type_tag_map.remove(&user_id);
+        // Also remove any back_edges referencing this node.
+        self.back_edges.retain(|be| be.lb_id != user_id && be.dst_id != user_id);
+        match slot {
+            NodeOrDevice::Node(n) => Ok(n),
+            NodeOrDevice::Device(_) => Err(format!("node {user_id} is a hardware device; use remove_hardware_device")),
         }
     }
 
@@ -555,6 +603,81 @@ impl NodeConfigurator {
     fn is_signal_port_type(pt: PortType) -> bool {
         matches!(pt, PortType::Modulation | PortType::Logic
                      | PortType::Cv | PortType::Pitch | PortType::Phase)
+    }
+
+    /// Remove a specific edge from the graph. Returns `Ok(())` if the edge was
+    /// found and removed, or `Err(String)` if any node ID is not found.
+    pub fn disconnect(
+        &mut self,
+        src: u32,
+        src_port: u32,
+        dst: u32,
+        dst_port: u32,
+    ) -> Result<(), String> {
+        let src_ni = *self.id_to_index.get(&src)
+            .ok_or_else(|| format!("no node with id {src}"))?;
+        let dst_ni = *self.id_to_index.get(&dst)
+            .ok_or_else(|| format!("no node with id {dst}"))?;
+        let edge = self.graph.edge_references()
+            .find(|e| {
+                e.source() == src_ni
+                    && e.target() == dst_ni
+                    && e.weight().src_port == src_port
+                    && e.weight().dst_port == dst_port
+            })
+            .map(|e| e.id());
+        if let Some(eid) = edge {
+            self.graph.remove_edge(eid);
+        }
+        // Also remove from back_edges if this was a sanctioned back-edge.
+        self.back_edges.retain(|be| {
+            !(be.lb_id == src
+                && be.lb_out_port == src_port
+                && be.dst_id == dst
+                && be.dst_in_port == dst_port)
+        });
+        Ok(())
+    }
+
+    /// Build a `NodeExecutor` from the current graph state.
+    ///
+    /// Unlike `build_executor()`, this method is callable multiple times. Each
+    /// call creates fresh communication channels (ring buffer, state bus, node
+    /// command SPSC) and installs their consumer ends in the new executor. The
+    /// producer ends are retained in the configurator so `send()`, `send_command()`,
+    /// and the state bus remain operational after the rebuild.
+    ///
+    /// Callers must ensure the audio thread is paused (via `AudioEngine::wait_paused()`)
+    /// before calling this — the previous executor must be dropped or returned first.
+    pub fn rebuild_executor(&mut self) -> NodeExecutor {
+        // Create fresh channels for the new executor. The old channels (consumed by
+        // the previous executor) are dropped when that executor is dropped.
+        let (new_sender, new_receiver)     = ring_buffer::channel(RING_CAPACITY);
+        let (new_sb_prod, new_sb_cons)     = rtrb::RingBuffer::<StateBusUpdate>::new(STATE_BUS_RING_CAPACITY);
+        let (new_cmd_prod, new_cmd_cons)   = rtrb::RingBuffer::<NodeCommand>::new(NODE_CMD_RING_CAPACITY);
+
+        // Replace configurator-side handles so `send()` and `send_command()` stay live.
+        self.sender                    = new_sender;
+        self.node_cmd_producer         = new_cmd_prod;
+        self.state_bus_consumer        = new_sb_cons;
+
+        // Install executor-side ends as pending so `build_executor()` can take them.
+        self.pending_receiver          = Some(new_receiver);
+        self.state_bus_producer_pending = Some(new_sb_prod);
+        self.node_cmd_consumer_pending = Some(new_cmd_cons);
+
+        self.build_executor()
+    }
+
+    /// Drain nodes from the executor back to the configurator after `apply_patch`
+    /// takes the old executor. Nodes are re-inserted so `rebuild_executor()` can
+    /// pick them up again.
+    pub fn restore_nodes(&mut self, nodes: Vec<(u32, NodeOrDevice)>) {
+        for (user_id, slot) in nodes {
+            if let Some(&ni) = self.id_to_index.get(&user_id) {
+                self.nodes.entry(ni).or_insert(slot);
+            }
+        }
     }
 
     /// Build a `NodeExecutor` from the current graph state. Can only be called once.

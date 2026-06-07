@@ -11,7 +11,7 @@ pub mod launchpad;
 pub mod digitakt;
 pub mod keystep;
 
-pub use audio::{AudioBackend, AudioError};
+pub use audio::{AudioBackend, AudioEngine, AudioError};
 pub use emulator::LaunchpadEmulator;
 pub use launchpad::LaunchpadNode;
 pub use digitakt::DigitaktMidiNode;
