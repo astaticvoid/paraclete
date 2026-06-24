@@ -32,8 +32,12 @@ cargo run
 cargo run -- --dev-ui
 ```
 
-On first boot: kick on beats 1 and 3, snare on 2 and 4, hihat on all 16 steps,
-bass on beat 1 — 140 BPM. Esc or Ctrl-C to stop.
+The graph is loaded from `instrument.yaml` (a 4-track synthesis drum machine at
+140 BPM: kick, snare, hihat, FM bass → mix → reverb → output). Pass
+`--instrument=<file>` to load a different one.
+
+Sequencers start **empty** — program steps live with the terminal-emulator
+keyboard rows (see below) or a connected Launchpad. Esc or Ctrl-C to stop.
 
 Hardware devices (Novation Launchpad, Elektron Digitakt, Arturia Keystep) are
 opened if present and fall back gracefully when absent.

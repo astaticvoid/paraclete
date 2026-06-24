@@ -1,0 +1,86 @@
+# Paraclete default instrument — 4-track synthesis drum machine.
+# Boots the standalone app: `cargo run`.
+# Graph: InternalClock -> 4x Sequencer -> 4x synth engine -> MixNode -> Reverb -> AudioOutput.
+# Node IDs follow the documented app graph (CLAUDE.md "App Graph Node IDs").
+format_version: 1
+name: "paraclete-default"
+bpm: 140.0
+
+# Hardware/emulator profile: maps Launchpad (or the terminal-emulator keyboard
+# rows Q/W/E.., A/S/D.., Z/X/C..) to sequencer step toggles on tracks 0-2.
+profiles:
+  - "profiles/launchpad.rhai"
+
+nodes:
+  - id: 1
+    type: internal_clock
+
+  # ── Sequencers (one per track) ──────────────────────────────────────────
+  - id: 10
+    type: sequencer
+    display_name: "Kick"
+  - id: 11
+    type: sequencer
+    display_name: "Snare"
+  - id: 12
+    type: sequencer
+    display_name: "HiHat"
+  - id: 13
+    type: sequencer
+    display_name: "Bass"
+
+  # ── Synth voices ────────────────────────────────────────────────────────
+  - id: 20
+    type: analog_engine:kick
+  - id: 21
+    type: analog_engine:snare
+  - id: 22
+    type: analog_engine:hihat
+  - id: 27
+    type: fm_engine:bass
+
+  # ── Master bus ──────────────────────────────────────────────────────────
+  - id: 2
+    type: mix
+    channel_count: 8
+  - id: 200
+    type: reverb
+  - id: 60
+    type: audio_output
+
+edges:
+  # clock -> each sequencer
+  - from: [1, "clock_out"]
+    to:   [10, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [11, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [12, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [13, "clock_in"]
+
+  # sequencer -> voice (events)
+  - from: [10, "events_out"]
+    to:   [20, 0]
+  - from: [11, "events_out"]
+    to:   [21, 0]
+  - from: [12, "events_out"]
+    to:   [22, 0]
+  - from: [13, "events_out"]
+    to:   [27, 0]
+
+  # voice audio out -> mix inputs 0..3
+  - from: [20, 1]
+    to:   [2, 0]
+  - from: [21, 1]
+    to:   [2, 1]
+  - from: [22, 1]
+    to:   [2, 2]
+  - from: [27, 1]
+    to:   [2, 3]
+
+  # mix -> reverb -> audio output
+  - from: [2, 8]
+    to:   [200, 0]
+  - from: [200, 1]
+    to:   [60, 0]
