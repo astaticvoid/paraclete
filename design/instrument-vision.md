@@ -55,16 +55,23 @@ Current step indicator sweeps the row during playback. Track selection,
 mute (pattern-level and global), pattern switching, fill mode activation,
 temporary save/reload — all from the grid without touching a mouse.
 
-**Novation Launch Control XL (Mk2 now, Mk3 target)**
-Contextual parameter control. When a track is selected on the Launchpad,
-the XL's 24 knobs and 8 faders control that track's instrument parameters.
-Kick selected → knobs are pitch, decay, distortion, filter. Hat selected →
-knobs are pitch, length, filter, reverb send. The XL follows the Launchpad's
-context automatically via Rhai profile script.
+**Encoder controller (true relative / endless)**
+Contextual parameter control. When a track is selected on the Launchpad, the
+encoders remap to that track's instrument parameters. Kick selected → encoders
+are pitch, decay, distortion, filter. Hat selected → encoders are pitch, length,
+filter, reverb send. Macro pages of filters/effects switch the same encoders to
+new targets. The controller follows the Launchpad's context automatically via
+Rhai profile script.
 
-Mk2: absolute position knobs. Calibration gesture on connect establishes
-current positions. Mk3 target: endless encoders with query protocol,
-bidirectional sync, no calibration needed.
+This **requires true relative / endless encoders** — the same physical encoders
+constantly remap across tracks, views, and macro pages, so absolute pots are
+disqualified (every switch leaves the pot wrong; soft-takeover is unacceptable).
+The Launch Control XL line is ruled out for this reason (Mk2 = absolute pots;
+Mk3 = absolute CC/NRPN in custom modes). The target is a true-relative box
+(e.g. Intech Grid EN16 Smooth, MIDI Fighter Twister, or OXI E16). Paraclete
+consumes relative deltas via `CMD_BUMP_PARAM`, so the remap is seamless and the
+controller is a swappable commodity. See the `controller-strategy` memory and
+roadmap P9.5.
 
 **Arturia Keystep 37**
 Melodic and bassline input. Plays a synth or sampler track that sits over

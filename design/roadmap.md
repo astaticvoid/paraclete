@@ -17,7 +17,7 @@
 | **P1** | First Sound | Sine oscillator triggered by Launchpad emulator | **Complete** |
 | **P2** | Sequencer v1 | 16-step sequencer, clock domain, LED feedback | **Complete** |
 | **P3** | First Instrument | Sampler, parameter locks, StateBus SPSC, Rhai bindings | **Complete** |
-| **P4** | Hardware Integration | 3-device setup live. Launchpad = 8-track drum machine. XL = contextual params. Keystep = melodic. DistortionNode + FilterNode. | **Complete** |
+| **P4** | Hardware Integration | 3-device setup live. Launchpad = 8-track drum machine. Digitakt (relative encoders) = contextual params (replaced the XL). Keystep = melodic. DistortionNode + FilterNode. | **Complete** |
 | **P5** | Depth | Sequencer v2 (conditional trigs, micro-timing, swing, fill). ReverbNode, DelayNode, SplitNode, MixNode. | **Complete** |
 | **P6** | Synthesis | FM synth, analog-style synth. High-quality resampling. Broader audio format support. | **Complete** |
 | **P6.5** | Cleanup | EnvelopeNode looping AD fix. LadderFilter param rename. Signal port executor allocation. | **Complete** |
@@ -115,16 +115,24 @@ they are hardware-only to verify.
   controls exceed keys), mode switching, and distinct rendering per LED
   state/color. The Launchpad is the device that *has* an emulator but an
   incomplete one; this is the minimum P10 Commit 5 depends on.
-- **Encoder testing via the Digitakt (stopgap)** — the Digitakt has endless
-  encoders and is already a supported `midir` node (`DigitaktMidiNode`,
-  `digitakt.rhai`). Use the **real hardware** to exercise contextual parameter
-  control rather than building an encoder emulator; verify/complete the Digitakt
-  encoder → `CMD_SET_PARAM`/`CMD_BUMP_PARAM` relative-encoder path. This matches
-  the eventual endless-encoder controller (Launch Control XL **Mk3**); the Mk2's
-  absolute-position pots are explicitly *not* a target — limit-bound pots are a
-  poor fit for this instrument, so no XL Mk2 node is built.
+- **Relative-encoder handling in Paraclete (`CMD_BUMP_PARAM`)** — the contextual
+  model (same encoders remap across tracks/views/macro-pages) is **only usable
+  with true relative/endless encoders**. Absolute pots are disqualified: every
+  view switch leaves the pot position wrong, so each knob is dead until swept
+  through the stored value, and soft-takeover is not an acceptable substitute.
+  P9.5 ensures the relative-delta path (`CMD_BUMP_PARAM`) is solid, with optional
+  acceleration/fine-step in the profile for resolution. See the
+  `controller-strategy` memory.
+- **Encoder hardware** — target a **true-relative encoder box**: Intech Grid
+  EN16 *Smooth* (~$327 CAD, Amazon.ca) is the realistic pick; MIDI Fighter
+  Twister (~$279 USD, direct) or OXI E16 (premium) are alternatives. The **entire
+  Launch Control XL line is ruled out** — Mk2 is absolute pots, and the Mk3's
+  Custom-mode encoders transmit absolute CC/NRPN only (no true relative). The
+  **Digitakt** can serve as a stopgap to exercise the encoder path, *but verify
+  it sends relative CC first* (Elektron often sends absolute).
 - **Computer-keyboard-as-piano** — note/arp input standing in for the Keystep
-  when its hardware isn't connected.
+  when its hardware isn't connected. (Keys and encoders are separate concerns —
+  the melodic keyboard is not the encoder controller.)
 - **Scripted/headless input injection** — drive device-event sequences from a
   file or virtual-MIDI port so P10/P11 integration tests run in CI, not only by
   hand.
@@ -197,7 +205,7 @@ continuous-evolution modes from the vision's "A Session."
 | Launchpad emulator reaches only pads 0–23, no scene/control row, no RGB | Active | Full emulator | **P9.5** |
 | No keyboard path to test encoders | Active | Use real Digitakt (endless encoders) as stopgap | **P9.5** |
 | Keystep is `midir`-only (no emulator / input injection) | Active | Keyboard-piano + scripted injection | **P9.5** |
-| Launch Control XL Mk2 (absolute pots) not a fit; no XL node | By design | Target Mk3 endless encoders later; Digitakt covers encoders now | — |
+| Entire Launch Control XL line ruled out (Mk2 absolute pots; Mk3 also absolute CC/NRPN in custom modes — no true relative) | By design | Target a true-relative encoder box (Intech EN16 Smooth / MFT / OXI E16) | — |
 | AnalogEngine/FmEngine monophonic (retrigger only) | Active | Voice allocator | P11+ |
 | Inner GraphNode runtime patching (outer graph only at P9) | Active | Inner `apply_patch()` | P11+ |
 | `InnerGraphNode::serialize()` returns empty | Active | Inner-graph persistence | P11+ |
@@ -216,7 +224,7 @@ P10, BUG-002/003/006/007 in P10.5. Nothing is unscheduled.
 | OQ-4 | Network / distributed nodes | — | Shapes EventStream serialisation format. Not blocking. |
 | OQ-6 | Micro-timing clock representation | — | Signed micro-timing implemented in P10 C3 (BUG-004 fix). Close out in p10-report. |
 | OQ-7 | Oversampling strategy | — | No oversampling until CvSignal audio-rate modulation needs it. |
-| OQ-10 | XL Mk3 query protocol integration | Mk3 | CC ch 7/8 protocol for bidirectional sync. Implement when Mk3 arrives. |
+| ~~OQ-10~~ | ~~XL Mk3 query protocol integration~~ | — | **Moot — XL line ruled out** (Mk3 confirmed absolute-only in custom modes). Encoder controller is a true-relative box instead. |
 | OQ-11 | Pattern/page representation on the Launchpad grid | **P10** | Scene buttons = page select; how cued/chained patterns are shown. ADR-030 + profile script. |
 | OQ-12 | Live-record quantisation model | P11 | Step-record vs. live-quantised-record; interaction with micro-timing. |
 
