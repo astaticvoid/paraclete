@@ -7,9 +7,15 @@ runtime where everything is a node.
 The closest analogies: Plan 9 (everything is a composable node), Emacs (live,
 reprogrammable runtime), and Elektron hardware (hardware-first, mouse-free workflow).
 
-**Current phase: P7 complete** — synthesis engines (AnalogEngine kick/snare/hihat,
-FmEngine bass/bell/kick), per-voice rubato resampling, project save/recall (RON),
-CLAP plugin output (`paraclete-clap`), 317 tests.
+**Current phase: P9 complete** — modular patchable graph (dynamic topology),
+single-sample feedback loop break, sequencer as a CV source, and a GraphNode
+that owns a nested executor. Builds on P8's YAML instrument definitions, the
+ratatui terminal UI, and the CLAP host. 391 tests.
+
+**Next: P10 — Pattern Engine.** Multi-pattern + seamless switching + chaining,
+multi-page (64-step) patterns, per-track length & speed (polyrhythm), and full
+serialization of sequencer state. See `design/roadmap.md` and
+`design/phases/p10-interfaces.md`.
 
 ---
 
@@ -59,6 +65,9 @@ crates/
   paraclete-scripting   L4 GPL3  — Rhai sandbox, hardware event dispatch
   paraclete-app              GPL3 — binary entry point
   paraclete-clap             GPL3 — Paraclete as a CLAP plugin (ADR-024)
+  paraclete-clap-host        GPL3 — Paraclete as a CLAP host (ADR-027)
+  paraclete-tui              GPL3 — ratatui terminal UI (ADR-026)
+  paraclete-graph-nodes      GPL3 — nodes that own an inner executor (ADR-023)
 tools/
   gen-samples/          — synthesized drum sample generator
 profiles/               — Rhai hardware profile scripts
@@ -99,9 +108,11 @@ cargo build
 cargo build --release
 
 # Run
-cargo run                              # P7 graph, falls back to terminal emulator
-cargo run -- --dev-ui                  # + step/pattern monitor on stderr
-cargo run -- --load=project.ron        # restore saved project state
+cargo run                              # graph from instrument.yaml; ratatui TUI by default
+cargo run -- --instrument=my.yaml      # load a specific instrument definition
+cargo run -- --no-tui                  # skip the TUI (stderr logging instead)
+cargo run -- --dev-ui                  # step/pattern monitor on stderr
+cargo run -- --load=project.ron        # restore saved project state (RON)
 cargo run -- --save=project.ron        # save project state on exit
 
 # Generate samples
@@ -136,17 +147,25 @@ encoder mappings, and pad routing via Rhai.
 
 ---
 
-## What works at P7
+## What works at P9
 
 - 8-track graph: clock → sequencer → instrument → distortion → filter → mix → audio
 - Synthesis engines: `AnalogEngine` (kick, snare, hihat), `FmEngine` (bass, bell, kick)
 - Sampler with per-voice rubato pitch resampling (symphonia + rubato)
 - Step sequencer with swing, fill A/B, per-step probability and micro-timing
+  (single 16-step pattern per track — the full pattern engine lands in P10)
+- Sequencer as a CV source: per-step CV locks with sample-and-hold output
 - Reverb on the master bus
-- Project save/recall in RON format (`--load`/`--save`)
-- CLAP plugin output: `SingleNodePlugin` (one node as MIDI effect), `SubgraphPlugin` (full graph), machine bank binaries
+- Declarative instrument definition in YAML (`--instrument`); set initial params per node
+- Terminal UI (`paraclete-tui`): transport bar, live encoder values, step row
+- Dynamic topology: add/remove nodes and edges at runtime (`apply_patch`, ~5 ms silence)
+- Single-sample feedback via `LoopBreakNode` (one `LoopBreakNode` per cycle is legal)
+- GraphNode / `InnerGraphNode`: a node that owns a nested executor
+- Project save/recall in RON format, v2 with topology (`--load`/`--save`)
+- CLAP plugin output: `SingleNodePlugin`, `SubgraphPlugin`, five machine-bank `.clap` binaries
+- CLAP host: load third-party `.clap` plugins as nodes (`paraclete-clap-host`)
 - Rhai profile scripts with state bus subscriptions and LED feedback
-- 317 tests, 0 failures
+- 391 tests (389 distinct), 0 failures
 
 ---
 
