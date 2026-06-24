@@ -11,13 +11,32 @@
 ## The Instrument
 
 A dawless hardware instrument for live performance and studio production of
-industrial, techno, and hardcore music. Tight, dark, aggressive. Rhythmically
-complex. Performance-centric — the instrument responds to the performer in
-real time, not just playback of a pre-composed arrangement.
+dark, aggressive, rhythmically complex electronic music — from the cold,
+distorted machine-funk of classic electronic body music and industrial to the
+hypnotic, cavernous, texture-driven palette of modern industrial techno. Tight
+and mechanical, but alive. Performance-centric: the instrument responds to the
+performer in real time, not playback of a pre-composed arrangement.
 
-The instrument is Paraclete running on a laptop connected to three hardware
-controllers. No DAW. No mouse. The laptop is a sound module and sequencer
-engine, not a workstation.
+The instrument is Paraclete running on a laptop connected to hardware
+controllers. No DAW. No mouse. The laptop is the whole instrument — sound
+sources, sequencer, and effects — not a workstation.
+
+It is a **full instrument, not just a sequencer.** Four pillars:
+
+1. **Sequencing** — an Elektron-style sequencer threaded through every
+   parameter. The heart of the instrument (detailed below).
+2. **Synthesis** — a full subtractive analog voice, an ergonomic FM voice, and
+   analog / FM / sampler drum modules.
+3. **Effects** — a 70s/80s-flavored palette: characterful distortion,
+   modulation, delay, and reverb, every one a node.
+4. **Performance** — macros, mutes, fills, pattern switching, and live
+   recording, all mouse-free from grids, keys, and encoders.
+
+The goal is to occupy the role a DAW plays in a hardware-style live rig — the
+single tool you compose and perform on — without being a linear audio
+workstation. There is no audio-recording timeline and no mixdown stage:
+arrangement *is* performance (pattern chaining), and anything outside the native
+palette is hosted as a CLAP plugin rather than re-implemented.
 
 ---
 
@@ -52,6 +71,53 @@ Melodic and bassline input. Plays a synth or sampler track that sits over
 the drum machine. Live keyboard playing, arpeggiation, and the Keystep's
 own internal sequencer for independent melodic patterns. Standard MIDI over
 USB — no special protocol needed.
+
+---
+
+## The Voices
+
+Sound generation is four families of node — each a self-contained instrument the
+sequencer drives, the parameter-lock system automates per step, and the macro
+layer exposes to the encoders. The drum modules exist today; the melodic voices
+are the largest unbuilt part of the instrument.
+
+**Analog synth voice — full subtractive mono.**
+A complete monophonic subtractive synthesizer modeled on the classic Sequential
+Pro-One feature set, composed from Paraclete primitives:
+
+- Two oscillators with multiple waveshapes (saw, triangle, pulse) and
+  pulse-width control; hard sync; the second oscillator doubles as a modulation
+  source at low rates
+- A noise source in the mixer
+- A self-oscillating four-pole (24 dB/oct) lowpass filter with key tracking and
+  envelope amount
+- Two envelopes (filter, amplifier) and a dedicated LFO
+- A modulation routing section (the Pro-One's "Direct" mod section) sending
+  envelope / LFO / oscillator-B to oscillator pitch, pulse-width, and filter
+  cutoff — faithful to the hardware's routing, not a general patch matrix
+- Glide (portamento) and an integrated arpeggiator / step sequencer
+
+This is the lead and bassline engine — the driving, resonant, aggressive
+monophonic core. "Full features" means the real instrument's capability set, not
+a reduced approximation.
+
+**FM voice — simplified, ergonomic, melodic.**
+A four-operator FM synth with a fixed set of algorithms, designed for fast
+sound-shaping from a handful of macro controls rather than per-operator menu
+diving. Metallic tones, bells, hard digital basses, detuned stacks. The
+ergonomic counterpart to the analog voice, not a clone of the FM drum engine.
+
+**Drum modules — analog, FM, sampler.**
+The percussion engines already at the core: an analog-style drum synth (kick,
+snare, hat machines), an FM percussion engine, and a sampler with high-quality
+pitch resampling. Each exposes its parameters to per-step locks and to the macro
+layer for hands-on performance.
+
+**Paraphony / polyphony.**
+The synth voices are monophonic by default — correct for basslines and leads.
+Pads, drones, and the slow atmospheric chords of the modern palette need at
+least paraphonic voice allocation. That is a first-class goal, not an
+afterthought: the cavernous, evolving side of the sound depends on it.
 
 ---
 
@@ -192,21 +258,42 @@ At no point have you touched a mouse.
 
 ## The Sound
 
-Industrial, techno, hardcore. Specific characteristics:
+The span runs from the cold, distorted, sequenced machine-funk of classic
+electronic body music and industrial to the hypnotic, cavernous, texture-driven
+palette of modern industrial techno. Two ends of one lineage. Specific
+characteristics:
 
 - **Distortion everywhere** — kicks saturated, hats clipped, basslines driven.
   Not clean. The signal chain has grit at every stage.
-- **Shoegaze pedal chain aesthetic** — reverb, delay, chorus, phaser as
-  modular effect nodes chained in series. Wet, washed, textured.
+- **Pedal-chain aesthetic** — reverb, delay, chorus, phaser as modular effect
+  nodes chained in series. Wet, washed, textured; from tight slapback to
+  bottomless dub-techno space.
 - **Tight and aggressive rhythm** — the sequencer is precise but not
   quantised-feeling. Micro-timing, swing, conditional trigs create movement
   within the grid without looseness.
 - **Controlled randomness** — not chaotic but alive. Steps that fire sometimes.
   Parameters that drift slightly. The pattern is a probability distribution,
   not a fixed sequence.
+- **Slow evolution and atmosphere** — drones, pads, and reverb tails that
+  develop over many bars under the rhythm. Hypnotic repetition, not constant
+  novelty.
 - **Dynamic performance** — the instrument responds to the performer. Muting
   tracks, switching patterns, live parameter tweaking, real-time recording.
   The music changes as you play.
+
+**The effects palette.** The character lives as much in the effects as in the
+voices, and targets a 70s/80s analog flavor with a dub-techno spatial
+sensibility:
+
+- **Saturation and distortion in variety** — soft tube-style warmth, hard diode
+  clipping, wavefolding, and bit / sample-rate reduction
+- **Modulation effects** — chorus, phaser, and flanger (bucket-brigade flavored)
+- **Time effects with character** — bucket-brigade (BBD) analog delay and tape
+  echo with feedback coloration; spring and plate reverb alongside a clean
+  algorithmic hall for cavernous, evolving space
+
+Every effect is a node; wet/dry and bypass are sequenceable parameters, so the
+whole chain is performable and per-step lockable.
 
 ---
 
@@ -256,9 +343,10 @@ The sequencer is not just a note trigger. It threads through the whole system:
   it in response to performance input. Algorithmic variation. Generative
   fills. Pattern mutation under performer control. (P4+)
 
-Phase targets: parameter locks (P3), conditional trigs + micro-timing + swing
-+ fill + mute (P5), pattern chaining (P5), CV source and nested sequencers (P9).
-The architecture supports all of them from day one.
+Phase targets: parameter locks (P3); conditional trigs + micro-timing + swing +
+fill (P5); CV source + nested sequencers (P9); multi-pattern + pages +
+polyrhythm + chaining (P10); mute + perform kit + live record (P11); retrig +
+euclidean (P12). The architecture supports all of them from day one.
 
 ---
 
@@ -270,9 +358,9 @@ any controller, the scripting layer allows custom profiles without touching
 Rust.
 
 When there is a tradeoff between making the platform more general and making
-this instrument better, the instrument wins through P6. After P6, when the
-architecture is proven and the instrument is playable, the platform gets the
-investment it needs to be genuinely open.
+this instrument better, the instrument wins until it is playable as the full
+instrument described here. Once the architecture is proven and the instrument
+stands on its own, the platform gets the investment it needs to be genuinely open.
 
 The instrument is the proof that the platform works. If you can make industrial
 techno with it without touching a mouse, the platform succeeded.
