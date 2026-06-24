@@ -63,7 +63,7 @@ the surface work in Commit 5.
 | 2 | `paraclete-nodes` | Multi-page patterns — up to 64 steps; page-loop window `(start_page, end_page)`; per-pattern swing. |
 | 3 | `paraclete-nodes` | Per-track length & speed multiplier (1/8×–2×) → polyrhythm. `CMD_SET_LENGTH`, `CMD_SET_SPEED`. **Fixes BUG-004** (signed micro-timing — genuinely in the step-emission path this commit rewrites). |
 | 4 | `paraclete-nodes` | Seamless cued switching + volatile chain. `CMD_SET_PATTERN` (real), `CMD_CHAIN_PUSH`, `CMD_CHAIN_CLEAR`. |
-| 5 | `paraclete-nodes`, `paraclete-tui`, `paraclete-app`, `profiles/` | State-bus surface: publish active/cued pattern, page, length, speed. TUI page display. Launchpad scene-button page select + cued-pattern blink. |
+| 5 | `paraclete-nodes`, `paraclete-tui`, `paraclete-app`, `profiles/` | State-bus surface: publish active/cued pattern, page, length, speed. TUI page display. Launchpad scene-button page select + cued-pattern blink. **Surface verification depends on P9.5** (full emulator) — see 5.3. |
 
 -----
 
@@ -445,6 +445,13 @@ a power cycle (state bus is not persisted, ADR-025).
 
 ## 5.3 Launchpad profile (`profiles/launchpad.rhai`)
 
+> **Depends on P9.5 (full Launchpad emulator).** The features below are bound to
+> scene buttons, the control row, and tracks 3–7 — none reachable from today's
+> emulator (pads 0–23 only, no scene/control keys). P9.5's full emulator is the
+> prerequisite for verifying any of this without physical hardware. If P9.5 has
+> not landed, this commit's surface behavior can only be tested on a real
+> Launchpad; the state-bus paths (5.1) and TUI (5.2) remain emulator-independent.
+
 - Scene buttons select the active page (write `CMD_SET_PAGE_LOOP` or a page-view
   offset; per OQ-11 decide whether scene = view-only page scroll or page-loop
   edit — recommend: tap = scroll view, hold-page + step = set page-loop window,
@@ -460,8 +467,11 @@ a power cycle (state bus is not persisted, ADR-025).
   correct variants after a process cycle.
 - `steps_bitfield_reflects_current_page` — on page 1, the bitfield matches steps
   8–15 (per the chosen convention).
-- Profile/TUI behavior is verified by the **hardware play-test** (see milestone),
-  not unit tests.
+- Profile/TUI behavior is verified by the **play-test** (see milestone): on real
+  hardware, or via the **P9.5 full emulator** (scene buttons + all 8 tracks
+  reachable) once it lands. With scripted input injection (P9.5 #4), the page-
+  select and cued-switch flows can additionally be covered by an automated
+  integration test rather than only by hand.
 
 -----
 
@@ -487,9 +497,11 @@ a power cycle (state bus is not persisted, ADR-025).
   `paraclete-node-api`.
 - BUG-005, BUG-008, BUG-001, and BUG-004 marked resolved in `bugs.md` with
   commit references.
-- A hardware play-test confirms: paging a 64-step pattern via scene buttons,
-  the hat track at 2× against the kick, cueing + chaining patterns live — all
-  mouse-free, per `instrument-vision.md`'s "A Session."
+- A play-test confirms (on hardware **or** the P9.5 full emulator): paging a
+  64-step pattern via scene buttons, the hat track at 2× against the kick,
+  cueing + chaining patterns live — all mouse-free, per `instrument-vision.md`'s
+  "A Session." Commits 0–4 are verifiable by unit tests + `NodeCommand`
+  injection alone; only Commit 5's surface needs the emulator/hardware.
 - `design/phases/p10-report.md` written (append-only); `architecture-evolving.md`
   appended; CLAUDE.md "Current Phase" and Sequencer command table updated.
 

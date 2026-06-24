@@ -4,7 +4,8 @@
 > planning changes occur. Keep it short — current state only.
 >
 > **Last updated:** June 2026
-> **Current phase:** P10 in design (Pattern Engine)
+> **Current phase:** P10 in design (Pattern Engine); P9.5 (Device Emulation &
+> Test Harness) is an enabling prerequisite for testing P10's surface features
 
 ---
 
@@ -23,6 +24,7 @@
 | **P7** | DAW Integration | CLAP plugin mode. DAW transport sync. Project save/recall. paraclete-node-api → crates.io. Per-voice rubato. | **Complete** |
 | **P8** | Instrument Layer | Instrument definition file (YAML). Terminal UI. CLAP Host. | **Complete** |
 | **P9** | Modular Graph | Patchable primitive node graph. Single-sample feedback. Sequencer as CV source. GraphNode / nested executor. | **Complete** |
+| **P9.5** | **Device Emulation & Test Harness** | **Full Launchpad emulator (all 64 pads + scene + control row, mode switching, RGB) — the priority. Encoder testing via the real Digitakt (endless encoders) as stopgap. Computer-keyboard-as-piano (Keystep role). Scripted/headless device-input injection for integration tests. Enables P10/P11 grid features to be tested without a physical Launchpad.** | **In design** |
 | **P10** | **Pattern Engine** | **Multi-pattern + seamless switching + chaining. Multi-page (64-step) patterns + page-loop selection. Per-track length & speed (polyrhythm). Serialization of all sequencer state. Fixes BUG-005/008/001/004 (sequencer + timing).** | **In design** |
 | **P10.5** | Cleanup | Infrastructure bugs not in P10's blast radius: BUG-002 (agreement baseline), BUG-003 (hal→runtime layer violation), BUG-006 (agg_state_buf realloc), BUG-007 (publish_bank_state alloc). Mirrors the P6.5 precedent. | — |
 | **P11** | Live Performance | Mute system (pattern + global + prepared). Temporary save / reload. Perform Kit mode. Live record from Keystep. | — |
@@ -93,6 +95,45 @@ become true rather than aspirational.
 
 ---
 
+## P9.5 Scope (enabling prerequisite)
+
+**Deliverable:** Every feature of every supported device is exercisable from the
+terminal — no physical hardware required to develop or test.
+
+**Why:** Audit (June 2026) found device emulation is largely absent. Only the
+Launchpad has a software emulator, and it reaches just **24 of 64 pads** (rows
+0–2), with **no scene buttons, no control row, fixed velocity, and no RGB** in
+the keyboard mapping. The Launch Control XL has **no device node at all**.
+Keystep and Digitakt are `midir`-only (exist solely when plugged in). The result:
+step toggles on 3 of 8 tracks are the entire keyboard-testable surface. P10's
+pages/pattern-switching (scene buttons, all 8 tracks) and P11's mutes/fills are
+bound to exactly the controls the emulator cannot reach — so without this work
+they are hardware-only to verify.
+
+- **Full Launchpad emulator** *(priority)* — all 64 pads + 8 scene buttons + the
+  top control row reachable from the keyboard (track-select cursor scheme, since
+  controls exceed keys), mode switching, and distinct rendering per LED
+  state/color. The Launchpad is the device that *has* an emulator but an
+  incomplete one; this is the minimum P10 Commit 5 depends on.
+- **Encoder testing via the Digitakt (stopgap)** — the Digitakt has endless
+  encoders and is already a supported `midir` node (`DigitaktMidiNode`,
+  `digitakt.rhai`). Use the **real hardware** to exercise contextual parameter
+  control rather than building an encoder emulator; verify/complete the Digitakt
+  encoder → `CMD_SET_PARAM`/`CMD_BUMP_PARAM` relative-encoder path. This matches
+  the eventual endless-encoder controller (Launch Control XL **Mk3**); the Mk2's
+  absolute-position pots are explicitly *not* a target — limit-bound pots are a
+  poor fit for this instrument, so no XL Mk2 node is built.
+- **Computer-keyboard-as-piano** — note/arp input standing in for the Keystep
+  when its hardware isn't connected.
+- **Scripted/headless input injection** — drive device-event sequences from a
+  file or virtual-MIDI port so P10/P11 integration tests run in CI, not only by
+  hand.
+
+A full interface spec (`design/phases/p9.5-interfaces.md`) is TBD; the full
+Launchpad emulator is the priority and gates P10's surface verification.
+
+---
+
 ## P10 Scope (current)
 
 **Deliverable:** The sequencer becomes a real pattern engine. A track holds
@@ -153,6 +194,10 @@ continuous-evolution modes from the vision's "A Session."
 | `paraclete-hal` depends on `paraclete-runtime` (BUG-003) | Active | Move `StateBusHandle` to L2 | **P10.5** |
 | `agg_state_buf` reallocs per cycle (BUG-006) | Active | Return-channel SPSC | **P10.5** |
 | `publish_bank_state()` String alloc per cycle (BUG-007) | Active | Cache path strings | **P10.5** |
+| Launchpad emulator reaches only pads 0–23, no scene/control row, no RGB | Active | Full emulator | **P9.5** |
+| No keyboard path to test encoders | Active | Use real Digitakt (endless encoders) as stopgap | **P9.5** |
+| Keystep is `midir`-only (no emulator / input injection) | Active | Keyboard-piano + scripted injection | **P9.5** |
+| Launch Control XL Mk2 (absolute pots) not a fit; no XL node | By design | Target Mk3 endless encoders later; Digitakt covers encoders now | — |
 | AnalogEngine/FmEngine monophonic (retrigger only) | Active | Voice allocator | P11+ |
 | Inner GraphNode runtime patching (outer graph only at P9) | Active | Inner `apply_patch()` | P11+ |
 | `InnerGraphNode::serialize()` returns empty | Active | Inner-graph persistence | P11+ |
