@@ -46,15 +46,20 @@ opened if present and fall back gracefully when absent.
 
 ## Keyboard controls (terminal emulator)
 
-When no physical Launchpad is connected, three keyboard rows map to the pad grid:
+When no physical Launchpad is connected, the full 8×8 surface is keyboard-driven
+via a track-cursor scheme:
 
 ```
-Row 0 → Track 0 (Kick)    Q  W  E  R  T  Y  U  I   steps 0–7
-Row 1 → Track 1 (Snare)   A  S  D  F  G  H  J  K   steps 0–7
-Row 2 → Track 2 (HiHat)   Z  X  C  V  B  N  M  ,   steps 0–7
+1 2 3 4 5 6 7 8   select active track row (0–7)
+Q W E R T Y U I   toggle the 8 step pads in the active row
+A S D F G H J K   scene buttons (page select)
+Z X C V B N M ,   top control row (modes / navigation)
+Tab               cycle input mode      Esc / Ctrl-C  quit
 ```
 
-Each key press toggles that step. Tracks 3–7 require a physical Launchpad.
+Pick a track with the number row, then toggle its steps — all 8 tracks, the
+scene buttons, and the control row are reachable. (Replaces the older 3-row
+mapping that only reached tracks 0–2.)
 
 ---
 

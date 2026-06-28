@@ -65,15 +65,17 @@ cargo clippy
 
 ### Terminal emulator keyboard controls (LaunchpadEmulator)
 
-Three keyboard rows map to the 8×8 pad grid when no physical Launchpad is connected:
+When no physical Launchpad is connected, the full 8×8 surface is keyboard-driven via a track-cursor scheme (P9.5):
 
 ```
-Row 0 → Track 0 (Kick)    Q  W  E  R  T  Y  U  I   steps 0–7
-Row 1 → Track 1 (Snare)   A  S  D  F  G  H  J  K   steps 0–7
-Row 2 → Track 2 (Hat CH)  Z  X  C  V  B  N  M  ,   steps 0–7
+1 2 3 4 5 6 7 8   select active track row (0–7)
+Q W E R T Y U I   toggle the 8 step pads in the active row
+A S D F G H J K   scene buttons (page select; ids 64–71)
+Z X C V B N M ,   top control row (modes / navigation; ids 72–79)
+Tab               cycle input mode (Grid/Encoder/Piano)   Esc/Ctrl-C  quit
 ```
 
-Tracks 3–7 have no keyboard row; toggle their steps from a physical Launchpad or by editing the preset in `crates/paraclete-nodes/src/pattern.rs`. Esc or Ctrl-C to stop.
+All 8 tracks + scene buttons + control row are reachable (replaces the legacy 3-row mapping that only reached tracks 0–2). Control-id map: grid 0–63 (`row*8+col`), scene 64–71, control 72–79. Esc or Ctrl-C to stop.
 
 ## Architecture: Five-Layer Model
 

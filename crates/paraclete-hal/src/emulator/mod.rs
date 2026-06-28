@@ -1,8 +1,10 @@
 mod surface;
 mod terminal;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
+
+use self::terminal::{key_to_target, KeyTarget, CONTROL_BASE, SCENE_BASE};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal as ct;
@@ -16,6 +18,32 @@ const RENDER_INTERVAL: Duration = Duration::from_millis(16);
 // Fixed velocity for keyboard-triggered pads (MIDI 2.0 16-bit range, ~50% of max).
 const KEY_VELOCITY: u16 = 32768;
 
+/// Emulator input mode. `Tab` cycles. Grid is the only active mode at P9.5
+/// Commit 1; Encoder/Piano are wired in later commits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EmuMode {
+    Grid,
+    Encoder,
+    Piano,
+}
+
+impl EmuMode {
+    fn label(self) -> &'static str {
+        match self {
+            EmuMode::Grid => "GRID",
+            EmuMode::Encoder => "ENC",
+            EmuMode::Piano => "PIANO",
+        }
+    }
+    fn next(self) -> Self {
+        match self {
+            EmuMode::Grid => EmuMode::Encoder,
+            EmuMode::Encoder => EmuMode::Piano,
+            EmuMode::Piano => EmuMode::Grid,
+        }
+    }
+}
+
 /// A software simulation of the Novation Launchpad surface.
 ///
 /// Implements `Node` (emitting `HardwareEvent`s into the graph) and
@@ -24,10 +52,21 @@ const KEY_VELOCITY: u16 = 32768;
 /// Terminal input is polled non-blocking in `process()` on the audio thread.
 /// Raw mode is enabled in `activate()` (main thread) and restored in `deactivate()`.
 /// Rendering is debounced to at most once per 16 ms.
+///
+/// Keyboard scheme (Grid mode): `1`–`8` select the active track row;
+/// `Q W E R T Y U I` toggle the 8 step pads in that row; `A S D F G H J K` are
+/// the scene buttons; `Z X C V B N M ,` are the top control row.
 pub struct LaunchpadEmulator {
     surface: SurfaceDescriptor,
     ports: [PortDescriptor; 1],
-    /// Currently pressed pad ids — used for terminal rendering.
+    /// Active track row (0–7) that the step keys edit.
+    active_row: u8,
+    /// Current input mode.
+    mode: EmuMode,
+    /// Keys currently held → the control id emitted on their press. Lets a
+    /// release emit the correct id even if `active_row` changed meanwhile.
+    held: HashMap<KeyCode, u32>,
+    /// Currently pressed control ids — used for terminal rendering.
     pressed: HashSet<u32>,
     /// Events buffered between poll_keyboard() and process() drain.
     pending: Vec<HardwareEvent>,
@@ -45,10 +84,49 @@ impl LaunchpadEmulator {
                 direction: PortDirection::Output,
                 port_type: PortType::Event,
             }],
+            active_row: 0,
+            mode: EmuMode::Grid,
+            held: HashMap::new(),
             pressed: HashSet::new(),
             pending: Vec::new(),
             last_render: None,
             raw_mode_active: false,
+        }
+    }
+
+    /// Apply a key-press target against the current `active_row`, buffering the
+    /// resulting `HardwareEvent` and tracking the held id for release.
+    fn apply_press(&mut self, code: KeyCode, target: KeyTarget) {
+        let id = match target {
+            // Cursor move only — no event, no held entry.
+            KeyTarget::RowSelect(r) => {
+                self.active_row = r;
+                return;
+            }
+            KeyTarget::Step(col) => self.active_row as u32 * 8 + col as u32,
+            KeyTarget::Scene(n) => SCENE_BASE + n as u32,
+            KeyTarget::Control(n) => CONTROL_BASE + n as u32,
+        };
+        // Ignore duplicate presses of an already-held key (auto-repeat, or a
+        // re-press in terminals without key-release reporting). The `Vacant`
+        // guard must not overwrite the held id — a later release relies on the
+        // original.
+        if let std::collections::hash_map::Entry::Vacant(slot) = self.held.entry(code) {
+            slot.insert(id);
+            self.pressed.insert(id);
+            self.pending.push(HardwareEvent::PadPressed {
+                id,
+                velocity: KEY_VELOCITY,
+                pressure: 0,
+            });
+        }
+    }
+
+    /// Release whatever control id the given key was holding (if any).
+    fn apply_release(&mut self, code: KeyCode) {
+        if let Some(id) = self.held.remove(&code) {
+            self.pressed.remove(&id);
+            self.pending.push(HardwareEvent::PadReleased { id });
         }
     }
 
@@ -78,18 +156,24 @@ impl LaunchpadEmulator {
                     std::process::exit(0);
                 }
 
+                // Tab cycles the input mode.
+                crossterm::event::Event::Key(KeyEvent {
+                    code: KeyCode::Tab,
+                    kind: KeyEventKind::Press,
+                    ..
+                }) => {
+                    self.mode = self.mode.next();
+                }
+
                 crossterm::event::Event::Key(KeyEvent {
                     code,
                     kind: KeyEventKind::Press,
                     ..
                 }) => {
-                    if let Some(pad_id) = terminal::key_to_pad(code) {
-                        if self.pressed.insert(pad_id) {
-                            self.pending.push(HardwareEvent::PadPressed {
-                                id: pad_id,
-                                velocity: KEY_VELOCITY,
-                                pressure: 0,
-                            });
+                    // Grid is the only active mode at Commit 1.
+                    if self.mode == EmuMode::Grid {
+                        if let Some(target) = key_to_target(code) {
+                            self.apply_press(code, target);
                         }
                     }
                 }
@@ -99,11 +183,9 @@ impl LaunchpadEmulator {
                     kind: KeyEventKind::Release,
                     ..
                 }) => {
-                    if let Some(pad_id) = terminal::key_to_pad(code) {
-                        if self.pressed.remove(&pad_id) {
-                            self.pending.push(HardwareEvent::PadReleased { id: pad_id });
-                        }
-                    }
+                    // Release regardless of current mode — a key held from Grid
+                    // mode must release even if the mode changed meanwhile.
+                    self.apply_release(code);
                 }
 
                 _ => {}
@@ -116,7 +198,7 @@ impl LaunchpadEmulator {
         let should_render =
             self.last_render.map_or(true, |t| now.duration_since(t) >= RENDER_INTERVAL);
         if should_render {
-            terminal::render(&self.pressed);
+            terminal::render(self.active_row, &self.pressed, self.mode.label());
             self.last_render = Some(now);
         }
     }
@@ -180,6 +262,109 @@ impl HardwareDevice for LaunchpadEmulator {
     }
 
     fn update_output(&mut self, _output: &HardwareOutput) {
-        // LED state update — wired at P2 when the state bus is available.
+        // LED state update — wired at P9.5 Commit 2.
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use paraclete_node_api::Control;
+
+    #[test]
+    fn surface_has_64_grid_8_scene_8_control() {
+        let emu = LaunchpadEmulator::new();
+        let pads = emu
+            .surface
+            .controls
+            .iter()
+            .filter(|c| matches!(c, Control::Pad(_)))
+            .count();
+        assert_eq!(pads, 80); // 64 grid + 8 scene + 8 control
+    }
+
+    #[test]
+    fn step_id_uses_active_row() {
+        let mut emu = LaunchpadEmulator::new();
+        emu.apply_press(KeyCode::Char('4'), KeyTarget::RowSelect(3));
+        assert_eq!(emu.active_row, 3);
+        emu.apply_press(KeyCode::Char('e'), KeyTarget::Step(2)); // row 3 col 2 = 26
+        assert!(matches!(
+            emu.pending.as_slice(),
+            [HardwareEvent::PadPressed { id: 26, .. }]
+        ));
+    }
+
+    #[test]
+    fn release_emits_pressed_id_after_row_change() {
+        let mut emu = LaunchpadEmulator::new();
+        emu.apply_press(KeyCode::Char('1'), KeyTarget::RowSelect(1));
+        emu.apply_press(KeyCode::Char('q'), KeyTarget::Step(0)); // row 1 col 0 = 8
+        emu.pending.clear();
+        emu.apply_press(KeyCode::Char('6'), KeyTarget::RowSelect(5)); // row changes
+        emu.apply_release(KeyCode::Char('q'));
+        assert!(matches!(
+            emu.pending.as_slice(),
+            [HardwareEvent::PadReleased { id: 8 }]
+        ));
+    }
+
+    #[test]
+    fn scene_and_control_map_to_id_ranges() {
+        let mut emu = LaunchpadEmulator::new();
+        emu.apply_press(KeyCode::Char('a'), KeyTarget::Scene(0));
+        emu.apply_press(KeyCode::Char('z'), KeyTarget::Control(0));
+        let ids: Vec<u32> = emu
+            .pending
+            .iter()
+            .filter_map(|e| match e {
+                HardwareEvent::PadPressed { id, .. } => Some(*id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, vec![SCENE_BASE, CONTROL_BASE]); // 64, 72
+    }
+
+    #[test]
+    fn autorepeat_press_emits_once() {
+        let mut emu = LaunchpadEmulator::new();
+        emu.apply_press(KeyCode::Char('q'), KeyTarget::Step(0));
+        emu.apply_press(KeyCode::Char('q'), KeyTarget::Step(0)); // auto-repeat
+        let presses = emu
+            .pending
+            .iter()
+            .filter(|e| matches!(e, HardwareEvent::PadPressed { .. }))
+            .count();
+        assert_eq!(presses, 1);
+    }
+
+    #[test]
+    fn duplicate_press_does_not_rebind_held_id() {
+        let mut emu = LaunchpadEmulator::new();
+        emu.apply_press(KeyCode::Char('q'), KeyTarget::Step(0)); // row 0 col 0 = id 0
+        emu.apply_press(KeyCode::Char('5'), KeyTarget::RowSelect(4));
+        emu.apply_press(KeyCode::Char('q'), KeyTarget::Step(0)); // re-press; row now 4
+        emu.pending.clear();
+        emu.apply_release(KeyCode::Char('q'));
+        // Release must carry the ORIGINAL id (0), not the rebound row-4 id.
+        assert!(matches!(
+            emu.pending.as_slice(),
+            [HardwareEvent::PadReleased { id: 0 }]
+        ));
+    }
+
+    #[test]
+    fn row_select_emits_no_event() {
+        let mut emu = LaunchpadEmulator::new();
+        emu.apply_press(KeyCode::Char('5'), KeyTarget::RowSelect(4));
+        assert!(emu.pending.is_empty());
+        assert_eq!(emu.active_row, 4);
+    }
+
+    #[test]
+    fn mode_cycles_grid_encoder_piano() {
+        assert_eq!(EmuMode::Grid.next(), EmuMode::Encoder);
+        assert_eq!(EmuMode::Encoder.next(), EmuMode::Piano);
+        assert_eq!(EmuMode::Piano.next(), EmuMode::Grid);
     }
 }
