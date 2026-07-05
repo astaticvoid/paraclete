@@ -68,7 +68,7 @@ each producing explicit roadmap deltas (or an explicit "no change").
 | **W3** | Sequencer deep views | 64-step pattern view, cue/chain, hold-step p-lock overlay, condition/timing editors | Hard dependency on P10 C2–C5 |
 | **P11** | Live Performance | Mute system, temp save/reload, Perform Kit, live record | — (W3 mute view follows) |
 | **P12** | Groove & Generation | Retrig, Euclidean, controlled randomness, generative fills | — |
-| **P13** | Analog Voice | Full subtractive mono voice (Pro-One-style), paraphonic allocation | — |
+| **P13** | Analog Voice | Full subtractive mono voice — **Pro-One as primary reference** (dual osc + hard sync + poly-mod routing, self-oscillating 4-pole, two envs, glide, arp); Model D / MS-20 as secondary character references only. Paraphonic allocation. ZDF ladder is C1 (audio-model review). | — |
 | **P14** | FM Voice | Four-operator melodic FM, macro-first | — |
 | **P15** | Effects Palette | Distortion variety, chorus/phaser/flanger, BBD/tape delay, spring/plate | — |
 | **P16** | Macro & Terminal Control | Macro system; TUI as editing surface | — |
@@ -142,6 +142,7 @@ Everything else open is scheduled: BUG-001/008 → P10 C0 (now), BUG-005 → P10
 | OQ-7 | Oversampling strategy | — | Not until CvSignal audio-rate modulation needs it |
 | OQ-11 | Pattern/page representation on the Launchpad grid | P10 C5 | Scene = page select; cued blink; now co-designed with the W3 pattern view |
 | OQ-12 | Live-record quantisation model | P11 | Step vs live-quantised; interaction with micro-timing |
+| OQ-13 | P13 voice: composed-from-primitives vs monolithic machine | **P13 C0** | `instrument-vision.md` says "composed from Paraclete primitives" (GraphNode/ADR-023 path: Phase-port hard sync, topo-order feedforward mod are already expressible); ADR-022's machine pattern + `SubgraphPlugin` CLAP portability argue for a monolithic `AnalogVoice` engine like AnalogEngine. Decide first, in the P13 spec — it shapes the mod-matrix API and CLAP export. |
 | WQ-1…9 | Interface-track risks (Wi-Fi jitter, velocity, reconciliation, licensing, terminal parity scope, …) | W0–W2 | Tracked in `design/interface-plan.md` |
 
 ---
