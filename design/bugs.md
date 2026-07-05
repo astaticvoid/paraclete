@@ -107,3 +107,43 @@ relative encoder mode.
 buttons/transport). If the DT II is ever used as an *absolute* fader-style
 source, that is a new, explicitly-absolute mapping decision — not a decoder
 fix. Do not add soft-takeover (rejected in controller strategy).
+
+### BUG-001 — Re-diagnosis (Session 0, July 2026)
+
+Measured directly (`paraclete-app/tests/timing_measure.rs`): the claimed
+systematic ~0.4% tempo error **does not exist** — long-term mean step period
+deviates only +0.011% from nominal. The real shape: the 15 in-pattern steps
+each run ~0.39% long (the 241/240 tick period), and the pattern-wrap step
+fires ~5.85% EARLY (−322 samples ≈ 7 ms at 120 BPM/44.1 kHz), snapping the
+pattern back on-grid. Net tempo is correct; the groove limps once per pattern.
+P10 C0's fix target is the per-step 241→240 period; the gated test
+`step_intervals_are_uniform_within_pattern` (#[ignore]) is the acceptance
+gate.
+
+### BUG-010 — Script errors silently swallowed at three layers (FIXED in session 0)
+
+**Severity:** High (masked every other profile bug)  
+**Phase found:** Session 0 (July 2026)  
+**Description:** `dispatch_surface_event` handler calls, `on_load()`
+invocation, and unmatched device ids in `deliver_script_output()` all
+discarded errors (`let _ =` / silent no-match). A crashing profile registered
+its early handlers, died mid-`on_load`, and the surface simply went dark with
+no diagnostic. Root cause of the "Launchpad shows nothing" session-0 symptom
+(combined with BUG-011).  
+**Fixed:** session-0 commit — all three sites now `eprintln!` the error.
+
+### BUG-011 — Profile/app assume 8 tracks; 4-track default instrument crashes launchpad.rhai (FIXED in session 0)
+
+**Severity:** High (default out-of-box configuration was broken)  
+**Phase found:** Session 0 (July 2026)  
+**Description:** `TRACK_SAMP_IDS` is populated only from literal `sampler`
+type-tags; the default instrument.yaml uses engine voices, so the array was
+empty and `launchpad.rhai` indexed it unguarded (trigger branch + three
+`0..8` loops), killing `on_load` mid-registration. Also: `CMD_TRIGGER` (19)
+sent by trigger mode is implemented by no engine — trigger-mode sound has
+never worked (still open; see fix direction).  
+**Fixed (session-0 commit):** `TRACK_GEN_IDS` injected from `ids.generators`;
+all profile track loops guarded by `TRACK_SEQ_IDS.len()`.  
+**Still open from this finding:** implement `CMD_TRIGGER` in engine nodes (or
+a `send_note` Rhai builtin) so pads can live-trigger voices — needed for the
+W-track pad-performance path; schedule with W1.
