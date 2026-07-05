@@ -120,6 +120,15 @@ snare, hat machines), an FM percussion engine, and a sampler with high-quality
 pitch resampling. Each exposes its parameters to per-step locks and to the macro
 layer for hands-on performance.
 
+The analog drum synth's destination is **machine breadth**, in the spirit of
+Elektron's Analog Rytm: a *family* of machine algorithms per drum type —
+several kicks (hard / classic / snappy), several snares, toms, claps,
+hats — selectable per track, not one fixed model each. The current
+one-machine-per-type engine (July 2026) is the seed, not the scope. Layering
+an analog voice with a sample on the same track is already graph topology
+(ADR-016), not an engine feature. Mutable Instruments peaks/plaits drum
+models (MIT) are the sanctioned algorithm source for the family.
+
 **Paraphony / polyphony.**
 The synth voices are monophonic by default — correct for basslines and leads.
 Pads, drones, and the slow atmospheric chords of the modern palette need at
