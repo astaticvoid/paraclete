@@ -18,8 +18,9 @@ cargo run -p gen-samples -- path/  # optional output directory
 # Debug Launchpad X hardware (verify MIDI connectivity, test LED output)
 cargo run -p lpx-debug
 
-# Build everything
-cargo build
+# Build everything (bare `cargo build` only builds paraclete-app — it is the sole
+# default-member in Cargo.toml — so pass --workspace to cover all crates)
+cargo build --workspace
 
 # Build release
 cargo build --release
@@ -46,8 +47,9 @@ cargo build -p paraclete-clap
 # Validate a .clap binary (requires clap-validator installed; test is tagged #[ignore])
 cargo test --test clap_validator -- --ignored
 
-# Run all tests
-cargo test
+# Run all tests (bare `cargo test` runs only paraclete-app's ~24 tests due to
+# default-members; --workspace runs the full suite)
+cargo test --workspace
 
 # Run tests for a single crate
 cargo test -p paraclete-runtime
@@ -56,11 +58,11 @@ cargo test -p paraclete-node-api
 # Run a single test by name
 cargo test -p paraclete-runtime configurator_connect_rejects_two_node_cycle
 
-# Check without building
-cargo check
+# Check without building (--workspace for all crates)
+cargo check --workspace
 
 # Lint
-cargo clippy
+cargo clippy --workspace
 ```
 
 ### Terminal emulator keyboard controls (LaunchpadEmulator)
@@ -312,7 +314,13 @@ P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, defa
 
 **Sequencer as CV source (P9):** `Sequencer::with_cv_outputs(n)` adds `n` CvSignal output ports (`cv_out_0`, `cv_out_1`, … at port IDs `PORT_CV_OUT_BASE + i`, where `PORT_CV_OUT_BASE = 3`; ports 0–2 are the existing clock_in/events_in/events_out). Each `Step` gains `cv_locks: Vec<(u16, f32)>` for per-step CV value locks (sample-and-hold: value held from step fire until next step fire). `"sequencer_cv"` type-tag is `Sequencer::with_cv_outputs(1)`. cv_locks are serialized in the project file (serialization version 2); P5 fields (TrigCondition, StepTiming) are still not serialized.
 
-## Current Phase: P9 shipped (between P9 and P10)
+## Current Phase: Playable-loop arc (P10 + W-track, July 2026)
+
+**If you are starting an implementation session, read `design/handoff.md` first** — it routes tasks by model tier and carries the guardrails. Current sequence (authority: `design/roadmap.md`): **P10 C0** (BUG-001 + BUG-008 pre-flight) → **W0** (Antiphon server + Theoria browser grid POC, spec: `design/phases/w0-interfaces.md`) → **P10 C1** (Pattern struct + serializer v3, gated) → **W1** (touch encoders MVP) → **paired session #1 with the user** → P10 C2+ interleaved with W2.
+
+**The interface track (accepted July 2026, `design/interface-plan.md`, ADR-031):** *Antiphon* (`paraclete-antiphon`) is a presentation-agnostic interface server — WebSocket for the tablet client, in-process transport for the terminal — speaking the existing hardware vocabulary; every connected surface manifests as a `HardwareDevice` node + gateway, peer to `LaunchpadNode`. *Theoria* is the view layer (`theoria-web` tablet client — primary control/editing surface; `theoria-term` — the TUI ported to an Antiphon client at milestone WT). Touch encoders emit relative deltas only. **Naming policy is binding:** third-party marks (Elektron, Digitakt, Ableton, Push…) never appear in our feature names, identifiers, or UI strings — house vocabulary is Antiphon, Theoria, kerygma (broadcast module), epiclesis (headless test driver), *pages*, *grid*, *chain*; wire-protocol names stay plain.
+
+**P9.5 closed early** (C1 shipped: full Launchpad emulator via track-cursor keyboard, 402 workspace tests passing). C2/C3 cancelled — superseded by W0/W1; C4 folded into P10 C5 test work; piano mode deferred. **P10.5 dissolved** into a trigger-based bug backlog (see roadmap).
 
 **P7 shipped** (317 tests, 0 failures): `Node::type_name()` — stable string label for project files. `published_state()` push-down (OQ-9 resolved) — nodes push into a caller-owned `Vec`, eliminating per-cycle heap allocation. Per-voice rubato pitch resampling in Sampler — `VoiceResampler` wraps `SincFixedOut<f32>`; `root_note` moved to ParameterBank; serialize v3. Project save/recall — RON format (ADR-025); `save_project()`/`load_project()` in `paraclete-app/src/project.rs`; `--load`/`--save` CLI flags. `paraclete-clap` crate — `ClapParamBridge`, `translate_transport`, `SingleNodePlugin`, `SubgraphPlugin`, machine bank stub binaries. `paraclete-node-api` v0.1.0 publication prep; `id_for_name` promoted to `const fn`. See `design/phases/p7-report.md`.
 
@@ -372,14 +380,14 @@ P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, defa
 - `clap-sys = "0.5"` (MIT) in `paraclete-clap`, `paraclete-clap-host` — raw CLAP FFI bindings for machine bank and host.
 - `libloading = "0.8"` (MIT/ISC) in `paraclete-clap-host` — cross-platform dynamic library loading for `.clap` files.
 - `serde_yaml = "0.9"` (MIT/Apache) in workspace + `paraclete-app` — YAML instrument definition parsing (ADR-026).
-- `ratatui = "0.28"` (MIT) in workspace + `paraclete-tui`, `paraclete-app` — terminal UI widgets.
+- `ratatui = "0.26"` (MIT) in workspace + `paraclete-tui`, `paraclete-app` — terminal UI widgets.
 - `crossterm` promoted to workspace dependency (was `paraclete-hal`-only; now also used by `paraclete-tui`).
 - `paraclete-tui` crate added — `TuiApp`, `TuiState`, `EncoderSlot`, `layout::render()`.
 - `paraclete-clap-host` crate added — `PluginLibrary`, `PluginNode`, `HostParamBridge`, `scan_clap_paths()`.
 - Five `paraclete-machine-*` workspace crates added (replace `[[bin]]` stubs in `paraclete-clap`).
 
 **P9:**
-- `serde_yaml = "0.9"` removed; `serde_yml = "0.9"` (MIT/Apache) replaces it — upstream deprecation migration (Commit 2).
+- `serde_yaml = "0.9"` removed; `serde_yml = "0.0"` (0.0.13 resolved; MIT/Apache) replaces it — upstream deprecation migration (Commit 2).
 - `paraclete-graph-nodes` crate added — GPL3; depends on `paraclete-node-api`, `paraclete-nodes`, `paraclete-runtime`; `InnerGraphNode` is the first implementation (Commit 6).
 
 ## DSP Source Policy
@@ -424,6 +432,9 @@ All design documents live in `design/`. Key documents:
 - `design/architecture-core.md` — stable: layer model, Node API, signal types, design principles (binding constraints)
 - `design/architecture-evolving.md` — append-only phase log; records what shipped and what was found per phase
 - `design/roadmap.md` — living: current phase scope, known provisional implementations, open questions
+- `design/handoff.md` — living: task routing by model tier, guardrails, current sequence; read before implementing
+- `design/interface-plan.md` — accepted plan: Antiphon interface server + Theoria clients (web/terminal), W0–W4 phases, naming & trademark policy
+- `design/sessions/` — paired-usage session notes (append-only; one file per session; each produces an explicit roadmap delta)
 - `design/instrument-vision.md` — the concrete instrument being built; design tiebreaker for ambiguous decisions
 - `design/bugs.md` — **append-only** known bug tracker; BUG-001 through BUG-008 currently open (BUG-008: `set_initial_params` re-applied on every `activate()`, overwrites deserialized state); add new bugs at the bottom with severity, phase found, location, and fix direction; mark resolved with commit reference
 - `design/adr/` — all Architecture Decision Records (**append-only** — never edit a past ADR, add a new one to supersede it)
@@ -441,6 +452,7 @@ All design documents live in `design/`. Key documents:
 - `design/adr/ADR-027-clap-host.md` — Paraclete as CLAP host (P8); `paraclete-clap-host` crate; `PluginLibrary` / `PluginNode`; generator plugins at P8, effect plugins at P9; `clap-sys` + `libloading` (spec referenced `clack` which is a crates.io placeholder); amended June 2026 to record P8 implementation findings
 - `design/adr/ADR-028-loop-break-node.md` — single-sample feedback loop break (P9); `LoopBreakNode`; executor pre/post phases; `MissingLoopBreak`/`TooManyLoopBreaks` error variants; CvSignal only; resolves OQ-5
 - `design/adr/ADR-029-dynamic-topology.md` — patchable node graph (P9); pause-rebuild-resume protocol; `NodeRegistry`; `apply_patch()`; `AudioEngine::pause()`/`wait_paused()`/`resume_with_executor()`; project file format v2 with `type_tag`; `cap_doc_cache` prerequisite
+- `design/adr/ADR-031-antiphon-interface-server.md` — interface server (W-track); pluggable transports (WebSocket + in-process, no tokio); surface/semantic command planes; surfaces as device nodes; plain wire names
 - `design/adr/ADR-030-pattern-engine.md` — pattern engine (P10); `Pattern` struct; `Sequencer` owns `Vec<Pattern>`; multi-page (64-step) patterns + page-loop window; per-track length & speed (polyrhythm); seamless cued switching + chain; serializer v3 (resolves BUG-005); pattern-within-node, not pattern-as-topology
 - `design/architecture-evolving-append.md` — retroactive phase log entries for P4–P8 (append to `architecture-evolving.md`)
 - `design/phases/` — per-phase interface specs and implementation reports (append-only once a phase ships)
@@ -460,6 +472,7 @@ All design documents live in `design/`. Key documents:
 - `design/phases/p9-interfaces.md` — P9 spec: encoder value publishing (gated Commit 1), housekeeping, loop break, dynamic topology, sequencer CV, GraphNode/InnerGraphNode; 389 test target
 - `design/phases/p9-report.md` — P9 implementation report: 389/391 tests, 0 failures; per-commit deltas; no new bugs (BUG-008 added in C2); deferred-items list for P10
 - `design/phases/p9.5-interfaces.md` — P9.5 spec (Device Emulation & Test Harness): full Launchpad emulator (track-cursor keyboard scheme, all 64 pads + scene + control row, gates p10 C5); RGB LED feedback render; virtual relative encoders + `CMD_BUMP_PARAM` acceleration; piano mode + headless input injection for CI
+- `design/phases/w0-interfaces.md` — W0 spec (Antiphon + Theoria grid POC): protocol v0 message schema, `paraclete-antiphon` crate layout, threading model, `TheoriaSurfaceNode`, zero-build client, per-commit test list, exit criteria
 - `design/phases/p10-interfaces.md` — P10 spec (Pattern Engine): pre-flight BUG-008 fix; `Pattern` struct + multi-pattern storage + serializer v3 (gated, fixes BUG-005); multi-page patterns + page-loop window; per-track length & speed (polyrhythm); seamless cued switching + chain; state-bus/TUI/Launchpad surface; new command IDs 28–32; ~410 test target
 - `design/review/` — post-phase code review reports (`p4-code-review.md`, `p4-fixes-review.md`, etc.)
 - `profiles/` — Rhai profile scripts loaded at startup (`launchpad.rhai`, `digitakt.rhai`, `keystep.rhai`, `launchpad_overview.rhai`). Constants `LP_DEVICE_ID`, `DT_DEVICE_ID`, `KS_DEVICE_ID`, `TRACK_SEQ_IDS`, etc. injected per profile.

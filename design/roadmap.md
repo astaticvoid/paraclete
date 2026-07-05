@@ -3,9 +3,52 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** June 2026
-> **Current phase:** P10 in design (Pattern Engine); P9.5 (Device Emulation &
-> Test Harness) is an enabling prerequisite for testing P10's surface features
+> **Last updated:** July 2026 (playable-loop reprioritization)
+> **Current phase:** P10 C0 pre-flight, then W0 (Theoria grid POC);
+> W1 → first paired usage session is the near-term milestone
+
+---
+
+## Prioritization Decision (July 2026): Playable Loop First
+
+With the tablet web surface accepted as the **primary control/editing device**
+(`design/interface-plan.md`), three forces competed for the next quarter:
+(a) reach something modestly useful fast and iterate with paired usage
+sessions, (b) long-deferred functionality bugs, (c) complete baseline
+standards. Decision — in priority order:
+
+1. **User-facing correctness that a session would notice is baseline** and
+   moves first: BUG-001 (0.4% tempo error — breaks sync when jamming beside
+   the Digitakt) and BUG-008 (param loss on reload after topology change).
+   These are P10 C0, pulled forward as an immediate pre-flight commit.
+2. **A playable feedback loop beats speculative depth.** W0 → P10 C1 → W1 land
+   before P10's pattern-depth commits (pages, chaining, polyrhythm). The
+   vision's "A Session" has never been tested against a real session; building
+   full pattern depth before the first paired session risks building the wrong
+   depth. P10 C2–C5 ordering is **re-validated after paired session #1**.
+3. **Non-user-facing standards move to a trigger-based backlog** (below).
+   Layer purity and per-cycle micro-allocations don't block sessions and no
+   longer occupy a scheduled phase slot (P10.5 dissolved into triggers).
+
+**No interim BUG-005 hack:** audit (July 2026) confirmed step param locks *are*
+serialized today; the v2 loss is conditions/micro-timing/swing, which the
+current control surface barely reaches. Data-safe saves for those arrive
+properly with serializer v3 in P10 C1 — scheduled before session #1 regardless.
+
+**Near-term sequence:**
+
+| Order | Work | Why |
+|---|---|---|
+| 1 | **P10 C0 pre-flight** — BUG-001 + BUG-008 fixes | Small, spec'd, timing baseline for hardware-sync jams |
+| 2 | **W0** — Theoria grid POC (`paraclete-antiphon` crate + canvas grid) | De-risks transport; tablet in hand; supersedes P9.5 C2 |
+| 3 | **P10 C1** — `Pattern` struct + serializer v3 (BUG-005) | Foundation commit of ADR-030; kills the data-loss class before sessions |
+| 4 | **W1** — touch encoders + context MVP | The "modestly useful" milestone: full playable surface, zero encoder-hardware spend |
+| 5 | **Paired session #1** — structured; findings → `design/sessions/s1.md` | Re-validates P10 C2–C5 order, W2 view priorities, and the vision's session walkthrough |
+| 6 | P10 C2+ (pages, switching, polyrhythm, surface) interleaved with W2 | Order set by session findings |
+
+**Paired sessions** are a first-class roadmap instrument from here on: one after
+each W-milestone (W1, W2, W3), notes captured append-only in `design/sessions/`,
+each producing explicit roadmap deltas (or an explicit "no change").
 
 ---
 
@@ -13,178 +56,58 @@
 
 | Phase | Name | Deliverable | Status |
 |---|---|---|---|
-| **P0** | Skeleton | Empty runtime, one node, one clock tick | **Complete** |
-| **P1** | First Sound | Sine oscillator triggered by Launchpad emulator | **Complete** |
-| **P2** | Sequencer v1 | 16-step sequencer, clock domain, LED feedback | **Complete** |
-| **P3** | First Instrument | Sampler, parameter locks, StateBus SPSC, Rhai bindings | **Complete** |
-| **P4** | Hardware Integration | 3-device setup live. Launchpad = 8-track drum machine. Digitakt (relative encoders) = contextual params (replaced the XL). Keystep = melodic. DistortionNode + FilterNode. | **Complete** |
-| **P5** | Depth | Sequencer v2 (conditional trigs, micro-timing, swing, fill). ReverbNode, DelayNode, SplitNode, MixNode. | **Complete** |
-| **P6** | Synthesis | FM synth, analog-style synth. High-quality resampling. Broader audio format support. | **Complete** |
-| **P6.5** | Cleanup | EnvelopeNode looping AD fix. LadderFilter param rename. Signal port executor allocation. | **Complete** |
-| **P7** | DAW Integration | CLAP plugin mode. DAW transport sync. Project save/recall. paraclete-node-api → crates.io. Per-voice rubato. | **Complete** |
-| **P8** | Instrument Layer | Instrument definition file (YAML). Terminal UI. CLAP Host. | **Complete** |
-| **P9** | Modular Graph | Patchable primitive node graph. Single-sample feedback. Sequencer as CV source. GraphNode / nested executor. | **Complete** |
-| **P9.5** | **Device Emulation & Test Harness** | **Full Launchpad emulator (all 64 pads + scene + control row, mode switching, RGB) — the priority. Encoder testing via the real Digitakt (endless encoders) as stopgap. Computer-keyboard-as-piano (Keystep role). Scripted/headless device-input injection for integration tests. Enables P10/P11 grid features to be tested without a physical Launchpad.** | **In design** |
-| **P10** | **Pattern Engine** | **Multi-pattern + seamless switching + chaining. Multi-page (64-step) patterns + page-loop selection. Per-track length & speed (polyrhythm). Serialization of all sequencer state. Fixes BUG-005/008/001/004 (sequencer + timing).** | **In design** |
-| **P10.5** | Cleanup | Infrastructure bugs not in P10's blast radius: BUG-002 (agreement baseline), BUG-003 (hal→runtime layer violation), BUG-006 (agg_state_buf realloc), BUG-007 (publish_bank_state alloc). Mirrors the P6.5 precedent. | — |
-| **P11** | Live Performance | Mute system (pattern + global + prepared). Temporary save / reload. Perform Kit mode. Live record from Keystep. | — |
-| **P12** | Groove & Generation | Retrig. Euclidean mode. Controlled randomness polish. Generative Rhai fills. | — |
-| **P13** | Analog Voice | Full subtractive mono synth voice (Pro-One-style): dual oscillators + sync + noise, self-oscillating 4-pole filter, two envelopes, LFO, modulation matrix, glide, arpeggiator. Paraphonic voice allocation. | — |
-| **P14** | FM Voice | Ergonomic four-operator melodic FM synth — macro-first, fixed algorithm set. Distinct from the FM drum engine. | — |
-| **P15** | Effects Palette | Distortion / saturation variety (tube, diode, fold, crush). Chorus / phaser / flanger. BBD + tape delay. Spring + plate reverb. 70s/80s and dub-techno character. | — |
-| **P16** | Macro & Terminal Control | First-class macro system (one control → many scaled destinations, saved per kit). TUI as an input / editing surface, not just a display. | — |
+| **P0–P9** | Skeleton → Modular Graph | See `architecture-evolving.md` phase log | **Complete** |
+| **P9.5** | Device Emulation & Test Harness | Full Launchpad emulator (C1). | **Closed early** — C1 shipped; C2/C3 cancelled (superseded by W0/W1); C4 rescoped into P10 C5 test work; piano mode deferred (physical Keystep exists) |
+| **W0** | Theoria grid POC | Browser grid as peer device: `paraclete-antiphon` crate, WS bridge, canvas 8×8 + scene + control, LED mirror, shared `launchpad.rhai` profile | **Next** |
+| **P10 C0–C1** | Pattern engine foundation | BUG-001/008 pre-flight (C0, runs before W0); `Pattern` struct + serializer v3 = BUG-005 (C1) | **Pulled forward** |
+| **W1** | Theoria MVP | Touch encoders (relative → `CMD_BUMP_PARAM`), context display, transport, state mirror v1 → **paired session #1** | — |
+| **P10 C2–C5** | Pattern Engine depth | Multi-page (64-step) + page-loop; seamless switching + chaining; per-track length/speed; BUG-004; grid/TUI surface | In design — order re-validated after session #1 |
+| **W2** | Theoria editor | Cap-doc-driven parameter pages for every engine; chain view; view-plugin API (ADR-032) → **paired session #2** | — |
+| **WT** | Theoria/term | Terminal client over in-process Antiphon transport; parameter pages + grid in the terminal | After W2, parallel W3 |
+| **W3** | Sequencer deep views | 64-step pattern view, cue/chain, hold-step p-lock overlay, condition/timing editors | Hard dependency on P10 C2–C5 |
+| **P11** | Live Performance | Mute system, temp save/reload, Perform Kit, live record | — (W3 mute view follows) |
+| **P12** | Groove & Generation | Retrig, Euclidean, controlled randomness, generative fills | — |
+| **P13** | Analog Voice | Full subtractive mono voice (Pro-One-style), paraphonic allocation | — |
+| **P14** | FM Voice | Four-operator melodic FM, macro-first | — |
+| **P15** | Effects Palette | Distortion variety, chorus/phaser/flanger, BBD/tape delay, spring/plate | — |
+| **P16** | Macro & Terminal Control | Macro system; TUI as editing surface | — |
+| **W4** | Interface maturity | Ordo layout profiles, multi-client polish, wavetable view, protocol freeze, headless protocol CI driver | Ongoing after W3 |
+
+The interface track (Antiphon server + Theoria clients) is specified in
+`design/interface-plan.md` (**accepted July 2026**; ADR-031 authored with W0,
+ADR-032 with W2). The terminal is a permanent first-class surface: **WT**
+(after W2, parallel to W3) ports `paraclete-tui` to an Antiphon client over an
+in-process transport, gaining the same generic views (pages, grid) as the web
+client — the P16 "TUI as editing surface" goal delivered early through shared
+machinery.
 
 ---
 
-## Why P10 Now — The Playability Gap
+## Why P10 Still Matters — The Playability Gap
 
-P6–P9 invested in **platform depth**: synthesis engines, CLAP plugin/host,
-dynamic topology, the modular CV graph, and nested executors. That work is
-done and the platform is sound.
+Unchanged from June 2026: "fun to play" per `instrument-vision.md` needs pages,
+patterns, polyrhythm, and durable state, and the engine has none of them
+(`CMD_SET_PATTERN` is a stub; single 16-step pattern). P10 closes this; P11
+layers performance affordances on top. What changed is *sequencing*: the
+foundation commits run now, the depth commits run after real session evidence.
 
-But "fun to play" is defined by `instrument-vision.md`'s **"A Session"**
-walkthrough, and most of its gestures depend on a **live-performance / pattern
-layer that has not been built.** The `Sequencer` is still a single 16-step,
-single-pattern engine with the P5 feature set (conditions, swing, fill,
-micro-timing) bolted on. Concretely, the vision needs and the engine lacks:
-
-- **Pages** — patterns longer than 16 steps (up to 64), scene-button page
-  select, and page-loop selection
-- **Patterns** — more than one pattern per track, seamless end-of-loop
-  switching, cueing, and chaining (`CMD_SET_PATTERN` is a stub that always
-  plays pattern 0)
-- **Polyrhythm** — per-track length and speed multiplier (the hat at 2× while
-  the kick runs 16ths)
-- **Durable state** — trig conditions, micro-timing, and swing are silently
-  **dropped on save** (BUG-005). This is data loss today.
-
-P10 closes this gap. P11 layers the live-performance affordances (mute, temp
-save, perform kit, live record) on top of the pattern model P10 establishes.
-
-The platform-vs-instrument tiebreaker (`instrument-vision.md`): through the
-playable instrument, the instrument wins. P10–P12 are the instrument finally
-becoming playable the way the vision describes.
+The arc beyond P12 (synthesis P13–P14, effects P15, macro/terminal P16) is
+unchanged — scope, not new architecture; P13 remains the keystone of the full
+four-pillar instrument.
 
 ---
 
-## The Arc Beyond P12 — Completing the Full Instrument
+## Deferred-Bug Backlog (trigger-based, replaces P10.5)
 
-P10–P12 complete the **sequencing and performance** pillar. They make Paraclete
-a world-class groovebox — but a groovebox is not yet the *full instrument* the
-vision describes (`instrument-vision.md`, four pillars). Two pillars remain
-largely unbuilt, and the roadmap now schedules them:
+| Bug | Fix when this trigger fires |
+|---|---|
+| BUG-002 (`baseline()` hardcodes 44100/512) | First non-44.1 kHz/512 deployment, or CLAP host reports mismatch — whichever first |
+| BUG-003 (hal→runtime layer violation) | Before any LGPL3/crates.io publication of `StateBusHandle` consumers, or when `paraclete-antiphon` wants `StateBusHandle` from L2 |
+| BUG-006 (`agg_state_buf` realloc/cycle) | When the web state mirror measurably raises state-bus churn (profile in W1), or any audible xrun traced to it |
+| BUG-007 (`publish_bank_state` String alloc) | Same trigger as BUG-006 — fix together |
 
-- **Synthesis (P13–P14)** — the melodic core. A full subtractive analog voice
-  (the lead / bassline engine) and an ergonomic FM voice. The drum modules
-  already exist; the *melodic* voices do not. **P13 is the keystone of the whole
-  arc** — without it the instrument is percussion-and-bassline only.
-- **Effects (P15)** — the sonic identity. Characterful distortion, modulation,
-  delay, and reverb. The current set is one distortion, one delay, one
-  algorithmic reverb; the 70s/80s and dub-techno character lives in the breadth
-  and the analog-modeled flavors this phase adds.
-- **Macro & terminal control (P16)** — the performance glue and the "fully
-  managed by terminal" goal: a first-class macro layer and a TUI that *edits*,
-  not just displays.
-
-These are **scope, not new architecture** — the node model and the synthesis
-primitives (oscillator, envelope, LFO, ladder filter) already support all of it.
-Sequenced first because the sequencer is what makes the rest playable; synthesis
-and effects follow because that is where the sound actually lives. Only after
-this arc does "a single tool that replaces the DAW's role as a full instrument"
-become true rather than aspirational.
-
----
-
-## P9.5 Scope (enabling prerequisite)
-
-**Deliverable:** Every feature of every supported device is exercisable from the
-terminal — no physical hardware required to develop or test.
-
-**Why:** Audit (June 2026) found device emulation is largely absent. Only the
-Launchpad has a software emulator, and it reaches just **24 of 64 pads** (rows
-0–2), with **no scene buttons, no control row, fixed velocity, and no RGB** in
-the keyboard mapping. The Launch Control XL has **no device node at all**.
-Keystep and Digitakt are `midir`-only (exist solely when plugged in). The result:
-step toggles on 3 of 8 tracks are the entire keyboard-testable surface. P10's
-pages/pattern-switching (scene buttons, all 8 tracks) and P11's mutes/fills are
-bound to exactly the controls the emulator cannot reach — so without this work
-they are hardware-only to verify.
-
-- **Full Launchpad emulator** *(priority)* — all 64 pads + 8 scene buttons + the
-  top control row reachable from the keyboard (track-select cursor scheme, since
-  controls exceed keys), mode switching, and distinct rendering per LED
-  state/color. The Launchpad is the device that *has* an emulator but an
-  incomplete one; this is the minimum P10 Commit 5 depends on.
-- **Relative-encoder handling in Paraclete (`CMD_BUMP_PARAM`)** — the contextual
-  model (same encoders remap across tracks/views/macro-pages) is **only usable
-  with true relative/endless encoders**. Absolute pots are disqualified: every
-  view switch leaves the pot position wrong, so each knob is dead until swept
-  through the stored value, and soft-takeover is not an acceptable substitute.
-  P9.5 ensures the relative-delta path (`CMD_BUMP_PARAM`) is solid, with optional
-  acceleration/fine-step in the profile for resolution. See the
-  `controller-strategy` memory.
-- **Encoder hardware** — target a **true-relative encoder box**: Intech Grid
-  EN16 *Smooth* (~$327 CAD, Amazon.ca) is the realistic pick; MIDI Fighter
-  Twister (~$279 USD, direct) or OXI E16 (premium) are alternatives. The **entire
-  Launch Control XL line is ruled out** — Mk2 is absolute pots, and the Mk3's
-  Custom-mode encoders transmit absolute CC/NRPN only (no true relative). The
-  **Digitakt** can serve as a stopgap to exercise the encoder path, *but verify
-  it sends relative CC first* (Elektron often sends absolute).
-- **Computer-keyboard-as-piano** — note/arp input standing in for the Keystep
-  when its hardware isn't connected. (Keys and encoders are separate concerns —
-  the melodic keyboard is not the encoder controller.)
-- **Scripted/headless input injection** — drive device-event sequences from a
-  file or virtual-MIDI port so P10/P11 integration tests run in CI, not only by
-  hand.
-
-A full interface spec (`design/phases/p9.5-interfaces.md`) is TBD; the full
-Launchpad emulator is the priority and gates P10's surface verification.
-
----
-
-## P10 Scope (current)
-
-**Deliverable:** The sequencer becomes a real pattern engine. A track holds
-multiple patterns; a pattern spans multiple pages; tracks run at independent
-lengths and speeds; and every bit of sequencer state survives a save/load.
-
-See `design/phases/p10-interfaces.md` for the implementation blueprint and
-`design/adr/ADR-030-pattern-engine.md` for the data-model decision.
-
-- **Pattern data model** — `Pattern` struct owns the `Vec<Step>`, length, and
-  page-loop window. `Sequencer` owns a `Vec<Pattern>` plus an `active` /
-  `cued` pattern index. (ADR-030)
-- **Multi-page patterns** — up to 64 steps; page-loop window selects which
-  contiguous run of pages plays.
-- **Seamless pattern switching** — `CMD_SET_PATTERN` cues a pattern; the switch
-  lands at the end of the current pattern's cycle (or page-loop window). Pattern
-  chaining: a volatile queue of up to 8 patterns.
-- **Per-track length & speed** — independent `pattern_length` and a speed
-  multiplier (1/8×–2×) applied to `ticks_per_step`. Polyrhythm falls out.
-- **Full serialization** — serializer v3: conditions, timing, swing, page-loop,
-  and all patterns are persisted. Resolves **BUG-005**.
-- **State bus + TUI + Launchpad surface** — publish active/cued pattern, page,
-  and per-track length so the TUI and Launchpad LED feedback reflect the new
-  state. Scene buttons select pages; cued patterns blink.
-
-**Out of scope for P10 (moves to P11):** mute system, temporary save/reload,
-Perform Kit mode, live record from the Keystep. P10 builds the model these sit on.
-
----
-
-## P11 Scope (next)
-
-**Deliverable:** The instrument becomes performable. Mutes, safety net, and
-continuous-evolution modes from the vision's "A Session."
-
-- **Mute system** — pattern mute (saved with pattern) + global mute (saved with
-  project) + prepared mute (stage while holding a modifier, execute atomically).
-- **Temporary save / reload** — volatile in-RAM pattern snapshot; the live
-  "quick-save" safety net. Not persistent across power cycles.
-- **Perform Kit mode** — parameter tweaks stay live and unsaved; current state
-  is retained across pattern switches rather than reset to the pattern's preset.
-- **Live record** — Keystep notes captured into the active pattern in real time
-  (step-record and live-quantised-record).
+Everything else open is scheduled: BUG-001/008 → P10 C0 (now), BUG-005 → P10 C1
+(now), BUG-004 → P10 C3.
 
 ---
 
@@ -192,27 +115,18 @@ continuous-evolution modes from the vision's "A Session."
 
 | Item | Status | Resolution | Target |
 |---|---|---|---|
-| `CMD_SET_PATTERN` is a stub (always plays pattern 0) | Active | Multi-pattern model | **P10** |
-| Single-pattern, 16-step only (no pages, no polyrhythm) | Active | Pattern engine | **P10** |
-| `Sequencer::serialize()` drops P5 fields + swing (BUG-005) | Active | Serializer v3 | **P10 C1** |
-| `set_initial_params` re-applied on re-activate (BUG-008) | Active | `mem::take` in `activate()` | **P10 C0** |
-| Step period 241 ticks, not 240 (BUG-001) | Active | Transport start-model fix | **P10 C0** |
-| Negative micro-timing == zero (BUG-004) | Active | Emit in prev step's window | **P10 C3** |
-| `ConnectionAgreement::baseline()` hardcodes 44100/512 (BUG-002) | Active | Thread real config through | **P10.5** |
-| `paraclete-hal` depends on `paraclete-runtime` (BUG-003) | Active | Move `StateBusHandle` to L2 | **P10.5** |
-| `agg_state_buf` reallocs per cycle (BUG-006) | Active | Return-channel SPSC | **P10.5** |
-| `publish_bank_state()` String alloc per cycle (BUG-007) | Active | Cache path strings | **P10.5** |
-| Launchpad emulator reaches only pads 0–23, no scene/control row, no RGB | Active | Full emulator | **P9.5** |
-| No keyboard path to test encoders | Active | Use real Digitakt (endless encoders) as stopgap | **P9.5** |
-| Keystep is `midir`-only (no emulator / input injection) | Active | Keyboard-piano + scripted injection | **P9.5** |
-| Entire Launch Control XL line ruled out (Mk2 absolute pots; Mk3 also absolute CC/NRPN in custom modes — no true relative) | By design | Target a true-relative encoder box (Intech EN16 Smooth / MFT / OXI E16) | — |
-| AnalogEngine/FmEngine monophonic (retrigger only) | Active | Voice allocator | P11+ |
-| Inner GraphNode runtime patching (outer graph only at P9) | Active | Inner `apply_patch()` | P11+ |
-| `InnerGraphNode::serialize()` returns empty | Active | Inner-graph persistence | P11+ |
+| `CMD_SET_PATTERN` stub (always pattern 0) | Active | Multi-pattern model | P10 C2+ |
+| Single-pattern, 16-step only | Active | Pattern engine | P10 C2+ |
+| `Sequencer::serialize()` drops P5 fields (BUG-005) | Active | Serializer v3 | **P10 C1 (now)** |
+| BUG-008 / BUG-001 | Active | Pre-flight fixes | **P10 C0 (now)** |
+| Negative micro-timing == zero (BUG-004) | Active | Emit in prev step's window | P10 C3 |
+| Terminal emulator: no RGB, no keyboard encoders | **Accepted permanent** | Web surface supersedes; terminal stays keyboard-grid-only for no-tablet dev | — |
+| No headless input injection for CI | Active | In-process injection API, built with P10 C5 surface tests; protocol-level driver at W4 | P10 C5 |
+| Encoder hardware (EN16/MFT) unpurchased | **De-escalated** | W1 touch encoders remove it from the critical path; buy later for tactile feel if sessions demand | Post-W1 |
+| Hard-coded app node IDs as script/UI contract | Active | W-track binds by discovery (`hello`/`topology` msgs); profiles migrate when it breaks | W2 |
+| AnalogEngine/FmEngine monophonic | Active | Voice allocator | P13 |
+| Inner GraphNode runtime patching; `InnerGraphNode::serialize()` empty | Active | Inner-graph patch + persistence | P11+ |
 | CLAP plugin nodes not in `NodeRegistry` | Active | Registry + PluginLibrary arg | P11+ |
-
-**Every open bug (BUG-001 … BUG-008) is now scheduled:** BUG-005/008/001/004 in
-P10, BUG-002/003/006/007 in P10.5. Nothing is unscheduled.
 
 ---
 
@@ -220,13 +134,13 @@ P10, BUG-002/003/006/007 in P10.5. Nothing is unscheduled.
 
 | # | Question | Blocking | Notes |
 |---|---|---|---|
-| OQ-3 | MIDI 2.0 CI depth | — | Negotiable trait shipped P3 with no CI. Deferred; not blocking. |
-| OQ-4 | Network / distributed nodes | — | Shapes EventStream serialisation format. Not blocking. |
-| OQ-6 | Micro-timing clock representation | — | Signed micro-timing implemented in P10 C3 (BUG-004 fix). Close out in p10-report. |
-| OQ-7 | Oversampling strategy | — | No oversampling until CvSignal audio-rate modulation needs it. |
-| ~~OQ-10~~ | ~~XL Mk3 query protocol integration~~ | — | **Moot — XL line ruled out** (Mk3 confirmed absolute-only in custom modes). Encoder controller is a true-relative box instead. |
-| OQ-11 | Pattern/page representation on the Launchpad grid | **P10** | Scene buttons = page select; how cued/chained patterns are shown. ADR-030 + profile script. |
-| OQ-12 | Live-record quantisation model | P11 | Step-record vs. live-quantised-record; interaction with micro-timing. |
+| OQ-3 | MIDI 2.0 CI depth | — | Deferred; not blocking |
+| OQ-4 | Network / distributed nodes | — | The W-track WS protocol is a de-facto first answer; revisit after protocol freeze (W4) |
+| OQ-6 | Micro-timing clock representation | P10 C3 | Close out in p10-report |
+| OQ-7 | Oversampling strategy | — | Not until CvSignal audio-rate modulation needs it |
+| OQ-11 | Pattern/page representation on the Launchpad grid | P10 C5 | Scene = page select; cued blink; now co-designed with the W3 pattern view |
+| OQ-12 | Live-record quantisation model | P11 | Step vs live-quantised; interaction with micro-timing |
+| WQ-1…9 | Interface-track risks (Wi-Fi jitter, velocity, reconciliation, licensing, terminal parity scope, …) | W0–W2 | Tracked in `design/interface-plan.md` |
 
 ---
 
@@ -234,26 +148,13 @@ P10, BUG-002/003/006/007 in P10.5. Nothing is unscheduled.
 
 | Question | Resolution | ADR / Phase |
 |---|---|---|
-| Language | Rust | ADR-002 |
-| License | GPL3 platform / LGPL3 Node API | ADR-001 |
-| Plugin format | CLAP primary, VST3 secondary | ADR-003 |
-| Signal model | Mixed-rate typed ports | ADR-004 |
-| Scheduler cycles | petgraph DAG; loop-break node at P9 | ADR-005, ADR-028 |
-| Hardware emulator | Required at P1 | ADR-006 |
-| Scripting runtime | Rhai | ADR-007 |
-| Node API level | Single trait, three implicit levels | ADR-008 |
-| Clock ownership | Federated domains | ADR-009 |
-| Multi-track sequencer | Multiple node instances | ADR-016 |
-| Effect node architecture | Plain nodes, AudioEffect marker only | ADR-017 |
-| Cellular architecture | No non-node platform components | ADR-018 |
-| Universal parameter control | CMD_SET_PARAM / ParameterBank | ADR-019 |
-| Node portability | Nodes link L2 only | ADR-022 |
-| Instrument encapsulation | GraphNode primitive | ADR-023 |
-| CLAP plugin wrapper approach | Hand-rolled adapter; nih-plug removed | ADR-024 |
-| State bus persistence boundary (OQ-2) | serialize() per node; RON project file | ADR-025 |
-| Operator feedback surface (OQ-1) | Terminal UI primary; profiles publish context | ADR-026 |
-| CLAP host approach | clap-sys + libloading; PluginLibrary/PluginNode | ADR-027 |
-| Single-sample feedback loop break (OQ-5) | Explicit LoopBreakNode | ADR-028 |
+| Language / License / Plugin format / Signal model | Rust; GPL3+LGPL3 L2; CLAP; mixed-rate typed ports | ADR-001…004 |
+| Scheduler cycles | petgraph DAG; LoopBreakNode | ADR-005, ADR-028 |
+| Hardware emulator; Scripting runtime; Node API level; Clock ownership | Required at P1; Rhai; single trait, three levels; federated domains | ADR-006…009 |
+| Multi-track; Effects; Cellular architecture; Universal parameter control | Node instances; plain nodes + marker; no non-node components; CMD_SET/BUMP_PARAM | ADR-016…019 |
+| Node portability; Instrument encapsulation | L2-only linking; GraphNode | ADR-022, ADR-023 |
+| CLAP wrapper / project file / TUI / CLAP host | Hand-rolled adapter; RON; terminal UI + publish_context; clap-sys host | ADR-024…027 |
 | Dynamic topology | Pause-rebuild-resume; NodeRegistry | ADR-029 |
-| Pattern engine data model | Pattern owns steps; Sequencer owns patterns | **ADR-030 (P10)** |
-| WAV-only format support | symphonia (WAV/FLAC/AIFF/OGG/MP3) | P6 |
+| Pattern engine data model | Pattern owns steps; Sequencer owns patterns | ADR-030 |
+| Interface architecture (server + clients) | Antiphon server, pluggable transports, surfaces as device nodes; Theoria schema-driven views + plugins | **interface-plan (accepted); ADR-031 @ W0, ADR-032 @ W2** |
+| ~~OQ-10~~ XL Mk3 protocol | Moot — XL ruled out; touch encoders (W1) + true-relative box later | — |
