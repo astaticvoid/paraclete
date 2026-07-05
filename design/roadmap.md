@@ -122,7 +122,7 @@ Everything else open is scheduled: BUG-001/008 → P10 C0 (now), BUG-005 → P10
 | Negative micro-timing == zero (BUG-004) | Active | Emit in prev step's window | P10 C3 |
 | Terminal emulator: no RGB, no keyboard encoders | **Accepted permanent** | Web surface supersedes; terminal stays keyboard-grid-only for no-tablet dev | — |
 | No headless input injection for CI | Active | In-process injection API, built with P10 C5 surface tests; protocol-level driver at W4 | P10 C5 |
-| Encoder hardware (EN16/MFT) unpurchased | **De-escalated** | W1 touch encoders remove it from the critical path; buy later for tactile feel if sessions demand | Post-W1 |
+| Encoder hardware (EN16/MFT) unpurchased | **De-escalated** | W1 touch encoders are the only relative path (session 0: Digitakt II verified absolute-only, disqualified; BUG-009 filed); buy a true-relative box later for tactile feel | Post-W1 |
 | Hard-coded app node IDs as script/UI contract | Active | W-track binds by discovery (`hello`/`topology` msgs); profiles migrate when it breaks | W2 |
 | AnalogEngine/FmEngine monophonic | Active | Voice allocator | P13 |
 | Inner GraphNode runtime patching; `InnerGraphNode::serialize()` empty | Active | Inner-graph patch + persistence | P11+ |

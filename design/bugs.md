@@ -91,3 +91,19 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** line and 
 ## Resolved
 
 _(none yet)_
+
+### BUG-009 — DigitaktMidiNode decodes CC as relative; Digitakt II sends absolute
+
+**Severity:** Low (device demoted from encoder role by session-0 finding)  
+**Phase found:** Session 0 (July 2026), hardware verification  
+**Description:** `decode_relative_delta()` interprets CC values as signed
+offsets around 64 (1–63 = CW, 65–127 = CCW). Verified against a real
+Digitakt II: encoder output is absolute position CC (values ramp 0–127 and
+mirror the internal parameter). The decoder therefore emits large spurious
+deltas (e.g. position 0x3B → delta +59). Elektron's MIDI implementation has no
+relative encoder mode.  
+**Location:** `crates/paraclete-hal/src/digitakt/mod.rs` — `decode_relative_delta()`, `parse_digitakt_midi()`  
+**Fix direction:** stop emitting `EncoderChanged` from DT CC input (keep
+buttons/transport). If the DT II is ever used as an *absolute* fader-style
+source, that is a new, explicitly-absolute mapping decision — not a decoder
+fix. Do not add soft-takeover (rejected in controller strategy).

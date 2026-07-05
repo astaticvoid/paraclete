@@ -78,3 +78,19 @@ the user says out loud. Close with the user's top-3 frustrations, verbatim.
 ## Findings
 
 _(append results here, dated, with the branch taken per check)_
+
+### 2026-07-04 — Check 1: Digitakt relative-CC (VERDICT: ABSOLUTE — disqualified)
+
+- Hardware is a **Digitakt II** (single USB MIDI port, "Elektron Digitakt II";
+  name-substring match in `DigitaktMidiNode::open()` works unchanged).
+- Default config transmits nothing (Encoder Dest = INT). With INT+EXT +
+  Param Output = CC, encoder A produced `B9 03 <value>` — CC 3, auto-channel
+  (10), **value tracking knob position** (0x3B→0x36 down, →0x3E up). Absolute,
+  and mirrored from the internal parameter.
+- Branch taken per decision tree: **absolute only.** No relative mode exists in
+  the Elektron MIDI implementation (MIDI-machine CC knobs are also absolute).
+  Digitakt II removed from the encoder-controller role; W1 touch encoders are
+  the only relative path until a true-relative box. No soft-takeover.
+- Side finding → **BUG-009**: `decode_relative_delta()` in
+  `paraclete-hal/src/digitakt/mod.rs` assumes relative encoding; against real
+  DT II output it yields garbage deltas (position 0x3B → "delta +59").
