@@ -525,3 +525,29 @@ a power cycle (state bus is not persisted, ADR-025).
 Note: signed micro-timing (OQ-6 / BUG-004) and the 240-tick period (BUG-001) are
 **no longer deferred** — BUG-001 is fixed in Commit 0 (§0.2, ahead of the speed
 work) and BUG-004 in Commit 3 (§3.3).
+
+-----
+
+# Amendment (July 2026, post-s0): Commit 0 as actually shipped
+
+Commit 0 shipped (`b0cf2c8`) with a fix **different from §0.2's direction**,
+based on direct measurement (`paraclete-app/tests/timing_measure.rs`, s0):
+
+- The "systematic ~0.4% BPM error" did not exist — long-term tempo was
+  correct. The real defect: the Sequencer's check-then-increment tick advance
+  gave every step a 241-tick span, and the **bar-boundary `sync_pulse` snap**
+  silently erased the accumulated drift each bar (one ~7 ms-early step per
+  pattern) and was also the only reason step 0 ever sounded.
+- Shipped fix (all in `sequencer.rs`; `internal_clock.rs` untouched):
+  increment-then-check advance (exactly `ticks_per_step` events per step);
+  step 0 fired at `global_start` (start event = tick 0, not counted as
+  progress); snap gated to genuine drift only (no-op when internal counting
+  matches transport, preserving natural wrap/loop_count).
+- §0.2's flagged test correction (`16*(tps+1)` → `16*tps`) applied as spec'd.
+  New tests: `step_period_is_240_ticks`, `sequencer_fires_step0_on_global_start`,
+  app-level `step_intervals_are_uniform_within_pattern` (the acceptance gate).
+- **Impact on Commit 3 (speed multipliers):** the clean 240-tick base now
+  holds exactly (+0.0000% measured); C3 may rely on it. When implementing C2+
+  note the snap's in-sync check assumes 1× speed — C3 must scale it with the
+  speed multiplier (`ticks_per_step` already carries the scaling if C3 mutates
+  it; verify).

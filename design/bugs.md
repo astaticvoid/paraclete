@@ -12,7 +12,8 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** line and 
 **Phase found:** P5  
 **Description:** `InternalClock` emits `global_start` on its first tick, consuming one tick before the Sequencer starts. Net result: step period is 241 ticks instead of the intended 240 (at 24 PPQN). Manifests as a systematic ~0.4% BPM error.  
 **Location:** `crates/paraclete-nodes/src/internal_clock.rs` — transport start model  
-**Fix direction:** Emit `global_start` without consuming a tick, or adjust the step count to account for the extra tick.
+**Fix direction:** Emit `global_start` without consuming a tick, or adjust the step count to account for the extra tick.  
+**Fixed:** P10 C0 (`b0cf2c8`) — per the s0 re-diagnosis (see below): increment-then-check tick advance (exactly 240 ticks/step), step 0 fired at `global_start`, bar-sync snap made drift-correction-only. Verified by `step_period_is_240_ticks` and the app-level uniformity gate (+0.0000% measured deviation).
 
 ---
 
@@ -84,7 +85,8 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** line and 
 **Phase found:** P9 C2  
 **Description:** All six ParameterBank nodes that implement `set_initial_params()` store the params map in `pending_initial_params` and apply it inside `activate()`. `activate()` is called again whenever dynamic topology rebuilds the executor (P9 C4). After a project load, `deserialize()` sets the bank to saved values; if `activate()` fires a second time before the next save, `pending_initial_params` is non-empty and overwrites the deserialized values. The pending map is never cleared after first use.  
 **Location:** `crates/paraclete-nodes/src/analog_engine.rs`, `fm_engine.rs`, `sampler.rs`, `reverb.rs`, `distortion.rs`, `filter.rs` — `activate()` in each  
-**Fix direction:** Call `std::mem::take(&mut self.pending_initial_params)` at the end of `activate()` so the map is cleared after first application. Subsequent `activate()` calls (re-activate) apply no params, leaving deserialized values intact.
+**Fix direction:** Call `std::mem::take(&mut self.pending_initial_params)` at the end of `activate()` so the map is cleared after first application. Subsequent `activate()` calls (re-activate) apply no params, leaving deserialized values intact.  
+**Fixed:** P10 C0 (`b0cf2c8`) — `mem::take` in all six nodes; regression test `reactivate_does_not_reapply_initial_params`.
 
 ---
 
@@ -118,7 +120,8 @@ fires ~5.85% EARLY (−322 samples ≈ 7 ms at 120 BPM/44.1 kHz), snapping the
 pattern back on-grid. Net tempo is correct; the groove limps once per pattern.
 P10 C0's fix target is the per-step 241→240 period; the gated test
 `step_intervals_are_uniform_within_pattern` (#[ignore]) is the acceptance
-gate.
+gate.  
+**Fixed:** P10 C0 (`b0cf2c8`) — gate enabled and passing; measured +0.0000%.
 
 ### BUG-010 — Script errors silently swallowed at three layers (FIXED in session 0)
 

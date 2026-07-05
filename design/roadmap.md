@@ -39,7 +39,7 @@ properly with serializer v3 in P10 C1 — scheduled before session #1 regardless
 
 | Order | Work | Why |
 |---|---|---|
-| 1 | **P10 C0 pre-flight** — BUG-001 + BUG-008 fixes | Small, spec'd, timing baseline for hardware-sync jams |
+| 1 | ~~P10 C0 pre-flight~~ — **shipped** (BUG-001 re-diagnosed via measurement harness; BUG-008 fixed) | Done |
 | 2 | **W0** — Theoria grid POC (`paraclete-antiphon` crate + canvas grid) | De-risks transport; tablet in hand; supersedes P9.5 C2 |
 | 3 | **P10 C1** — `Pattern` struct + serializer v3 (BUG-005) | Foundation commit of ADR-030; kills the data-loss class before sessions |
 | 4 | **W1** — touch encoders + context MVP | The "modestly useful" milestone: full playable surface, zero encoder-hardware spend |
@@ -117,8 +117,8 @@ Everything else open is scheduled: BUG-001/008 → P10 C0 (now), BUG-005 → P10
 |---|---|---|---|
 | `CMD_SET_PATTERN` stub (always pattern 0) | Active | Multi-pattern model | P10 C2+ |
 | Single-pattern, 16-step only | Active | Pattern engine | P10 C2+ |
-| `Sequencer::serialize()` drops P5 fields (BUG-005) | Active | Serializer v3 | **P10 C1 (now)** |
-| BUG-008 / BUG-001 | Active | Pre-flight fixes | **P10 C0 (now)** |
+| `Sequencer::serialize()` drops P5 fields (BUG-005) | Active | Serializer v3 | **P10 C1 (next)** |
+| BUG-008 / BUG-001 | **Fixed (P10 C0 shipped)** | s0 re-diagnosis: 240-tick step + step-0 fire + drift-only snap; mem::take | Done |
 | Negative micro-timing == zero (BUG-004) | Active | Emit in prev step's window | P10 C3 |
 | Terminal emulator: no RGB, no keyboard encoders | **Accepted permanent** | Web surface supersedes; terminal stays keyboard-grid-only for no-tablet dev | — |
 | No headless input injection for CI | Active | In-process injection API, built with P10 C5 surface tests; protocol-level driver at W4 | P10 C5 |
