@@ -45,6 +45,9 @@ implemented in W0.
 {"t":"pad_down","id":13,"vel":65535}   // ids 0–63 grid (row*8+col), 64–71 scene, 72–79 control
 {"t":"pad_up","id":13}
 {"t":"ping","ts":123456.7}             // ts is client-clock ms, echoed verbatim
+{"t":"pad_pres","id":13,"v":41000}     // [W1+] continuous per-pad pressure, 16-bit; parse-and-drop
+                                       // at W0. Reserved so protocol freeze (W4) cannot foreclose
+                                       // poly aftertouch from pressure-capable clients/surfaces.
 {"t":"enc","id":90,"delta":-3}         // [W1] ids 90–97; delta = accumulated detents this frame
 {"t":"enc_push","id":90,"pressed":true}                       // [W1]
 {"t":"set_param","node":20,"param":"cutoff","v":0.5}          // [W1] semantic plane
