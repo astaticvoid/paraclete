@@ -334,6 +334,7 @@ fn build_constants(
         ("CLOCK_ID".into(),       rhai::Dynamic::from(ids.clock as i64)),
         ("TRACK_SEQ_IDS".into(),  id_array(&ids.sequencers)),
         ("TRACK_SAMP_IDS".into(), id_array(&ids.samplers)),
+        ("TRACK_GEN_IDS".into(),  id_array(&ids.generators)),
         ("TRACK_DIST_IDS".into(), id_array(&ids.distortions)),
         ("TRACK_FILT_IDS".into(), id_array(&ids.filters)),
     ]

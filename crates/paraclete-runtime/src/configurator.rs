@@ -576,6 +576,10 @@ impl NodeConfigurator {
         for (device_id, hw_out) in output {
             if let Some((_, handle)) = self.output_handles.iter_mut().find(|(id, _)| *id == device_id) {
                 handle.deliver(hw_out);
+            } else {
+                eprintln!("[deliver] no output handle for device {device_id} ({} led updates dropped); registered: {:?}",
+                    hw_out.led_updates.len(),
+                    self.output_handles.iter().map(|(id, _)| *id).collect::<Vec<_>>());
             }
         }
     }

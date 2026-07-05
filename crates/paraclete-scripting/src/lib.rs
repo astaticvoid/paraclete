@@ -522,7 +522,11 @@ impl ScriptingEngine {
         self.engine.run_ast_with_scope(&mut scope, &ast)?;
 
         // Call on_load() if defined (ignore "function not found" errors).
-        let _ = self.engine.call_fn::<()>(&mut scope, &ast, "on_load", ());
+        if let Err(e) = self.engine.call_fn::<()>(&mut scope, &ast, "on_load", ()) {
+            if !matches!(*e, EvalAltResult::ErrorFunctionNotFound(ref n, _) if n.starts_with("on_load")) {
+                eprintln!("[rhai] on_load error ({name}): {e}");
+            }
+        }
 
         self.contexts.insert(name.to_string(), ScriptContext {
             name: name.to_string(),
@@ -555,11 +559,13 @@ impl ScriptingEngine {
             if let Some(ctx) = self.contexts.get_mut(ctx_name) {
                 for handler in &handlers {
                     // FnPtr::call(engine, ast, args) — scope is embedded in captured closures.
-                    let _ = handler.call::<()>(
+                    if let Err(e) = handler.call::<()>(
                         &self.engine,
                         &ctx.ast,
                         (event_dyn.clone(),),
-                    );
+                    ) {
+                        eprintln!("[rhai] surface-event handler error ({ctx_name}): {e}");
+                    }
                 }
             }
 

@@ -46,6 +46,7 @@ fn on_load() {
                 set_led(LP_DEVICE_ID, 64, 0, 0, 0); // SEQ EDIT off
                 for p in 8..16 { set_led(LP_DEVICE_ID, p, 0, 0, 0); }
                 for t in 0..8 {
+                    if t >= TRACK_SEQ_IDS.len() { set_led(LP_DEVICE_ID, t, 0, 0, 0); continue; }
                     let steps = get_step_state(TRACK_SEQ_IDS[t]);
                     let has   = type_of(steps) == "string" && steps.contains("1");
                     let r = if has { 48 } else { 0 };
@@ -92,6 +93,7 @@ fn on_load() {
 
         // SHIFT + pad 0–7 = select track (any mode → sequence mode)
         if shift == true && eid < 8 {
+            if eid >= TRACK_SEQ_IDS.len() { return; } // fewer tracks than pads
             state_write("/script/lp/selected", eid);
             state_write("/script/lp/mode", "sequence");
             set_led(LP_DEVICE_ID, 64, 0, 200, 100);
@@ -123,21 +125,24 @@ fn on_load() {
             // Sequence mode: toggle step on selected track only.
             let sel = state_read("/script/lp/selected");
             let t   = if sel == () { 0 } else { sel };
+            if t >= TRACK_SEQ_IDS.len() { return; }
             debug_print(`SEQ: CMD_TOGGLE_STEP track=${t} step=${eid}`);
             send_cmd(TRACK_SEQ_IDS[t], 16, eid, 0.0); // CMD_TOGGLE_STEP
         } else {
-            // Trigger mode: fire sound on tracks 0–7.
-            if eid < 8 {
-                send_cmd(TRACK_SAMP_IDS[eid], 19, 0, 0.0); // CMD_TRIGGER
+            // Trigger mode: fire sound on declared tracks.
+            // NOTE: CMD_TRIGGER (19) is not implemented by any engine yet
+            // (session-0 finding) — the flash works, the sound does not.
+            if eid < TRACK_GEN_IDS.len() {
+                send_cmd(TRACK_GEN_IDS[eid], 19, 0, 0.0); // CMD_TRIGGER
                 set_led(LP_DEVICE_ID, eid, 255, 255, 255);
             }
         }
     });
 
-    // ── Sampler play detection — logs which sampler actually plays and on what note
-    for track in 0..8 {
+    // ── Generator play detection — logs which voice actually plays
+    for track in 0..TRACK_GEN_IDS.len() {
         let t2      = track;
-        let samp_id = TRACK_SAMP_IDS[t2];
+        let samp_id = TRACK_GEN_IDS[t2];
         subscribe(`/node/${samp_id}/state/trig`, |count| {
             let note = state_read(`/node/${samp_id}/state/last_note`);
             debug_print(`SAMPLER_PLAY track=${t2} samp=${samp_id} count=${count} note=${note}`);
@@ -145,7 +150,7 @@ fn on_load() {
     }
 
     // ── Per-track subscriptions ───────────────────────────────────────────────
-    for track in 0..8 {
+    for track in 0..TRACK_SEQ_IDS.len() {
         let t      = track;
         let seq_id = TRACK_SEQ_IDS[t];
 
@@ -228,6 +233,7 @@ fn on_load() {
 
     // ── Initial render: trigger mode ──────────────────────────────────────────
     for t in 0..8 {
+        if t >= TRACK_SEQ_IDS.len() { set_led(LP_DEVICE_ID, t, 0, 0, 0); continue; }
         let steps = get_step_state(TRACK_SEQ_IDS[t]);
         let has   = type_of(steps) == "string" && steps.contains("1");
         let r = if has { 48 } else { 0 };
