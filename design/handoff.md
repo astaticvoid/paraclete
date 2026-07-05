@@ -33,11 +33,7 @@ one tier up.
 - W0 Commit 1 (`paraclete-antiphon` crate) and Commit 2 (app wiring)
 - P10 C1 (Pattern struct + serializer v3 — data-model restructure, gated)
 - P10 C2–C5, W1 implementation
-- State-bus path unification (first W1 commit, spec in `w1-interfaces.md`):
-  params publish to `/node/{id}/param/{name}` (today: `/node/{id}/{name}`,
-  inconsistent with the script sandbox's `/node/{id}/param/*` write rule);
-  `/hw/*` prefix → `/surface/*`. Must land before Antiphon's state mirror
-  freezes paths into the protocol.
+- W1 per `design/phases/w1-interfaces.md` (C0/C1 Sonnet-capable; C2–C4 Opus)
 - Post-commit code review passes (the workflow requires them — see below)
 
 **Defer — needs the user, or a frontier-model session, or both:**
@@ -73,9 +69,13 @@ one tier up.
 
 ## Current sequence (mirror of roadmap, July 2026)
 
-1. P10 C0 pre-flight → 2. W0 (Antiphon + grid) → 3. P10 C1 (gated) →
-4. W1 → 5. **paired session #1** (user; produces `design/sessions/s1.md` and a
-roadmap delta) → 6. P10 C2+ interleaved with W2.
+1. ~~P10 C0~~ **shipped** (`b0cf2c8`; BUG-001 re-diagnosed — read the
+p10-interfaces amendment before touching sequencer timing) → 2. **W0** (next;
+`w0-interfaces.md`) → 3. P10 C1 (gated; serializer v3) → 4. W1
+(`w1-interfaces.md`) → 5. **paired session #1** (user; `design/sessions/s1.md`
++ roadmap delta) → 6. P10 C2+ interleaved with W2. Session-0 runbooks
+(`s0-launchpad-debug.md`) remain open for the pending human LED/sound
+confirmation.
 
 Standing user offers to schedule when hardware is at hand: Digitakt
 relative-CC verification (last unverified assumption under the encoder path),
