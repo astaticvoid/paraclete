@@ -22,8 +22,8 @@ Route by the **judgment density** of the task, not its size. When in doubt,
 one tier up.
 
 **Sonnet-tier — mechanical, fully specified, verifiable by tests:**
-- P10 C0 (BUG-008 `mem::take`, BUG-001 tick fix — exact fix directions +
-  test lists in the spec)
+- W1 C0 (CMD_TRIGGER in engines) and W1 C1 (state-path unification) per
+  `w1-interfaces.md`
 - `web/theoria/` W0 client (zero-build vanilla JS, fully specified in
   `w0-interfaces.md`)
 - Marking bugs resolved, report drafting from a commit diff, doc sweeps,
