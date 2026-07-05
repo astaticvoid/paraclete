@@ -94,3 +94,21 @@ _(append results here, dated, with the branch taken per check)_
 - Side finding → **BUG-009**: `decode_relative_delta()` in
   `paraclete-hal/src/digitakt/mod.rs` assumes relative encoding; against real
   DT II output it yields garbage deltas (position 0x3B → "delta +59").
+
+### 2026-07-04 — Check 2: replaced by direct measurement (BUG-001 re-diagnosed)
+
+The Digitakt-reference listening test was dropped (user call: no second sound
+generator as reference). Replaced with an offline harness
+(`paraclete-app/tests/timing_measure.rs`) driving clock→sequencer and
+measuring note-on intervals in samples. Verdict: **no systematic tempo error**
+(+0.011% mean). Real defect: 15 steps at +0.39% (the 241/240 period), wrap
+step −5.85% (≈7 ms early once per pattern). Details under BUG-001 re-diagnosis
+in bugs.md; gated test is the P10 C0 acceptance gate.
+
+### 2026-07-04 — Check 3 partial: Launchpad dark-grid root cause
+
+"Launchpad shows nothing" traced to BUG-010 (three silent error swallows) +
+BUG-011 (empty TRACK_SAMP_IDS on the 4-track default → profile crash
+mid-on_load). Both fixed; LED bytes confirmed flowing ([lpx] note=.. lines).
+Human confirmation of visible LEDs/sound pending → runbook
+`s0-launchpad-debug.md` (Haiku-executable).
