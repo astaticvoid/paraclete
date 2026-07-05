@@ -42,6 +42,7 @@ properly with serializer v3 in P10 C1 — scheduled before session #1 regardless
 | 1 | ~~P10 C0 pre-flight~~ — **shipped** (BUG-001 re-diagnosed via measurement harness; BUG-008 fixed) | Done |
 | 2 | **W0** — Theoria grid POC (`paraclete-antiphon` crate + canvas grid) | De-risks transport; tablet in hand; supersedes P9.5 C2 |
 | 3 | **P10 C1** — `Pattern` struct + serializer v3 (BUG-005) | Foundation commit of ADR-030; kills the data-loss class before sessions |
+| 3.5 | **BUG-012** — device rate/buffer negotiation + FTZ (small standalone commit) | A 48 kHz interface at session #1 would be mistuned; see audio-model review |
 | 4 | **W1** — touch encoders + context MVP | The "modestly useful" milestone: full playable surface, zero encoder-hardware spend |
 | 5 | **Paired session #1** — structured; findings → `design/sessions/s1.md` | Re-validates P10 C2–C5 order, W2 view priorities, and the vision's session walkthrough |
 | 6 | P10 C2+ (pages, switching, polyrhythm, surface) interleaved with W2 | Order set by session findings |
@@ -61,7 +62,7 @@ each producing explicit roadmap deltas (or an explicit "no change").
 | **W0** | Theoria grid POC | Browser grid as peer device: `paraclete-antiphon` crate, WS bridge, canvas 8×8 + scene + control, LED mirror, shared `launchpad.rhai` profile | **Next** |
 | **P10 C0–C1** | Pattern engine foundation | BUG-001/008 pre-flight (C0, runs before W0); `Pattern` struct + serializer v3 = BUG-005 (C1) | **Pulled forward** |
 | **W1** | Theoria MVP | Touch encoders (relative → `CMD_BUMP_PARAM`), context display, transport, state mirror v1 → **paired session #1** | — |
-| **P10 C2–C5** | Pattern Engine depth | Multi-page (64-step) + page-loop; seamless switching + chaining; per-track length/speed; BUG-004; grid/TUI surface | In design — order re-validated after session #1 |
+| **P10 C2–C5** | Pattern Engine depth | Multi-page (64-step) + page-loop; seamless switching + chaining; per-track length/speed; BUG-004 **+ BUG-013 (sub-block voice starts — micro-timing must be audible) + Sampler Hermite playback** in C3; grid/TUI surface | In design — order re-validated after session #1 |
 | **W2** | Theoria editor | Cap-doc-driven parameter pages for every engine; chain view; view-plugin API (ADR-032) → **paired session #2** | — |
 | **WT** | Theoria/term | Terminal client over in-process Antiphon transport; parameter pages + grid in the terminal | After W2, parallel W3 |
 | **W3** | Sequencer deep views | 64-step pattern view, cue/chain, hold-step p-lock overlay, condition/timing editors | Hard dependency on P10 C2–C5 |
@@ -104,7 +105,8 @@ four-pillar instrument.
 | BUG-002 (`baseline()` hardcodes 44100/512) | First non-44.1 kHz/512 deployment, or CLAP host reports mismatch — whichever first |
 | BUG-003 (hal→runtime layer violation) | Before any LGPL3/crates.io publication of `StateBusHandle` consumers, or when `paraclete-antiphon` wants `StateBusHandle` from L2 |
 | BUG-006 (`agg_state_buf` realloc/cycle) | When the web state mirror measurably raises state-bus churn (profile in W1), or any audible xrun traced to it |
-| BUG-007 (`publish_bank_state` String alloc) | Same trigger as BUG-006 — fix together |
+| BUG-007 (`publish_bank_state` String alloc) | Folded into W1 C1 (state-path unification) |
+| Executor cell `Mutex` → `arc-swap`; master limiter/headroom; xrun/CPU meter to `/engine/cpu`; FM 2-sample feedback average; DT node `rtrb` harmonization | See `design/review/audio-model-review.md` — each has a named trigger there |
 
 Everything else open is scheduled: BUG-001/008 → P10 C0 (now), BUG-005 → P10 C1
 (now), BUG-004 → P10 C3.

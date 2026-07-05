@@ -150,3 +150,35 @@ all profile track loops guarded by `TRACK_SEQ_IDS.len()`.
 **Still open from this finding:** implement `CMD_TRIGGER` in engine nodes (or
 a `send_note` Rhai builtin) so pads can live-trigger voices — needed for the
 W-track pad-performance path; schedule with W1.
+
+### BUG-012 — Device sample rate and buffer size are assumed, not negotiated
+
+**Severity:** High — wrong pitch/tempo on 48 kHz devices; OOB index or stale
+samples on buffer sizes ≠ 512 (release builds have only a debug_assert)  
+**Phase found:** Audio-model review (July 2026); escalates/subsumes BUG-002  
+**Description:** app hardcodes 44100/512 into `NodeConfigurator::new`; cpal
+opens the stream at the device default rate; `NodeExecutor::process()` renders
+`self.block_size` frames regardless of the callback buffer length
+(`executor.rs:578`).  
+**Location:** `paraclete-app/src/main.rs:23`, `paraclete-hal/src/audio.rs`,
+`paraclete-runtime/src/executor.rs:578`  
+**Fix direction:** query `default_output_config()` before graph build and pass
+the real rate through; chunk the cpal callback into internal fixed blocks via
+a small ring buffer. Set FTZ/DAZ on the audio thread in the same commit.
+Schedule before the first paired session on external audio hardware.
+
+### BUG-013 — Engines ignore event sample_offset: voice starts quantized to block boundaries
+
+**Severity:** High for the instrument's identity — ±11.6 ms trigger jitter at
+512/44.1k; P5/P10 micro-timing is inaudible in audio (event timestamps only)  
+**Phase found:** Audio-model review (July 2026)  
+**Description:** Sequencer emits sample-accurate offsets (verified by the s0
+timing harness) but AnalogEngine/FmEngine/Sampler start voices at block start
+(`_sample_offset` ignored in `trigger_voice`; retrigger applied before
+whole-block render).  
+**Location:** `analog_engine.rs`, `fm_engine.rs`, `sampler.rs` process loops  
+**Fix direction:** split the render block at event offsets (render pre-event
+span with old state, apply event, render remainder). Replace the Sampler's
+per-voice `SincFixedOut` with load-time resample + playback Hermite in the
+same change (sinc group delay compounds the jitter). **Schedule with P10 C3**
+— signed micro-timing must ship audible.
