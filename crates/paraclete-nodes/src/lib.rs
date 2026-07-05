@@ -33,7 +33,7 @@ pub use internal_clock::InternalClock;
 pub use ladder::LadderFilterNode;
 pub use lfo::LfoNode;
 pub use loop_break::LoopBreakNode;
-pub use mapping::HardwareMappingNode;
+pub use mapping::SurfaceMappingNode;
 pub use mix::MixNode;
 pub use oscillator::{OscillatorNode, SineOscillator, midi_note_to_hz};
 pub use pattern::{apply_preset, TrackPreset, TRACKS};

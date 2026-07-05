@@ -7,7 +7,7 @@ use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 
 use paraclete_node_api::{
     CapabilityDocument, ConnectionAgreement, ConnectionRecord,
-    HardwareDevice, HardwareOutputHandle, NodeCommand,
+    Surface, SurfaceOutputHandle, NodeCommand,
     StateBusHandle, StateBusSubscription, StateBusValue,
     Node, PortDescriptor, PortDirection, PortType, SignalPortKind,
 };
@@ -92,7 +92,7 @@ pub struct LoopBackEdge {
 /// Holds either a regular node or a hardware device.
 pub enum NodeOrDevice {
     Node(Box<dyn Node>),
-    Device(Box<dyn HardwareDevice>),
+    Device(Box<dyn Surface>),
 }
 
 impl NodeOrDevice {
@@ -134,7 +134,7 @@ impl NodeOrDevice {
     pub(crate) fn as_node_ref(&self) -> &dyn Node {
         match self {
             NodeOrDevice::Node(n) => &**n,
-            // HardwareDevice: Node; trait upcasting stabilised in Rust 1.86.
+            // Surface: Node; trait upcasting stabilised in Rust 1.86.
             NodeOrDevice::Device(d) => &**d as &dyn Node,
         }
     }
@@ -171,9 +171,9 @@ pub struct NodeConfigurator {
     node_cmd_producer: rtrb::Producer<NodeCommand>,
     node_cmd_consumer_pending: Option<rtrb::Consumer<NodeCommand>>,
 
-    /// HardwareOutputHandles from devices that implement take_output_handle().
+    /// SurfaceOutputHandles from devices that implement take_output_handle().
     /// Stored as (device_id, handle) so script LED output can be routed by device_id.
-    output_handles: Vec<(u32, Box<dyn HardwareOutputHandle>)>,
+    output_handles: Vec<(u32, Box<dyn SurfaceOutputHandle>)>,
 
     /// Capability documents cached at `add_node()` time — keyed by user_id.
     /// Persists after `build_executor()`.
@@ -285,10 +285,10 @@ impl NodeConfigurator {
 
     /// Register a hardware device. Calls `take_output_handle()` immediately;
     /// if `Some`, the handle is stored and ticked each main-loop iteration.
-    pub fn add_hardware_device(
+    pub fn add_surface(
         &mut self,
         user_id: u32,
-        mut device: Box<dyn HardwareDevice>,
+        mut device: Box<dyn Surface>,
     ) -> NodeId {
         if let Some(handle) = device.take_output_handle() {
             self.output_handles.push((user_id, handle));
@@ -313,7 +313,7 @@ impl NodeConfigurator {
         self.back_edges.retain(|be| be.lb_id != user_id && be.dst_id != user_id);
         match slot {
             NodeOrDevice::Node(n) => Ok(n),
-            NodeOrDevice::Device(_) => Err(format!("node {user_id} is a hardware device; use remove_hardware_device")),
+            NodeOrDevice::Device(_) => Err(format!("node {user_id} is a hardware device; use remove_surface")),
         }
     }
 
@@ -554,7 +554,7 @@ impl NodeConfigurator {
     }
 
     /// Drain executor state bus updates and apply them to the handle.
-    /// Also ticks all registered `HardwareOutputHandle`s.
+    /// Also ticks all registered `SurfaceOutputHandle`s.
     /// Call from the main loop between audio cycles.
     pub fn process_main_thread(&mut self) {
         let mut bus = self.state_bus.borrow_mut();
@@ -571,7 +571,7 @@ impl NodeConfigurator {
     /// hardware device's output handle. Call after `process_subscriptions()`.
     pub fn deliver_script_output(
         &mut self,
-        output: std::collections::HashMap<u32, paraclete_node_api::HardwareOutput>,
+        output: std::collections::HashMap<u32, paraclete_node_api::SurfaceOutput>,
     ) {
         for (device_id, hw_out) in output {
             if let Some((_, handle)) = self.output_handles.iter_mut().find(|(id, _)| *id == device_id) {

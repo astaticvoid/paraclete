@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Novation Launchpad X — HardwareDevice node via MIDI.
+//! Novation Launchpad X — Surface node via MIDI.
 //!
 //! Port selection: Launchpad X exposes two ports; we use the "LPX MIDI" port
 //! (standard programmer-mode MIDI), not the "LPX DAW" port.
@@ -15,8 +15,8 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use paraclete_node_api::{
-    CapabilityDocument, Control, HardwareDevice,
-    HardwareEvent, HardwareOutput, HardwareOutputHandle, LedUpdate, Node, PadDescriptor,
+    CapabilityDocument, Control, Surface,
+    SurfaceEvent, SurfaceOutput, SurfaceOutputHandle, LedUpdate, Node, PadDescriptor,
     PortDescriptor, PortDirection, PortName, PortType, ProcessInput, ProcessOutput,
     RgbColor, SurfaceDescriptor, TimedEvent, Event,
 };
@@ -101,7 +101,7 @@ fn lp_x_top_cc_to_id(cc: u8) -> Option<u32> {
 
 // ── MIDI parsing ──────────────────────────────────────────────────────────────
 
-fn parse_launchpad_midi(bytes: &[u8]) -> Option<HardwareEvent> {
+fn parse_launchpad_midi(bytes: &[u8]) -> Option<SurfaceEvent> {
     if bytes.len() < 3 { return None; }
     let status  = bytes[0] & 0xF0;
     let _channel = bytes[0] & 0x0F;
@@ -113,39 +113,39 @@ fn parse_launchpad_midi(bytes: &[u8]) -> Option<HardwareEvent> {
             // 8×8 grid pad
             if let Some(id) = lp_x_note_to_pad_id(note) {
                 return if vel > 0 {
-                    Some(HardwareEvent::PadPressed { id, velocity: (vel as u16) << 9, pressure: 0 })
+                    Some(SurfaceEvent::PadPressed { id, velocity: (vel as u16) << 9, pressure: 0 })
                 } else {
-                    Some(HardwareEvent::PadReleased { id })
+                    Some(SurfaceEvent::PadReleased { id })
                 };
             }
             // Right-column scene buttons
             if let Some(id) = lp_x_scene_note_to_id(note) {
-                return if vel > 0 { Some(HardwareEvent::ButtonPressed  { id }) }
-                       else       { Some(HardwareEvent::ButtonReleased { id }) };
+                return if vel > 0 { Some(SurfaceEvent::ButtonPressed  { id }) }
+                       else       { Some(SurfaceEvent::ButtonReleased { id }) };
             }
             // Top row buttons: Note On notes 91–98 in Programmer Mode
             if let Some(id) = lp_x_top_cc_to_id(note) {
-                return if vel > 0 { Some(HardwareEvent::ButtonPressed  { id }) }
-                       else       { Some(HardwareEvent::ButtonReleased { id }) };
+                return if vel > 0 { Some(SurfaceEvent::ButtonPressed  { id }) }
+                       else       { Some(SurfaceEvent::ButtonReleased { id }) };
             }
             None
         }
         0x80 => {
-            if let Some(id) = lp_x_note_to_pad_id(note)  { return Some(HardwareEvent::PadReleased    { id }); }
-            if let Some(id) = lp_x_scene_note_to_id(note) { return Some(HardwareEvent::ButtonReleased { id }); }
-            if let Some(id) = lp_x_top_cc_to_id(note)     { return Some(HardwareEvent::ButtonReleased { id }); }
+            if let Some(id) = lp_x_note_to_pad_id(note)  { return Some(SurfaceEvent::PadReleased    { id }); }
+            if let Some(id) = lp_x_scene_note_to_id(note) { return Some(SurfaceEvent::ButtonReleased { id }); }
+            if let Some(id) = lp_x_top_cc_to_id(note)     { return Some(SurfaceEvent::ButtonReleased { id }); }
             None
         }
         0xB0 => {
             // Scene buttons (right column) send CC in Programmer Mode: CC 19,29,...,89
             if let Some(id) = lp_x_scene_note_to_id(note) {
-                return if vel > 0 { Some(HardwareEvent::ButtonPressed  { id }) }
-                       else       { Some(HardwareEvent::ButtonReleased { id }) };
+                return if vel > 0 { Some(SurfaceEvent::ButtonPressed  { id }) }
+                       else       { Some(SurfaceEvent::ButtonReleased { id }) };
             }
             // Top round buttons — some firmware sends CC 91–98
             if let Some(id) = lp_x_top_cc_to_id(note) {
-                return if vel > 0 { Some(HardwareEvent::ButtonPressed  { id }) }
-                       else       { Some(HardwareEvent::ButtonReleased { id }) };
+                return if vel > 0 { Some(SurfaceEvent::ButtonPressed  { id }) }
+                       else       { Some(SurfaceEvent::ButtonReleased { id }) };
             }
             None
         }
@@ -157,7 +157,7 @@ fn parse_launchpad_midi(bytes: &[u8]) -> Option<HardwareEvent> {
 
 pub struct LaunchpadOutputHandle {
     conn_out: midir::MidiOutputConnection,
-    rx: rtrb::Consumer<HardwareOutput>,
+    rx: rtrb::Consumer<SurfaceOutput>,
     initialised: bool,
 }
 
@@ -185,7 +185,7 @@ fn pad_id_to_lp_x_note(id: u32) -> u8 {
 }
 
 impl LaunchpadOutputHandle {
-    fn send_led_updates(&mut self, output: &HardwareOutput) {
+    fn send_led_updates(&mut self, output: &SurfaceOutput) {
         for update in &output.led_updates {
             let note = if update.control_id < 64 {
                 pad_id_to_lp_x_note(update.control_id)
@@ -217,7 +217,7 @@ impl Drop for LaunchpadOutputHandle {
     }
 }
 
-impl HardwareOutputHandle for LaunchpadOutputHandle {
+impl SurfaceOutputHandle for LaunchpadOutputHandle {
     fn tick(&mut self) {
         while let Ok(output) = self.rx.pop() {
             self.send_led_updates(&output);
@@ -225,7 +225,7 @@ impl HardwareOutputHandle for LaunchpadOutputHandle {
         self.initialised = true;
     }
 
-    fn deliver(&mut self, output: HardwareOutput) {
+    fn deliver(&mut self, output: SurfaceOutput) {
         eprintln!("[lpx-deliver] {} LED updates", output.led_updates.len());
         self.send_led_updates(&output);
     }
@@ -238,9 +238,9 @@ pub struct LaunchpadNode {
     node_id:  u32,
     _conn_in: midir::MidiInputConnection<()>,
     conn_out: Option<midir::MidiOutputConnection>,
-    incoming: Arc<Mutex<VecDeque<HardwareEvent>>>,
-    hw_out_tx: rtrb::Producer<HardwareOutput>,
-    hw_out_rx: Option<rtrb::Consumer<HardwareOutput>>,
+    incoming: Arc<Mutex<VecDeque<SurfaceEvent>>>,
+    hw_out_tx: rtrb::Producer<SurfaceOutput>,
+    hw_out_rx: Option<rtrb::Consumer<SurfaceOutput>>,
     surface:  SurfaceDescriptor,
 }
 
@@ -248,7 +248,7 @@ impl LaunchpadNode {
     /// Open the Launchpad X on its standard MIDI port ("LPX MIDI").
     /// Falls back to any port containing "Launchpad" if the X is not found.
     pub fn open() -> Result<Self, MidiDeviceError> {
-        let incoming    = Arc::new(Mutex::new(VecDeque::<HardwareEvent>::new()));
+        let incoming    = Arc::new(Mutex::new(VecDeque::<SurfaceEvent>::new()));
         let incoming_cb = Arc::clone(&incoming);
 
         // Step 1: Reset any stuck DAW/Session state via the DAW port.
@@ -293,7 +293,7 @@ impl LaunchpadNode {
             }
         })?;
 
-        let (tx, rx) = rtrb::RingBuffer::<HardwareOutput>::new(64);
+        let (tx, rx) = rtrb::RingBuffer::<SurfaceOutput>::new(64);
 
         Ok(Self {
             ports: [PortDescriptor {
@@ -323,7 +323,7 @@ impl LaunchpadNode {
     }
 }
 
-// ── Node + HardwareDevice impls ───────────────────────────────────────────────
+// ── Node + Surface impls ───────────────────────────────────────────────
 
 impl Node for LaunchpadNode {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
@@ -341,17 +341,17 @@ impl Node for LaunchpadNode {
     fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
         if let Ok(mut q) = self.incoming.try_lock() {
             while let Some(ev) = q.pop_front() {
-                output.events_out.push(TimedEvent::new(0, Event::Hardware(ev)));
+                output.events_out.push(TimedEvent::new(0, Event::Surface(ev)));
             }
         }
     }
 }
 
-impl HardwareDevice for LaunchpadNode {
-    fn surface(&self) -> &SurfaceDescriptor { &self.surface }
+impl Surface for LaunchpadNode {
+    fn descriptor(&self) -> &SurfaceDescriptor { &self.surface }
 
-    fn update_output(&mut self, output: &HardwareOutput) {
-        let _ = self.hw_out_tx.push(HardwareOutput {
+    fn update_output(&mut self, output: &SurfaceOutput) {
+        let _ = self.hw_out_tx.push(SurfaceOutput {
             led_updates: output.led_updates.iter()
                 .map(|u| LedUpdate { control_id: u.control_id, color: u.color })
                 .collect(),
@@ -359,7 +359,7 @@ impl HardwareDevice for LaunchpadNode {
         });
     }
 
-    fn take_output_handle(&mut self) -> Option<Box<dyn HardwareOutputHandle>> {
+    fn take_output_handle(&mut self) -> Option<Box<dyn SurfaceOutputHandle>> {
         let conn_out = self.conn_out.take()?;
         let rx       = self.hw_out_rx.take()?;
         Some(Box::new(LaunchpadOutputHandle { conn_out, rx, initialised: false }))
@@ -414,31 +414,31 @@ mod tests {
     fn parse_note_on_top_left_pad_gives_pressed_id_0() {
         // note 81, vel > 0 → PadPressed id=0
         let ev = parse_launchpad_midi(&[0x90, 81, 100]);
-        assert!(matches!(ev, Some(HardwareEvent::PadPressed { id: 0, .. })));
+        assert!(matches!(ev, Some(SurfaceEvent::PadPressed { id: 0, .. })));
     }
 
     #[test]
     fn parse_note_on_vel_zero_gives_released() {
         let ev = parse_launchpad_midi(&[0x90, 81, 0]);
-        assert!(matches!(ev, Some(HardwareEvent::PadReleased { id: 0 })));
+        assert!(matches!(ev, Some(SurfaceEvent::PadReleased { id: 0 })));
     }
 
     #[test]
     fn parse_top_button_cc_gives_button_pressed() {
         let ev = parse_launchpad_midi(&[0xB0, 91, 127]);
-        assert!(matches!(ev, Some(HardwareEvent::ButtonPressed { id: 72 })));
+        assert!(matches!(ev, Some(SurfaceEvent::ButtonPressed { id: 72 })));
     }
 
     #[test]
     fn parse_scene_button_cc_gives_button_pressed() {
         // CC 89 = scene button row 0 (physical top) = id 64 = SEQ EDIT
         let ev = parse_launchpad_midi(&[0xB0, 89, 127]);
-        assert!(matches!(ev, Some(HardwareEvent::ButtonPressed { id: 64 })));
+        assert!(matches!(ev, Some(SurfaceEvent::ButtonPressed { id: 64 })));
     }
 
     #[test]
     fn parse_scene_button_cc_release_gives_button_released() {
         let ev = parse_launchpad_midi(&[0xB0, 89, 0]);
-        assert!(matches!(ev, Some(HardwareEvent::ButtonReleased { id: 64 })));
+        assert!(matches!(ev, Some(SurfaceEvent::ButtonReleased { id: 64 })));
     }
 }

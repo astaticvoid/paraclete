@@ -199,7 +199,7 @@ fn main() {
     }
 
     // ── 13. Main loop ─────────────────────────────────────────────────────────
-    let mut event_buf: Vec<paraclete_node_api::HardwareEventMsg> = Vec::with_capacity(64);
+    let mut event_buf: Vec<paraclete_node_api::SurfaceEventMsg> = Vec::with_capacity(64);
     let mut dev_ui_tick = 0u64;
 
     while running.load(std::sync::atomic::Ordering::SeqCst) {
@@ -213,7 +213,7 @@ fn main() {
         if let Some(ref mut c) = consumer_ks { c.drain(&mut event_buf); }
 
         for ev in &event_buf {
-            scripting.dispatch_hardware_event(ev);
+            scripting.dispatch_surface_event(ev);
         }
 
         {
@@ -365,13 +365,13 @@ fn restore_terminal(
 fn try_open_launchpad(conf: &mut NodeConfigurator) -> Option<u32> {
     match LaunchpadNode::open() {
         Ok(node) => {
-            conf.add_hardware_device(ID_LAUNCHPAD, Box::new(node));
+            conf.add_surface(ID_LAUNCHPAD, Box::new(node));
             eprintln!("[paraclete] Launchpad connected");
             Some(ID_LAUNCHPAD)
         }
         Err(e) => {
             eprintln!("[paraclete] Launchpad not found ({e}), using terminal emulator");
-            conf.add_hardware_device(ID_EMULATOR, Box::new(LaunchpadEmulator::new()));
+            conf.add_surface(ID_EMULATOR, Box::new(LaunchpadEmulator::new()));
             Some(ID_EMULATOR)
         }
     }
@@ -380,7 +380,7 @@ fn try_open_launchpad(conf: &mut NodeConfigurator) -> Option<u32> {
 fn try_open_digitakt(conf: &mut NodeConfigurator) -> Option<u32> {
     match DigitaktMidiNode::open() {
         Ok(node) => {
-            conf.add_hardware_device(ID_DIGITAKT, Box::new(node));
+            conf.add_surface(ID_DIGITAKT, Box::new(node));
             eprintln!("[paraclete] Digitakt connected");
             Some(ID_DIGITAKT)
         }
@@ -391,7 +391,7 @@ fn try_open_digitakt(conf: &mut NodeConfigurator) -> Option<u32> {
 fn try_open_keystep(conf: &mut NodeConfigurator) -> Option<u32> {
     match KeystepNode::open() {
         Ok(node) => {
-            conf.add_hardware_device(ID_KEYSTEP, Box::new(node));
+            conf.add_surface(ID_KEYSTEP, Box::new(node));
             eprintln!("[paraclete] Keystep connected");
             Some(ID_KEYSTEP)
         }

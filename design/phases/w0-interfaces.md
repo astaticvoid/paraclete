@@ -22,7 +22,7 @@
 
 | Commit | Crate(s) | Deliverable |
 |--------|----------|-------------|
-| **1** | `paraclete-antiphon` (new) | Protocol v0 types + serde; WS server (accept/read/write threads, token auth, client slots); `TheoriaSurfaceNode` (HardwareDevice, SPSC pool in, output handle out); `kerygma` LED broadcast; `tiny_http` static file serving. Full unit-test list below. No app changes. |
+| **1** | `paraclete-antiphon` (new) | Protocol v0 types + serde; WS server (accept/read/write threads, token auth, client slots); `TheoriaSurfaceNode` (Surface, SPSC pool in, output handle out); `kerygma` LED broadcast; `tiny_http` static file serving. Full unit-test list below. No app changes. |
 | **2** | `paraclete-app`, `web/` | App wiring (device 106, gateway 113, CLI flags, main-loop integration); `web/theoria/` zero-build vanilla-JS client (canvas grid, touch, reconnect, RTT overlay); exit-criteria verification + latency log. |
 
 ---
@@ -71,7 +71,7 @@ Rust: one `enum ClientMsg` / `enum ServerMsg` in `protocol.rs` with
 `#[serde(tag = "t", rename_all = "snake_case")]` and `#[non_exhaustive]`.
 Include the [W1] variants now (parsing them is free; W0 server replies to the
 semantic-plane ones with a logged drop). Velocity/pressure are 16-bit on the
-wire (MIDI 2.0 resolution, matches `HardwareEvent`); W0 client always sends
+wire (MIDI 2.0 resolution, matches `SurfaceEvent`); W0 client always sends
 `vel: 65535` (per-view velocity is W1, WQ-2).
 
 ### Auth & session
@@ -109,7 +109,7 @@ crates/paraclete-antiphon/src/
 ```
 per-client WS read thread ──rtrb SPSC (slot i)──► TheoriaSurfaceNode::process()   [audio thread]
                                                         │ emits Event port → gateway 113 → Rhai
-main thread: handle.tick() ◄── device-internal SPSC ◄── node pushes HardwareOutput
+main thread: handle.tick() ◄── device-internal SPSC ◄── node pushes SurfaceOutput
       │
       └► kerygma: serialize led batch → per-client std::sync::mpsc → WS write thread
 ```
@@ -123,22 +123,22 @@ main thread: handle.tick() ◄── device-internal SPSC ◄── node pushes 
 - Ring capacities: inbound 256 events/slot; outbound unbounded mpsc is
   acceptable (main thread producer, W0 traffic is LED batches only).
 - `process()` drains **all** slot rings each cycle (fixed iteration, no
-  allocation), translating to `HardwareEvent` and emitting on the event out
+  allocation), translating to `SurfaceEvent` and emitting on the event out
   port — mirror `LaunchpadNode`'s pattern exactly.
 - JSON parse/serialize happens **only** on WS threads and main thread
   (`kerygma`), never the audio thread. The audio thread sees pre-decoded
-  `HardwareEvent` values from the rings.
+  `SurfaceEvent` values from the rings.
 
 ### `TheoriaSurfaceNode`
 
-- `HardwareDevice` impl. `SurfaceDescriptor`: name `"Theoria Surface"`, vendor
+- `Surface` impl. `SurfaceDescriptor`: name `"Theoria Surface"`, vendor
   `"Paraclete"`, 80 pads (grid 0–63 with row/col, scene 64–71, control 72–79 —
   same ids as the P9.5 emulator) **plus** 8 `EncoderDescriptor`s ids 90–97,
   `behaviour: Relative`, `has_push: true`, declared now so W1 adds no
   descriptor change. Pads: `velocity_sensitive: true`,
   `pressure_sensitive: false` (WQ-2).
 - `take_output_handle()` → `Some(TheoriaOutputHandle)`; `tick()` drains the
-  device-internal SPSC of `HardwareOutput` and forwards `led_updates` to
+  device-internal SPSC of `SurfaceOutput` and forwards `led_updates` to
   kerygma. `update_output()` is a no-op (P4+ path only).
 - After `welcome`, kerygma sends one **full-surface** `led` batch from a
   main-thread shadow copy of the last known color per control (kerygma owns a
@@ -165,7 +165,7 @@ built): state-diff coalescing at ≥ 33 ms intervals from paths the app pumps in
 - Startup (after hardware devices, before executor build):
   `AntiphonServer::spawn(config, node_summaries)` →
   (`TheoriaSurfaceNode`, `AntiphonHandle`);
-  `conf.add_hardware_device(ID_THEORIA, node)`; add
+  `conf.add_surface(ID_THEORIA, node)`; add
   `ScriptingGatewayNode::new(ID_GATEWAY_THEORIA, 256)` wired
   `theoria events_out → gateway events_in`; drain its consumer in main-loop
   step 2 with the others.
@@ -173,7 +173,7 @@ built): state-diff coalescing at ≥ 33 ms intervals from paths the app pumps in
   same handlers keyed by pad id; the profile's device-id checks must accept
   `THEORIA_DEVICE_ID` wherever they accept `LP_DEVICE_ID` — if the profile
   hard-gates on `LP_DEVICE_ID`, add the alternation **in the profile** (one
-  line), not in Rust. LED output: the app mirrors `HardwareOutput` destined
+  line), not in Rust. LED output: the app mirrors `SurfaceOutput` destined
   for the Launchpad/emulator to the Theoria node as well — implement by
   registering the Theoria device as an additional recipient in
   `deliver_script_output()` for LED commands addressed to `LP_DEVICE_ID`
@@ -215,11 +215,11 @@ web/theoria/
 1. `protocol_round_trip_client_msgs` — every `ClientMsg` variant JSON round-trips
 2. `protocol_round_trip_server_msgs` — same for `ServerMsg`
 3. `protocol_unknown_tag_is_error_not_panic`
-4. `pad_msg_to_hardware_event_mapping` — pad_down/up/enc/enc_push → correct `HardwareEvent`
+4. `pad_msg_to_hardware_event_mapping` — pad_down/up/enc/enc_push → correct `SurfaceEvent`
 5. `surface_descriptor_counts` — 80 pads + 8 relative encoders, ids exact
 6. `node_process_drains_all_slots` — events pushed into 2 slot rings both emerge from the event port in one `process()`
 7. `node_process_is_allocation_free_shape` — drains with zero slots connected without panic; fixed-size iteration (structural test)
-8. `output_handle_forwards_led_updates` — `HardwareOutput` pushed → `tick()` → kerygma receives the batch
+8. `output_handle_forwards_led_updates` — `SurfaceOutput` pushed → `tick()` → kerygma receives the batch
 9. `kerygma_shadow_replays_full_surface_to_new_client` — set 3 LEDs, connect, first batch after welcome carries them
 10. `hello_bad_token_gets_bye` — server logic level (feed frames through the handshake fn, no real socket)
 11. `hello_must_be_first_frame`

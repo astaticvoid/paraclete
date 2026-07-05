@@ -33,6 +33,11 @@ one tier up.
 - W0 Commit 1 (`paraclete-antiphon` crate) and Commit 2 (app wiring)
 - P10 C1 (Pattern struct + serializer v3 — data-model restructure, gated)
 - P10 C2–C5, W1 implementation
+- State-bus path unification (first W1 commit, spec in `w1-interfaces.md`):
+  params publish to `/node/{id}/param/{name}` (today: `/node/{id}/{name}`,
+  inconsistent with the script sandbox's `/node/{id}/param/*` write rule);
+  `/hw/*` prefix → `/surface/*`. Must land before Antiphon's state mirror
+  freezes paths into the protocol.
 - Post-commit code review passes (the workflow requires them — see below)
 
 **Defer — needs the user, or a frontier-model session, or both:**

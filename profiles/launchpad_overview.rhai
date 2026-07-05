@@ -1,7 +1,7 @@
 // Step 6: pad press toggles a step on that row's sequencer.
 fn on_load() {
     // Pad presses → CMD_TOGGLE_STEP on the matching track's sequencer.
-    on_hw_event(LP_DEVICE_ID, |event| {
+    on_surface_event(LP_DEVICE_ID, |event| {
         if event.event_type == "PadPressed" {
             let id  = event.id;
             if id < 64 {

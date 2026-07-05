@@ -13,7 +13,7 @@ pub mod command;
 pub mod constants;
 pub mod context;
 pub mod event;
-pub mod hardware;
+pub mod surface;
 pub mod midi;
 pub mod node;
 pub mod parameter;
@@ -36,10 +36,10 @@ pub use event::{
     Event, ExtendedEventSlab, ParamLockEvent, ExtendedEventRef, TimedEvent, UmpMessage,
 };
 
-pub use hardware::{
+pub use surface::{
     ButtonDescriptor, Control, DisplayContent, DisplayDescriptor, DisplayType,
-    EncoderBehaviour, EncoderDescriptor, FaderDescriptor, HardwareDevice, HardwareEvent,
-    HardwareEventMsg, HardwareOutput, HardwareOutputHandle, LedDescriptor, LedUpdate,
+    EncoderBehaviour, EncoderDescriptor, FaderDescriptor, Surface, SurfaceEvent,
+    SurfaceEventMsg, SurfaceOutput, SurfaceOutputHandle, LedDescriptor, LedUpdate,
     PadDescriptor, RgbColor, SurfaceDescriptor,
 };
 

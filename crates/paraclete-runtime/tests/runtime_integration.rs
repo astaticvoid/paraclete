@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex, atomic::{AtomicU32, Ordering}};
 
 use paraclete_node_api::{
-    CapabilityDocument, ConnectionAgreement, ConnectionRecord, Event, HardwareDevice,
-    HardwareEvent, HardwareOutput, HardwareOutputHandle, StateBusValue, Node,
+    CapabilityDocument, ConnectionAgreement, ConnectionRecord, Event, Surface,
+    SurfaceEvent, SurfaceOutput, SurfaceOutputHandle, StateBusValue, Node,
     ParamLockEvent, PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput,
     SurfaceDescriptor, TimedEvent, TransportEvent, TransportFlags, TransportInfo,
 };
@@ -246,11 +246,11 @@ impl Node for EventCapturingNode {
 
 struct EventEmittingNode {
     ports: Vec<PortDescriptor>,
-    event: Option<HardwareEvent>,
+    event: Option<SurfaceEvent>,
 }
 
 impl EventEmittingNode {
-    fn new(event: HardwareEvent) -> Self {
+    fn new(event: SurfaceEvent) -> Self {
         Self {
             ports: vec![PortDescriptor {
                 id: 0,
@@ -267,18 +267,18 @@ impl Node for EventEmittingNode {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
     fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
         if let Some(event) = self.event {
-            output.events_out.push(TimedEvent::new(0, Event::Hardware(event)));
+            output.events_out.push(TimedEvent::new(0, Event::Surface(event)));
         }
     }
 }
 
-struct TestHardwareDevice {
+struct TestSurface {
     ports: Vec<PortDescriptor>,
     surface: SurfaceDescriptor,
     update_count: Arc<AtomicU32>,
 }
 
-impl TestHardwareDevice {
+impl TestSurface {
     fn new(update_count: Arc<AtomicU32>) -> Self {
         Self {
             ports: vec![],
@@ -288,14 +288,14 @@ impl TestHardwareDevice {
     }
 }
 
-impl Node for TestHardwareDevice {
+impl Node for TestSurface {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
     fn process(&mut self, _: &ProcessInput, _: &mut ProcessOutput) {}
 }
 
-impl HardwareDevice for TestHardwareDevice {
-    fn surface(&self) -> &SurfaceDescriptor { &self.surface }
-    fn update_output(&mut self, _: &HardwareOutput) {
+impl Surface for TestSurface {
+    fn descriptor(&self) -> &SurfaceDescriptor { &self.surface }
+    fn update_output(&mut self, _: &SurfaceOutput) {
         self.update_count.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -303,7 +303,7 @@ impl HardwareDevice for TestHardwareDevice {
 #[test]
 fn event_routing_delivers_events_from_upstream_to_downstream_node() {
     let received = Arc::new(Mutex::new(vec![]));
-    let hw_event = HardwareEvent::PadPressed { id: 7, velocity: 100, pressure: 0 };
+    let hw_event = SurfaceEvent::PadPressed { id: 7, velocity: 100, pressure: 0 };
 
     let mut conf = NodeConfigurator::new(44100.0, 64);
     conf.add_node(1, Box::new(EventEmittingNode::new(hw_event)));
@@ -316,7 +316,7 @@ fn event_routing_delivers_events_from_upstream_to_downstream_node() {
 
     let events = received.lock().unwrap();
     assert_eq!(events.len(), 1);
-    assert!(matches!(events[0], Event::Hardware(HardwareEvent::PadPressed { id: 7, .. })));
+    assert!(matches!(events[0], Event::Surface(SurfaceEvent::PadPressed { id: 7, .. })));
 }
 
 #[test]
@@ -332,18 +332,18 @@ fn disconnected_nodes_receive_empty_event_slice() {
     assert!(received.lock().unwrap().is_empty());
 }
 
-// A HardwareOutputHandle that counts deliver() calls.
+// A SurfaceOutputHandle that counts deliver() calls.
 struct DeliverCountHandle {
     count: Arc<AtomicU32>,
 }
-impl HardwareOutputHandle for DeliverCountHandle {
+impl SurfaceOutputHandle for DeliverCountHandle {
     fn tick(&mut self) {}
-    fn deliver(&mut self, _output: HardwareOutput) {
+    fn deliver(&mut self, _output: SurfaceOutput) {
         self.count.fetch_add(1, Ordering::Relaxed);
     }
 }
 
-// A HardwareDevice that hands its output handle to the configurator.
+// A Surface that hands its output handle to the configurator.
 struct DeviceWithHandle {
     ports: Vec<PortDescriptor>,
     surface: SurfaceDescriptor,
@@ -362,10 +362,10 @@ impl Node for DeviceWithHandle {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
     fn process(&mut self, _: &ProcessInput, _: &mut ProcessOutput) {}
 }
-impl HardwareDevice for DeviceWithHandle {
-    fn surface(&self) -> &SurfaceDescriptor { &self.surface }
-    fn update_output(&mut self, _: &HardwareOutput) {}
-    fn take_output_handle(&mut self) -> Option<Box<dyn HardwareOutputHandle>> {
+impl Surface for DeviceWithHandle {
+    fn descriptor(&self) -> &SurfaceDescriptor { &self.surface }
+    fn update_output(&mut self, _: &SurfaceOutput) {}
+    fn take_output_handle(&mut self) -> Option<Box<dyn SurfaceOutputHandle>> {
         Some(Box::new(DeliverCountHandle { count: Arc::clone(&self.deliver_count) }))
     }
 }
@@ -376,11 +376,11 @@ impl HardwareDevice for DeviceWithHandle {
 fn led_routing_deliver_script_output_reaches_handle() {
     let deliver_count = Arc::new(AtomicU32::new(0));
     let mut conf = NodeConfigurator::new(44100.0, 64);
-    conf.add_hardware_device(42, Box::new(DeviceWithHandle::new(Arc::clone(&deliver_count))));
+    conf.add_surface(42, Box::new(DeviceWithHandle::new(Arc::clone(&deliver_count))));
     let _exec = conf.build_executor();
 
     let mut pending = std::collections::HashMap::new();
-    pending.insert(42u32, HardwareOutput::empty());
+    pending.insert(42u32, SurfaceOutput::empty());
     conf.deliver_script_output(pending);
 
     assert_eq!(deliver_count.load(Ordering::Relaxed), 1, "deliver() should be called once");
@@ -390,22 +390,22 @@ fn led_routing_deliver_script_output_reaches_handle() {
 fn led_routing_unknown_device_id_is_silently_dropped() {
     let deliver_count = Arc::new(AtomicU32::new(0));
     let mut conf = NodeConfigurator::new(44100.0, 64);
-    conf.add_hardware_device(42, Box::new(DeviceWithHandle::new(Arc::clone(&deliver_count))));
+    conf.add_surface(42, Box::new(DeviceWithHandle::new(Arc::clone(&deliver_count))));
     let _exec = conf.build_executor();
 
     // device_id 99 has no registered handle — should not panic
     let mut pending = std::collections::HashMap::new();
-    pending.insert(99u32, HardwareOutput::empty());
+    pending.insert(99u32, SurfaceOutput::empty());
     conf.deliver_script_output(pending);
 
     assert_eq!(deliver_count.load(Ordering::Relaxed), 0, "unknown device_id must be silently dropped");
 }
 
 #[test]
-fn add_hardware_device_registers_device_for_output_callbacks() {
+fn add_surface_registers_device_for_output_callbacks() {
     let update_count = Arc::new(AtomicU32::new(0));
     let mut conf = NodeConfigurator::new(44100.0, 64);
-    conf.add_hardware_device(1, Box::new(TestHardwareDevice::new(update_count.clone())));
+    conf.add_surface(1, Box::new(TestSurface::new(update_count.clone())));
     let mut exec = conf.build_executor();
 
     let mut out = vec![0.0f32; 64 * 2];
@@ -533,7 +533,7 @@ fn connect_invokes_negotiate_and_set_connection_record_on_both_sides() {
 
     // src: Event Output
     conf.add_node(1, Box::new(EventEmittingNode::new(
-        HardwareEvent::PadPressed { id: 0, velocity: 0, pressure: 0 },
+        SurfaceEvent::PadPressed { id: 0, velocity: 0, pressure: 0 },
     )));
     conf.add_node(2, Box::new(NegotiatingInstrument::new(
         dst_negotiate.clone(), dst_record_rx.clone(),
@@ -578,7 +578,7 @@ impl Node for OrderCapturingNode {
             let label = match timed.event {
                 Event::ParamLock(_) => "param_lock",
                 Event::Midi2(_)     => "midi2",
-                Event::Hardware(_)  => "hardware",
+                Event::Surface(_)  => "hardware",
                 _                   => "other",
             };
             order.push(label.to_string());

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use paraclete_node_api::{
-    AudioBuffer, Control, Event, EventOutputBuffer, HardwareOutput, ExtendedEventSlab,
+    AudioBuffer, Control, Event, EventOutputBuffer, SurfaceOutput, ExtendedEventSlab,
     NodeCommand, ProcessInput, ProcessOutput, StateBusValue,
     SignalInputSlot, SignalOutputSlot, SignalPortKind,
     TransportInfo, TransportEvent, TimedEvent,
@@ -118,7 +118,7 @@ impl NodeSlot {
         }
     }
 
-    fn hw_update(&mut self, out: &HardwareOutput) {
+    fn hw_update(&mut self, out: &SurfaceOutput) {
         if let NodeOrDevice::Device(d) = &mut self.kind {
             d.update_output(out);
         }
@@ -133,7 +133,7 @@ impl NodeSlot {
 
     fn surface_pad_count(&self) -> Option<u32> {
         if let NodeOrDevice::Device(d) = &self.kind {
-            Some(d.surface().controls.iter().filter(|c| matches!(c, Control::Pad(_))).count() as u32)
+            Some(d.descriptor().controls.iter().filter(|c| matches!(c, Control::Pad(_))).count() as u32)
         } else {
             None
         }
@@ -141,7 +141,7 @@ impl NodeSlot {
 
     fn hw_rgb_control_ids(&self) -> Vec<u32> {
         if let NodeOrDevice::Device(d) = &self.kind {
-            d.surface().controls.iter().filter_map(|c| match c {
+            d.descriptor().controls.iter().filter_map(|c| match c {
                 Control::Pad(p) if p.rgb => Some(p.id),
                 Control::Button(b) if b.rgb => Some(b.id),
                 _ => None,
@@ -340,10 +340,10 @@ impl NodeExecutor {
         }
     }
 
-    fn build_hardware_output(&self) -> HardwareOutput {
+    fn build_hardware_output(&self) -> SurfaceOutput {
         // LED output is now owned by the scripting layer via deliver_script_output().
         // The executor no longer auto-generates step indicators.
-        HardwareOutput::empty()
+        SurfaceOutput::empty()
     }
 
     pub fn process(&mut self, out_interleaved: &mut [f32], channels: usize) {
@@ -476,7 +476,7 @@ impl NodeExecutor {
                     Event::Transport(_) => 1,
                     Event::Tempo(_)     => 1,
                     Event::Midi2(_)     => 2,
-                    Event::Hardware(_)  => 3,
+                    Event::Surface(_)  => 3,
                     Event::Extended(_)  => 4,
                     _ => 5,
                 };

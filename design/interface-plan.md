@@ -66,7 +66,7 @@ One interface architecture, three deliverables:
    pages, grid view, and transport, rendered in the terminal idiom. Deferred,
    never dropped.
 
-Real hardware already speaks this architecture's language — `HardwareEvent`,
+Real hardware already speaks this architecture's language — `SurfaceEvent`,
 `SurfaceDescriptor`, `LedUpdate` — and Antiphon adopts that vocabulary rather
 than inventing a parallel one. **One description language for every surface,
 physical or drawn.**
@@ -81,7 +81,7 @@ stays in the Paraclete process.
 The cellular claim (ADR-018) holds as follows:
 
 - **Every surface manifests in the graph as a device node.** A connected
-  Theoria client is represented by a `HardwareDevice` node (dynamic
+  Theoria client is represented by a `Surface` node (dynamic
   `SurfaceDescriptor`), with its own `ScriptingGatewayNode`, exactly like
   `LaunchpadNode` or `DigitaktMidiNode`. Profiles cannot tell glass from
   plastic except by capability.
@@ -127,7 +127,7 @@ theoria-web (tablet)      theoria-term / CI driver
   message types over an internal channel — zero cost for the terminal.
 - **Two planes, JSON first** (binary only if profiling demands):
   - **Surface plane** — device-shaped, profile-routed:
-    `{"ev":"pad_down","id":13,"vel":96}` → `HardwareEvent::PadPressed` →
+    `{"ev":"pad_down","id":13,"vel":96}` → `SurfaceEvent::PadPressed` →
     gateway → Rhai. Grid touches use the P9.5 control-id map (0–63 grid,
     64–71 scene, 72–79 control row); touch encoders use ids 90–97 and emit
     **relative deltas only** — a drag *is* a delta, which is the

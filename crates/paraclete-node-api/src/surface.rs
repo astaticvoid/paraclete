@@ -5,7 +5,7 @@ use crate::port::PortName;
 
 /// Native hardware control event. `Copy` — lives in pre-allocated event slices.
 #[derive(Clone, Copy, Debug)]
-pub enum HardwareEvent {
+pub enum SurfaceEvent {
     /// Pad pressed. velocity and pressure are 16-bit (MIDI 2.0 resolution).
     PadPressed { id: u32, velocity: u16, pressure: u16 },
     /// Pad released.
@@ -27,9 +27,9 @@ pub enum HardwareEvent {
 /// A hardware event tagged with the source device node id.
 /// Produced by `ScriptingGatewayNode` and consumed by the scripting engine.
 #[derive(Clone, Copy, Debug)]
-pub struct HardwareEventMsg {
+pub struct SurfaceEventMsg {
     pub device_id: u32,
-    pub event: HardwareEvent,
+    pub event: SurfaceEvent,
 }
 
 // ── Surface descriptor ────────────────────────────────────────────────────────
@@ -128,12 +128,12 @@ pub enum DisplayType {
 
 /// Collected output state sent to a hardware device after each cycle.
 #[derive(Clone, Debug)]
-pub struct HardwareOutput {
+pub struct SurfaceOutput {
     pub led_updates: Vec<LedUpdate>,
     pub display_updates: Vec<DisplayUpdate>,
 }
 
-impl HardwareOutput {
+impl SurfaceOutput {
     pub fn empty() -> Self {
         Self { led_updates: vec![], display_updates: vec![] }
     }
@@ -174,15 +174,15 @@ impl RgbColor {
     pub const BLUE:  RgbColor = RgbColor { r: 0,   g: 0,   b: 255 };
 }
 
-// ── HardwareOutputHandle ──────────────────────────────────────────────────────
+// ── SurfaceOutputHandle ──────────────────────────────────────────────────────
 
 /// Main-thread output handler for a hardware device.
 ///
-/// Created by `HardwareDevice::take_output_handle()` at registration time.
+/// Created by `Surface::take_output_handle()` at registration time.
 /// The configurator holds it and calls `tick()` each main-loop iteration.
-/// The device's audio-thread side pushes `HardwareOutput` to an internal SPSC;
+/// The device's audio-thread side pushes `SurfaceOutput` to an internal SPSC;
 /// `tick()` drains and delivers to the physical device. Must not block.
-pub trait HardwareOutputHandle: Send {
+pub trait SurfaceOutputHandle: Send {
     /// Called by the configurator each main-loop iteration. Drains the
     /// device's internal audio-thread SPSC and sends pending output.
     fn tick(&mut self);
@@ -190,10 +190,10 @@ pub trait HardwareOutputHandle: Send {
     /// Deliver script-generated output directly from the main thread.
     /// Called after `process_subscriptions()` with LED updates from Rhai scripts.
     /// Default: no-op (device has no LED output from scripts).
-    fn deliver(&mut self, _output: HardwareOutput) {}
+    fn deliver(&mut self, _output: SurfaceOutput) {}
 }
 
-// ── HardwareDevice trait ──────────────────────────────────────────────────────
+// ── Surface trait ──────────────────────────────────────────────────────
 
 /// A hardware controller node. Implements `Node` for graph participation.
 ///
@@ -202,17 +202,17 @@ pub trait HardwareOutputHandle: Send {
 /// - **P4+ path:** implement `take_output_handle()` returning `Some(...)`. The
 ///   configurator holds the handle and calls `handle.tick()` each main-loop
 ///   iteration (main thread). Use this for all new hardware nodes.
-pub trait HardwareDevice: Node {
-    fn surface(&self) -> &SurfaceDescriptor;
+pub trait Surface: Node {
+    fn descriptor(&self) -> &SurfaceDescriptor;
 
     /// Legacy output path: called from the executor after each process cycle.
     /// New P4+ devices implement `take_output_handle()` instead and leave this
     /// as a no-op.
-    fn update_output(&mut self, output: &HardwareOutput);
+    fn update_output(&mut self, output: &SurfaceOutput);
 
     /// Called once by the configurator after registration. Return `Some` to opt
     /// into the main-thread output path; `None` uses the legacy audio-thread path.
-    fn take_output_handle(&mut self) -> Option<Box<dyn HardwareOutputHandle>> {
+    fn take_output_handle(&mut self) -> Option<Box<dyn SurfaceOutputHandle>> {
         None
     }
 }
@@ -222,18 +222,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hardware_event_is_copy() {
-        let a = HardwareEvent::PadPressed { id: 0, velocity: 100, pressure: 0 };
+    fn surface_event_is_copy() {
+        let a = SurfaceEvent::PadPressed { id: 0, velocity: 100, pressure: 0 };
         let b = a;
         let _ = a;
         let _ = b;
     }
 
     #[test]
-    fn hardware_event_msg_is_copy() {
-        let msg = HardwareEventMsg {
+    fn surface_event_msg_is_copy() {
+        let msg = SurfaceEventMsg {
             device_id: 1,
-            event: HardwareEvent::ButtonPressed { id: 5 },
+            event: SurfaceEvent::ButtonPressed { id: 5 },
         };
         let _ = msg;
         let _ = msg;
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn hardware_output_empty_has_no_updates() {
-        let out = HardwareOutput::empty();
+        let out = SurfaceOutput::empty();
         assert!(out.led_updates.is_empty());
         assert!(out.display_updates.is_empty());
     }
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn hardware_output_handle_is_object_safe() {
         // Verify the trait is object-safe by forming a trait object reference.
-        fn _takes_handle(_h: &dyn HardwareOutputHandle) {}
+        fn _takes_handle(_h: &dyn SurfaceOutputHandle) {}
     }
 
     #[test]

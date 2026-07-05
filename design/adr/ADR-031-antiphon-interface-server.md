@@ -97,3 +97,17 @@ the protocol is explicitly unstable (`protocol: 0`) until the W4 freeze.
 W0 blueprint: `design/phases/w0-interfaces.md`. Client/view architecture
 (Theoria, the view-plugin extension layer) is a separate decision → ADR-032,
 authored with W2.
+
+## Amendment (July 2026): Surface vocabulary rename
+
+Immediately after acceptance — while zero external users made it free — the
+`Hardware*` type family was renamed to match this ADR's "one description
+language for every surface" position: `HardwareDevice` → `Surface` (method
+`surface()` → `descriptor()`), `HardwareEvent` → `SurfaceEvent`,
+`HardwareOutput`/`Handle` → `SurfaceOutput`/`Handle`, `Event::Hardware` →
+`Event::Surface`, `add/remove_hardware_device` → `add/remove_surface`,
+`dispatch_hardware_event` → `dispatch_surface_event`, Rhai `on_hw_event` →
+`on_surface_event`, `HardwareMappingNode` → `SurfaceMappingNode`. Documents
+written before July 2026 (P3–P10 phase specs, earlier ADRs) use the old names;
+map accordingly. The `/hw/*` state-bus path prefix is renamed with the W1
+state-path unification, not here.

@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal as ct;
 
 use paraclete_node_api::{
-    Event, HardwareDevice, HardwareEvent, HardwareOutput, Node, PortDescriptor, PortDirection,
+    Event, Surface, SurfaceEvent, SurfaceOutput, Node, PortDescriptor, PortDirection,
     PortType, ProcessInput, ProcessOutput, SurfaceDescriptor, TimedEvent,
 };
 
@@ -46,8 +46,8 @@ impl EmuMode {
 
 /// A software simulation of the Novation Launchpad surface.
 ///
-/// Implements `Node` (emitting `HardwareEvent`s into the graph) and
-/// `HardwareDevice` (declaring its surface, receiving LED feedback at P2).
+/// Implements `Node` (emitting `SurfaceEvent`s into the graph) and
+/// `Surface` (declaring its surface, receiving LED feedback at P2).
 ///
 /// Terminal input is polled non-blocking in `process()` on the audio thread.
 /// Raw mode is enabled in `activate()` (main thread) and restored in `deactivate()`.
@@ -69,7 +69,7 @@ pub struct LaunchpadEmulator {
     /// Currently pressed control ids — used for terminal rendering.
     pressed: HashSet<u32>,
     /// Events buffered between poll_keyboard() and process() drain.
-    pending: Vec<HardwareEvent>,
+    pending: Vec<SurfaceEvent>,
     last_render: Option<Instant>,
     raw_mode_active: bool,
 }
@@ -95,7 +95,7 @@ impl LaunchpadEmulator {
     }
 
     /// Apply a key-press target against the current `active_row`, buffering the
-    /// resulting `HardwareEvent` and tracking the held id for release.
+    /// resulting `SurfaceEvent` and tracking the held id for release.
     fn apply_press(&mut self, code: KeyCode, target: KeyTarget) {
         let id = match target {
             // Cursor move only — no event, no held entry.
@@ -114,7 +114,7 @@ impl LaunchpadEmulator {
         if let std::collections::hash_map::Entry::Vacant(slot) = self.held.entry(code) {
             slot.insert(id);
             self.pressed.insert(id);
-            self.pending.push(HardwareEvent::PadPressed {
+            self.pending.push(SurfaceEvent::PadPressed {
                 id,
                 velocity: KEY_VELOCITY,
                 pressure: 0,
@@ -126,7 +126,7 @@ impl LaunchpadEmulator {
     fn apply_release(&mut self, code: KeyCode) {
         if let Some(id) = self.held.remove(&code) {
             self.pressed.remove(&id);
-            self.pending.push(HardwareEvent::PadReleased { id });
+            self.pending.push(SurfaceEvent::PadReleased { id });
         }
     }
 
@@ -251,17 +251,17 @@ impl Node for LaunchpadEmulator {
         self.maybe_render();
 
         for event in self.pending.drain(..) {
-            output.events_out.push(TimedEvent::new(0, Event::Hardware(event)));
+            output.events_out.push(TimedEvent::new(0, Event::Surface(event)));
         }
     }
 }
 
-impl HardwareDevice for LaunchpadEmulator {
-    fn surface(&self) -> &SurfaceDescriptor {
+impl Surface for LaunchpadEmulator {
+    fn descriptor(&self) -> &SurfaceDescriptor {
         &self.surface
     }
 
-    fn update_output(&mut self, _output: &HardwareOutput) {
+    fn update_output(&mut self, _output: &SurfaceOutput) {
         // LED state update — wired at P9.5 Commit 2.
     }
 }
@@ -291,7 +291,7 @@ mod tests {
         emu.apply_press(KeyCode::Char('e'), KeyTarget::Step(2)); // row 3 col 2 = 26
         assert!(matches!(
             emu.pending.as_slice(),
-            [HardwareEvent::PadPressed { id: 26, .. }]
+            [SurfaceEvent::PadPressed { id: 26, .. }]
         ));
     }
 
@@ -305,7 +305,7 @@ mod tests {
         emu.apply_release(KeyCode::Char('q'));
         assert!(matches!(
             emu.pending.as_slice(),
-            [HardwareEvent::PadReleased { id: 8 }]
+            [SurfaceEvent::PadReleased { id: 8 }]
         ));
     }
 
@@ -318,7 +318,7 @@ mod tests {
             .pending
             .iter()
             .filter_map(|e| match e {
-                HardwareEvent::PadPressed { id, .. } => Some(*id),
+                SurfaceEvent::PadPressed { id, .. } => Some(*id),
                 _ => None,
             })
             .collect();
@@ -333,7 +333,7 @@ mod tests {
         let presses = emu
             .pending
             .iter()
-            .filter(|e| matches!(e, HardwareEvent::PadPressed { .. }))
+            .filter(|e| matches!(e, SurfaceEvent::PadPressed { .. }))
             .count();
         assert_eq!(presses, 1);
     }
@@ -349,7 +349,7 @@ mod tests {
         // Release must carry the ORIGINAL id (0), not the rebound row-4 id.
         assert!(matches!(
             emu.pending.as_slice(),
-            [HardwareEvent::PadReleased { id: 0 }]
+            [SurfaceEvent::PadReleased { id: 0 }]
         ));
     }
 

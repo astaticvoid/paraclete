@@ -111,7 +111,7 @@ Three additional platform crates live outside the five-layer model:
 |--------|----------|
 | `add_node(Box<dyn Node>)` | Standard node (oscillator, sequencer, mapper) |
 | `add_node_tagged(Box<dyn Node>, type_tag)` | Same as `add_node` but records the type_tag for v2 project file serialization. Preferred for all new call sites. |
-| `add_hardware_device(id, Box<dyn HardwareDevice>)` | Physical or emulated controller. Calls `take_output_handle()` at registration; if `Some`, the handle is ticked each main loop iteration instead of calling `update_output()` from the executor. |
+| `add_surface(id, Box<dyn Surface>)` | Physical or emulated controller. Calls `take_output_handle()` at registration; if `Some`, the handle is ticked each main loop iteration instead of calling `update_output()` from the executor. |
 | `add_tempo_source(id, Box<dyn TempoSource>)` | Clock master; registers a clock domain, returns `(NodeId, domain_id)` |
 
 ## Core Design: Configurator / Executor Split
@@ -149,9 +149,9 @@ The core trait is `Node` in `paraclete-node-api`. Three engagement levels:
 - **L2** — also override `capability_document()`, `activate()`, `deactivate()`, `serialize()`, `deserialize()`. Instruments and stateful nodes.
 - **L3** — also implement `Negotiable` and override `is_negotiable()` to return `true`. `negotiate()` returns a `ConnectionAgreement` (declaring `lockable_params` for instruments); `set_connection_record()` receives the reconciled `ConnectionRecord` from both sides. The runtime invokes the handshake at `connect()` time for all connections (handshake defaults are no-ops for non-Negotiable nodes).
 
-`HardwareDevice` is a supertrait of `Node` that declares a `SurfaceDescriptor` and provides two output paths:
+`Surface` is a supertrait of `Node` that declares a `SurfaceDescriptor` and provides two output paths:
 - **Legacy path** — `update_output()` called from the executor (audio thread) each cycle.
-- **P4+ path** — implement `take_output_handle()` returning `Some(Box<dyn HardwareOutputHandle>)`. The configurator holds the handle and calls `handle.tick()` each main-loop iteration (main thread). Use this for all new hardware nodes — it avoids audio-thread output. The `HardwareOutputHandle` pattern works via a device-internal SPSC: the audio-thread side pushes `HardwareOutput`; `tick()` drains it.
+- **P4+ path** — implement `take_output_handle()` returning `Some(Box<dyn SurfaceOutputHandle>)`. The configurator holds the handle and calls `handle.tick()` each main-loop iteration (main thread). Use this for all new hardware nodes — it avoids audio-thread output. The `SurfaceOutputHandle` pattern works via a device-internal SPSC: the audio-thread side pushes `SurfaceOutput`; `tick()` drains it.
 
 **ParameterBank** — any node that declares parameters in `capability_document()` should use `ParameterBank` (shipped, in L2). Build it at `activate()` time; call `bank.handle_commands(input.commands())` before DSP in `process()`. It handles `CMD_SET_PARAM` and `CMD_BUMP_PARAM` allocation-free, with clamping and silent ignore for unknown IDs.
 
@@ -213,7 +213,7 @@ Ports are typed. `connect()` validates: (1) both port IDs must exist on their re
 | Type | Description |
 |------|-------------|
 | `Audio` | Block-rate stereo or multi-channel audio |
-| `Event` | Timestamped event queue (notes, MIDI 2.0 UMP, `HardwareEvent`) |
+| `Event` | Timestamped event queue (notes, MIDI 2.0 UMP, `SurfaceEvent`) |
 | `Cv`, `Mod`, `Logic`, `Phase`, `Pitch` | Signal types for modulation and CV |
 
 Events are routed between nodes within the same buffer cycle. The executor builds an `event_routes` table at `build_executor()` time by inspecting edge `src_port_type`.
@@ -234,7 +234,7 @@ handle.write(path, value)     // main thread only
 handle.subscribe(path)        // → StateBusSubscription
 ```
 
-The main loop must call `conf.process_main_thread()` each iteration — this drains the state bus SPSC, calls `handle.tick()` on all registered `HardwareOutputHandle`s, and notifies subscriptions. (`process_state_bus()` is kept as an alias.)
+The main loop must call `conf.process_main_thread()` each iteration — this drains the state bus SPSC, calls `handle.tick()` on all registered `SurfaceOutputHandle`s, and notifies subscriptions. (`process_state_bus()` is kept as an alias.)
 
 Rhai scripts access the state bus through this same API. Scripts may `read()` any path and `write_sandboxed()` to `/node/{id}/param/*` only. Writing to `/node/*/state/*`, `/transport/*`, or `/hw/*` is sandbox-rejected. Scripts run on the main thread (`Rc<RefCell>` not `Arc<Mutex>`).
 
@@ -245,7 +245,7 @@ Within the same `sample_offset`, the executor delivers events in this priority o
 1. `ParamLockEvent` — apply parameter overrides before note triggers
 2. `TransportEvent` — position updates
 3. `Midi2` — notes and controllers
-4. `Hardware` — pad events
+4. `Surface` — pad events
 5. `Extended` — custom
 
 `ParamLockEvent` is routed by `node_id` match, not by graph edges. A lock for an unknown `param_id` is silently ignored.
@@ -279,7 +279,7 @@ The app hard-codes these IDs; profile scripts use them as injected constants:
 | 102 | `LaunchpadNode` |
 | 103 | `DigitaktMidiNode` |
 | 104 | `KeystepNode` |
-| 105 | `HardwareMappingNode` |
+| 105 | `SurfaceMappingNode` |
 | 110 | `ScriptingGatewayNode[LP]` (Launchpad or emulator gateway) |
 | 111 | `ScriptingGatewayNode[DT]` (Digitakt gateway, if connected) |
 | 112 | `ScriptingGatewayNode[KS]` (Keystep gateway, if connected) |
@@ -318,7 +318,7 @@ P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, defa
 
 **If you are starting an implementation session, read `design/handoff.md` first** — it routes tasks by model tier and carries the guardrails. Current sequence (authority: `design/roadmap.md`): **P10 C0** (BUG-001 + BUG-008 pre-flight) → **W0** (Antiphon server + Theoria browser grid POC, spec: `design/phases/w0-interfaces.md`) → **P10 C1** (Pattern struct + serializer v3, gated) → **W1** (touch encoders MVP) → **paired session #1 with the user** → P10 C2+ interleaved with W2.
 
-**The interface track (accepted July 2026, `design/interface-plan.md`, ADR-031):** *Antiphon* (`paraclete-antiphon`) is a presentation-agnostic interface server — WebSocket for the tablet client, in-process transport for the terminal — speaking the existing hardware vocabulary; every connected surface manifests as a `HardwareDevice` node + gateway, peer to `LaunchpadNode`. *Theoria* is the view layer (`theoria-web` tablet client — primary control/editing surface; `theoria-term` — the TUI ported to an Antiphon client at milestone WT). Touch encoders emit relative deltas only. **Naming policy is binding:** third-party marks (Elektron, Digitakt, Ableton, Push…) never appear in our feature names, identifiers, or UI strings — house vocabulary is Antiphon, Theoria, kerygma (broadcast module), epiclesis (headless test driver), *pages*, *grid*, *chain*; wire-protocol names stay plain.
+**The interface track (accepted July 2026, `design/interface-plan.md`, ADR-031):** *Antiphon* (`paraclete-antiphon`) is a presentation-agnostic interface server — WebSocket for the tablet client, in-process transport for the terminal — speaking the existing hardware vocabulary; every connected surface manifests as a `Surface` node + gateway, peer to `LaunchpadNode`. *Theoria* is the view layer (`theoria-web` tablet client — primary control/editing surface; `theoria-term` — the TUI ported to an Antiphon client at milestone WT). Touch encoders emit relative deltas only. **Naming policy is binding:** third-party marks (Elektron, Digitakt, Ableton, Push…) never appear in our feature names, identifiers, or UI strings — house vocabulary is Antiphon, Theoria, kerygma (broadcast module), epiclesis (headless test driver), *pages*, *grid*, *chain*; wire-protocol names stay plain.
 
 **P9.5 closed early** (C1 shipped: full Launchpad emulator via track-cursor keyboard, 402 workspace tests passing). C2/C3 cancelled — superseded by W0/W1; C4 folded into P10 C5 test work; piano mode deferred. **P10.5 dissolved** into a trigger-based bug backlog (see roadmap).
 
@@ -404,9 +404,9 @@ Multi-track is a graph topology, not a node feature (ADR-016): 8 tracks = 8 `Seq
 
 The app main loop (`paraclete-app/src/main.rs`) runs at ~1 ms intervals and must execute these steps in order each iteration:
 
-1. `conf.process_main_thread()` — drain state bus SPSC from audio thread; tick all `HardwareOutputHandle`s
+1. `conf.process_main_thread()` — drain state bus SPSC from audio thread; tick all `SurfaceOutputHandle`s
 2. Drain per-device gateway SPSCs (`consumer_lp.drain()`, `consumer_dt.drain()`, `consumer_ks.drain()`) into a shared event buffer
-3. `scripting.dispatch_hardware_event(ev)` — dispatch each event to registered Rhai handlers
+3. `scripting.dispatch_surface_event(ev)` — dispatch each event to registered Rhai handlers
 4. `scripting.process_subscriptions(&bus)` — fire state bus subscription callbacks for changed paths
 5. `conf.send_command(cmd)` — flush `NodeCommand`s produced by scripts to the audio thread ring buffer
 6. `conf.deliver_script_output(led_output)` — route LED/output commands from scripts to hardware handles
@@ -426,6 +426,8 @@ When adding a new hardware device, add a `ScriptingGatewayNode` for it (with its
 **Project file format v2 (P9):** `NodeSnapshot` gains `type_tag: String` (construction key). Edges are now authoritative — v2 loads restore topology from the file. v1 files remain loadable (warning emitted; topology unchanged). `save_project()` writes version 2. `load_project()` reads both.
 
 ## Design Documents
+
+**Vocabulary note (July 2026):** the `Hardware*` type family was renamed to `Surface*` while the project had zero external users: `HardwareDevice` → `Surface` (method `surface()` → `descriptor()`), `HardwareEvent` → `SurfaceEvent`, `HardwareOutput`/`Handle` → `SurfaceOutput`/`Handle`, `Event::Hardware` → `Event::Surface`, `add_hardware_device` → `add_surface`, Rhai `on_hw_event` → `on_surface_event`, `HardwareMappingNode` → `SurfaceMappingNode`. Phase specs and ADRs written before July 2026 use the old names — map accordingly; do not edit those historical documents.
 
 All design documents live in `design/`. Key documents:
 
@@ -457,7 +459,7 @@ All design documents live in `design/`. Key documents:
 - `design/architecture-evolving-append.md` — retroactive phase log entries for P4–P8 (append to `architecture-evolving.md`)
 - `design/phases/` — per-phase interface specs and implementation reports (append-only once a phase ships)
 - `design/phases/p3-interfaces.md` — P3 spec: `Negotiable` trait, parameter lock protocol, `Sampler` node, StateBus SPSC upgrade, Rhai bindings
-- `design/phases/p4-interfaces.md` — P4 spec: hardware integration, `ParameterBank`, `NodeCommand`, `HardwareOutputHandle`, effect nodes, profile scripts
+- `design/phases/p4-interfaces.md` — P4 spec: hardware integration, `ParameterBank`, `NodeCommand`, `SurfaceOutputHandle`, effect nodes, profile scripts
 - `design/phases/p4-report.md` — P4 implementation report: what shipped, node IDs, test coverage, deferred items, post-commit analysis
 - `design/phases/p5-interfaces.md` — P4.5 + P5 spec: foundation fixes + Sequencer v2, ReverbNode, DelayNode, SplitNode
 - `design/phases/p5-report.md` — P5 implementation report: what shipped, deviations, test counts

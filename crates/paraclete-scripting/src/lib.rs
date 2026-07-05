@@ -13,7 +13,7 @@ use std::time::Instant;
 use rhai::{Dynamic, Engine, EvalAltResult, FnPtr, Scope, AST};
 
 use paraclete_node_api::{
-    HardwareEvent, HardwareEventMsg, HardwareOutput, LedUpdate, NodeCommand,
+    SurfaceEvent, SurfaceEventMsg, SurfaceOutput, LedUpdate, NodeCommand,
     RgbColor, StateBusHandle, StateBusValue,
 };
 
@@ -57,7 +57,7 @@ struct ScriptState {
     /// Per-context: hw_handlers, macros, bindings, subscriptions
     context_data: HashMap<String, ContextData>,
     pending_commands: Vec<NodeCommand>,
-    pending_output: HashMap<u32, HardwareOutput>,
+    pending_output: HashMap<u32, SurfaceOutput>,
     state_bus: Option<Rc<RefCell<StateBusHandle>>>,
 }
 
@@ -100,33 +100,33 @@ impl ScriptState {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn event_type_str(ev: &HardwareEvent) -> &'static str {
+fn event_type_str(ev: &SurfaceEvent) -> &'static str {
     match ev {
-        HardwareEvent::PadPressed { .. }     => "PadPressed",
-        HardwareEvent::PadReleased { .. }    => "PadReleased",
-        HardwareEvent::PadPressure { .. }    => "PadPressure",
-        HardwareEvent::ButtonPressed { .. }  => "ButtonPressed",
-        HardwareEvent::ButtonReleased { .. } => "ButtonReleased",
-        HardwareEvent::EncoderChanged { .. } => "EncoderChanged",
-        HardwareEvent::EncoderPush { .. }    => "EncoderPush",
-        HardwareEvent::FaderMoved { .. }     => "FaderMoved",
+        SurfaceEvent::PadPressed { .. }     => "PadPressed",
+        SurfaceEvent::PadReleased { .. }    => "PadReleased",
+        SurfaceEvent::PadPressure { .. }    => "PadPressure",
+        SurfaceEvent::ButtonPressed { .. }  => "ButtonPressed",
+        SurfaceEvent::ButtonReleased { .. } => "ButtonReleased",
+        SurfaceEvent::EncoderChanged { .. } => "EncoderChanged",
+        SurfaceEvent::EncoderPush { .. }    => "EncoderPush",
+        SurfaceEvent::FaderMoved { .. }     => "FaderMoved",
     }
 }
 
-fn event_control_id(ev: &HardwareEvent) -> u32 {
+fn event_control_id(ev: &SurfaceEvent) -> u32 {
     match ev {
-        HardwareEvent::PadPressed { id, .. }     => *id,
-        HardwareEvent::PadReleased { id }        => *id,
-        HardwareEvent::PadPressure { id, .. }    => *id,
-        HardwareEvent::ButtonPressed { id }      => *id,
-        HardwareEvent::ButtonReleased { id }     => *id,
-        HardwareEvent::EncoderChanged { id, .. } => *id,
-        HardwareEvent::EncoderPush { id, .. }    => *id,
-        HardwareEvent::FaderMoved { id, .. }     => *id,
+        SurfaceEvent::PadPressed { id, .. }     => *id,
+        SurfaceEvent::PadReleased { id }        => *id,
+        SurfaceEvent::PadPressure { id, .. }    => *id,
+        SurfaceEvent::ButtonPressed { id }      => *id,
+        SurfaceEvent::ButtonReleased { id }     => *id,
+        SurfaceEvent::EncoderChanged { id, .. } => *id,
+        SurfaceEvent::EncoderPush { id, .. }    => *id,
+        SurfaceEvent::FaderMoved { id, .. }     => *id,
     }
 }
 
-fn event_to_dynamic(msg: &HardwareEventMsg) -> Dynamic {
+fn event_to_dynamic(msg: &SurfaceEventMsg) -> Dynamic {
     let mut map = rhai::Map::new();
     let ev = &msg.event;
     map.insert("device_id".into(),  Dynamic::from(msg.device_id as i64));
@@ -135,21 +135,21 @@ fn event_to_dynamic(msg: &HardwareEventMsg) -> Dynamic {
     map.insert("row".into(), Dynamic::from(event_control_id(ev) as i64 / 8));
     map.insert("col".into(), Dynamic::from(event_control_id(ev) as i64 % 8));
     match ev {
-        HardwareEvent::PadPressed { velocity, pressure, .. } => {
+        SurfaceEvent::PadPressed { velocity, pressure, .. } => {
             map.insert("velocity".into(), Dynamic::from(*velocity as i64));
             map.insert("pressure".into(), Dynamic::from(*pressure as i64));
         }
-        HardwareEvent::PadPressure { pressure, .. } => {
+        SurfaceEvent::PadPressure { pressure, .. } => {
             map.insert("pressure".into(), Dynamic::from(*pressure as i64));
         }
-        HardwareEvent::EncoderChanged { value, delta, .. } => {
+        SurfaceEvent::EncoderChanged { value, delta, .. } => {
             map.insert("value".into(), Dynamic::from(*value as i64));
             map.insert("delta".into(), Dynamic::from(*delta as i64));
         }
-        HardwareEvent::EncoderPush { pressed, .. } => {
+        SurfaceEvent::EncoderPush { pressed, .. } => {
             map.insert("pressed".into(), Dynamic::from(*pressed));
         }
-        HardwareEvent::FaderMoved { value, .. } => {
+        SurfaceEvent::FaderMoved { value, .. } => {
             map.insert("value".into(), Dynamic::from(*value as i64));
         }
         _ => {}
@@ -245,7 +245,7 @@ fn register_builtins(engine: &mut Engine, state: Rc<RefCell<ScriptState>>) {
             let mut st = s.borrow_mut();
             let entry = st.pending_output
                 .entry(device_id as u32)
-                .or_insert_with(HardwareOutput::empty);
+                .or_insert_with(SurfaceOutput::empty);
             entry.led_updates.push(LedUpdate {
                 control_id: control_id as u32,
                 color: RgbColor { r: r as u8, g: g as u8, b: b as u8 },
@@ -253,10 +253,10 @@ fn register_builtins(engine: &mut Engine, state: Rc<RefCell<ScriptState>>) {
         });
     }
 
-    // ── on_hw_event(device_id, fn) ────────────────────────────────────────────
+    // ── on_surface_event(device_id, fn) ────────────────────────────────────────────
     {
         let s = Rc::clone(&state);
-        engine.register_fn("on_hw_event", move |device_id: i64, handler: FnPtr| {
+        engine.register_fn("on_surface_event", move |device_id: i64, handler: FnPtr| {
             let mut st = s.borrow_mut();
             let ctx_name = st.current_context.clone();
             let ctx = st.context_data.entry(ctx_name).or_insert_with(ContextData::new);
@@ -327,11 +327,11 @@ fn register_builtins(engine: &mut Engine, state: Rc<RefCell<ScriptState>>) {
 
     // ── fire_macro(name) ──────────────────────────────────────────────────────
     // Note: firing a macro requires calling a FnPtr which needs the AST.
-    // The actual fire_macro call is handled in dispatch_hardware_event().
+    // The actual fire_macro call is handled in dispatch_surface_event().
     // Here we register a no-op placeholder so scripts don't error on the call.
     {
         engine.register_fn("fire_macro", |_name: &str| {
-            // Actual dispatch done in ScriptingEngine::dispatch_hardware_event
+            // Actual dispatch done in ScriptingEngine::dispatch_surface_event
         });
     }
 
@@ -534,7 +534,7 @@ impl ScriptingEngine {
     }
 
     /// Dispatch a hardware event to all matching handlers and macro bindings.
-    pub fn dispatch_hardware_event(&mut self, msg: &HardwareEventMsg) {
+    pub fn dispatch_surface_event(&mut self, msg: &SurfaceEventMsg) {
         let event_type_s = event_type_str(&msg.event).to_string();
         let control_id   = event_control_id(&msg.event);
         let event_dyn    = event_to_dynamic(msg);
@@ -639,7 +639,7 @@ impl ScriptingEngine {
     }
 
     /// Drain and return accumulated LED output from `set_led()` calls.
-    pub fn take_pending_output(&mut self) -> HashMap<u32, HardwareOutput> {
+    pub fn take_pending_output(&mut self) -> HashMap<u32, SurfaceOutput> {
         let mut out = HashMap::new();
         std::mem::swap(&mut out, &mut self.script_state.borrow_mut().pending_output);
         out

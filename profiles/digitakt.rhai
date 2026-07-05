@@ -11,7 +11,7 @@
 // Sampler does not yet use ParameterBank. Encoder → pitch deferred to P5.
 
 fn on_load() {
-    on_hw_event(DT_DEVICE_ID, |event| {
+    on_surface_event(DT_DEVICE_ID, |event| {
         if event.event_type == "EncoderChanged" {
             let track = state_read("/script/selected_track");
             let t = if track == () { 0 } else { track };

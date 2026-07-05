@@ -1,4 +1,4 @@
-use crate::hardware::HardwareEvent;
+use crate::surface::SurfaceEvent;
 use crate::transport::TransportEvent;
 
 /// A fixed-size owned UMP packet backed by `[u32; 4]` (the maximum UMP packet
@@ -79,9 +79,9 @@ pub enum Event {
 
     /// Native hardware control event from a physical or emulated controller.
     /// Carries typed, controller-specific data (grid position, velocity, etc.)
-    /// that cannot be cleanly expressed in UMP. See `HardwareMappingNode` for
-    /// the standard Hardware → Midi2 translation layer.
-    Hardware(HardwareEvent),
+    /// that cannot be cleanly expressed in UMP. See `SurfaceMappingNode` for
+    /// the standard Surface → Midi2 translation layer.
+    Surface(SurfaceEvent),
 
     /// Sequencer parameter lock — overrides a parameter for one step.
     ParamLock(ParamLockEvent),
@@ -150,7 +150,7 @@ mod tests {
 
         let kind = match event {
             Event::Midi2(_)      => "midi2",
-            Event::Hardware(_)   => "hardware",
+            Event::Surface(_)   => "surface",
             Event::ParamLock(_)  => "param_lock",
             Event::Transport(_)  => "transport",
             Event::Tempo(_)      => "tempo",

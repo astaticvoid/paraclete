@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Elektron Digitakt in MIDI mode — HardwareDevice node.
+//! Elektron Digitakt in MIDI mode — Surface node.
 //!
 //! Encoders use relative encoding (127=CCW, 1–63=CW).
 //! No LED output — `take_output_handle()` returns `None`.
@@ -8,8 +8,8 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use paraclete_node_api::{
-    CapabilityDocument, Control, EncoderBehaviour, EncoderDescriptor, HardwareDevice,
-    HardwareEvent, HardwareOutput, Node, PortDescriptor, PortDirection, PortName,
+    CapabilityDocument, Control, EncoderBehaviour, EncoderDescriptor, Surface,
+    SurfaceEvent, SurfaceOutput, Node, PortDescriptor, PortDirection, PortName,
     PortType, ProcessInput, ProcessOutput, SurfaceDescriptor, TimedEvent, Event,
     ButtonDescriptor,
 };
@@ -50,18 +50,18 @@ fn build_surface() -> SurfaceDescriptor {
     }
 }
 
-/// Digitakt MIDI mode as a `HardwareDevice: Node`.
+/// Digitakt MIDI mode as a `Surface: Node`.
 pub struct DigitaktMidiNode {
     ports: [PortDescriptor; 1],
     node_id: u32,
     _conn_in: midir::MidiInputConnection<()>,
-    incoming: Arc<Mutex<VecDeque<HardwareEvent>>>,
+    incoming: Arc<Mutex<VecDeque<SurfaceEvent>>>,
     surface: SurfaceDescriptor,
 }
 
 impl DigitaktMidiNode {
     pub fn open() -> Result<Self, MidiDeviceError> {
-        let incoming = Arc::new(Mutex::new(VecDeque::<HardwareEvent>::new()));
+        let incoming = Arc::new(Mutex::new(VecDeque::<SurfaceEvent>::new()));
         let incoming_cb = Arc::clone(&incoming);
 
         let reg = MidiDeviceRegistry::new()?;
@@ -99,7 +99,7 @@ fn decode_relative_delta(value: u8) -> i16 {
     }
 }
 
-fn parse_digitakt_midi(bytes: &[u8]) -> Option<HardwareEvent> {
+fn parse_digitakt_midi(bytes: &[u8]) -> Option<SurfaceEvent> {
     if bytes.len() < 3 { return None; }
     let status = bytes[0] & 0xF0;
     let note = bytes[1];
@@ -109,14 +109,14 @@ fn parse_digitakt_midi(bytes: &[u8]) -> Option<HardwareEvent> {
         0xB0 => {
             // CC: encoders (CC 0–7 or similar mapping)
             let delta = decode_relative_delta(vel);
-            Some(HardwareEvent::EncoderChanged {
+            Some(SurfaceEvent::EncoderChanged {
                 id: note as u32,
                 value: 0,
                 delta,
             })
         }
-        0x90 if vel > 0 => Some(HardwareEvent::ButtonPressed { id: note as u32 }),
-        0x90 | 0x80     => Some(HardwareEvent::ButtonReleased { id: note as u32 }),
+        0x90 if vel > 0 => Some(SurfaceEvent::ButtonPressed { id: note as u32 }),
+        0x90 | 0x80     => Some(SurfaceEvent::ButtonReleased { id: note as u32 }),
         _ => None,
     }
 }
@@ -139,15 +139,15 @@ impl Node for DigitaktMidiNode {
     fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
         if let Ok(mut q) = self.incoming.try_lock() {
             while let Some(ev) = q.pop_front() {
-                output.events_out.push(TimedEvent::new(0, Event::Hardware(ev)));
+                output.events_out.push(TimedEvent::new(0, Event::Surface(ev)));
             }
         }
     }
 }
 
-impl HardwareDevice for DigitaktMidiNode {
-    fn surface(&self) -> &SurfaceDescriptor { &self.surface }
-    fn update_output(&mut self, _: &HardwareOutput) {}
+impl Surface for DigitaktMidiNode {
+    fn descriptor(&self) -> &SurfaceDescriptor { &self.surface }
+    fn update_output(&mut self, _: &SurfaceOutput) {}
     // No output handle — Digitakt has no LED feedback in standard MIDI mode.
 }
 

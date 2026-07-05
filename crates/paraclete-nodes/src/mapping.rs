@@ -1,25 +1,25 @@
 use std::collections::HashMap;
 
 use paraclete_node_api::{
-    Event, HardwareEvent, Node, PortDescriptor, PortDirection, PortType, ProcessInput,
+    Event, SurfaceEvent, Node, PortDescriptor, PortDirection, PortType, ProcessInput,
     ProcessOutput, TimedEvent,
 };
 
 use crate::{build_note_on, build_note_off};
 
-/// Translates `HardwareEvent`s into `Midi2` events.
+/// Translates `SurfaceEvent`s into `Midi2` events.
 ///
 /// Sits between a hardware controller node (e.g. `LaunchpadEmulator`) and a
 /// sound node (e.g. `SineOscillator`). At P1 the mapping is hardcoded.
 /// At P4 it becomes scriptable via Rhai.
-pub struct HardwareMappingNode {
+pub struct SurfaceMappingNode {
     ports: [PortDescriptor; 2],
     pad_to_note: HashMap<u32, u8>,
     channel: u8,
     group: u8,
 }
 
-impl HardwareMappingNode {
+impl SurfaceMappingNode {
     /// Default chromatic mapping: pad 0 → C4 (60), pad 1 → C#4 (61), …
     pub fn default_chromatic(channel: u8) -> Self {
         let pad_to_note = (0u32..64).map(|id| (id, 60u8.saturating_add(id as u8))).collect();
@@ -49,7 +49,7 @@ impl HardwareMappingNode {
     }
 }
 
-impl Node for HardwareMappingNode {
+impl Node for SurfaceMappingNode {
     fn ports(&self) -> &[PortDescriptor] {
         &self.ports
     }
@@ -57,7 +57,7 @@ impl Node for HardwareMappingNode {
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
         for timed in input.events {
             match timed.event {
-                Event::Hardware(HardwareEvent::PadPressed { id, velocity, .. }) => {
+                Event::Surface(SurfaceEvent::PadPressed { id, velocity, .. }) => {
                     if let Some(&note) = self.pad_to_note.get(&id) {
                         output.events_out.push(TimedEvent::new(
                             timed.sample_offset,
@@ -65,7 +65,7 @@ impl Node for HardwareMappingNode {
                         ));
                     }
                 }
-                Event::Hardware(HardwareEvent::PadReleased { id }) => {
+                Event::Surface(SurfaceEvent::PadReleased { id }) => {
                     if let Some(&note) = self.pad_to_note.get(&id) {
                         output.events_out.push(TimedEvent::new(
                             timed.sample_offset,
@@ -85,12 +85,12 @@ impl Node for HardwareMappingNode {
 mod tests {
     use super::*;
     use paraclete_node_api::{
-        AudioBuffer, EventOutputBuffer, ExtendedEventSlab, Event, HardwareEvent,
+        AudioBuffer, EventOutputBuffer, ExtendedEventSlab, Event, SurfaceEvent,
         TimedEvent, TransportInfo, UmpMessage,
         midi::ChannelVoice2,
     };
 
-    fn run_mapper(mapper: &mut HardwareMappingNode, events: &[TimedEvent]) -> Vec<TimedEvent> {
+    fn run_mapper(mapper: &mut SurfaceMappingNode, events: &[TimedEvent]) -> Vec<TimedEvent> {
         let block = 64usize;
         let mut audio = AudioBuffer::new(2, block);
         let mut events_out = EventOutputBuffer::new(64);
@@ -122,10 +122,10 @@ mod tests {
 
     #[test]
     fn mapping_node_translates_pad_pressed_to_midi2_note_on() {
-        let mut mapper = HardwareMappingNode::default_chromatic(0);
+        let mut mapper = SurfaceMappingNode::default_chromatic(0);
         let events = [TimedEvent::new(
             0,
-            Event::Hardware(HardwareEvent::PadPressed { id: 0, velocity: 16000, pressure: 0 }),
+            Event::Surface(SurfaceEvent::PadPressed { id: 0, velocity: 16000, pressure: 0 }),
         )];
         let out = run_mapper(&mut mapper, &events);
 
@@ -138,8 +138,8 @@ mod tests {
 
     #[test]
     fn mapping_node_translates_pad_released_to_midi2_note_off() {
-        let mut mapper = HardwareMappingNode::default_chromatic(0);
-        let events = [TimedEvent::new(0, Event::Hardware(HardwareEvent::PadReleased { id: 0 }))];
+        let mut mapper = SurfaceMappingNode::default_chromatic(0);
+        let events = [TimedEvent::new(0, Event::Surface(SurfaceEvent::PadReleased { id: 0 }))];
         let out = run_mapper(&mut mapper, &events);
 
         assert_eq!(out.len(), 1);
@@ -151,7 +151,7 @@ mod tests {
 
     #[test]
     fn mapping_node_passes_unknown_events_through_unchanged() {
-        let mut mapper = HardwareMappingNode::default_chromatic(0);
+        let mut mapper = SurfaceMappingNode::default_chromatic(0);
         let events = [TimedEvent::new(0, Event::Tempo(120.0))];
         let out = run_mapper(&mut mapper, &events);
 
@@ -162,12 +162,12 @@ mod tests {
     #[test]
     fn mapping_node_ignores_pads_not_in_its_map() {
         let mapper_map: HashMap<u32, u8> = [(0, 60)].into_iter().collect();
-        let mut mapper = HardwareMappingNode::from_map(mapper_map, 0);
+        let mut mapper = SurfaceMappingNode::from_map(mapper_map, 0);
 
         // Pad 99 is not in the map.
         let events = [TimedEvent::new(
             0,
-            Event::Hardware(HardwareEvent::PadPressed { id: 99, velocity: 16000, pressure: 0 }),
+            Event::Surface(SurfaceEvent::PadPressed { id: 99, velocity: 16000, pressure: 0 }),
         )];
         let out = run_mapper(&mut mapper, &events);
         assert!(out.is_empty());

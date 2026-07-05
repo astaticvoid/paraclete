@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Arturia Keystep 37 — HardwareDevice node via MIDI.
+//! Arturia Keystep 37 — Surface node via MIDI.
 //!
 //! Standard MIDI over USB. Note On/Off → `Event::Midi2`. Mod wheel → FaderMoved.
 //! No LED output — `take_output_handle()` returns `None`.
@@ -8,8 +8,8 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use paraclete_node_api::{
-    CapabilityDocument, Control, HardwareDevice,
-    HardwareEvent, HardwareOutput, Node, PortDescriptor, PortDirection, PortName,
+    CapabilityDocument, Control, Surface,
+    SurfaceEvent, SurfaceOutput, Node, PortDescriptor, PortDirection, PortName,
     PortType, ProcessInput, ProcessOutput, SurfaceDescriptor, TimedEvent, Event,
     UmpMessage, FaderDescriptor,
 };
@@ -50,7 +50,7 @@ fn build_surface() -> SurfaceDescriptor {
     }
 }
 
-/// Arturia Keystep 37 as a `HardwareDevice: Node`.
+/// Arturia Keystep 37 as a `Surface: Node`.
 pub struct KeystepNode {
     ports: [PortDescriptor; 1],
     node_id: u32,
@@ -99,7 +99,7 @@ fn parse_keystep_midi(bytes: &[u8]) -> Vec<TimedEvent> {
         0x90 | 0x80     => vec![TimedEvent::new(0, Event::Midi2(build_note_off(note)))],
         0xB0 if note == 1 => {
             // Mod wheel CC1
-            vec![TimedEvent::new(0, Event::Hardware(HardwareEvent::FaderMoved {
+            vec![TimedEvent::new(0, Event::Surface(SurfaceEvent::FaderMoved {
                 id: 1,
                 value: (vel as u16) << 9,
             }))]
@@ -109,7 +109,7 @@ fn parse_keystep_midi(bytes: &[u8]) -> Vec<TimedEvent> {
             let pb = if bytes.len() >= 3 {
                 (((bytes[2] as u16) << 7) | (bytes[1] as u16))
             } else { 0 };
-            vec![TimedEvent::new(0, Event::Hardware(HardwareEvent::FaderMoved {
+            vec![TimedEvent::new(0, Event::Surface(SurfaceEvent::FaderMoved {
                 id: 0,
                 value: pb,
             }))]
@@ -142,9 +142,9 @@ impl Node for KeystepNode {
     }
 }
 
-impl HardwareDevice for KeystepNode {
-    fn surface(&self) -> &SurfaceDescriptor { &self.surface }
-    fn update_output(&mut self, _: &HardwareOutput) {}
+impl Surface for KeystepNode {
+    fn descriptor(&self) -> &SurfaceDescriptor { &self.surface }
+    fn update_output(&mut self, _: &SurfaceOutput) {}
     // No output handle — Keystep has no LED feedback.
 }
 
@@ -170,6 +170,6 @@ mod tests {
     fn keystep_mod_wheel_produces_fader_event() {
         let events = parse_keystep_midi(&[0xB0, 1, 64]);
         assert_eq!(events.len(), 1);
-        assert!(matches!(events[0].event, Event::Hardware(HardwareEvent::FaderMoved { id: 1, .. })));
+        assert!(matches!(events[0].event, Event::Surface(SurfaceEvent::FaderMoved { id: 1, .. })));
     }
 }
