@@ -243,9 +243,11 @@ impl Node for AnalogEngine {
         self.sample_rate = sample_rate;
         let doc = Self::build_doc(self.machine);
         self.bank        = ParameterBank::from_capability_document(&doc);
-        for (name, value) in &self.pending_initial_params {
+        // BUG-008 fix: consume the pending map so a re-activate (dynamic
+        // topology rebuild, P9 C4) cannot overwrite deserialized state.
+        for (name, value) in std::mem::take(&mut self.pending_initial_params) {
             if let Some(param) = doc.params.iter().find(|p| p.name.as_str() == name.as_str()) {
-                self.bank.set(param.id, *value);
+                self.bank.set(param.id, value);
             }
         }
         self.render_l    = vec![0.0; block_size];
@@ -582,6 +584,27 @@ mod tests {
         assert!(entry.is_some(), "published_state should contain /decay");
         if let paraclete_node_api::StateBusValue::Float(v) = entry.unwrap().1 {
             assert!((v - 0.9).abs() < 1e-9, "decay should be 0.9, got {v}");
+        } else {
+            panic!("decay entry should be Float");
+        }
+    }
+
+    #[test]
+    fn reactivate_does_not_reapply_initial_params() {
+        // BUG-008: pending_initial_params must be consumed on first activate()
+        // so a rebuild re-activate leaves the bank at defaults for deserialize()
+        // to overlay (kick decay default = 0.5).
+        let mut eng = AnalogEngine::kick();
+        eng.set_node_id(1);
+        eng.set_initial_params(&[("decay".to_string(), 0.9)].into_iter().collect());
+        eng.activate(44100.0, 256);
+        eng.activate(44100.0, 256); // dynamic-topology rebuild path
+        let mut buf: Vec<(String, paraclete_node_api::StateBusValue)> = Vec::new();
+        eng.published_state(&mut buf);
+        let entry = buf.iter().find(|(k, _)| k.ends_with("/decay")).expect("/decay published");
+        if let paraclete_node_api::StateBusValue::Float(v) = entry.1 {
+            assert!((v - 0.5).abs() < 1e-9,
+                "re-activate must not re-apply initial params (expected default 0.5, got {v})");
         } else {
             panic!("decay entry should be Float");
         }

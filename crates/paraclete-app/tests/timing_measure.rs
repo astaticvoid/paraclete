@@ -50,8 +50,7 @@ impl Node for OnsetProbe {
     }
 }
 
-#[test]
-fn step_period_matches_nominal_16th_note() {
+fn run_harness() -> Vec<f64> {
     let onsets = Arc::new(Mutex::new(Vec::new()));
 
     let mut conf = NodeConfigurator::new(SR, BLOCK);
@@ -97,7 +96,12 @@ fn step_period_matches_nominal_16th_note() {
 
     // Skip the first 8 onsets (start transient), measure steady-state period.
     let steady = &onsets[8..];
-    let intervals: Vec<f64> = steady.windows(2).map(|w| (w[1] - w[0]) as f64).collect();
+    steady.windows(2).map(|w| (w[1] - w[0]) as f64).collect()
+}
+
+#[test]
+fn step_period_matches_nominal_16th_note() {
+    let intervals = run_harness();
     let mean = intervals.iter().sum::<f64>() / intervals.len() as f64;
     let min = intervals.iter().cloned().fold(f64::MAX, f64::min);
     let max = intervals.iter().cloned().fold(f64::MIN, f64::max);
@@ -124,15 +128,18 @@ fn step_period_matches_nominal_16th_note() {
     );
 }
 
-/// P10 C0 GATE — currently fails (remove #[ignore] when fixing BUG-001):
-/// every interval must be uniform. Today the 15 in-pattern steps run ~0.39%
-/// long (the 241/240 tick period) and the wrap step snaps back 5.85% short
-/// (-322 samples at 120 BPM / 44.1k), a ~7 ms early hit once per pattern.
+/// P10 C0 acceptance gate (BUG-001): EVERY interval must be uniform — no
+/// intra-pattern limp, no wrap snap-back. Pre-fix: 15 steps ran +0.39% long
+/// and the wrap step fired 5.85% early.
 #[test]
-#[ignore = "P10 C0 gate: intra-pattern step uniformity (BUG-001 re-diagnosed in s0)"]
 fn step_intervals_are_uniform_within_pattern() {
-    // Re-run the same harness assertion with per-interval tolerance.
-    // Implementation note for C0: extract the harness into a fn shared by both
-    // tests; assert every interval within 0.1% of nominal.
-    panic!("enable and implement with the P10 C0 fix");
+    let intervals = run_harness();
+    let nominal = SR as f64 * 60.0 / BPM / 4.0;
+    for (i, iv) in intervals.iter().enumerate() {
+        let dev = (iv - nominal) / nominal * 100.0;
+        assert!(
+            dev.abs() < 0.1,
+            "interval[{i}] = {iv:.0} samples deviates {dev:+.3}% from nominal {nominal:.1}"
+        );
+    }
 }

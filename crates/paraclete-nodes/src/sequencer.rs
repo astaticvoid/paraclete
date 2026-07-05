@@ -356,14 +356,28 @@ impl Sequencer {
                 + k.tick as u64;
             let step_index  = (total_ticks / self.ticks_per_step as u64) % self.pattern_length as u64;
             let new_tick    = (total_ticks % self.ticks_per_step as u64) as u32;
-            self.current_step = step_index as usize;
-            self.step_tick    = new_tick;
 
-            // When the sync snap lands at tick 0 (exact start of a step) and the
-            // sequencer is playing, fire that step if active. Without this, step 0
-            // is entered via snap rather than via the normal boundary code path,
-            // so emit_note_on is never called for it.
-            if new_tick == 0 && self.playing && k.flags.playing {
+            // Drift correction only (BUG-001 fix, s0 re-diagnosis): when internal
+            // counting is in sync, the natural advance below handles this event —
+            // the snap must be a no-op or it pre-empts the wrap (and loop_count).
+            // "In sync" = the natural path reaches (step_index, new_tick) this
+            // event: either we are already there, or we are one increment away.
+            let next_tick   = self.step_tick + 1;
+            let in_sync = if next_tick >= self.ticks_per_step {
+                new_tick == 0
+                    && step_index as usize == (self.current_step + 1) % self.pattern_length
+            } else {
+                step_index as usize == self.current_step && new_tick == next_tick
+            };
+            if !in_sync && self.playing {
+                self.current_step = step_index as usize;
+                self.step_tick    = new_tick;
+            }
+
+            // When a genuine resync lands at tick 0 (exact start of a step) and
+            // the sequencer is playing, fire that step if active — a node that
+            // connects mid-session enters its pattern here.
+            if !in_sync && new_tick == 0 && self.playing && k.flags.playing {
                 let step_active = self.steps[self.current_step].active;
                 if step_active {
                     let cond = self.steps[self.current_step].condition.clone();
@@ -401,11 +415,39 @@ impl Sequencer {
             self.playing      = true;
             self.current_step = 0;
             self.step_tick    = 0;
+            // Fire step 0 (BUG-001 fix): previously the first step was never
+            // emitted by the boundary path and only sounded via the bar-sync
+            // snap. The start event IS tick 0 of step 0 — return so it is not
+            // also counted as progress.
+            let step_active = self.steps[0].active;
+            if step_active {
+                let cond = self.steps[0].condition.clone();
+                if cond.evaluate(&self.cycle_state, &mut self.rng) {
+                    let note_off = sample_offset + self.step_sample_offset(0, spb);
+                    self.emit_note_on(note_off, output);
+                    for lock in &self.steps[0].param_locks {
+                        output.events_out.push(TimedEvent::new(
+                            note_off,
+                            Event::ParamLock(ParamLockEvent {
+                                node_id:  lock.node_id,
+                                param_id: lock.param_id,
+                                value:    lock.value,
+                            }),
+                        ));
+                    }
+                }
+            }
+            return;
         }
 
         if !k.flags.playing || !self.playing {
             return;
         }
+
+        // Count this tick first (BUG-001 fix): the old check-then-increment
+        // structure spanned ticks_per_step + 1 tick events per step (241/240),
+        // with the bar-sync snap silently erasing the accumulated drift.
+        self.step_tick += 1;
 
         if self.gate_open {
             let gate_ticks = (self.steps[self.current_step].length * self.ticks_per_step as f32) as u32;
@@ -443,8 +485,6 @@ impl Sequencer {
                     }
                 }
             }
-        } else {
-            self.step_tick += 1;
         }
     }
 
@@ -891,14 +931,54 @@ mod tests {
         assert_eq!(seq.active_pattern, 3); // stored but has no playback effect
     }
 
+    fn contains_note_on(events: &[Event]) -> bool {
+        events.iter().any(|e| {
+            matches!(e, Event::Midi2(ump)
+                if matches!(ump, UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_))))
+        })
+    }
+
+    #[test]
+    fn sequencer_fires_step0_on_global_start() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.set_step(0, 60, 32768, true);
+        let out = run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        assert!(contains_note_on(&out), "step 0 must fire on the global_start event (BUG-001 fix)");
+    }
+
+    #[test]
+    fn step_period_is_240_ticks() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        for i in 0..16 {
+            seq.set_step(i, 60, 32768, true);
+        }
+        let tps = TICKS_PER_BEAT / 4;
+        let mut fire_ticks: Vec<u32> = Vec::new();
+        let out0 = run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        if contains_note_on(&out0) {
+            fire_ticks.push(0);
+        }
+        for t in 1..=(4 * tps) {
+            let out = run_seq(&mut seq, &[transport_tick(t, true, false, false, false)]);
+            if contains_note_on(&out) {
+                fire_ticks.push(t);
+            }
+        }
+        assert!(fire_ticks.len() >= 4, "expected >=4 fires, got {:?}", fire_ticks);
+        for w in fire_ticks.windows(2) {
+            assert_eq!(w[1] - w[0], tps, "step period must be exactly {tps} ticks, fires: {fire_ticks:?}");
+        }
+    }
+
     #[test]
     fn sequencer_loop_count_increments_on_pattern_wrap() {
         let mut seq = Sequencer::new();
         seq.activate(44100.0, 64);
         let tps = TICKS_PER_BEAT / 4;  // 240 ticks per step
-        // Known off-by-one: each step takes tps+1 ticks (the transport start model
-        // costs one extra tick at startup). One full 16-step pattern = 16*(tps+1).
-        let wrap_tick = 16 * (tps + 1);
+        // BUG-001 fixed (P10 C0): each step takes exactly tps ticks.
+        let wrap_tick = 16 * tps;
 
         run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
         assert_eq!(seq.cycle_state.loop_count, 0);

@@ -96,9 +96,11 @@ impl Node for DistortionNode {
     fn activate(&mut self, _sr: f32, _block: usize) {
         let doc = Self::default_doc();
         self.bank = ParameterBank::from_capability_document(&doc);
-        for (name, value) in &self.pending_initial_params {
+        // BUG-008 fix: consume the pending map so a re-activate (dynamic
+        // topology rebuild, P9 C4) cannot overwrite deserialized state.
+        for (name, value) in std::mem::take(&mut self.pending_initial_params) {
             if let Some(param) = doc.params.iter().find(|p| p.name.as_str() == name.as_str()) {
-                self.bank.set(param.id, *value);
+                self.bank.set(param.id, value);
             }
         }
     }
