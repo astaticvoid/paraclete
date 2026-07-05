@@ -551,3 +551,22 @@ based on direct measurement (`paraclete-app/tests/timing_measure.rs`, s0):
   note the snap's in-sync check assumes 1× speed — C3 must scale it with the
   speed multiplier (`ticks_per_step` already carries the scaling if C3 mutates
   it; verify).
+
+-----
+
+# Amendment (July 2026, universality sweep): serializer v3 forward-extensibility
+
+Commit 1 freezes the on-disk step format — the last cheap moment to avoid
+foreclosing known futures. Two requirements added to §1.3:
+
+1. **Multi-note steps.** `Step.note: u8` forecloses chord steps (the melodic
+   voices at P13/P14 want 3–4 note steps, in the manner of modern groovebox
+   sequencers). Either widen to a note list now, or — minimum bar — give v3
+   **per-step extensible framing** (length-prefixed step records, unknown
+   trailing fields skipped) so v4 can add note lists without a rewrite.
+   Decide in C1; record the choice in the phase report.
+2. **Engine caps must not inherit surface shape.** The 64-step ceiling is
+   8 pages × 8 pads — a Launchpad-shaped number. Keep the *format* free of it:
+   store page/step counts as actual integers, not 0–63 bitfields, so raising
+   the engine cap later (128-step patterns) is a constant change, not a format
+   version. The runtime cap MAY stay 64 at P10; the file format must not care.

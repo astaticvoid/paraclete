@@ -39,6 +39,14 @@ Session 0 found trigger mode has never produced sound: profiles send command
 - Implement in `AnalogEngine`, `FmEngine`, `Sampler` (`handle_commands` /
   command loop — same retrigger path as a `NoteOn`). Effects/others ignore it
   (unknown-command silence is the existing contract).
+- **Velocity plumbing (universality sweep):** engines currently drop velocity
+  entirely — `retrigger(note)` has no velocity argument and per-step
+  `Step.velocity` dies at the engine boundary. Fix here (same seam):
+  `retrigger(note, velocity)`; NoteOn 16-bit velocity and `CMD_TRIGGER.arg1`
+  both feed it; default mapping velocity → output level (Rytm-style
+  velocity-mod routing is P12+; the *plumbing* must not wait).
+- **Test:** `velocity_scales_output_level` per engine (vel 65535 vs 16384 →
+  proportionally different peak amplitude).
 - **Tests:** per engine: `cmd_trigger_produces_audio` (send 19, process one
   block, assert non-silent output), `cmd_trigger_negative_note_uses_default`.
 

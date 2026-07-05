@@ -63,7 +63,13 @@ one tier up.
    standard concepts keep plain names.
 5. **Audio-thread rules are hard constraints** (CLAUDE.md): no alloc/lock/block
    in `process()`; JSON never touches the audio thread.
-6. **Every commit:** `cargo test --workspace` green (bare `cargo test` only
+6. **Universality check (standing user directive, July 2026):** at every spec
+   or implementation pass, ask what is being hard-coded that the vision does
+   not require — fixed counts, surface-shaped engine caps, `&'static str` in
+   published APIs, single-purpose fields. Flag findings to the user even
+   unprompted; file them before format freezes (serializers, wire protocol,
+   crates.io APIs), where limitations become permanent.
+7. **Every commit:** `cargo test --workspace` green (bare `cargo test` only
    runs the app crate), clippy clean on touched crates, update the phase
    report as you go — not at the end.
 

@@ -127,6 +127,9 @@ Everything else open is scheduled: BUG-001/008 → P10 C0 (now), BUG-005 → P10
 | Encoder hardware (EN16/MFT) unpurchased | **De-escalated** | W1 touch encoders are the only relative path (session 0: Digitakt II verified absolute-only, disqualified; BUG-009 filed); buy a true-relative box later for tactile feel | Post-W1 |
 | Hard-coded app node IDs as script/UI contract | Active | W-track binds by discovery (`hello`/`topology` msgs); profiles migrate when it breaks | W2 |
 | AnalogEngine/FmEngine monophonic | Active | Voice allocator | P13 |
+| L2 `&'static str` in `CapabilityDocument`/`SurfaceDescriptor` (name, vendor, extensions) | Active — **`Box::leak` already shipping** in `paraclete-clap-host/src/bridge.rs:137` per plugin load; blocks dynamic surfaces (Theoria per-client) and dynamic nodes | `Cow<'static, str>` (PortName already models the fix); breaking change is FREE until crates.io publication — do before `paraclete-node-api` v0.1.0 ships | Pre-publication |
+| Per-step velocity dropped at engine boundary (`retrigger(note)` has no velocity) | Active | Plumb velocity → level in W1 C0 (spec amended); velocity-mod routing later | **W1 C0** |
+| Sampler: one sample per node — no velocity layers, round-robin, or slices | Active | Layering via topology today; slices/layers are engine-internal, spec with the P12+ drum pass | P12+ |
 | AnalogEngine: one machine per drum type | Active — vision amended July 2026: machine *family* per type (kick/snare/tom/clap/hat variants, per-track selectable) is the destination | peaks/plaits (MIT) algorithm source; OQ-14 decides selection mechanism | P12+ |
 | Inner GraphNode runtime patching; `InnerGraphNode::serialize()` empty | Active | Inner-graph patch + persistence | P11+ |
 | CLAP plugin nodes not in `NodeRegistry` | Active | Registry + PluginLibrary arg | P11+ |
