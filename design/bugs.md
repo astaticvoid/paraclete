@@ -203,3 +203,31 @@ which is the correct one — the emulator is the odd one out.
 emulator; update the P9.5 emulator tests that assert `PadPressed` for scene/
 control ids. One-file change + test sweep; fold into the next emulator-touching
 commit or W0 C2 verification if the emulator path blocks the exit criteria.
+
+---
+
+### BUG-015 — FmEngine routes ParamLock through bank.handle_commands (p-lock bleed)
+
+**Severity:** Medium — per-step parameter locks on an FM voice permanently
+mutate the ParameterBank, so a locked value bleeds into every subsequent step
+until another lock or `CMD_SET_PARAM` overwrites it  
+**Phase found:** W1 C0 (July 2026), while adding CMD_TRIGGER — noticed the
+existing event loop  
+**Description:** CLAUDE.md's ParamLock pattern (ADR-019) is explicit: nodes
+supporting per-step locks "must NOT route `ParamLock` events through
+`bank.handle_commands()` — that permanently mutates the bank and bleeds the
+locked value into subsequent steps." `AnalogEngine` follows the prescribed
+`node_locks` pattern (per-cycle overrides cleared each `process()`), but
+`FmEngine` converts each `ParamLock` event into a synthetic `CMD_SET_PARAM`
+and feeds it to `self.bank.handle_commands(...)` (`fm_engine.rs` ~305–306),
+the exact anti-pattern. An FM track with a p-lock on one step hears that value
+persist on the following unlocked steps.  
+**Location:** `crates/paraclete-nodes/src/fm_engine.rs` — `process()` event
+loop (`Event::ParamLock` arm)  
+**Fix direction:** mirror `AnalogEngine` — add a `node_locks: Vec<(u32, f64)>`
+cleared at the top of `process()`, push `(param_id, value)` in the `ParamLock`
+arm, and read via a `get_param()` helper that checks `node_locks` before the
+bank. Pre-existing (not introduced by W1 C0); left untouched there to keep the
+commit scoped. Fold into the next `fm_engine.rs`-touching commit or a small
+standalone fix; add a regression test asserting a locked step does not affect
+the next unlocked step.

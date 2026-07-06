@@ -266,6 +266,7 @@ These are hard constraints, not guidelines:
 - The `NodeExecutor::process()` loop uses raw pointer aliasing to work around Rust's borrow checker for the `transport` and `extended_events` fields — this is intentional and documented with `SAFETY` comments.
 - All main-thread → audio-thread communication goes through the lock-free ring buffer (`ConfigMessage`).
 - `NodeCommand` messages (`CMD_SET_PARAM = 0`, `CMD_BUMP_PARAM = 1`) are routed per-node via a separate SPSC and delivered as `input.commands()` in `process()`. Node-specific command type IDs start at 16.
+- `CMD_TRIGGER = 19` (W1 C0) is a **universal instrument command** (defined in `paraclete-node-api`, re-exported): live-trigger a voice, same retrigger path as a `NoteOn`. `arg0` = note number (`< 0` → the node's default/last note), `arg1` = velocity `0.0–1.0` (`<= 0.0` → default `0.79`). Implemented identically by `AnalogEngine`, `FmEngine`, `Sampler`; other node types ignore it. Numerically it sits in the `≥ 16` node-specific range but is cross-instrument by contract. Velocity (from `CMD_TRIGGER.arg1` or a `NoteOn`'s 16-bit value, `vel/65535`) is a linear output-level multiplier — full velocity = unity gain; velocity-mod routing is P12+.
 
 ## App Graph Node IDs
 
