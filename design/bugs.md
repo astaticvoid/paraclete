@@ -182,3 +182,23 @@ span with old state, apply event, render remainder). Replace the Sampler's
 per-voice `SincFixedOut` with load-time resample + playback Hermite in the
 same change (sinc group delay compounds the jitter). **Schedule with P10 C3**
 — signed micro-timing must ship audible.
+
+### BUG-014 — Emulator emits PadPressed for scene/control ids where hardware emits ButtonPressed
+
+**Severity:** Medium — emulator-only; SHIFT (65) and SEQ_EDIT (64) are dead
+under the terminal emulator because the profile keys them on `ButtonPressed`  
+**Phase found:** W0 Commit 1 (July 2026), while defining Theoria's event
+mapping  
+**Description:** the physical `LaunchpadNode` parses scene (64–71) and
+control-row (72–79) presses as `ButtonPressed`/`ButtonReleased`, and
+`launchpad.rhai` matches on those event types. The P9.5 `LaunchpadEmulator`
+emits `PadPressed`/`PadReleased` for *all* 80 ids (`emulator/mod.rs`
+`apply_press`), so scene/control handlers never fire when driving the app
+from the keyboard. `TheoriaSurfaceNode` (W0) follows the hardware convention,
+which is the correct one — the emulator is the odd one out.  
+**Location:** `paraclete-hal/src/emulator/mod.rs` (`apply_press`,
+`apply_release`)  
+**Fix direction:** emit `ButtonPressed`/`ButtonReleased` for ids ≥ 64 in the
+emulator; update the P9.5 emulator tests that assert `PadPressed` for scene/
+control ids. One-file change + test sweep; fold into the next emulator-touching
+commit or W0 C2 verification if the emulator path blocks the exit criteria.
