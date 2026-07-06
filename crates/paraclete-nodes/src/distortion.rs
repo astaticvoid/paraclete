@@ -203,8 +203,8 @@ mod tests {
         dist.activate(44100.0, 64);
         let mut buf: Vec<(String, StateBusValue)> = Vec::new();
         dist.published_state(&mut buf);
-        let entry = buf.iter().find(|(k, _)| k == "/node/3/drive");
-        assert!(entry.is_some(), "expected /node/3/drive in published_state");
+        let entry = buf.iter().find(|(k, _)| k == "/node/3/param/drive");
+        assert!(entry.is_some(), "expected /node/3/param/drive in published_state");
         assert_eq!(entry.unwrap().1, StateBusValue::Float(0.0));
     }
 }

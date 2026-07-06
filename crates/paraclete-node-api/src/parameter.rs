@@ -24,6 +24,12 @@ struct ParameterSlot {
 /// on the audio thread.
 pub struct ParameterBank {
     slots: Vec<ParameterSlot>,
+    /// Lazily-built `/node/{id}/param/{name}` path strings, keyed to the
+    /// `node_id` passed into the first `publish_bank_state()` call for this
+    /// bank instance. A fresh bank is built on every `activate()`, so
+    /// re-activation naturally rebuilds the cache with the current node_id
+    /// (BUG-007 fix: eliminates the per-cycle `format!` on the audio thread).
+    path_cache: std::sync::OnceLock<Vec<String>>,
 }
 
 impl ParameterBank {
@@ -38,12 +44,12 @@ impl ParameterBank {
             max:      p.max,
             default:  p.default,
         }).collect();
-        Self { slots }
+        Self { slots, path_cache: std::sync::OnceLock::new() }
     }
 
     /// Build an empty bank (no parameters declared).
     pub fn empty() -> Self {
-        Self { slots: Vec::new() }
+        Self { slots: Vec::new(), path_cache: std::sync::OnceLock::new() }
     }
 
     /// Apply `CMD_SET_PARAM` and `CMD_BUMP_PARAM` from `input.commands`.
@@ -95,15 +101,24 @@ impl ParameterBank {
     }
 }
 
-/// Push one `/node/{node_id}/{param_name}` = Float(value) entry per declared slot.
-/// Appends to `buf`; does not clear it.
+/// Push one `/node/{node_id}/param/{param_name}` = Float(value) entry per
+/// declared slot. Appends to `buf`; does not clear it.
+///
+/// Path strings are built once (lazily, on first call) and cached in
+/// `bank.path_cache`; subsequent calls clone the cached `String`s instead of
+/// re-running `format!` (BUG-007). This is audio-thread safe: `OnceLock::get_or_init`
+/// after initialization is a cheap atomic load, and the residual `String::clone`
+/// per entry is the accepted cost of shipping owned strings off the audio thread.
 pub fn publish_bank_state(
     node_id: u32,
     bank:    &ParameterBank,
     buf:     &mut Vec<(String, StateBusValue)>,
 ) {
-    for (name, value) in bank.iter_values() {
-        buf.push((format!("/node/{}/{}", node_id, name), StateBusValue::Float(value)));
+    let paths = bank.path_cache.get_or_init(|| {
+        bank.slots.iter().map(|s| format!("/node/{}/param/{}", node_id, s.name)).collect()
+    });
+    for (path, slot) in paths.iter().zip(bank.slots.iter()) {
+        buf.push((path.clone(), StateBusValue::Float(slot.current)));
     }
 }
 
@@ -225,8 +240,36 @@ mod tests {
         let mut buf: Vec<(String, StateBusValue)> = Vec::new();
         publish_bank_state(42, &bank, &mut buf);
         assert_eq!(buf.len(), 1);
-        assert_eq!(buf[0].0, "/node/42/cutoff");
+        assert_eq!(buf[0].0, "/node/42/param/cutoff");
         assert_eq!(buf[0].1, StateBusValue::Float(0.7));
+    }
+
+    #[test]
+    fn publish_bank_state_uses_param_prefix() {
+        let doc = make_single_param_doc("resonance", 0.42);
+        let bank = ParameterBank::from_capability_document(&doc);
+        let mut buf: Vec<(String, StateBusValue)> = Vec::new();
+        publish_bank_state(7, &bank, &mut buf);
+        let entry = buf.iter().find(|(k, _)| k == "/node/7/param/resonance");
+        assert!(entry.is_some(), "expected /node/7/param/resonance in {:?}", buf);
+    }
+
+    #[test]
+    fn publish_bank_state_allocates_no_paths_after_first_call() {
+        let doc = make_doc(); // 2 params
+        let bank = ParameterBank::from_capability_document(&doc);
+        let mut buf: Vec<(String, StateBusValue)> = Vec::new();
+
+        publish_bank_state(7, &bank, &mut buf);
+        let first_ptrs: Vec<*const u8> = bank.path_cache.get().unwrap()
+            .iter().map(|s| s.as_ptr()).collect();
+
+        buf.clear();
+        publish_bank_state(7, &bank, &mut buf);
+        let second_ptrs: Vec<*const u8> = bank.path_cache.get().unwrap()
+            .iter().map(|s| s.as_ptr()).collect();
+
+        assert_eq!(first_ptrs, second_ptrs, "path_cache backing strings must be stable across calls (no re-format!)");
     }
 
     #[test]

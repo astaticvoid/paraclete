@@ -91,7 +91,7 @@ fn tui_encoder_slot_resolves_param_label_from_cap_doc() {
         b.write("/context/encoder_0/param", StateBusValue::Float(
             ParamDescriptor::id_for_name("cutoff") as f64
         ));
-        b.write("/node/42/cutoff", StateBusValue::Float(1200.0));
+        b.write("/node/42/param/cutoff", StateBusValue::Float(1200.0));
     }
 
     let mut cap_docs = HashMap::new();
@@ -123,7 +123,7 @@ fn tui_recently_changed_clears_after_500ms() {
         b.write("/context/encoder_0/param", StateBusValue::Float(
             ParamDescriptor::id_for_name("cutoff") as f64
         ));
-        b.write("/node/42/cutoff", StateBusValue::Float(1200.0));
+        b.write("/node/42/param/cutoff", StateBusValue::Float(1200.0));
     }
 
     let mut cap_docs = HashMap::new();

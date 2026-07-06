@@ -223,6 +223,13 @@ pub struct Sequencer {
 
     cv_outputs:  usize,
     current_cv:  Vec<f32>,
+
+    /// Lazily-built `/node/{id}/state/*` path strings for the 9 unconditional
+    /// `published_state()` entries (BUG-007 fix: eliminates the per-cycle
+    /// `format!` on the audio thread for these fixed keys). Keyed to
+    /// `self.node_id` at first `published_state()` call. The conditional
+    /// `track_name` entry and all VALUEs are still computed fresh each call.
+    state_path_cache: std::sync::OnceLock<[String; 9]>,
 }
 
 impl Sequencer {
@@ -307,6 +314,7 @@ impl Sequencer {
             sample_rate:    44100.0,
             cv_outputs,
             current_cv:  vec![0.0_f32; cv_outputs],
+            state_path_cache: std::sync::OnceLock::new(),
         }
     }
 
@@ -678,15 +686,33 @@ impl Node for Sequencer {
 
     fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         let id = self.node_id;
-        buf.push((format!("/node/{id}/state/current_step"),    StateBusValue::Int(self.current_step as i64)));
-        buf.push((format!("/node/{id}/state/pattern_length"),  StateBusValue::Int(self.patterns[self.active_index()].length as i64)));
-        buf.push((format!("/node/{id}/state/playing"),         StateBusValue::Bool(self.playing)));
-        buf.push((format!("/node/{id}/state/steps"),           StateBusValue::Text(self.steps_bitfield())));
-        buf.push((format!("/node/{id}/state/last_trig"),       StateBusValue::Int(self.trig_count as i64)));
-        buf.push((format!("/node/{id}/state/last_fired_step"), StateBusValue::Int(self.last_fired_step as i64)));
-        buf.push((format!("/node/{id}/state/loop_count"),      StateBusValue::Int(self.cycle_state.loop_count as i64)));
-        buf.push((format!("/node/{id}/state/fill_a"),          StateBusValue::Float(if self.cycle_state.fill_a { 1.0 } else { 0.0 })));
-        buf.push((format!("/node/{id}/state/fill_b"),          StateBusValue::Float(if self.cycle_state.fill_b { 1.0 } else { 0.0 })));
+        let paths = self.state_path_cache.get_or_init(|| {
+            [
+                format!("/node/{id}/state/current_step"),
+                format!("/node/{id}/state/pattern_length"),
+                format!("/node/{id}/state/playing"),
+                format!("/node/{id}/state/steps"),
+                format!("/node/{id}/state/last_trig"),
+                format!("/node/{id}/state/last_fired_step"),
+                format!("/node/{id}/state/loop_count"),
+                format!("/node/{id}/state/fill_a"),
+                format!("/node/{id}/state/fill_b"),
+            ]
+        });
+        buf.push((paths[0].clone(), StateBusValue::Int(self.current_step as i64)));
+        buf.push((paths[1].clone(), StateBusValue::Int(self.patterns[self.active_index()].length as i64)));
+        buf.push((paths[2].clone(), StateBusValue::Bool(self.playing)));
+        buf.push((paths[3].clone(), StateBusValue::Text(self.steps_bitfield())));
+        buf.push((paths[4].clone(), StateBusValue::Int(self.trig_count as i64)));
+        buf.push((paths[5].clone(), StateBusValue::Int(self.last_fired_step as i64)));
+        buf.push((paths[6].clone(), StateBusValue::Int(self.cycle_state.loop_count as i64)));
+        buf.push((paths[7].clone(), StateBusValue::Float(if self.cycle_state.fill_a { 1.0 } else { 0.0 })));
+        buf.push((paths[8].clone(), StateBusValue::Float(if self.cycle_state.fill_b { 1.0 } else { 0.0 })));
+        // Conditional entry — not cached: caching would require a second
+        // OnceLock keyed on presence-at-first-call, which is fragile if
+        // track_name is set after construction but before the first publish.
+        // format! here is cheap (single optional String) relative to the 9
+        // unconditional entries above.
         if !self.track_name.is_empty() {
             buf.push((format!("/node/{id}/state/track_name"), StateBusValue::Text(self.track_name.clone())));
         }

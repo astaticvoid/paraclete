@@ -60,7 +60,7 @@ impl StateBusHandle {
     /// Scripts may NOT write to:
     ///   - `/node/{id}/state/` — written by the executor, read-only for scripts
     ///   - `/transport/` — clock domain state
-    ///   - `/hw/` — hardware state
+    ///   - `/surface/` — surface (hardware/Theoria) state
     pub fn write_sandboxed(&mut self, path: &str, value: StateBusValue) -> Result<(), &'static str> {
         let allowed = path.starts_with("/script/")
             || (path.starts_with("/node/") && {
@@ -199,9 +199,9 @@ mod tests {
     }
 
     #[test]
-    fn state_bus_write_sandboxed_rejects_transport_and_hw_paths() {
+    fn state_bus_write_sandboxed_rejects_transport_and_surface_paths() {
         let mut handle = StateBusHandle::new();
         assert!(handle.write_sandboxed("/transport/bpm", StateBusValue::Float(120.0)).is_err());
-        assert!(handle.write_sandboxed("/hw/led/1", StateBusValue::Int(0)).is_err());
+        assert!(handle.write_sandboxed("/surface/led/1", StateBusValue::Int(0)).is_err());
     }
 }

@@ -118,7 +118,7 @@ impl TuiApp {
                 (String::new(), 0.0, 1.0)
             };
 
-            let value_path = format!("/node/{}/{}", node_id, label);
+            let value_path = format!("/node/{}/param/{}", node_id, label);
             let value = match bus.read(&value_path) {
                 Some(StateBusValue::Float(v)) => *v,
                 _ => 0.0,
