@@ -76,7 +76,8 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** line and 
 **Description:** `publish_bank_state` calls `format!("/node/{}/{}", node_id, name)` per parameter per cycle on the audio thread. `state_bufs.clear()` drops these `String`s each cycle; they are re-created from scratch on the next cycle. The `Vec` outer capacity is retained but String heap data is not.  
 **Location:** `crates/paraclete-node-api/src/parameter.rs` — `publish_bank_state()`  
 **Note:** The Sequencer's `published_state()` has used the same `format!` pattern since P5. This is an accepted pattern — `published_state()` is not held to the same no-alloc rule as `process()` — but is worth eliminating for large graphs.  
-**Fix direction:** Cache formatted path strings in a `Vec<String>` built once at `activate()` time. `publish_bank_state` zips cached paths with `iter_values()` to push pairs with no allocation.
+**Fix direction:** Cache formatted path strings in a `Vec<String>` built once at `activate()` time. `publish_bank_state` zips cached paths with `iter_values()` to push pairs with no allocation.  
+**Fixed:** W1 C1 (`c9468b9`) — path strings cached in a per-`ParameterBank` `std::sync::OnceLock<Vec<String>>`, built lazily on the first `publish_bank_state()` call and cloned thereafter; `format!` no longer runs on the audio thread after the first cycle. `Sequencer::published_state()` got the same treatment (`OnceLock<[String; 9]>` for its fixed `/state/*` keys; the conditional `track_name` entry stays inline). The residual per-entry `String::clone` is retained by design — the buffer ships owned strings to the main thread (full elimination needs BUG-006's return channel). Verified by `publish_bank_state_allocates_no_paths_after_first_call` (pointer-stability across calls). Note the paths also changed to `/node/{id}/param/{name}` in the same commit (state-path unification).
 
 ---
 

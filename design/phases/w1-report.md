@@ -73,3 +73,70 @@ commit; the 8-angle fan-out was reserved for the gated P10 C1 data-model
 change). Verified: consistent velocity math and clamping, allocation-free
 output scaling, sensible defaults, state reset in `activate()`, valid tests.
 No correctness issues found; BUG-015 filed as a pre-existing neighbor.
+
+---
+
+## Commit 1 — state-path unification + BUG-007 path caching — shipped `c9468b9`
+
+### What shipped
+
+- **Canonical path scheme frozen** (documented in CLAUDE.md → StateBus):
+  param values move `/node/{id}/{name}` → `/node/{id}/param/{name}`;
+  `/node/{id}/state/{key}`, `/transport/*`, `/context/*`, `/script/*`
+  unchanged; `/hw/*` → `/surface/{id}/*`. This matches the sandbox rule that
+  was already correct (`write_sandboxed` permitted `/node/{id}/param/*`) — the
+  publisher, not the rule, was wrong.
+- **BUG-007 fixed** (resolved in tracker): `publish_bank_state` caches its
+  formatted paths in a per-`ParameterBank` `std::sync::OnceLock<Vec<String>>`,
+  built lazily on first call and cloned thereafter — no `format!` on the audio
+  thread after the first cycle. Signature unchanged, so all 11 caller nodes
+  are untouched. `Sequencer::published_state()` got the same treatment
+  (`OnceLock<[String; 9]>` for its fixed `/state/*` keys). The residual
+  per-entry `String::clone` is retained by design (the buffer ships owned
+  strings to the main thread; full elimination needs BUG-006's return channel).
+- `/hw/`→`/surface/` in the sandbox doc + test; TUI encoder row + affected
+  tests read the new `/param/` path.
+
+### Scope came in smaller than the spec's file list
+
+I verified before implementing (recorded so the smaller diff isn't mistaken
+for incompleteness):
+
+- **Profiles need no change** — `profiles/*.rhai` read only
+  `/node/{id}/state/*` and `/script/*`, never param paths. The spec's "update
+  all `profiles/*.rhai`" over-stated it.
+- **No `/hw/*` writers or readers exist** anywhere except one doc comment and
+  one sandbox test, so that rename was doc + test only.
+- The only reader of the old param scheme was the TUI encoder row (one line).
+
+### Deviations / boring-option choices
+
+- Sequencer's conditional `track_name` `/state/` entry is **not** cached
+  (still inline `format!`): caching it cleanly would need a second cache keyed
+  on "present at first call," fragile if `track_name` is set post-construction
+  but pre-first-publish. It is one optional entry against nine cached ones —
+  documented in-code.
+- `paraclete-antiphon/src/protocol.rs` has a JSON round-trip **test fixture**
+  using the old `/node/20/cutoff` string. It is fixture data, not a scheme
+  assertion, so C1 left it. **Carried to C2:** when the live state mirror is
+  wired, the emitted paths must be the new `/param/` scheme; the fixture will
+  be aligned there (C2 is in that crate anyway).
+
+### Gate results
+
+- `cargo test --workspace`: **452 passed, 0 failures** (450 baseline + 2 new:
+  `publish_bank_state_uses_param_prefix`,
+  `publish_bank_state_allocates_no_paths_after_first_call` — pointer-stability
+  proof that `format!` does not re-run).
+- Clippy A/B (`-p paraclete-node-api -p paraclete-nodes -p paraclete-tui`,
+  forced full recompile): identical warning locations; zero new.
+- 3 existing param-path test assertions updated (parameter.rs, tui_tests.rs,
+  distortion.rs); `/state/`-path assertions left untouched.
+
+### Review
+
+Orchestrator-designed (the `OnceLock` caching mechanism was specified before
+implementation to resolve the BUG-007 buffer-ownership subtlety), then direct
+read of both substantive diffs + independent gate re-run. Verified: correct
+`OnceLock` lazy init keyed on `node_id`, faithful index→value mapping in the
+Sequencer cache, no new audio-thread allocation beyond the accepted clone.

@@ -244,7 +244,20 @@ handle.subscribe(path)        // → StateBusSubscription
 
 The main loop must call `conf.process_main_thread()` each iteration — this drains the state bus SPSC, calls `handle.tick()` on all registered `SurfaceOutputHandle`s, and notifies subscriptions. (`process_state_bus()` is kept as an alias.)
 
-Rhai scripts access the state bus through this same API. Scripts may `read()` any path and `write_sandboxed()` to `/node/{id}/param/*` only. Writing to `/node/*/state/*`, `/transport/*`, or `/hw/*` is sandbox-rejected. Scripts run on the main thread (`Rc<RefCell>` not `Arc<Mutex>`).
+**Canonical path scheme (W1 C1 — single source of truth; frozen before the Theoria protocol mirror):**
+
+| Path | Meaning | Writer |
+|------|---------|--------|
+| `/node/{id}/param/{name}` | live parameter value | `publish_bank_state()` |
+| `/node/{id}/state/{key}` | node-internal state (steps, current_step, …) | node `published_state()` |
+| `/transport/*` | clock domain state | clock |
+| `/context/*` | encoder context (from `publish_context()`) | profiles |
+| `/surface/{id}/*` | per-surface state (was `/hw/*`) | devices |
+| `/script/*` | profile-private scratch | scripts |
+
+`publish_bank_state()` caches its formatted `/node/{id}/param/{name}` paths in a per-`ParameterBank` `OnceLock` (built once, cloned thereafter) — no `format!` on the audio thread after the first cycle (BUG-007). `Sequencer::published_state()` caches its fixed `/state/*` keys the same way.
+
+Rhai scripts access the state bus through this same API. Scripts may `read()` any path and `write_sandboxed()` to `/node/{id}/param/*` and `/script/*` only. Writing to `/node/*/state/*`, `/transport/*`, or `/surface/*` is sandbox-rejected. Scripts run on the main thread (`Rc<RefCell>` not `Arc<Mutex>`).
 
 ## Event Delivery Ordering
 
