@@ -25,8 +25,8 @@ fn on_load() {
     state_write("/script/lp/selected", 0);
     state_write("/script/lp/shift",    false);
 
-    // ── Button / pad input ────────────────────────────────────────────────────
-    on_surface_event(LP_DEVICE_ID, |event| {
+    // ── Button / pad input (Launchpad/emulator + Theoria: one handler) ───────
+    on_surface_event([LP_DEVICE_ID, THEORIA_DEVICE_ID], |event| {
         let etype = event.event_type;
         let eid   = event.id;
 

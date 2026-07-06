@@ -94,6 +94,9 @@ pub fn build_from_instrument(
         } else {
             conf.add_node(node_def.id, node);
         }
+        // Record the tag for project-file v2 saves and the Antiphon `welcome`
+        // node snapshot (clients key editor views off type_tag).
+        conf.set_type_tag_for(node_def.id, &node_def.type_tag);
     }
 
     for edge in &def.edges {

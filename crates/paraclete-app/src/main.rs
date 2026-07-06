@@ -10,6 +10,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use paraclete_antiphon::protocol::{NodeSummary, ParamSummary, TransportSummary};
+use paraclete_antiphon::{AntiphonConfig, AntiphonHandle, AntiphonServer};
 use paraclete_app::builder::{build_from_instrument, load_instrument_definition, InstrumentIds};
 use paraclete_app::instrument::InstrumentDefinition;
 use paraclete_app::project::{save_project, load_project, ProjectMetadata, ProfileBinding};
@@ -27,9 +29,11 @@ const ID_EMULATOR:  u32 = 101;
 const ID_LAUNCHPAD: u32 = 102;
 const ID_DIGITAKT:  u32 = 103;
 const ID_KEYSTEP:   u32 = 104;
+const ID_THEORIA:   u32 = 106;
 const ID_GW_LP:     u32 = 110;
 const ID_GW_DT:     u32 = 111;
 const ID_GW_KS:     u32 = 112;
+const ID_GW_THEORIA: u32 = 113;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -49,6 +53,16 @@ fn main() {
 
     let no_tui = args.iter().any(|a| a == "--no-tui");
     let dev_ui = args.iter().any(|a| a == "--dev-ui");
+
+    let no_antiphon = args.iter().any(|a| a == "--no-antiphon");
+    let antiphon_port: u16 = args.iter()
+        .find(|a| a.starts_with("--antiphon-port="))
+        .and_then(|a| a.splitn(2, '=').nth(1).and_then(|s| s.parse().ok()))
+        .unwrap_or(paraclete_antiphon::DEFAULT_PORT);
+    let theoria_dir: PathBuf = args.iter()
+        .find(|a| a.starts_with("--theoria-dir="))
+        .and_then(|a| a.splitn(2, '=').nth(1).filter(|s| !s.is_empty()).map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("web/theoria"));
 
     // ── 1. Load instrument definition ────────────────────────────────────────
     let def = match load_instrument_definition(&instrument_path) {
@@ -122,6 +136,36 @@ fn main() {
             eprintln!("[paraclete] save failed: {e}");
         } else {
             eprintln!("[paraclete] project saved: {}", path.display());
+        }
+    }
+
+    // ── 6.5 Antiphon interface server (Theoria surfaces, ADR-031) ────────────
+    // After project load so the welcome snapshot reflects restored topology;
+    // after save so runtime surface/gateway nodes stay out of project files.
+    let mut consumer_theoria: Option<ScriptEventConsumer> = None;
+    let mut antiphon: Option<AntiphonHandle> = None;
+    if !no_antiphon {
+        let summaries = collect_node_summaries(&conf, &ids);
+        let config = AntiphonConfig {
+            port: antiphon_port,
+            token: load_or_create_token(),
+            static_dir: Some(theoria_dir.clone()),
+            device_id: ID_THEORIA,
+        };
+        // Static snapshot: InternalClock auto-starts, so playing=true is
+        // truthful at W0. The live state mirror replaces this at W1.
+        let transport = TransportSummary { playing: true, bpm: def.bpm };
+        match AntiphonServer::spawn(config, summaries, transport) {
+            Ok((node, handle)) => {
+                conf.add_surface(ID_THEORIA, Box::new(node));
+                let (gw, cons) = ScriptingGatewayNode::new(ID_THEORIA, 256);
+                conf.add_node(ID_GW_THEORIA, Box::new(gw));
+                conf.connect(ID_THEORIA, 0, ID_GW_THEORIA, 0).ok();
+                consumer_theoria = Some(cons);
+                eprintln!("[paraclete] Theoria: {}", handle.url);
+                antiphon = Some(handle);
+            }
+            Err(e) => eprintln!("[paraclete] antiphon disabled ({e})"),
         }
     }
 
@@ -211,6 +255,7 @@ fn main() {
         consumer_lp.drain(&mut event_buf);
         if let Some(ref mut c) = consumer_dt { c.drain(&mut event_buf); }
         if let Some(ref mut c) = consumer_ks { c.drain(&mut event_buf); }
+        if let Some(ref mut c) = consumer_theoria { c.drain(&mut event_buf); }
 
         for ev in &event_buf {
             scripting.dispatch_surface_event(ev);
@@ -225,7 +270,22 @@ fn main() {
             conf.send_command(cmd).ok();
         }
 
-        let led_output = scripting.take_pending_output();
+        let mut led_output = scripting.take_pending_output();
+        // Mirror LED output addressed to the Launchpad/emulator onto the
+        // Theoria surface so both show the same state (w0-interfaces §wiring).
+        if antiphon.is_some() {
+            if let Some(mut lp_out) = led_output.get(&lp_dev_id).cloned() {
+                led_output
+                    .entry(ID_THEORIA)
+                    .and_modify(|o| {
+                        // Mirrored updates first: downstream is last-write-wins,
+                        // so a profile's direct-to-Theoria write beats the mirror.
+                        std::mem::swap(&mut lp_out.led_updates, &mut o.led_updates);
+                        o.led_updates.extend(lp_out.led_updates.drain(..));
+                    })
+                    .or_insert(lp_out);
+            }
+        }
         if !led_output.is_empty() {
             conf.deliver_script_output(led_output);
         }
@@ -316,6 +376,52 @@ fn load_plugin_libraries(def: &InstrumentDefinition) -> HashMap<String, Arc<Plug
     libraries
 }
 
+/// Load the Antiphon session token from `.antiphon-token` (CWD), creating it
+/// on first run. Persisting across restarts is what makes the client's
+/// auto-reconnect-after-app-restart work — a per-run token would bounce every
+/// reconnecting client with `bye "bad token"`. Delete the file to rotate.
+/// (`fastrand` is not a CSPRNG; acceptable under the recorded W0 LAN posture.)
+fn load_or_create_token() -> String {
+    const TOKEN_FILE: &str = ".antiphon-token";
+    if let Ok(existing) = std::fs::read_to_string(TOKEN_FILE) {
+        let existing = existing.trim().to_ascii_lowercase();
+        if existing.len() == 32 && existing.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return existing;
+        }
+        eprintln!("[paraclete] {TOKEN_FILE} malformed; generating a new token");
+    }
+    let token: String = (0..16).map(|_| format!("{:02x}", fastrand::u8(..))).collect();
+    if let Err(e) = std::fs::write(TOKEN_FILE, &token) {
+        eprintln!("[paraclete] could not persist {TOKEN_FILE} ({e}); token is per-run");
+    }
+    token
+}
+
+/// Assemble the `welcome` node snapshot from the configurator's cap-doc cache.
+/// Antiphon never talks to the configurator directly (w0 spec §kerygma).
+fn collect_node_summaries(
+    conf: &NodeConfigurator,
+    ids: &InstrumentIds,
+) -> Vec<NodeSummary> {
+    ids.all.iter()
+        .filter_map(|(_, node_id)| {
+            let doc = conf.get_node_cap_doc(*node_id)?;
+            Some(NodeSummary {
+                id: *node_id,
+                type_tag: conf.type_tag_for(*node_id).unwrap_or("").to_string(),
+                name: doc.name.to_string(),
+                params: doc.params.iter().map(|p| ParamSummary {
+                    id: p.id,
+                    name: p.name.as_str().to_string(),
+                    min: p.min,
+                    max: p.max,
+                    default: p.default,
+                }).collect(),
+            })
+        })
+        .collect()
+}
+
 fn build_constants(
     lp_dev_id:   u32,
     digitakt_id: Option<u32>,
@@ -331,6 +437,8 @@ fn build_constants(
         ("LP_DEVICE_ID".into(),   rhai::Dynamic::from(lp_dev_id as i64)),
         ("DT_DEVICE_ID".into(),   rhai::Dynamic::from(digitakt_id.unwrap_or(0) as i64)),
         ("KS_DEVICE_ID".into(),   rhai::Dynamic::from(keystep_id.unwrap_or(0) as i64)),
+        // Injected even with --no-antiphon so profiles referencing it still load.
+        ("THEORIA_DEVICE_ID".into(), rhai::Dynamic::from(ID_THEORIA as i64)),
         ("CLOCK_ID".into(),       rhai::Dynamic::from(ids.clock as i64)),
         ("TRACK_SEQ_IDS".into(),  id_array(&ids.sequencers)),
         ("TRACK_SAMP_IDS".into(), id_array(&ids.samplers)),

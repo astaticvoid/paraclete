@@ -264,6 +264,36 @@ fn register_builtins(engine: &mut Engine, state: Rc<RefCell<ScriptState>>) {
         });
     }
 
+    // ── on_surface_event([device_ids…], fn) ───────────────────────────────────
+    // Array overload: one inline handler serves any number of surfaces
+    // (Rhai's FnPtr-from-closure cannot be stored and re-passed, so profiles
+    // cannot register the same closure twice themselves).
+    {
+        let s = Rc::clone(&state);
+        engine.register_fn("on_surface_event", move |device_ids: rhai::Array, handler: FnPtr| {
+            let mut st = s.borrow_mut();
+            let ctx_name = st.current_context.clone();
+            let ctx = st.context_data.entry(ctx_name).or_insert_with(ContextData::new);
+            // Dedupe within the call: dispatch fires every matching entry, so
+            // a repeated id (e.g. two absent devices both injected as 0)
+            // would double-fire the handler — toggle handlers would look dead.
+            let mut seen: Vec<u32> = Vec::with_capacity(device_ids.len());
+            for id in device_ids {
+                match id.as_int() {
+                    Ok(i) if i >= 0 => {
+                        let i = i as u32;
+                        if !seen.contains(&i) {
+                            seen.push(i);
+                            ctx.hw_handlers.push((i, handler.clone()));
+                        }
+                    }
+                    Ok(i) => eprintln!("[rhai] on_surface_event: negative device id {i} ignored"),
+                    Err(t) => eprintln!("[rhai] on_surface_event: non-integer device id ({t})"),
+                }
+            }
+        });
+    }
+
     // ── subscribe(path, fn) ───────────────────────────────────────────────────
     {
         let s = Rc::clone(&state);
@@ -749,6 +779,39 @@ mod tests {
         assert!(engine.eval_str(r#"
             let v = state_read("/node/1/state/x");
         "#).is_ok());
+    }
+
+    #[test]
+    fn on_surface_event_array_registers_handler_for_multiple_devices() {
+        let mut engine = ScriptingEngine::new();
+        let path = std::env::temp_dir().join("on_surface_event_array_test.rhai");
+        // Registration lives in on_load(), the production idiom — top-level
+        // statements run twice (run_ast + call_fn's AST evaluation).
+        // 42 repeated + a negative id: both must not double-register.
+        std::fs::write(&path, r#"
+            fn on_load() {
+                on_surface_event([42, 77, 42, -3], |event| {
+                    send_cmd(1, 16, event.id, 0.0);
+                });
+            }
+        "#).unwrap();
+        engine.eval_file("array_test", path.to_str().unwrap(), &[])
+            .expect("script with array registration must load");
+
+        use paraclete_node_api::{SurfaceEvent, SurfaceEventMsg};
+        for (dev, pad) in [(42u32, 5i64), (77, 6), (99, 7)] {
+            engine.dispatch_surface_event(&SurfaceEventMsg {
+                device_id: dev,
+                event: SurfaceEvent::PadPressed { id: pad as u32, velocity: 100, pressure: 0 },
+            });
+        }
+
+        let cmds: Vec<_> = engine.take_pending_commands().into_iter()
+            .filter(|c| c.target_id == 1 && c.type_id == 16)
+            .collect();
+        assert_eq!(cmds.len(), 2, "handler fires for both registered ids, not the third");
+        assert_eq!(cmds[0].arg0, 5, "device 42's event dispatched");
+        assert_eq!(cmds[1].arg0, 6, "device 77's event dispatched");
     }
 
     #[test]

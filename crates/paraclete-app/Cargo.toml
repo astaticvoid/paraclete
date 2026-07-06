@@ -24,6 +24,8 @@ paraclete-scripting   = { workspace = true }
 paraclete-tui         = { path = "../paraclete-tui" }
 paraclete-clap-host   = { path = "../paraclete-clap-host" }
 paraclete-graph-nodes = { workspace = true }
+paraclete-antiphon    = { workspace = true }
+fastrand  = { workspace = true }
 log       = { workspace = true }
 rhai      = { workspace = true }
 ctrlc     = { workspace = true }
