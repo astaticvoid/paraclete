@@ -86,8 +86,86 @@ shadow replay on tick, ping→pong; passes). Workspace: 425 passed, 0 failed
 
 ## Commit 2 — app wiring + client
 
-*(pending)*
+**Shipped:**
+
+- App wiring: `ID_THEORIA = 106`, `ID_GW_THEORIA = 113`; flags `--no-antiphon`,
+  `--antiphon-port` (default 7274), `--theoria-dir` (default `web/theoria`);
+  spawn after hardware devices, before executor build; gateway drained in
+  main-loop step 2; random 16-byte hex token printed as
+  `Theoria: http://<lan-ip>:<port>/?t=<token>` (stderr only — the TUI
+  transport bar was not trivially reachable, per spec fallback).
+- `welcome` snapshot assembled by `collect_node_summaries()` from the cap-doc
+  cache; antiphon never touches the configurator. Builder now calls
+  `set_type_tag_for()` for every YAML node, so snapshots carry real tags
+  (`analog_engine:kick` …) — this also un-breaks type_tags for project-file
+  v2 saves of instrument-built graphs, which previously had none.
+- LED mirroring: script output addressed to the Launchpad/emulator device is
+  cloned onto `ID_THEORIA` in the main loop (merge via `entry().and_modify()`
+  so direct-to-Theoria output is preserved).
+- **Profile:** `launchpad.rhai` changed by exactly one line —
+  `on_surface_event([LP_DEVICE_ID, THEORIA_DEVICE_ID], |event| …)`. Supported
+  by a new **array overload** of `on_surface_event` in `paraclete-scripting`
+  (one inline handler registered for N device ids; FnPtr cloned per id).
+  Rationale: Rhai's inline-only constraint (see memory/profile comments) makes
+  it impossible for a profile to share one closure across two registration
+  calls; the overload is a generic capability, not a Theoria special case
+  (universality check: any future surface joins a handler the same way).
+- `web/theoria/`: zero-build canvas client per spec — 8×8 grid + scene column
+  + control row, multi-touch pointer tracking with drag-off release, LED
+  batches, STALE banner ≤ 500 ms, 1→2→4→5 s reconnect backoff with hello
+  replay, protocol-mismatch hard error, RTT + touch→LED overlay.
+
+**Verified headless (epiclesis-style Node driver, localhost):** hello→welcome
+(protocol 0, device 106, 12 nodes with real params) in ~22 ms from socket
+open; full-surface replay (88 ids); SEQ_EDIT via glass lights green;
+step-toggle round trip **touch→profile→CMD_TOGGLE_STEP→state-bus→set_led→
+mirror→WS echo in 24–34 ms** on localhost. Driver script preserved in the
+session scratchpad; a reusable epiclesis harness is W1 C5 material.
+
+**Pre-commit review findings, Commit 2 (fixed before commit):**
+
+- **MAJOR — restart→reconnect was impossible:** the token was regenerated per
+  run, so a client auto-reconnecting after an app restart got
+  `bye "bad token"` and hard-errored. Fixed: the token persists in
+  `.antiphon-token` (CWD, gitignored; delete to rotate); verified two
+  consecutive runs print the same URL. `fastrand` is not a CSPRNG —
+  acceptable under the recorded W0 LAN posture.
+- Welcome snapshot moved after project load/save (step 6.5): a v2 `--load`
+  that restores topology is now reflected in `welcome.nodes`, and the Theoria
+  surface/gateway stay out of `--save` project files. `playing: true` in the
+  static transport snapshot is truthful (InternalClock auto-starts) and
+  commented as replaced by the W1 state mirror.
+- Mirror ordering: mirrored Launchpad updates now go *first* in the merged
+  batch so a profile's direct-to-Theoria write wins last-write-wins
+  downstream (mattered for W1 encoder-context colors).
+- Scripting array overload: ids deduped within a call (a repeated id — e.g.
+  two absent devices both injected as 0 — would double-fire handlers, making
+  toggle surfaces look dead), negative ids rejected with a log line.
+- Client: pong-liveness watchdog (2 missed pongs → close → STALE + reconnect,
+  covers silent Wi-Fi death), `bye "full"` keeps retrying instead of
+  hard-erroring, `canvas { touch-action: none }` belt-and-braces, draw-loop
+  and overlay perf nits.
+- Spec-letter note: the spec's `ScriptingGatewayNode::new(ID_GATEWAY_THEORIA,
+  256)` would tag events with the gateway id (113) and break the profile
+  match; the ctor takes the *device* id, so the implementation passes
+  `ID_THEORIA` (106) — the correct reading of the spec's intent.
+
+**Rhai finding (recorded):** `Engine::call_fn` re-evaluates the AST top level
+before invoking `on_load`, so top-level statements in profiles run twice.
+Existing profiles are safe (everything lives inside `fn on_load()`); the new
+scripting test documents the idiom.
 
 ## Exit criteria
 
-*(verified at Commit 2 / user session — see spec checklist)*
+- [x] Tablet (client) toggles steps; audio graph reflects it — verified
+      headless via WS driver + dev-ui/LED echo; **tablet-hardware pass
+      pending user session**
+- [ ] Launchpad + Theoria simultaneously, same LEDs — needs physical hardware
+      (user session; s0-launchpad-debug.md LED confirmation still pending)
+- [x] `launchpad.rhai`: one-line device-id alternation only
+- [x] Kill app → STALE ≤ 500 ms; restart → auto-reconnect (token persists in
+      `.antiphon-token` across restarts — verified; on-device check in user
+      session)
+- [x] RTT + touch→LED figures logged (localhost: 24–34 ms full round trip;
+      LAN figures to be added from the user session)
+- [x] `cargo test --workspace` green (427 passed, 0 failed); clippy clean

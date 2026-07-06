@@ -41,6 +41,13 @@ cargo run -- --dev-ui
 # Load/save project state (RON format, ADR-025; --load applied before build_executor, --save after)
 cargo run -- --load=project.ron --save=project.ron
 
+# Antiphon interface server (W0, ADR-031) — on by default; prints
+# "Theoria: http://<lan-ip>:7274/?t=<token>" to stderr. Open that URL on a
+# tablet for the Theoria grid. WS listens on port+1 (7275).
+cargo run -- --no-antiphon              # disable the interface server
+cargo run -- --antiphon-port=7274       # HTTP port (WS = port+1)
+cargo run -- --theoria-dir=web/theoria  # static client bundle directory
+
 # Build machine bank CLAP plugins (paraclete-clap crate; output: target/debug/*.clap)
 cargo build -p paraclete-clap
 
@@ -102,6 +109,7 @@ Three additional platform crates live outside the five-layer model:
 | `paraclete-clap-host` | GPL3 | Paraclete-as-CLAP-host (ADR-027, shipped P8). `PluginLibrary` loads `.clap` files (clap-sys + libloading); `PluginNode` wraps a loaded plugin as a `Node`. Arc-shared library handle keeps the .clap alive as long as any node exists. Generator plugins only at P8; effect plugins (audio_in port) in P9. |
 | `paraclete-tui` | GPL3 | `ratatui`-based terminal UI (ADR-026, shipped P8). `TuiApp` reads transport, encoder context, and step state from the StateBus each frame. Three-row layout: transport bar, encoder row, step row. |
 | `paraclete-graph-nodes` | GPL3 | Nodes that own a `NodeExecutor` inner graph (ADR-023, P9). The only crate permitted to depend on both `paraclete-nodes` and `paraclete-runtime`. `InnerGraphNode` is the initial concrete implementation. |
+| `paraclete-antiphon` | GPL3 | Antiphon interface server (ADR-031, W0). Protocol v0 (JSON over WebSocket, blocking tungstenite + rtrb, no tokio), `TheoriaSurfaceNode` (peer to `LaunchpadNode`; 80 pads + 8 relative encoders ids 90–97, all clients multiplex last-writer-wins), kerygma LED broadcast + shadow replay, tiny_http static serving of `web/theoria/`. Depends on L2 only. JSON never touches the audio thread; `process()` drains ≤ 250 events/cycle (executor event-buffer cap is 256). App wiring: device 106, gateway 113, `THEORIA_DEVICE_ID` Rhai constant. |
 
 ## Configurator API
 
@@ -280,9 +288,11 @@ The app hard-codes these IDs; profile scripts use them as injected constants:
 | 103 | `DigitaktMidiNode` |
 | 104 | `KeystepNode` |
 | 105 | `SurfaceMappingNode` |
+| 106 | `TheoriaSurfaceNode` (Antiphon, if enabled) |
 | 110 | `ScriptingGatewayNode[LP]` (Launchpad or emulator gateway) |
 | 111 | `ScriptingGatewayNode[DT]` (Digitakt gateway, if connected) |
 | 112 | `ScriptingGatewayNode[KS]` (Keystep gateway, if connected) |
+| 113 | `ScriptingGatewayNode[Theoria]` (if antiphon enabled) |
 | 200 | `ReverbNode` (master bus) |
 
 Constants injected per profile: `LP_DEVICE_ID`, `DT_DEVICE_ID`, `KS_DEVICE_ID`, `CLOCK_ID`, `TRACK_SEQ_IDS`, `TRACK_SAMP_IDS`, `TRACK_DIST_IDS`, `TRACK_FILT_IDS`.

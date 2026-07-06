@@ -4,7 +4,7 @@
 > planning changes occur. Keep it short — current state only.
 >
 > **Last updated:** July 2026 (playable-loop reprioritization)
-> **Current phase:** P10 C0 pre-flight, then W0 (Theoria grid POC);
+> **Current phase:** W0 shipped July 2026 (both commits; tablet-hardware pass pending user session). Next: P10 C1 (Pattern + serializer v3);
 > W1 → first paired usage session is the near-term milestone
 
 ---
@@ -59,7 +59,7 @@ each producing explicit roadmap deltas (or an explicit "no change").
 |---|---|---|---|
 | **P0–P9** | Skeleton → Modular Graph | See `architecture-evolving.md` phase log | **Complete** |
 | **P9.5** | Device Emulation & Test Harness | Full Launchpad emulator (C1). | **Closed early** — C1 shipped; C2/C3 cancelled (superseded by W0/W1); C4 rescoped into P10 C5 test work; piano mode deferred (physical Keystep exists) |
-| **W0** | Theoria grid POC | Browser grid as peer device: `paraclete-antiphon` crate, WS bridge, canvas 8×8 + scene + control, LED mirror, shared `launchpad.rhai` profile | **Next** |
+| **W0** | Theoria grid POC | Browser grid as peer device: `paraclete-antiphon` crate, WS bridge, canvas 8×8 + scene + control, LED mirror, shared `launchpad.rhai` profile | **Shipped** (July 2026; report: `w0-report.md`; localhost touch→LED 24–34 ms; exit criteria needing tablet/Launchpad hardware roll into the next user session) |
 | **P10 C0–C1** | Pattern engine foundation | BUG-001/008 pre-flight (C0, runs before W0); `Pattern` struct + serializer v3 = BUG-005 (C1) | **Pulled forward** |
 | **W1** | Theoria MVP | Touch encoders (relative → `CMD_BUMP_PARAM`), context display, transport, state mirror v1 → **paired session #1** | — |
 | **P10 C2–C5** | Pattern Engine depth | Multi-page (64-step) + page-loop; seamless switching + chaining; per-track length/speed; BUG-004 **+ BUG-013 (sub-block voice starts — micro-timing must be audible) + Sampler Hermite playback** in C3; grid/TUI surface | In design — order re-validated after session #1 |

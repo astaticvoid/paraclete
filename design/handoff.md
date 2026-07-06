@@ -76,8 +76,11 @@ one tier up.
 ## Current sequence (mirror of roadmap, July 2026)
 
 1. ~~P10 C0~~ **shipped** (`b0cf2c8`; BUG-001 re-diagnosed — read the
-p10-interfaces amendment before touching sequencer timing) → 2. **W0** (next;
-`w0-interfaces.md`) → 3. P10 C1 (gated; serializer v3) → 4. W1
+p10-interfaces amendment before touching sequencer timing) → 2. ~~W0~~
+**shipped** (July 2026, both commits; `w0-report.md` has deviations + figures;
+tablet-hardware exit checks roll into the next user session) → 3. **P10 C1**
+(next; gated; serializer v3 — read the p10-interfaces forward-extensibility
+amendment first) → 4. W1
 (`w1-interfaces.md`) → 5. **paired session #1** (user; `design/sessions/s1.md`
 + roadmap delta) → 6. P10 C2+ interleaved with W2. Session-0 runbooks
 (`s0-launchpad-debug.md`) remain open for the pending human LED/sound
