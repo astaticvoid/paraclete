@@ -140,3 +140,73 @@ implementation to resolve the BUG-007 buffer-ownership subtlety), then direct
 read of both substantive diffs + independent gate re-run. Verified: correct
 `OnceLock` lazy init keyed on `node_id`, faithful index→value mapping in the
 Sequencer cache, no new audio-thread allocation beyond the accepted clone.
+
+---
+
+## Commit 2 — kerygma state mirror v1 — shipped `3672d1a`
+
+### What shipped
+
+- **`StateBusHandle::iter()`** (L2, additive): full-scan access so the mirror
+  can diff the whole bus each pump.
+- **`AntiphonHandle::pump(bus, now_ms)`** (main-thread, called at main-loop
+  step 1.5): diffs the bus against a per-path `state_shadow`, coalesces
+  changes into a `pending` HashMap (repeated writes to one path collapse to
+  the latest), and flushes a `ServerMsg::State` batch at a 33 ms cadence.
+  Batch cap 256 with immediate overflow flush mid-scan (no drops). Numeric
+  coercion `Int`/`Bool`/`Float` → f64; **`Text` skipped** (steps bitfield /
+  track_name — the grid renders from LED, names from `NodeSummary`).
+- **`context`**: full 8-slot `/context/*` snapshot emitted whenever any
+  context path changes.
+- **`publish_topology(nodes)`**: `ServerMsg::Topology` hook. No live runtime
+  `apply_patch` call site exists at W1 (dynamic topology is test-only), so the
+  method + test ship as the ready hook for when apply_patch is wired to a
+  trigger — no trigger was invented.
+- App: monotonic `Instant` clock; `pump` at step 1.5 after
+  `process_main_thread`. protocol fixture aligned to the `/param/` scheme.
+
+### Subagent failure + recovery (process note)
+
+The implementer subagent died mid-task on an API connection drop. It had the
+code compiling but had **not** run its own gate and had written only 1 of the
+6 spec'd tests. On recovery I reviewed the full diff and found a **real
+correctness bug**: `context_dirty` was a per-`pump()` local, so a `/context/*`
+change during a non-due pump updated the shadow (preventing re-detection next
+pump) but was never flushed — the update was silently lost. Fixed by making it
+a persisted field cleared only on flush; added
+`context_change_during_non_due_pump_is_not_lost` as the regression guard. Also
+completed the 6-test suite and resolved an `is_none_or`-vs-MSRV-1.75 clippy
+conflict (the crate's MSRV is 1.75; `is_none_or` is 1.82) with an explicit
+`match`.
+
+### Flags for the paired session (design decisions to validate)
+
+1. **Context enc-id mapping is an assumption.** `publish_context` keys are
+   strings (`/context/encoder_3/...`) but `ContextSlot.enc` is a `u32`. The
+   mirror derives `enc` as the trailing integer of the key (`encoder_3` → 3).
+   This assumes one profile-encoder-key per slot; when the web encoder row
+   (C4) binds ids 90–97, this may need a defined key→id map instead. Marked
+   in-code and here.
+2. **No per-client initial state sync.** The mirror broadcasts *diffs*; a
+   client connecting mid-session gets `welcome` (which carries `NodeSummary`
+   params at their **default** values) and then only live changes — so current
+   non-default param values are not shown until they next change. Fine for the
+   single-tablet W1 MVP; a per-client welcome-time state snapshot is a
+   post-W1 / C4 refinement. Flag if a second tablet joining mid-jam feels
+   wrong in session #1.
+
+### Gate results
+
+- `cargo test --workspace`: **459 passed, 0 failures** (452 baseline + 7 new:
+  `StateBusHandle::iter` + 6 pump tests: diff-only, coalescing window,
+  overflow-without-drops, skips-text, context-snapshot-shape, context-dirty
+  regression).
+- Clippy clean on `paraclete-antiphon` (0 real warnings).
+
+### Review
+
+Orchestrator-scoped (value coercion, iteration API, and the context/enc
+decisions were specified before implementation). After the subagent's partial
+delivery I did a direct full-diff review — which caught the `context_dirty`
+bug the incomplete self-gate would have missed — plus the test completion and
+independent gate re-run.
