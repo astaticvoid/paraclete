@@ -322,11 +322,11 @@ Sequencer publishes to the state bus each cycle:
 
 P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, default 0.0). Swing is applied at emit time to odd-indexed steps.
 
-**Sequencer as CV source (P9):** `Sequencer::with_cv_outputs(n)` adds `n` CvSignal output ports (`cv_out_0`, `cv_out_1`, … at port IDs `PORT_CV_OUT_BASE + i`, where `PORT_CV_OUT_BASE = 3`; ports 0–2 are the existing clock_in/events_in/events_out). Each `Step` gains `cv_locks: Vec<(u16, f32)>` for per-step CV value locks (sample-and-hold: value held from step fire until next step fire). `"sequencer_cv"` type-tag is `Sequencer::with_cv_outputs(1)`. cv_locks are serialized in the project file (serialization version 2); P5 fields (TrigCondition, StepTiming) are still not serialized.
+**Sequencer as CV source (P9):** `Sequencer::with_cv_outputs(n)` adds `n` CvSignal output ports (`cv_out_0`, `cv_out_1`, … at port IDs `PORT_CV_OUT_BASE + i`, where `PORT_CV_OUT_BASE = 3`; ports 0–2 are the existing clock_in/events_in/events_out). Each `Step` gains `cv_locks: Vec<(u16, f32)>` for per-step CV value locks (sample-and-hold: value held from step fire until next step fire). `"sequencer_cv"` type-tag is `Sequencer::with_cv_outputs(1)`. cv_locks are serialized in the project file (serializer **v3** as of P10 C1; see below). P5 fields (`TrigCondition`, `StepTiming`) and per-pattern swing are serialized as of v3 (BUG-005 fixed).
 
 ## Current Phase: Playable-loop arc (P10 + W-track, July 2026)
 
-**If you are starting an implementation session, read `design/handoff.md` first** — it routes tasks by model tier and carries the guardrails. Current sequence (authority: `design/roadmap.md`): ~~P10 C0~~ shipped (BUG-001 re-diagnosed + fixed via measurement — see p10-interfaces amendment; BUG-008 fixed) → **W0** (next: Antiphon server + Theoria browser grid POC, spec: `design/phases/w0-interfaces.md`) → **P10 C1** (Pattern struct + serializer v3, gated) → **W1** (spec: `design/phases/w1-interfaces.md`) → **paired session #1 with the user** → P10 C2+ interleaved with W2.
+**If you are starting an implementation session, read `design/handoff.md` first** — it routes tasks by model tier and carries the guardrails. Current sequence (authority: `design/roadmap.md`): ~~P10 C0~~ shipped (BUG-001 re-diagnosed + fixed via measurement — see p10-interfaces amendment; BUG-008 fixed) → ~~W0~~ shipped (Antiphon server + Theoria browser grid POC) → ~~P10 C1~~ shipped (`6212242`; Pattern struct + serializer v3, gated; BUG-005 closed) → **W1** (next, spec: `design/phases/w1-interfaces.md`; BUG-012 device rate/buffer negotiation slots ahead of it) → **paired session #1 with the user** → P10 C2+ interleaved with W2.
 
 **The interface track (accepted July 2026, `design/interface-plan.md`, ADR-031):** *Antiphon* (`paraclete-antiphon`) is a presentation-agnostic interface server — WebSocket for the tablet client, in-process transport for the terminal — speaking the existing hardware vocabulary; every connected surface manifests as a `Surface` node + gateway, peer to `LaunchpadNode`. *Theoria* is the view layer (`theoria-web` tablet client — primary control/editing surface; `theoria-term` — the TUI ported to an Antiphon client at milestone WT). Touch encoders emit relative deltas only. **Naming policy is binding:** third-party marks (Elektron, Digitakt, Ableton, Push…) never appear in our feature names, identifiers, or UI strings — house vocabulary is Antiphon, Theoria, kerygma (broadcast module), epiclesis (headless test driver), *pages*, *grid*, *chain*; wire-protocol names stay plain.
 
@@ -344,14 +344,16 @@ P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, defa
 - **Commit 5:** Sequencer as CV source — `Sequencer::with_cv_outputs(n)`, `cv_out_{i}` ports (CvSignal), `Step::cv_locks`, sample-and-hold output. `"sequencer_cv"` registered in NodeRegistry.
 - **Commit 6:** GraphNode — `GraphNode` marker trait (LGPL3), `paraclete-graph-nodes` crate (new), `InnerGraphNode` (inner executor: clock→sequencer→kick→mix→audio_out), `"inner_graph"` registered in NodeRegistry.
 
+**P10 shipped so far** (pattern engine, in progress — see `design/phases/p10-report.md`):
+- **Commit 0** (`b0cf2c8`): BUG-001 (240-tick step period, re-diagnosed via measurement — the drift was the bar-sync snap, not `internal_clock.rs`) and BUG-008 (`set_initial_params` re-applied on re-activate) fixed.
+- **Commit 1 (GATED)** (`6212242`): `Pattern` struct (`steps`/`length`/`page_loop`/`swing`, `PAGE_SIZE = 8`); `Sequencer` owns `patterns: Vec<Pattern>` (one pattern); inert `cued_pattern`/`chain`/`chain_pos`/`speed_mult` staged for C3/C4; `STEP_CAPACITY = 64`. Serializer **v3** (fixes BUG-005): every `Step` field + per-pattern `length`/`page_loop`/`swing` persisted. Step **and** pattern records are length-prefixed (future fields skipped by v3 readers); counts are plain integers (engine cap can grow without a format bump). v1/v2 blobs load into `patterns[0]`. Deserialize is hardened against corrupt blobs (zero-step abort, `length` clamp, step re-pad to capacity — audio-thread playback must never panic on load).
+
 **Known deferred items (P10+):**
-- Step period is 241 ticks (not 240) — off-by-one in transport start model.
 - `ConnectionAgreement::baseline()` hardcodes `sample_rate=44100.0` and `block_size=512`.
 - `paraclete-hal` depends on `paraclete-runtime` (layer violation, deferred until StateBusHandle moves to L2).
 - AnalogEngine/FmEngine polyphony (monophonic with retrigger).
-- Signed micro-timing in Sequencer (negative offset not yet distinct from positive).
+- Signed micro-timing in Sequencer (negative offset not yet distinct from positive) — scheduled P10 C3 (BUG-004).
 - LadderFilter HP/BP modes, LFO tempo sync.
-- `Sequencer::serialize()` does not save P5 fields (TrigCondition, StepTiming) or swing.
 - `agg_state_buf` in executor does one allocation per cycle via `mem::take()` — full elimination requires a return channel.
 - AudioBuffer feedback cycles (requires OQ-7 oversampling strategy).
 - Inner GraphNode topology patching at runtime (P9 `apply_patch()` patches the outer graph only).

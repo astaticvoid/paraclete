@@ -3,8 +3,8 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** July 2026 (playable-loop reprioritization)
-> **Current phase:** W0 shipped July 2026 (both commits; tablet-hardware pass pending user session). Next: P10 C1 (Pattern + serializer v3);
+> **Last updated:** July 2026 (P10 C1 shipped)
+> **Current phase:** P10 C1 shipped July 2026 (`6212242`; Pattern struct + serializer v3 = BUG-005 closed; report: `p10-report.md`). Next: BUG-012 (device rate/buffer negotiation) then W1;
 > W1 → first paired usage session is the near-term milestone
 
 ---
@@ -40,8 +40,8 @@ properly with serializer v3 in P10 C1 — scheduled before session #1 regardless
 | Order | Work | Why |
 |---|---|---|
 | 1 | ~~P10 C0 pre-flight~~ — **shipped** (BUG-001 re-diagnosed via measurement harness; BUG-008 fixed) | Done |
-| 2 | **W0** — Theoria grid POC (`paraclete-antiphon` crate + canvas grid) | De-risks transport; tablet in hand; supersedes P9.5 C2 |
-| 3 | **P10 C1** — `Pattern` struct + serializer v3 (BUG-005) | Foundation commit of ADR-030; kills the data-loss class before sessions |
+| 2 | ~~**W0**~~ — **shipped** (Theoria grid POC: `paraclete-antiphon` crate + canvas grid) | Done |
+| 3 | ~~**P10 C1**~~ — **shipped** (`6212242`; `Pattern` struct + serializer v3 = BUG-005) | Done — data-loss class closed before sessions |
 | 3.5 | **BUG-012** — device rate/buffer negotiation + FTZ (small standalone commit) | A 48 kHz interface at session #1 would be mistuned; see audio-model review |
 | 4 | **W1** — touch encoders + context MVP | The "modestly useful" milestone: full playable surface, zero encoder-hardware spend |
 | 5 | **Paired session #1** — structured; findings → `design/sessions/s1.md` | Re-validates P10 C2–C5 order, W2 view priorities, and the vision's session walkthrough |
@@ -60,7 +60,7 @@ each producing explicit roadmap deltas (or an explicit "no change").
 | **P0–P9** | Skeleton → Modular Graph | See `architecture-evolving.md` phase log | **Complete** |
 | **P9.5** | Device Emulation & Test Harness | Full Launchpad emulator (C1). | **Closed early** — C1 shipped; C2/C3 cancelled (superseded by W0/W1); C4 rescoped into P10 C5 test work; piano mode deferred (physical Keystep exists) |
 | **W0** | Theoria grid POC | Browser grid as peer device: `paraclete-antiphon` crate, WS bridge, canvas 8×8 + scene + control, LED mirror, shared `launchpad.rhai` profile | **Shipped** (July 2026; report: `w0-report.md`; localhost touch→LED 24–34 ms; exit criteria needing tablet/Launchpad hardware roll into the next user session) |
-| **P10 C0–C1** | Pattern engine foundation | BUG-001/008 pre-flight (C0, runs before W0); `Pattern` struct + serializer v3 = BUG-005 (C1) | **Pulled forward** |
+| **P10 C0–C1** | Pattern engine foundation | BUG-001/008 pre-flight (C0, runs before W0); `Pattern` struct + serializer v3 = BUG-005 (C1) | **Shipped** (C0 `b0cf2c8`, C1 `6212242`) |
 | **W1** | Theoria MVP | Touch encoders (relative → `CMD_BUMP_PARAM`), context display, transport, state mirror v1 → **paired session #1** | — |
 | **P10 C2–C5** | Pattern Engine depth | Multi-page (64-step) + page-loop; seamless switching + chaining; per-track length/speed; BUG-004 **+ BUG-013 (sub-block voice starts — micro-timing must be audible) + Sampler Hermite playback** in C3; grid/TUI surface | In design — order re-validated after session #1 |
 | **W2** | Theoria editor | Cap-doc-driven parameter pages for every engine; chain view; view-plugin API (ADR-032) → **paired session #2** | — |
@@ -119,7 +119,7 @@ Everything else open is scheduled: BUG-001/008 → P10 C0 (now), BUG-005 → P10
 |---|---|---|---|
 | `CMD_SET_PATTERN` stub (always pattern 0) | Active | Multi-pattern model | P10 C2+ |
 | Single-pattern, 16-step only | Active | Pattern engine | P10 C2+ |
-| `Sequencer::serialize()` drops P5 fields (BUG-005) | Active | Serializer v3 | **P10 C1 (next)** |
+| `Sequencer::serialize()` drops P5 fields (BUG-005) | **Fixed (P10 C1 shipped)** | Serializer v3 (`6212242`); length-prefixed step + pattern records | Done |
 | BUG-008 / BUG-001 | **Fixed (P10 C0 shipped)** | s0 re-diagnosis: 240-tick step + step-0 fire + drift-only snap; mem::take | Done |
 | Negative micro-timing == zero (BUG-004) | Active | Emit in prev step's window | P10 C3 |
 | Terminal emulator: no RGB, no keyboard encoders | **Accepted permanent** | Web surface supersedes; terminal stays keyboard-grid-only for no-tablet dev | — |

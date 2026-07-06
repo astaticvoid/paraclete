@@ -53,7 +53,8 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** line and 
 **Phase found:** P5  
 **Description:** `TrigCondition` (probability, repeat, fill), `StepTiming` (micro_offset), and `swing` are all lost on project save/load. A project that programs conditional trigs or timing offsets silently loses that programming across sessions. P9 adds `cv_locks` serialization but P5 fields remain excluded.  
 **Location:** `crates/paraclete-nodes/src/sequencer.rs` — `serialize()` / `deserialize()`  
-**Fix direction:** Include P5 fields in the serialised `Step` representation; bump serializer version.
+**Fix direction:** Include P5 fields in the serialised `Step` representation; bump serializer version.  
+**Fixed:** P10 C1 (`6212242`) — serializer v3 persists every `Step` field (`TrigCondition`, `StepTiming.micro_offset`) and per-pattern `swing`. Step and pattern records are length-prefixed for forward extensibility (v4 can append fields without a rewrite); counts are plain integers so engine caps can grow without a format bump. v1/v2 blobs still load into `patterns[0]` with defaults for the never-saved fields. Verified by `serialize_roundtrip_preserves_{conditions,timing,swing,cv_locks}` and `deserialize_v2_into_single_pattern`.
 
 ---
 
