@@ -39,7 +39,7 @@ pub use oscillator::{OscillatorNode, SineOscillator, midi_note_to_hz};
 pub use pattern::{apply_preset, TrackPreset, TRACKS};
 pub use reverb::ReverbNode;
 pub use sampler::Sampler;
-pub use sequencer::{Sequencer, Step, StepParamLock};
+pub use sequencer::{Pattern, Sequencer, Step, StepParamLock, PAGE_SIZE};
 pub use split::SplitNode;
 
 use paraclete_node_api::{
