@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use paraclete_node_api::{
     CapabilityDocument, Event, Node, ParamDescriptor, ParamUnit, ParameterBank,
     PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
-    UmpMessage, midi::ChannelVoice2,
+    UmpMessage, midi::ChannelVoice2, CMD_TRIGGER,
 };
 
 use crate::engine_dsp::{AdState, note_to_hz, soft_clip, svf_lp_sample, xorshift};
@@ -38,6 +38,11 @@ pub struct AnalogEngine {
     active:      bool,
     node_id:     u32,
     node_locks:  Vec<(u32, f64)>,
+    /// Note of the last retrigger — used as the CMD_TRIGGER default note (arg0 < 0).
+    last_note:   u8,
+    /// Linear output-level multiplier derived from trigger velocity (0.0..=1.0).
+    /// 1.0 = unity gain (full velocity, matches pre-W1 output level).
+    velocity_level: f32,
 
     render_l:    Vec<f32>,
     render_r:    Vec<f32>,
@@ -71,6 +76,8 @@ impl AnalogEngine {
             active:      false,
             node_id:     0,
             node_locks:  Vec::new(),
+            last_note:   36, // C2 — matches current_hz's initial value
+            velocity_level: 1.0,
             render_l:    Vec::new(),
             render_r:    Vec::new(),
             pending_initial_params: HashMap::new(),
@@ -130,9 +137,11 @@ impl AnalogEngine {
         }
     }
 
-    fn retrigger(&mut self, note: u8) {
+    fn retrigger(&mut self, note: u8, velocity: f32) {
         let tune = self.get_param(ap("tune"));
         self.current_hz = note_to_hz(note, tune);
+        self.last_note = note;
+        self.velocity_level = velocity.clamp(0.0, 1.0);
         self.pitch_env.trigger();
         self.amp_env.trigger();
         self.body_env.trigger();
@@ -263,6 +272,8 @@ impl Node for AnalogEngine {
         self.hihat_noise = 1;
         self.current_hz  = 65.41;
         self.active      = false;
+        self.last_note   = 36;
+        self.velocity_level = 1.0;
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
@@ -276,6 +287,25 @@ impl Node for AnalogEngine {
         // locks from one step do not bleed into steps that carry no lock.
         self.node_locks.clear();
 
+        // Handle NodeCommands: CMD_TRIGGER live-triggers a voice (same retrigger
+        // path as NoteOn). arg0 = note (< 0 → last-triggered note); arg1 = velocity
+        // 0.0..=1.0 (<= 0.0 → default 0.79).
+        for cmd in input.commands {
+            if cmd.type_id == CMD_TRIGGER {
+                let note: u8 = if cmd.arg0 < 0 {
+                    self.last_note
+                } else {
+                    cmd.arg0.clamp(0, 127) as u8
+                };
+                let velocity: f32 = if cmd.arg1 <= 0.0 {
+                    0.79
+                } else {
+                    cmd.arg1.clamp(0.0, 1.0) as f32
+                };
+                self.retrigger(note, velocity);
+            }
+        }
+
         // Handle events: ParamLock before NoteOn (executor guarantees ordering).
         for timed in input.events {
             match timed.event {
@@ -285,7 +315,10 @@ impl Node for AnalogEngine {
                 Event::Midi2(ref ump) => {
                     if let UmpMessage::ChannelVoice2(cv2) = ump {
                         match cv2 {
-                            ChannelVoice2::NoteOn(n) => self.retrigger(u8::from(n.note_number())),
+                            ChannelVoice2::NoteOn(n) => {
+                                let velocity = n.velocity() as f32 / 65535.0;
+                                self.retrigger(u8::from(n.note_number()), velocity);
+                            }
                             ChannelVoice2::NoteOff(_) => {}
                             _ => {}
                         }
@@ -305,13 +338,17 @@ impl Node for AnalogEngine {
 
         if let Some(buf) = output.audio_outputs.first_mut() {
             if buf.channels() >= 2 {
-                buf.channel_mut(0).copy_from_slice(&self.render_l[..block_size]);
-                buf.channel_mut(1).copy_from_slice(&self.render_r[..block_size]);
+                for (dst, &src) in buf.channel_mut(0).iter_mut().zip(self.render_l[..block_size].iter()) {
+                    *dst = src * self.velocity_level;
+                }
+                for (dst, &src) in buf.channel_mut(1).iter_mut().zip(self.render_r[..block_size].iter()) {
+                    *dst = src * self.velocity_level;
+                }
             } else if buf.channels() == 1 {
                 for (i, (&l, &r)) in self.render_l[..block_size].iter()
                     .zip(self.render_r[..block_size].iter()).enumerate()
                 {
-                    buf.channel_mut(0)[i] = (l + r) * 0.5;
+                    buf.channel_mut(0)[i] = (l + r) * 0.5 * self.velocity_level;
                 }
             }
         }
@@ -325,7 +362,7 @@ mod tests {
     use super::*;
     use paraclete_node_api::{
         AudioBuffer, Event, EventOutputBuffer, ExtendedEventSlab,
-        NodeCommand, CMD_SET_PARAM, ParamLockEvent, TimedEvent, TransportInfo,
+        NodeCommand, CMD_SET_PARAM, CMD_TRIGGER, ParamLockEvent, TimedEvent, TransportInfo,
         UmpMessage, midi::{ChannelVoice2, Channeled, Grouped, NoteOn, u4, u7},
     };
 
@@ -615,5 +652,47 @@ mod tests {
         let mut eng = AnalogEngine::snare();
         eng.set_initial_params(&[("nonexistent_param".to_string(), 99.0)].into_iter().collect());
         eng.activate(44100.0, 256); // must not panic
+    }
+
+    // ── W1 Commit 0: CMD_TRIGGER + velocity plumbing ─────────────────────────
+
+    #[test]
+    fn cmd_trigger_produces_audio() {
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        let cmd = NodeCommand { target_id: 0, type_id: CMD_TRIGGER, arg0: 36, arg1: 1.0 };
+        let out = run_engine_cmds(&mut eng, &[], &[cmd]);
+        assert!(out.iter().any(|&s| s.abs() > 1e-5), "CMD_TRIGGER should produce audio");
+    }
+
+    #[test]
+    fn cmd_trigger_negative_note_uses_default() {
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        let cmd = NodeCommand { target_id: 0, type_id: CMD_TRIGGER, arg0: -1, arg1: 1.0 };
+        let out = run_engine_cmds(&mut eng, &[], &[cmd]);
+        assert!(out.iter().any(|&s| s.abs() > 1e-5),
+            "CMD_TRIGGER with arg0<0 should use the default/last note and produce audio");
+    }
+
+    #[test]
+    fn velocity_scales_output_level() {
+        let mut eng_hi = AnalogEngine::kick();
+        eng_hi.activate(44100.0, 512);
+        let cmd_hi = NodeCommand { target_id: 0, type_id: CMD_TRIGGER, arg0: 36, arg1: 1.0 };
+        let out_hi = run_engine_cmds(&mut eng_hi, &[], &[cmd_hi]);
+        let peak_hi = out_hi.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+
+        let mut eng_lo = AnalogEngine::kick();
+        eng_lo.activate(44100.0, 512);
+        let cmd_lo = NodeCommand { target_id: 0, type_id: CMD_TRIGGER, arg0: 36, arg1: 0.25 };
+        let out_lo = run_engine_cmds(&mut eng_lo, &[], &[cmd_lo]);
+        let peak_lo = out_lo.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+
+        assert!(peak_hi > peak_lo,
+            "higher velocity should produce a louder peak: hi={peak_hi:.4} lo={peak_lo:.4}");
+        let ratio = peak_hi / peak_lo.max(1e-9);
+        assert!(ratio > 2.0,
+            "velocity ratio (1.0 vs 0.25) should roughly scale peak amplitude, got ratio={ratio:.2}");
     }
 }

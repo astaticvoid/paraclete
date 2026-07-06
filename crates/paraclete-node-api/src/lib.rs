@@ -66,6 +66,6 @@ pub use templates::{
     ControllerNode, InstrumentNode, SequencerNode, SignalNode,
 };
 
-pub use command::{NodeCommand, CMD_BUMP_PARAM, CMD_SET_PARAM};
+pub use command::{NodeCommand, CMD_BUMP_PARAM, CMD_SET_PARAM, CMD_TRIGGER};
 
 pub use parameter::{publish_bank_state, ParameterBank};

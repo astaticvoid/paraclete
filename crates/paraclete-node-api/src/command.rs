@@ -24,6 +24,14 @@ pub const CMD_SET_PARAM: u32 = 0;
 /// arg0 = param_id (u32 cast), arg1 = delta (result clamped to declared range).
 pub const CMD_BUMP_PARAM: u32 = 1;
 
+/// Universal instrument command: live-trigger a voice (pad "trigger mode").
+/// arg0 = note number (< 0 → the node's default/last note); arg1 = velocity
+/// 0.0–1.0 (<= 0.0 → default 0.79). Same retrigger path as a `NoteOn` event.
+/// Numerically this falls in the node-specific range (>= 16) but is
+/// designated universal — implemented identically by every instrument node
+/// (`AnalogEngine`, `FmEngine`, `Sampler`) rather than being node-type-specific.
+pub const CMD_TRIGGER: u32 = 19;
+
 #[cfg(test)]
 mod tests {
     use super::*;

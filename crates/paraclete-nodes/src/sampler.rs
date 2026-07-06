@@ -91,6 +91,9 @@ struct Voice {
     env_value: f32,
     env_phase: EnvPhaseSimple,
     resampler: Option<VoiceResampler>,
+    /// Linear output-level multiplier derived from trigger velocity (0.0..=1.0).
+    /// Set at trigger time (NoteOn or CMD_TRIGGER); 1.0 = unity gain (full velocity).
+    velocity_level: f32,
 }
 
 impl Voice {
@@ -104,6 +107,7 @@ impl Voice {
             env_value: 1.0,
             env_phase: EnvPhaseSimple::Done,
             resampler: None,
+            velocity_level: 1.0,
         }
     }
 
@@ -224,7 +228,7 @@ impl Sampler {
 
     /// Trigger the default note at full velocity immediately.
     /// Sent from scripts in trigger mode: send_cmd(samp_id, CMD_TRIGGER, 0, 0.0)
-    pub const CMD_TRIGGER: u32 = 19;
+    pub const CMD_TRIGGER: u32 = paraclete_node_api::CMD_TRIGGER;
 
     pub fn new() -> Self { Self::build(None) }
 
@@ -299,9 +303,10 @@ impl Sampler {
             .unwrap_or_else(|| self.base_for(param_id))
     }
 
-    fn trigger_voice(&mut self, note: u8, _velocity: u16, _sample_offset: u32) {
+    fn trigger_voice(&mut self, note: u8, velocity: u16, _sample_offset: u32) {
         self.samp_trig_count = self.samp_trig_count.wrapping_add(1);
         self.last_triggered_note = note;
+        let velocity_level = (velocity as f32 / 65535.0).clamp(0.0, 1.0);
         let voice_idx = self.voices.iter().position(|v| !v.active)
             .unwrap_or_else(|| {
                 self.voices.iter().enumerate()
@@ -325,6 +330,7 @@ impl Sampler {
         voice.active_locks.clear();
         voice.env_value = 0.0;
         voice.env_phase = EnvPhaseSimple::Attack;
+        voice.velocity_level = velocity_level;
 
         if let Some(ref mut vrs) = voice.resampler {
             vrs.set_ratio(ratio);
@@ -440,9 +446,22 @@ impl Node for Sampler {
         self.node_locks.clear();
 
         // 0. Handle NodeCommands (CMD_TRIGGER from scripting layer).
+        // arg0 = note number (< 0 → default: root_note); arg1 = velocity 0.0..=1.0
+        // (<= 0.0 → default 0.79).
         for cmd in input.commands {
             if cmd.type_id == Self::CMD_TRIGGER {
-                self.trigger_voice(60, u16::MAX / 2, 0);
+                let note: u8 = if cmd.arg0 < 0 {
+                    self.bank.get(param_hash("root_note")) as u8
+                } else {
+                    cmd.arg0.clamp(0, 127) as u8
+                };
+                let vel_norm: f32 = if cmd.arg1 <= 0.0 {
+                    0.79
+                } else {
+                    cmd.arg1.clamp(0.0, 1.0) as f32
+                };
+                let velocity: u16 = (vel_norm * 65535.0) as u16;
+                self.trigger_voice(note, velocity, 0);
             }
         }
 
@@ -590,8 +609,8 @@ impl Node for Sampler {
                             break;
                         };
                         let sample = out.get(frame).copied().unwrap_or(0.0);
-                        self.render_l[frame] += sample * vol * pan_l * env;
-                        self.render_r[frame] += sample * vol * pan_r * env;
+                        self.render_l[frame] += sample * vol * pan_l * env * voice.velocity_level;
+                        self.render_r[frame] += sample * vol * pan_r * env * voice.velocity_level;
                     }
                 }
 
@@ -620,8 +639,8 @@ impl Node for Sampler {
                         let s0 = sample_data.get(idx).copied().unwrap_or(0.0);
                         let s1 = sample_data.get(idx + 1).copied().unwrap_or(0.0);
                         let sample = s0 + (s1 - s0) * frac;
-                        self.render_l[frame] += sample * vol * pan_l * env;
-                        self.render_r[frame] += sample * vol * pan_r * env;
+                        self.render_l[frame] += sample * vol * pan_l * env * voice.velocity_level;
+                        self.render_r[frame] += sample * vol * pan_r * env * voice.velocity_level;
                         voice.playback_pos += playback_rate;
                     } else if looping {
                         voice.playback_pos = 0.0;
@@ -853,7 +872,7 @@ mod tests {
     use paraclete_node_api::{
         AudioBuffer, EventOutputBuffer, ExtendedEventSlab, Event, ParamLockEvent,
         TransportInfo, ProcessInput, ProcessOutput, TimedEvent, UmpMessage,
-        NodeCommand, CMD_BUMP_PARAM, CMD_SET_PARAM,
+        NodeCommand, CMD_BUMP_PARAM, CMD_SET_PARAM, CMD_TRIGGER,
         midi::{ChannelVoice2, Grouped, Channeled, NoteOn, NoteOff, u4, u7},
     };
 
@@ -1464,5 +1483,53 @@ mod tests {
         } else {
             panic!("attack entry should be Float");
         }
+    }
+
+    // ── W1 Commit 0: CMD_TRIGGER + velocity plumbing ─────────────────────────
+
+    #[test]
+    fn cmd_trigger_produces_audio() {
+        let mut s = Sampler::new();
+        s.set_node_id(1);
+        load_test_sample(&mut s, 4096);
+
+        let cmd = NodeCommand { target_id: 1, type_id: CMD_TRIGGER, arg0: 60, arg1: 1.0 };
+        let buf = run_sampler_with_cmds(&mut s, &[], &[cmd]);
+        assert!(buf.channel(0).iter().any(|&x| x.abs() > 0.0), "CMD_TRIGGER should produce audio");
+    }
+
+    #[test]
+    fn cmd_trigger_negative_note_uses_default() {
+        let mut s = Sampler::new();
+        s.set_node_id(1);
+        load_test_sample(&mut s, 4096);
+
+        let cmd = NodeCommand { target_id: 1, type_id: CMD_TRIGGER, arg0: -1, arg1: 1.0 };
+        let buf = run_sampler_with_cmds(&mut s, &[], &[cmd]);
+        assert!(buf.channel(0).iter().any(|&x| x.abs() > 0.0),
+            "CMD_TRIGGER with arg0<0 should fall back to the default (root_note) and produce audio");
+    }
+
+    #[test]
+    fn velocity_scales_output_level() {
+        let mut s_hi = Sampler::new();
+        s_hi.set_node_id(1);
+        load_test_sample(&mut s_hi, 4096);
+        let cmd_hi = NodeCommand { target_id: 1, type_id: CMD_TRIGGER, arg0: 60, arg1: 1.0 };
+        let buf_hi = run_sampler_with_cmds(&mut s_hi, &[], &[cmd_hi]);
+        let peak_hi = buf_hi.channel(0).iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+
+        let mut s_lo = Sampler::new();
+        s_lo.set_node_id(1);
+        load_test_sample(&mut s_lo, 4096);
+        let cmd_lo = NodeCommand { target_id: 1, type_id: CMD_TRIGGER, arg0: 60, arg1: 0.25 };
+        let buf_lo = run_sampler_with_cmds(&mut s_lo, &[], &[cmd_lo]);
+        let peak_lo = buf_lo.channel(0).iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+
+        assert!(peak_hi > peak_lo,
+            "higher velocity should produce a louder peak: hi={peak_hi:.4} lo={peak_lo:.4}");
+        let ratio = peak_hi / peak_lo.max(1e-9);
+        assert!(ratio > 2.0,
+            "velocity ratio (1.0 vs 0.25) should roughly scale peak amplitude, got ratio={ratio:.2}");
     }
 }
