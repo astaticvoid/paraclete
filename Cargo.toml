@@ -17,6 +17,7 @@ members = [
     "crates/paraclete-tui",
     "crates/paraclete-clap-host",
     "crates/paraclete-graph-nodes",
+    "crates/paraclete-antiphon",
     "tools/gen-samples",
     "tools/lpx-debug",
 ]
@@ -36,8 +37,12 @@ paraclete-scripting   = { path = "crates/paraclete-scripting" }
 paraclete-clap        = { path = "crates/paraclete-clap" }
 paraclete-clap-host   = { path = "crates/paraclete-clap-host" }
 paraclete-graph-nodes = { path = "crates/paraclete-graph-nodes" }
+paraclete-antiphon    = { path = "crates/paraclete-antiphon" }
 clap-sys            = "0.5"
 libloading          = "0.8"
+tungstenite         = "0.21"
+tiny_http           = "0.12"
+serde_json          = "1"
 
 cpal      = "0.15"
 rhai      = "1"

@@ -1,0 +1,16 @@
+[package]
+name         = "paraclete-antiphon"
+description  = "Antiphon — the Paraclete interface server (ADR-031). Theoria clients connect here."
+license      = "GPL-3.0-or-later"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+
+[dependencies]
+paraclete-node-api = { workspace = true }
+tungstenite        = { workspace = true }
+tiny_http          = { workspace = true }
+serde              = { workspace = true }
+serde_json         = { workspace = true }
+rtrb               = { workspace = true }
