@@ -103,6 +103,13 @@ impl StateBusHandle {
             self.store.insert(k, v);
         }
     }
+
+    /// Iterate every path currently on the bus. Additive (W1 Commit 2) — used
+    /// by consumers that need a full-scan diff (e.g. the Antiphon state
+    /// mirror) rather than a single-path subscription.
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &StateBusValue)> {
+        self.store.iter().map(|(k, v)| (k.as_str(), v))
+    }
 }
 
 // ── StateBusSubscription ──────────────────────────────────────────────────────
@@ -203,5 +210,21 @@ mod tests {
         let mut handle = StateBusHandle::new();
         assert!(handle.write_sandboxed("/transport/bpm", StateBusValue::Float(120.0)).is_err());
         assert!(handle.write_sandboxed("/surface/led/1", StateBusValue::Int(0)).is_err());
+    }
+
+    #[test]
+    fn state_bus_handle_iter_yields_all_paths() {
+        let mut handle = StateBusHandle::new();
+        handle.write("/node/1/param/cutoff", StateBusValue::Float(0.5));
+        handle.write("/transport/bpm", StateBusValue::Float(120.0));
+        let mut seen: Vec<(&str, &StateBusValue)> = handle.iter().collect();
+        seen.sort_by_key(|(k, _)| *k);
+        assert_eq!(
+            seen,
+            vec![
+                ("/node/1/param/cutoff", &StateBusValue::Float(0.5)),
+                ("/transport/bpm", &StateBusValue::Float(120.0)),
+            ]
+        );
     }
 }

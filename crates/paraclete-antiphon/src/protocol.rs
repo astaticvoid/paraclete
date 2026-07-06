@@ -170,7 +170,7 @@ mod tests {
             ServerMsg::Led { updates: vec![LedMsg { id: 13, rgb: [255, 64, 0] }] },
             ServerMsg::Pong { ts: 123456.7 },
             ServerMsg::Bye { reason: "bad token".into() },
-            ServerMsg::State { updates: vec![StateUpdate { path: "/node/20/cutoff".into(), v: 0.62 }] },
+            ServerMsg::State { updates: vec![StateUpdate { path: "/node/20/param/cutoff".into(), v: 0.62 }] },
             ServerMsg::Context { slots: vec![ContextSlot { enc: 90, node: 20, param: "cutoff".into() }] },
             ServerMsg::Topology { nodes: vec![] },
         ];

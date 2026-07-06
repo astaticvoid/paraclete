@@ -6,8 +6,9 @@
 //! the main thread only (called from `TheoriaOutputHandle::tick()`/`deliver()`);
 //! WS write I/O happens on the per-client threads that own the `mpsc` receivers.
 //!
-//! W0 scope: LED fan-out + full-surface replay to new clients. W1 adds
-//! state-diff coalescing here (spec'd in `w1-interfaces.md`, not built).
+//! W0 scope: LED fan-out + full-surface replay to new clients. W1 Commit 2
+//! adds the state/context mirror as `AntiphonHandle::pump()` in `lib.rs`
+//! (it needs no LED shadow, so it doesn't live here) — see `w1-interfaces.md`.
 
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};

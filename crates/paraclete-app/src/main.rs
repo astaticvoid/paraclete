@@ -245,11 +245,21 @@ fn main() {
     // ── 13. Main loop ─────────────────────────────────────────────────────────
     let mut event_buf: Vec<paraclete_node_api::SurfaceEventMsg> = Vec::with_capacity(64);
     let mut dev_ui_tick = 0u64;
+    // Monotonic clock for the Antiphon state mirror (w1-interfaces.md §Commit
+    // 2) — antiphon does no clock reads of its own; the caller passes now_ms.
+    let loop_clock = std::time::Instant::now();
 
     while running.load(std::sync::atomic::Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(1));
 
         conf.process_main_thread();
+
+        // Step 1.5: state/context mirror pump (after process_main_thread so
+        // the bus reflects this cycle's executor updates).
+        if let Some(handle) = antiphon.as_mut() {
+            let now_ms = loop_clock.elapsed().as_millis() as u64;
+            handle.pump(&bus_handle.borrow(), now_ms);
+        }
 
         event_buf.clear();
         consumer_lp.drain(&mut event_buf);
