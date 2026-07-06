@@ -21,6 +21,15 @@ design intent is captured in the documents, not in anyone's head.
 Route by the **judgment density** of the task, not its size. When in doubt,
 one tier up.
 
+**Session orchestrator is Opus** (decided July 2026; Fable/frontier tier is
+off the table). The orchestrator holds session context, makes delegation
+calls, verifies returned work for correctness, and writes gated commit
+messages and spec-conflict reconciliations — it is never delegated down.
+Delegate *to* a subagent with an explicit model param when there is a real
+batch to amortize the cold start (a spec'd test-stub list, a multi-file doc
+sweep); do trivial single actions (one commit, marking one bug resolved)
+inline. See `[[feedback-model-routing-subagents]]`.
+
 **Sonnet-tier — mechanical, fully specified, verifiable by tests:**
 - W1 C0 (CMD_TRIGGER in engines) and W1 C1 (state-path unification) per
   `w1-interfaces.md`
@@ -36,7 +45,10 @@ one tier up.
 - W1 per `design/phases/w1-interfaces.md` (C0/C1 Sonnet-capable; C2–C4 Opus)
 - Post-commit code review passes (the workflow requires them — see below)
 
-**Defer — needs the user, or a frontier-model session, or both:**
+**Defer — needs the user (with Opus), not a higher tier:**
+(These once read "frontier-model session"; with Fable off the table the top
+available tier is Opus, so these gate on the *user*, not on a bigger model.
+They are judgment calls to make *with* the user in session, not solo.)
 - ADR-032 (Theoria view-plugin API freeze at W2) — this is the extension-layer
   contract; do not improvise it
 - Protocol v1 freeze (W4); any protocol change beyond the v0 spec
