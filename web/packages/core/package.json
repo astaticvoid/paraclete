@@ -1,0 +1,15 @@
+{
+  "name": "@paraclete/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Transport-agnostic protocol types, WebSocket connection, state/context stores, and gesture helper for Theoria clients. No DOM rendering.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4"
+  }
+}

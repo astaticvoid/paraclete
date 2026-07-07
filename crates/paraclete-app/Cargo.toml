@@ -34,3 +34,9 @@ crossterm = { workspace = true }
 ron        = { workspace = true }
 serde      = { workspace = true }
 serde_yml = { workspace = true }
+include_dir = { workspace = true, optional = true }
+
+[features]
+# Embed the built Theoria bundle (web/packages/app/dist) into the binary
+# (w1-interfaces.md §Commit 4). `--theoria-dir` still overrides for dev.
+embed-ui = ["dep:include_dir", "paraclete-antiphon/embed-ui"]

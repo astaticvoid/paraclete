@@ -3,3 +3,6 @@
 **/.DS_Store
 samples/*.wav
 .antiphon-token
+web/node_modules/
+web/packages/*/node_modules/
+web/packages/*/dist/

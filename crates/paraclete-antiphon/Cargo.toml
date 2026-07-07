@@ -14,3 +14,9 @@ tiny_http          = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { workspace = true }
 rtrb               = { workspace = true }
+include_dir        = { workspace = true, optional = true }
+
+[features]
+# Embed the built Theoria bundle (web/packages/app/dist) into the binary at
+# compile time (paraclete-app's embed-ui feature enables this one too).
+embed-ui = ["dep:include_dir"]

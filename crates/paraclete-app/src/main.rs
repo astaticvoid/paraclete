@@ -59,10 +59,12 @@ fn main() {
         .find(|a| a.starts_with("--antiphon-port="))
         .and_then(|a| a.splitn(2, '=').nth(1).and_then(|s| s.parse().ok()))
         .unwrap_or(paraclete_antiphon::DEFAULT_PORT);
-    let theoria_dir: PathBuf = args.iter()
+    // `--theoria-dir` overrides whatever the build would otherwise serve
+    // (the embedded bundle if `embed-ui` is compiled in, else the on-disk
+    // build output directory) — always explicit, never a silent fallback.
+    let theoria_dir_override: Option<PathBuf> = args.iter()
         .find(|a| a.starts_with("--theoria-dir="))
-        .and_then(|a| a.splitn(2, '=').nth(1).filter(|s| !s.is_empty()).map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("web/theoria"));
+        .and_then(|a| a.splitn(2, '=').nth(1).filter(|s| !s.is_empty()).map(PathBuf::from));
 
     // ── 1. Load instrument definition ────────────────────────────────────────
     let def = match load_instrument_definition(&instrument_path) {
@@ -146,10 +148,11 @@ fn main() {
     let mut antiphon: Option<AntiphonHandle> = None;
     if !no_antiphon {
         let summaries = collect_node_summaries(&conf, &ids);
+        let static_source = theoria_static_source(theoria_dir_override.clone());
         let config = AntiphonConfig {
             port: antiphon_port,
             token: load_or_create_token(),
-            static_dir: Some(theoria_dir.clone()),
+            static_dir: Some(static_source),
             device_id: ID_THEORIA,
         };
         // Static snapshot: InternalClock auto-starts, so playing=true is
@@ -398,6 +401,37 @@ fn load_plugin_libraries(def: &InstrumentDefinition) -> HashMap<String, Arc<Plug
 /// auto-reconnect-after-app-restart work — a per-run token would bounce every
 /// reconnecting client with `bye "bad token"`. Delete the file to rotate.
 /// (`fastrand` is not a CSPRNG; acceptable under the recorded W0 LAN posture.)
+/// The built Theoria client bundle (`web/packages/app/dist`), baked into the
+/// binary at compile time when the `embed-ui` feature is on
+/// (w1-interfaces.md §Commit 4). Requires `npm run build` in `web/` to have
+/// produced the `dist/` directory before this crate is compiled with the
+/// feature enabled.
+#[cfg(feature = "embed-ui")]
+static EMBEDDED_THEORIA_UI: include_dir::Dir<'static> =
+    include_dir::include_dir!("$CARGO_MANIFEST_DIR/../../web/packages/app/dist");
+
+/// Resolve where the Theoria HTTP thread should read the client bundle from.
+/// `--theoria-dir` always wins (dev override). Otherwise: the embedded
+/// bundle if this binary was built with `embed-ui`, else the on-disk build
+/// output directory (dev default without the feature — run `npm run build`
+/// in `web/` first).
+fn theoria_static_source(
+    dir_override: Option<PathBuf>,
+) -> paraclete_antiphon::http::StaticSource {
+    use paraclete_antiphon::http::StaticSource;
+    if let Some(dir) = dir_override {
+        return StaticSource::Disk(dir);
+    }
+    #[cfg(feature = "embed-ui")]
+    {
+        StaticSource::Embedded(&EMBEDDED_THEORIA_UI)
+    }
+    #[cfg(not(feature = "embed-ui"))]
+    {
+        StaticSource::Disk(PathBuf::from("web/packages/app/dist"))
+    }
+}
+
 fn load_or_create_token() -> String {
     const TOKEN_FILE: &str = ".antiphon-token";
     if let Ok(existing) = std::fs::read_to_string(TOKEN_FILE) {

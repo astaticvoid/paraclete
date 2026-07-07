@@ -1,0 +1,145 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+html, body, #root {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: #0b0b0e;
+  color: #ddd;
+  font-family: system-ui, sans-serif;
+}
+
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  width: 100vw;
+}
+
+.transport-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  background: #17171d;
+  border-bottom: 1px solid #26262e;
+  font: 500 13px ui-monospace, monospace;
+}
+
+.transport-bar .status {
+  min-width: 4.5em;
+}
+
+.transport-bar .status.open { color: #7c7; }
+.transport-bar .status.stale { color: #cc6; }
+.transport-bar .status.error { color: #d66; }
+.transport-bar .status.connecting { color: #888; }
+
+.transport-bar .bpm { color: #aad; }
+
+.track-buttons {
+  display: flex;
+  gap: 4px;
+  margin-left: auto;
+}
+
+.track-btn {
+  width: 26px;
+  height: 26px;
+  border-radius: 5px;
+  border: 1px solid #33333c;
+  background: #1c1c22;
+  color: #999;
+  font: 600 11px ui-monospace, monospace;
+  cursor: pointer;
+}
+
+.track-btn.selected {
+  background: #2a5;
+  border-color: #3d7;
+  color: #041;
+}
+
+.velocity-slider {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+}
+
+.velocity-slider input[type="range"] {
+  width: 90px;
+}
+
+.encoder-row-container {
+  flex: 0 0 108px;
+  border-bottom: 1px solid #26262e;
+  position: relative;
+}
+
+.encoder-row-container canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.grid-container {
+  flex: 1 1 auto;
+  position: relative;
+  min-height: 0;
+}
+
+.grid-container canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.overlay-stale, .overlay-error {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 2em;
+  z-index: 30;
+}
+
+.overlay-stale.visible, .overlay-error.visible {
+  display: flex;
+}
+
+.overlay-stale {
+  background: rgba(40, 40, 46, 0.85);
+  color: #ddd;
+  font: 700 6vw system-ui, sans-serif;
+  letter-spacing: 0.3em;
+}
+
+.overlay-error {
+  background: #300;
+  color: #fbb;
+  font: 400 4vw system-ui, sans-serif;
+  z-index: 40;
+}
+
+.rtt-readout {
+  position: fixed;
+  right: 8px;
+  bottom: 6px;
+  color: #667;
+  font: 400 12px ui-monospace, monospace;
+  pointer-events: none;
+  z-index: 5;
+}

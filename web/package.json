@@ -1,0 +1,13 @@
+{
+  "name": "theoria-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Theoria — the tablet client for Paraclete's Antiphon interface server (W1, ADR-031). npm workspaces root; no root-level source.",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @paraclete/core && npm run build -w @paraclete/app",
+    "dev": "npm run dev -w @paraclete/app"
+  }
+}

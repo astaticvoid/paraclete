@@ -18,10 +18,10 @@ pub mod surface;
 
 use std::collections::HashMap;
 use std::net::UdpSocket;
-use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
+use http::StaticSource;
 use kerygma::{ClientTable, Kerygma, MAX_CLIENTS};
 use paraclete_node_api::{NodeCommand, StateBusHandle, StateBusValue};
 use protocol::{ContextSlot, NodeSummary, ServerMsg, StateUpdate, TransportSummary};
@@ -43,9 +43,11 @@ pub struct AntiphonConfig {
     pub port: u16,
     /// Session token; gates the WS handshake. The app generates and prints it.
     pub token: String,
-    /// Directory of the Theoria client bundle; `None` disables the HTTP side
-    /// (WS-only — useful for tests and headless drivers).
-    pub static_dir: Option<PathBuf>,
+    /// Source of the Theoria client bundle; `None` disables the HTTP side
+    /// (WS-only — useful for tests and headless drivers). `Some(Disk(_))` for
+    /// dev (`--theoria-dir`); `Some(Embedded(_))` for the `embed-ui` release
+    /// build (app-assembled, see `paraclete-app`'s `embed-ui` feature).
+    pub static_dir: Option<StaticSource>,
     /// Node id the app will register the surface under (`welcome.device_id`).
     pub device_id: u32,
 }
