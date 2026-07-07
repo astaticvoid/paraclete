@@ -210,3 +210,53 @@ decisions were specified before implementation). After the subagent's partial
 delivery I did a direct full-diff review — which caught the `context_dirty`
 bug the incomplete self-gate would have missed — plus the test completion and
 independent gate re-run.
+
+---
+
+## Commit 3 — semantic plane (set_param / bump_param / node_cmd) — shipped `004bf77`
+
+### What shipped
+
+- **`FrameAction::Command(NodeCommand)`** + `route_frame(msg, &SessionInfo)`.
+  `resolve_semantic()` validates each semantic-plane message against the
+  cap-doc snapshot (`SessionInfo.nodes`):
+  - `set_param` — resolve param name → id, clamp `v` to `[min, max]` →
+    `CMD_SET_PARAM`.
+  - `bump_param` — resolve id, clamp `delta` to ±0.5 per message (the node's
+    bank clamps the *result* to range) → `CMD_BUMP_PARAM`.
+  - `node_cmd` — reject `cmd < 16` (universal range must use the typed
+    messages), require a known node, else pass-through.
+  - Unknown node/param → log + `Drop`, never disconnect (ADR-019 discipline).
+- **Command channel**: `std::sync::mpsc` from client threads → main loop.
+  Each client thread holds a `Sender` clone; `AntiphonHandle` owns the
+  `Receiver` and exposes `drain_commands()`. Many producers → one consumer;
+  off the audio thread, so mpsc allocation is fine (rtrb is SPSC and wouldn't
+  fit the multi-client shape).
+- **App**: drains antiphon commands into `conf.send_command()` at main-loop
+  step 5, beside the script-command flush. `Enc`/`EncPush` untouched — those
+  are the C4 surface-plane path, not the semantic plane.
+
+### Notes
+
+- `resolve_semantic` is a private helper with a controlled caller (only the
+  three semantic variants reach it); its final `unreachable!` is a
+  programming-error guard, not a runtime path.
+- One pre-existing test was renamed for accuracy (its old name claimed the
+  semantic variants always drop at W1; they now drop only when unresolvable —
+  asserted via an empty-node session). No behavior change.
+
+### Gate results
+
+- `cargo test --workspace`: **466 passed, 0 failures** (459 baseline + 7 new:
+  name resolution, value clamp, delta clamp, unknown-target drop, `cmd<16`
+  rejection, unknown-node drop, and a channel FIFO-drain test).
+- Clippy clean on `paraclete-antiphon` (MSRV 1.75 respected — no `is_none_or`).
+
+### Review
+
+Orchestrator-designed (the `FrameAction::Command` variant, the
+`route_frame(&SessionInfo)` signature, and the mpsc-not-rtrb channel choice
+were specified before implementation). After delivery I independently
+recompiled (the reported "466 pass" was contradicted by a stale mid-edit
+diagnostic — verified it was stale), re-ran the gate, and read the
+`resolve_semantic` logic + channel threading directly. Correct.
