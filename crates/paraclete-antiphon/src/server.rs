@@ -18,7 +18,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use paraclete_node_api::SurfaceEvent;
+use paraclete_node_api::{NodeCommand, SurfaceEvent, CMD_BUMP_PARAM, CMD_SET_PARAM};
 use tungstenite::{Message, WebSocket};
 
 use crate::kerygma::{ClientTable, MAX_CLIENTS};
@@ -29,6 +29,11 @@ use crate::surface::client_msg_to_surface_event;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(3);
 /// Read timeout for the steady-state I/O loop; bounds outbound-frame latency.
 const IO_POLL: Duration = Duration::from_millis(15);
+/// Per-message rate cap on `bump_param` deltas (w1-interfaces.md §Commit 3).
+/// Distinct from the resolved param's own declared `[min, max]` range — the
+/// node's `ParameterBank` clamps the *result* of applying the delta; this
+/// only bounds how far one message can move it.
+const BUMP_DELTA_CAP: f64 = 0.5;
 
 /// Immutable per-session data shared with every client thread.
 pub struct SessionInfo {
@@ -73,12 +78,64 @@ pub enum FrameAction {
     Emit(SurfaceEvent),
     /// Reply with `pong` echoing the timestamp.
     Pong(f64),
-    /// Log and drop (W1 variants, reserved messages, out-of-range ids).
+    /// A resolved semantic-plane command, ready to reach the graph.
+    Command(NodeCommand),
+    /// Log and drop (reserved messages, out-of-range ids, unresolvable
+    /// semantic-plane references).
     Drop(&'static str),
 }
 
+/// Resolve a semantic-plane message against the cap-doc snapshot in
+/// `session.nodes`. Pure; unknown node/param references drop rather than
+/// erroring — a stale client (old topology) must not be able to crash or
+/// wedge the server.
+fn resolve_semantic(msg: ClientMsg, session: &SessionInfo) -> FrameAction {
+    match msg {
+        ClientMsg::SetParam { node, param, v } => {
+            let Some(n) = session.nodes.iter().find(|n| n.id == node) else {
+                return FrameAction::Drop("set_param: unknown node or param");
+            };
+            let Some(p) = n.params.iter().find(|p| p.name == param) else {
+                return FrameAction::Drop("set_param: unknown node or param");
+            };
+            let clamped = v.clamp(p.min, p.max);
+            FrameAction::Command(NodeCommand {
+                target_id: node,
+                type_id: CMD_SET_PARAM,
+                arg0: p.id as i64,
+                arg1: clamped,
+            })
+        }
+        ClientMsg::BumpParam { node, param, delta } => {
+            let Some(n) = session.nodes.iter().find(|n| n.id == node) else {
+                return FrameAction::Drop("bump_param: unknown node or param");
+            };
+            let Some(p) = n.params.iter().find(|p| p.name == param) else {
+                return FrameAction::Drop("bump_param: unknown node or param");
+            };
+            let clamped = delta.clamp(-BUMP_DELTA_CAP, BUMP_DELTA_CAP);
+            FrameAction::Command(NodeCommand {
+                target_id: node,
+                type_id: CMD_BUMP_PARAM,
+                arg0: p.id as i64,
+                arg1: clamped,
+            })
+        }
+        ClientMsg::NodeCmd { node, cmd, a0, a1 } => {
+            if cmd < 16 {
+                return FrameAction::Drop("node_cmd: universal range (<16) must use typed messages");
+            }
+            if !session.nodes.iter().any(|n| n.id == node) {
+                return FrameAction::Drop("node_cmd: unknown node");
+            }
+            FrameAction::Command(NodeCommand { target_id: node, type_id: cmd, arg0: a0, arg1: a1 })
+        }
+        _ => unreachable!("resolve_semantic called with a non-semantic-plane message"),
+    }
+}
+
 /// Route one decoded client message. Pure; runs on WS read threads.
-pub fn route_frame(msg: ClientMsg) -> FrameAction {
+pub fn route_frame(msg: ClientMsg, session: &SessionInfo) -> FrameAction {
     match msg {
         ClientMsg::Ping { ts } => FrameAction::Pong(ts),
         ClientMsg::Hello { .. } => FrameAction::Drop("duplicate hello"),
@@ -87,10 +144,9 @@ pub fn route_frame(msg: ClientMsg) -> FrameAction {
         // Surface plane, gated to W1 (descriptor declares the encoders now;
         // delivery waits so W0 builds nothing early).
         ClientMsg::Enc { .. } | ClientMsg::EncPush { .. } => FrameAction::Drop("encoders are W1"),
-        // Semantic plane is W1.
-        ClientMsg::SetParam { .. } | ClientMsg::BumpParam { .. } | ClientMsg::NodeCmd { .. } => {
-            FrameAction::Drop("semantic plane is W1")
-        }
+        ref m @ (ClientMsg::SetParam { .. }
+        | ClientMsg::BumpParam { .. }
+        | ClientMsg::NodeCmd { .. }) => resolve_semantic(m.clone(), session),
         ref m @ (ClientMsg::PadDown { .. } | ClientMsg::PadUp { .. }) => {
             match client_msg_to_surface_event(m) {
                 Some(ev) => FrameAction::Emit(ev),
@@ -109,6 +165,7 @@ pub fn spawn_listener(
     session: Arc<SessionInfo>,
     clients: Arc<Mutex<ClientTable>>,
     pool: ProducerPool,
+    cmd_tx: mpsc::Sender<NodeCommand>,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind(("0.0.0.0", ws_port))?;
     std::thread::Builder::new()
@@ -119,9 +176,10 @@ pub fn spawn_listener(
                 let session = Arc::clone(&session);
                 let clients = Arc::clone(&clients);
                 let pool = Arc::clone(&pool);
+                let cmd_tx = cmd_tx.clone();
                 let _ = std::thread::Builder::new()
                     .name("antiphon-client".into())
-                    .spawn(move || client_session(stream, session, clients, pool));
+                    .spawn(move || client_session(stream, session, clients, pool, cmd_tx));
             }
         })?;
     Ok(())
@@ -171,6 +229,7 @@ fn client_session(
     session: Arc<SessionInfo>,
     clients: Arc<Mutex<ClientTable>>,
     pool: ProducerPool,
+    cmd_tx: mpsc::Sender<NodeCommand>,
 ) {
     // Bound the WS upgrade + hello so a stalled connection can't pin the
     // thread forever.
@@ -253,7 +312,7 @@ fn client_session(
 
         match ws.read() {
             Ok(Message::Text(frame)) => match serde_json::from_str::<ClientMsg>(&frame) {
-                Ok(msg) => match route_frame(msg) {
+                Ok(msg) => match route_frame(msg, &session) {
                     FrameAction::Emit(ev) => {
                         let full = guard
                             .producer
@@ -268,6 +327,10 @@ fn client_session(
                         if !send_msg(&mut ws, &ServerMsg::Pong { ts }) {
                             return;
                         }
+                    }
+                    FrameAction::Command(cmd) => {
+                        // Main loop gone (shutting down) — nothing to do.
+                        let _ = cmd_tx.send(cmd);
                     }
                     FrameAction::Drop(why) => {
                         eprintln!("[antiphon] dropped frame from slot {slot}: {why}");
@@ -288,6 +351,18 @@ fn client_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session with no registered nodes — enough for the tests below that
+    /// only exercise the surface-plane / reserved-message branches, where
+    /// `resolve_semantic` is expected to drop for lack of a resolvable node.
+    fn empty_session() -> SessionInfo {
+        SessionInfo {
+            token: String::new(),
+            device_id: 0,
+            nodes: vec![],
+            transport: TransportSummary { playing: false, bpm: 120.0 },
+        }
+    }
 
     #[test]
     fn hello_bad_token_gets_bye() {
@@ -315,13 +390,17 @@ mod tests {
     }
 
     #[test]
-    fn w1_variants_parse_but_are_dropped() {
-        // The [W1] semantic-plane variants parse (protocol reserves them) and
-        // the router drops them at W0 rather than erroring or emitting.
+    fn unresolvable_semantic_and_reserved_variants_parse_but_are_dropped() {
+        // The semantic-plane variants parse (protocol reserves the shape) and
+        // drop against a session with no matching node/param rather than
+        // erroring or emitting. Reserved (Enc/EncPush/PadPres) variants drop
+        // unconditionally — they are gated to W1+ surface-plane delivery,
+        // which this commit does not touch.
+        let session = empty_session();
         let msg: ClientMsg =
             serde_json::from_str(r#"{"t":"set_param","node":20,"param":"cutoff","v":0.5}"#)
-                .expect("set_param must parse at W0");
-        assert!(matches!(route_frame(msg), FrameAction::Drop(_)));
+                .expect("set_param must parse");
+        assert!(matches!(route_frame(msg, &session), FrameAction::Drop(_)));
 
         for raw in [
             r#"{"t":"bump_param","node":20,"param":"cutoff","delta":0.01}"#,
@@ -330,25 +409,138 @@ mod tests {
             r#"{"t":"enc_push","id":90,"pressed":true}"#,
             r#"{"t":"pad_pres","id":13,"v":41000}"#,
         ] {
-            let msg: ClientMsg = serde_json::from_str(raw).expect("W1 variant must parse");
-            assert!(matches!(route_frame(msg), FrameAction::Drop(_)), "must drop: {raw}");
+            let msg: ClientMsg = serde_json::from_str(raw).expect("variant must parse");
+            assert!(matches!(route_frame(msg, &session), FrameAction::Drop(_)), "must drop: {raw}");
         }
     }
 
     #[test]
     fn route_frame_emits_pad_events_and_pongs() {
+        let session = empty_session();
         assert!(matches!(
-            route_frame(ClientMsg::PadDown { id: 13, vel: 65535 }),
+            route_frame(ClientMsg::PadDown { id: 13, vel: 65535 }, &session),
             FrameAction::Emit(SurfaceEvent::PadPressed { id: 13, .. })
         ));
         assert!(matches!(
-            route_frame(ClientMsg::PadUp { id: 70 }),
+            route_frame(ClientMsg::PadUp { id: 70 }, &session),
             FrameAction::Emit(SurfaceEvent::ButtonReleased { id: 70 })
         ));
-        assert!(matches!(route_frame(ClientMsg::Ping { ts: 42.5 }), FrameAction::Pong(ts) if ts == 42.5));
         assert!(matches!(
-            route_frame(ClientMsg::PadDown { id: 99, vel: 1 }),
+            route_frame(ClientMsg::Ping { ts: 42.5 }, &session),
+            FrameAction::Pong(ts) if ts == 42.5
+        ));
+        assert!(matches!(
+            route_frame(ClientMsg::PadDown { id: 99, vel: 1 }, &session),
             FrameAction::Drop("pad id out of range")
         ));
+    }
+}
+
+#[cfg(test)]
+mod semantic_tests {
+    use super::*;
+    use crate::protocol::ParamSummary;
+
+    fn session_with_cutoff() -> SessionInfo {
+        SessionInfo {
+            token: String::new(),
+            device_id: 0,
+            nodes: vec![NodeSummary {
+                id: 20,
+                type_tag: "test".into(),
+                name: "test".into(),
+                params: vec![ParamSummary {
+                    id: 123,
+                    name: "cutoff".into(),
+                    min: 0.0,
+                    max: 1.0,
+                    default: 0.5,
+                }],
+            }],
+            transport: TransportSummary { playing: false, bpm: 120.0 },
+        }
+    }
+
+    #[test]
+    fn set_param_resolves_name_to_id() {
+        let session = session_with_cutoff();
+        let msg = ClientMsg::SetParam { node: 20, param: "cutoff".into(), v: 0.4 };
+        let FrameAction::Command(cmd) = route_frame(msg, &session) else {
+            panic!("expected Command");
+        };
+        assert_eq!(cmd.target_id, 20);
+        assert_eq!(cmd.type_id, CMD_SET_PARAM);
+        assert_eq!(cmd.arg0, 123);
+        assert_eq!(cmd.arg1, 0.4);
+    }
+
+    #[test]
+    fn set_param_clamps_value() {
+        let session = session_with_cutoff();
+        let msg = ClientMsg::SetParam { node: 20, param: "cutoff".into(), v: 5.0 };
+        let FrameAction::Command(cmd) = route_frame(msg, &session) else {
+            panic!("expected Command");
+        };
+        assert_eq!(cmd.arg1, 1.0, "clamped to declared max");
+
+        let msg = ClientMsg::SetParam { node: 20, param: "cutoff".into(), v: -1.0 };
+        let FrameAction::Command(cmd) = route_frame(msg, &session) else {
+            panic!("expected Command");
+        };
+        assert_eq!(cmd.arg1, 0.0, "clamped to declared min");
+    }
+
+    #[test]
+    fn bump_param_clamps_delta() {
+        let session = session_with_cutoff();
+        let msg = ClientMsg::BumpParam { node: 20, param: "cutoff".into(), delta: 2.0 };
+        let FrameAction::Command(cmd) = route_frame(msg, &session) else {
+            panic!("expected Command");
+        };
+        assert_eq!(cmd.type_id, CMD_BUMP_PARAM);
+        assert_eq!(cmd.arg0, 123);
+        assert_eq!(cmd.arg1, 0.5, "clamped to the per-message rate cap, not the param range");
+
+        let msg = ClientMsg::BumpParam { node: 20, param: "cutoff".into(), delta: -2.0 };
+        let FrameAction::Command(cmd) = route_frame(msg, &session) else {
+            panic!("expected Command");
+        };
+        assert_eq!(cmd.arg1, -0.5);
+    }
+
+    #[test]
+    fn unknown_node_or_param_is_dropped() {
+        let session = session_with_cutoff();
+        let msg = ClientMsg::SetParam { node: 99, param: "cutoff".into(), v: 0.5 };
+        assert!(matches!(route_frame(msg, &session), FrameAction::Drop(_)));
+
+        let msg = ClientMsg::SetParam { node: 20, param: "nope".into(), v: 0.5 };
+        assert!(matches!(route_frame(msg, &session), FrameAction::Drop(_)));
+    }
+
+    #[test]
+    fn node_cmd_rejects_universal_range() {
+        let session = session_with_cutoff();
+        let msg = ClientMsg::NodeCmd { node: 20, cmd: 0, a0: 3, a1: 0.0 };
+        assert!(matches!(route_frame(msg, &session), FrameAction::Drop(_)));
+
+        let msg = ClientMsg::NodeCmd { node: 20, cmd: 15, a0: 3, a1: 0.0 };
+        assert!(matches!(route_frame(msg, &session), FrameAction::Drop(_)));
+
+        let msg = ClientMsg::NodeCmd { node: 20, cmd: 16, a0: 3, a1: 7.0 };
+        let FrameAction::Command(cmd) = route_frame(msg, &session) else {
+            panic!("expected Command pass-through");
+        };
+        assert_eq!(cmd.target_id, 20);
+        assert_eq!(cmd.type_id, 16);
+        assert_eq!(cmd.arg0, 3);
+        assert_eq!(cmd.arg1, 7.0);
+    }
+
+    #[test]
+    fn node_cmd_unknown_node_dropped() {
+        let session = session_with_cutoff();
+        let msg = ClientMsg::NodeCmd { node: 99, cmd: 16, a0: 0, a1: 0.0 };
+        assert!(matches!(route_frame(msg, &session), FrameAction::Drop(_)));
     }
 }

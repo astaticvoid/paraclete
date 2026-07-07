@@ -279,6 +279,13 @@ fn main() {
         for cmd in scripting.take_pending_commands() {
             conf.send_command(cmd).ok();
         }
+        // Semantic-plane commands (set_param/bump_param/node_cmd) resolved by
+        // Antiphon client threads (w1-interfaces.md §Commit 3).
+        if let Some(h) = antiphon.as_ref() {
+            for cmd in h.drain_commands() {
+                conf.send_command(cmd).ok();
+            }
+        }
 
         let mut led_output = scripting.take_pending_output();
         // Mirror LED output addressed to the Launchpad/emulator onto the

@@ -19,10 +19,11 @@ pub mod surface;
 use std::collections::HashMap;
 use std::net::UdpSocket;
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 
 use kerygma::{ClientTable, Kerygma, MAX_CLIENTS};
-use paraclete_node_api::{StateBusHandle, StateBusValue};
+use paraclete_node_api::{NodeCommand, StateBusHandle, StateBusValue};
 use protocol::{ContextSlot, NodeSummary, ServerMsg, StateUpdate, TransportSummary};
 use server::SessionInfo;
 use surface::TheoriaSurfaceNode;
@@ -77,11 +78,24 @@ pub struct AntiphonHandle {
     /// not re-detect it), so the pending flush has to be remembered here or
     /// the change would be silently lost.
     context_dirty: bool,
+    /// Receiving end of the semantic-plane command channel: every client I/O
+    /// thread holds a clone of the paired `Sender` and feeds it resolved
+    /// `NodeCommand`s (w1-interfaces.md §Commit 3). Many producers, one
+    /// consumer (the main loop) — `std::sync::mpsc`, not `rtrb`; this is off
+    /// the audio thread so its allocation is fine.
+    cmd_rx: mpsc::Receiver<NodeCommand>,
 }
 
 impl AntiphonHandle {
     pub fn client_count(&self) -> usize {
         self.clients.lock().map(|t| t.active_count()).unwrap_or(0)
+    }
+
+    /// Drain semantic-plane `NodeCommand`s resolved by client threads since
+    /// the last call. Main-thread only; call once per main-loop iteration
+    /// and forward each to `NodeConfigurator::send_command()`.
+    pub fn drain_commands(&self) -> impl Iterator<Item = NodeCommand> + '_ {
+        self.cmd_rx.try_iter()
     }
 
     /// Diff the state bus against the shadow, coalesce changes, and flush a
@@ -252,7 +266,8 @@ impl AntiphonServer {
             nodes,
             transport,
         });
-        server::spawn_listener(config.port + 1, session, Arc::clone(&clients), pool)?;
+        let (cmd_tx, cmd_rx) = mpsc::channel::<NodeCommand>();
+        server::spawn_listener(config.port + 1, session, Arc::clone(&clients), pool, cmd_tx)?;
         if let Some(dir) = config.static_dir {
             http::spawn_http(dir, config.port)?;
         }
@@ -268,6 +283,7 @@ impl AntiphonServer {
                 context_shadow: HashMap::new(),
                 last_flush_ms: None,
                 context_dirty: false,
+                cmd_rx,
             },
         ))
     }
@@ -367,6 +383,7 @@ mod pump_tests {
         let (tx, rx) = mpsc::channel();
         let mut table = ClientTable::new();
         table.allocate(tx).expect("one slot");
+        let (_cmd_tx, cmd_rx) = mpsc::channel();
         let handle = AntiphonHandle {
             url: String::new(),
             clients: Arc::new(Mutex::new(table)),
@@ -375,6 +392,7 @@ mod pump_tests {
             context_shadow: HashMap::new(),
             last_flush_ms: None,
             context_dirty: false,
+            cmd_rx,
         };
         (handle, rx)
     }
@@ -506,5 +524,54 @@ mod pump_tests {
         let msgs = drain(&rx);
         assert!(msgs.iter().any(|m| matches!(m, ServerMsg::Context { slots } if !slots.is_empty())),
             "context change from the non-due pump must still be flushed");
+    }
+}
+
+#[cfg(test)]
+mod semantic_channel_tests {
+    use super::*;
+
+    /// Simulates what client threads do: send resolved `NodeCommand`s into
+    /// the mpsc channel the handle owns the receiving end of, then drain via
+    /// the public API in FIFO order. Exercises the same channel wiring as
+    /// `AntiphonServer::spawn` without needing a full client-thread harness.
+    #[test]
+    fn drain_commands_returns_sent_commands_in_order() {
+        let (tx, cmd_rx) = mpsc::channel::<NodeCommand>();
+        let mut table = ClientTable::new();
+        let (out_tx, _out_rx) = mpsc::channel();
+        table.allocate(out_tx).expect("one slot");
+        let handle = AntiphonHandle {
+            url: String::new(),
+            clients: Arc::new(Mutex::new(table)),
+            state_shadow: HashMap::new(),
+            pending: HashMap::new(),
+            context_shadow: HashMap::new(),
+            last_flush_ms: None,
+            context_dirty: false,
+            cmd_rx,
+        };
+
+        tx.send(NodeCommand {
+            target_id: 20,
+            type_id: paraclete_node_api::CMD_SET_PARAM,
+            arg0: 123,
+            arg1: 0.4,
+        })
+        .unwrap();
+        tx.send(NodeCommand {
+            target_id: 21,
+            type_id: paraclete_node_api::CMD_BUMP_PARAM,
+            arg0: 5,
+            arg1: -0.1,
+        })
+        .unwrap();
+
+        let drained: Vec<NodeCommand> = handle.drain_commands().collect();
+        assert_eq!(drained.len(), 2);
+        assert_eq!(drained[0].target_id, 20);
+        assert_eq!(drained[0].arg0, 123);
+        assert_eq!(drained[1].target_id, 21);
+        assert_eq!(drained[1].arg0, 5);
     }
 }
