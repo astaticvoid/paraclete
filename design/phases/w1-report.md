@@ -260,3 +260,86 @@ were specified before implementation). After delivery I independently
 recompiled (the reported "466 pass" was contradicted by a stale mid-edit
 diagnostic — verified it was stale), re-ran the gate, and read the
 `resolve_semantic` logic + channel threading directly. Correct.
+
+---
+
+## Commit 4 — theoria-web (TS workspace + encoder row + embedded bundle) — shipped `11608c8`
+
+### What shipped (builds green; interactive acceptance is C5/paired session)
+
+- **`web/` npm workspace** (Node 26 / npm 11):
+  - `@paraclete/core` — transport-agnostic, no DOM: TS protocol types
+    mirroring `paraclete-antiphon/src/protocol.rs`, a WS connection wrapper
+    (token, hello/welcome, reconnect/backoff, staleness), a path-keyed state
+    store + a context store fed by `state`/`context` messages, and a
+    gesture→detent helper.
+  - `@paraclete/app` — Preact + vite + canvas: **Grid** (ported from W0 —
+    pads, LED colors, pad_down/up), **EncoderRow** (ids 90–97; vertical drag →
+    detents → `{t:"enc",id,delta}`, coalesced per animation frame; cells show
+    param name + live value from the C2 mirror + the C3 context mapping;
+    p-lock flash), **TransportBar** (play/BPM read-only from `/transport/*`,
+    track-select). W0 `web/theoria/` deleted.
+- **Relative-only encoders** upheld — the wire carries detent *deltas*, never
+  absolute values.
+- **`embed-ui` cargo feature** (opt-in, not default): `include_dir!`s
+  `web/packages/app/dist` at compile time. `antiphon/http.rs` gains a
+  `StaticSource { Disk | Embedded }` enum sharing one traversal-safe path
+  resolver (`resolve_rel_path` rejects `..`/empty/`\` segments — W0's guard
+  preserved); `--theoria-dir` still overrides for dev. Plain `cargo build` /
+  `cargo test --workspace` never require `dist/` or pull `include_dir`.
+
+### Build step to note (release with embedded UI)
+
+`dist/` is a build artifact (gitignored). Building with `--features embed-ui`
+requires the bundle to exist first: `cd web && npm install && npm run build`,
+then `cargo build -p paraclete-app --release --features embed-ui`. The feature
+is opt-in precisely so a plain build never depends on the frontend toolchain.
+
+### Gate results
+
+- `npm run build`: green (core + app; 25 KB app bundle; `tsc --noEmit` clean).
+- `cargo build -p paraclete-app` (default) and `--features embed-ui`: both
+  compile; embedded asset filenames verified present in the feature binary.
+- `cargo test --workspace`: **466 passed, 0 failures**.
+- No new clippy warnings on the Rust changes (all 9 workspace warnings are
+  pre-existing in unrelated crates).
+
+### Needs paired-session (C5) validation
+
+Touch/pointer feel on canvas, encoder coarse/fine gestures, p-lock flash
+timing, reconnect on a real Wi-Fi drop, RTT overlay, PWA/install (not built —
+W0 approach carried). **Known gap:** `TransportBar` track-select read-back is
+optimistic/local-only — the C2 mirror allowlist excludes `/script/*`, so
+`/script/lp/selected` is not live-mirrored. Either extend the mirror to a
+`/script/lp/*` subset in a later commit or accept local-only for W1; decide
+at the session.
+
+### Review
+
+Bounded to a green build (interactive UI is inherently paired-session work).
+After delivery I independently verified both cargo configs compile (the
+reported success was contradicted by stale mid-edit E0425/E0308/`unexpected_cfgs`
+diagnostics — confirmed all stale), re-ran the full gate, confirmed the
+`embed-ui` feature wiring in both Cargo.tomls and that the default build has
+zero cfg warnings, and read the static-serving path-safety refactor.
+
+---
+
+## W1 status at end of autonomous run
+
+Commits 0–4 shipped (`53caf77`, `c9468b9`, `3672d1a`, `004bf77`, `11608c8`,
+each with a paired design-docs commit). The **runtime side of W1 is complete
+and test-verified** (466 passing): pads live-trigger with velocity, the state
+path scheme is frozen and cached, the tablet receives a coalesced live state
+mirror, and it can drive parameters/commands through the validated semantic
+plane. The **web client builds** as a proper workspace with the new encoder/
+transport views and an embeddable bundle.
+
+**Remaining before the milestone: C5 — paired session #1** (user, not
+autonomous). That session exercises the tablet end-to-end (the exit-criteria
+checklist in `w1-interfaces.md` §Commit 5), captures findings in
+`design/sessions/s1.md`, and produces the roadmap delta that re-validates the
+P10 C2–C5 ordering. Carry-in items for the session: the default step-velocity
+loudness question (C0), the context enc-id mapping assumption (C2), the
+`/script/*` mirror gap for track-select read-back (C4), and BUG-015
+(FmEngine p-lock bleed) if an FM track is used.

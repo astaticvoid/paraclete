@@ -3,9 +3,8 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** July 2026 (P10 C1 shipped)
-> **Current phase:** P10 C1 shipped July 2026 (`6212242`; Pattern struct + serializer v3 = BUG-005 closed; report: `p10-report.md`). Next: BUG-012 (device rate/buffer negotiation) then W1;
-> W1 → first paired usage session is the near-term milestone
+> **Last updated:** July 2026 (W1 C0–C4 shipped)
+> **Current phase:** W1 Commits 0–4 shipped July 2026 (`53caf77`/`c9468b9`/`3672d1a`/`004bf77`/`11608c8`; report: `w1-report.md`; 466 tests). The runtime side of W1 is complete and test-verified; the web client builds. **Next: paired session #1** (C5 — user, not autonomous; exit criteria in `w1-interfaces.md` §Commit 5 → `design/sessions/s1.md`). BUG-012 (device rate/buffer negotiation) remains queued for a hardware session.
 
 ---
 
@@ -43,8 +42,8 @@ properly with serializer v3 in P10 C1 — scheduled before session #1 regardless
 | 2 | ~~**W0**~~ — **shipped** (Theoria grid POC: `paraclete-antiphon` crate + canvas grid) | Done |
 | 3 | ~~**P10 C1**~~ — **shipped** (`6212242`; `Pattern` struct + serializer v3 = BUG-005) | Done — data-loss class closed before sessions |
 | 3.5 | **BUG-012** — device rate/buffer negotiation + FTZ (small standalone commit) | A 48 kHz interface at session #1 would be mistuned; see audio-model review |
-| 4 | **W1** — touch encoders + context MVP | The "modestly useful" milestone: full playable surface, zero encoder-hardware spend |
-| 5 | **Paired session #1** — structured; findings → `design/sessions/s1.md` | Re-validates P10 C2–C5 order, W2 view priorities, and the vision's session walkthrough |
+| 4 | ~~**W1**~~ — **C0–C4 shipped** (trigger+velocity, path scheme, state mirror, semantic plane, theoria-web) | Runtime side done + web client builds; C5 = the session |
+| 5 | **Paired session #1** (C5, next) — structured; findings → `design/sessions/s1.md` | Re-validates P10 C2–C5 order, W2 view priorities, and the vision's session walkthrough |
 | 6 | P10 C2+ (pages, switching, polyrhythm, surface) interleaved with W2 | Order set by session findings |
 
 **Paired sessions** are a first-class roadmap instrument from here on: one after
@@ -61,7 +60,7 @@ each producing explicit roadmap deltas (or an explicit "no change").
 | **P9.5** | Device Emulation & Test Harness | Full Launchpad emulator (C1). | **Closed early** — C1 shipped; C2/C3 cancelled (superseded by W0/W1); C4 rescoped into P10 C5 test work; piano mode deferred (physical Keystep exists) |
 | **W0** | Theoria grid POC | Browser grid as peer device: `paraclete-antiphon` crate, WS bridge, canvas 8×8 + scene + control, LED mirror, shared `launchpad.rhai` profile | **Shipped** (July 2026; report: `w0-report.md`; localhost touch→LED 24–34 ms; exit criteria needing tablet/Launchpad hardware roll into the next user session) |
 | **P10 C0–C1** | Pattern engine foundation | BUG-001/008 pre-flight (C0, runs before W0); `Pattern` struct + serializer v3 = BUG-005 (C1) | **Shipped** (C0 `b0cf2c8`, C1 `6212242`) |
-| **W1** | Theoria MVP | Touch encoders (relative → `CMD_BUMP_PARAM`), context display, transport, state mirror v1 → **paired session #1** | — |
+| **W1** | Theoria MVP | Touch encoders (relative → `CMD_BUMP_PARAM`), context display, transport, state mirror v1 → **paired session #1** | **C0–C4 shipped** (`w1-report.md`); C5 = paired session #1 (next) |
 | **P10 C2–C5** | Pattern Engine depth | Multi-page (64-step) + page-loop; seamless switching + chaining; per-track length/speed; BUG-004 **+ BUG-013 (sub-block voice starts — micro-timing must be audible) + Sampler Hermite playback** in C3; grid/TUI surface | In design — order re-validated after session #1 |
 | **W2** | Theoria editor | Cap-doc-driven parameter pages for every engine; chain view; view-plugin API (ADR-032) → **paired session #2** | — |
 | **WT** | Theoria/term | Terminal client over in-process Antiphon transport; parameter pages + grid in the terminal | After W2, parallel W3 |

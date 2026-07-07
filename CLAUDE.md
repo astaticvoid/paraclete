@@ -46,7 +46,12 @@ cargo run -- --load=project.ron --save=project.ron
 # tablet for the Theoria grid. WS listens on port+1 (7275).
 cargo run -- --no-antiphon              # disable the interface server
 cargo run -- --antiphon-port=7274       # HTTP port (WS = port+1)
-cargo run -- --theoria-dir=web/theoria  # static client bundle directory
+
+# Theoria web client (W1 C4 — npm workspace in web/; @paraclete/core + app)
+cd web && npm install && npm run build  # produces web/packages/app/dist
+cargo run -- --theoria-dir=web/packages/app/dist   # dev: serve the built bundle from disk
+# Embed the bundle in the binary (opt-in; requires dist/ to exist first):
+cargo build -p paraclete-app --release --features embed-ui
 
 # Build machine bank CLAP plugins (paraclete-clap crate; output: target/debug/*.clap)
 cargo build -p paraclete-clap
@@ -109,7 +114,7 @@ Three additional platform crates live outside the five-layer model:
 | `paraclete-clap-host` | GPL3 | Paraclete-as-CLAP-host (ADR-027, shipped P8). `PluginLibrary` loads `.clap` files (clap-sys + libloading); `PluginNode` wraps a loaded plugin as a `Node`. Arc-shared library handle keeps the .clap alive as long as any node exists. Generator plugins only at P8; effect plugins (audio_in port) in P9. |
 | `paraclete-tui` | GPL3 | `ratatui`-based terminal UI (ADR-026, shipped P8). `TuiApp` reads transport, encoder context, and step state from the StateBus each frame. Three-row layout: transport bar, encoder row, step row. |
 | `paraclete-graph-nodes` | GPL3 | Nodes that own a `NodeExecutor` inner graph (ADR-023, P9). The only crate permitted to depend on both `paraclete-nodes` and `paraclete-runtime`. `InnerGraphNode` is the initial concrete implementation. |
-| `paraclete-antiphon` | GPL3 | Antiphon interface server (ADR-031, W0). Protocol v0 (JSON over WebSocket, blocking tungstenite + rtrb, no tokio), `TheoriaSurfaceNode` (peer to `LaunchpadNode`; 80 pads + 8 relative encoders ids 90–97, all clients multiplex last-writer-wins), kerygma LED broadcast + shadow replay, tiny_http static serving of `web/theoria/`. Depends on L2 only. JSON never touches the audio thread; `process()` drains ≤ 250 events/cycle (executor event-buffer cap is 256). App wiring: device 106, gateway 113, `THEORIA_DEVICE_ID` Rhai constant. |
+| `paraclete-antiphon` | GPL3 | Antiphon interface server (ADR-031, W0). Protocol v0 (JSON over WebSocket, blocking tungstenite + rtrb, no tokio), `TheoriaSurfaceNode` (peer to `LaunchpadNode`; 80 pads + 8 relative encoders ids 90–97, all clients multiplex last-writer-wins), kerygma LED broadcast + shadow replay, tiny_http static serving via `StaticSource` (disk dir or, behind the `embed-ui` feature, an `include_dir!` of the built `web/packages/app/dist`). W1: `AntiphonHandle::pump()` state/context mirror + `drain_commands()` semantic plane (`route_frame` cap-doc validation). Depends on L2 only. JSON never touches the audio thread; `process()` drains ≤ 250 events/cycle (executor event-buffer cap is 256). App wiring: device 106, gateway 113, `THEORIA_DEVICE_ID` Rhai constant. |
 
 ## Configurator API
 
@@ -340,7 +345,7 @@ P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, defa
 
 ## Current Phase: Playable-loop arc (P10 + W-track, July 2026)
 
-**If you are starting an implementation session, read `design/handoff.md` first** — it routes tasks by model tier and carries the guardrails. Current sequence (authority: `design/roadmap.md`): ~~P10 C0~~ shipped (BUG-001 re-diagnosed + fixed via measurement — see p10-interfaces amendment; BUG-008 fixed) → ~~W0~~ shipped (Antiphon server + Theoria browser grid POC) → ~~P10 C1~~ shipped (`6212242`; Pattern struct + serializer v3, gated; BUG-005 closed) → **W1** (next, spec: `design/phases/w1-interfaces.md`; BUG-012 device rate/buffer negotiation slots ahead of it) → **paired session #1 with the user** → P10 C2+ interleaved with W2.
+**If you are starting an implementation session, read `design/handoff.md` first** — it routes tasks by model tier and carries the guardrails. Current sequence (authority: `design/roadmap.md`): ~~P10 C0~~ shipped (BUG-001 re-diagnosed + fixed via measurement — see p10-interfaces amendment; BUG-008 fixed) → ~~W0~~ shipped (Antiphon server + Theoria browser grid POC) → ~~P10 C1~~ shipped (`6212242`; Pattern struct + serializer v3, gated; BUG-005 closed) → ~~W1 C0–C4~~ shipped (`w1-report.md`; CMD_TRIGGER+velocity, canonical state paths + BUG-007, kerygma state mirror, semantic plane, theoria-web; 466 tests) → **paired session #1 with the user** (next; C5, exit criteria in `w1-interfaces.md`) → P10 C2+ interleaved with W2. BUG-012 (device rate/buffer negotiation) queued for a hardware session.
 
 **The interface track (accepted July 2026, `design/interface-plan.md`, ADR-031):** *Antiphon* (`paraclete-antiphon`) is a presentation-agnostic interface server — WebSocket for the tablet client, in-process transport for the terminal — speaking the existing hardware vocabulary; every connected surface manifests as a `Surface` node + gateway, peer to `LaunchpadNode`. *Theoria* is the view layer (`theoria-web` tablet client — primary control/editing surface; `theoria-term` — the TUI ported to an Antiphon client at milestone WT). Touch encoders emit relative deltas only. **Naming policy is binding:** third-party marks (Elektron, Digitakt, Ableton, Push…) never appear in our feature names, identifiers, or UI strings — house vocabulary is Antiphon, Theoria, kerygma (broadcast module), epiclesis (headless test driver), *pages*, *grid*, *chain*; wire-protocol names stay plain.
 
