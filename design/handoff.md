@@ -91,11 +91,12 @@ They are judgment calls to make *with* the user in session, not solo.)
 p10-interfaces amendment before touching sequencer timing) → 2. ~~W0~~
 **shipped** (July 2026, both commits; `w0-report.md` has deviations + figures;
 tablet-hardware exit checks roll into the next user session) → 3. **P10 C1**
-(next; gated; serializer v3 — read the p10-interfaces forward-extensibility
-amendment first) → 4. W1
-(`w1-interfaces.md`) → 5. **paired session #1** (user; `design/sessions/s1.md`
-+ roadmap delta) → 6. P10 C2+ interleaved with W2. Session-0 runbooks
-(`s0-launchpad-debug.md`) remain open for the pending human LED/sound
+(gated; serializer v3) → 4. ~~W1~~ **shipped** → 5. ~~paired session #1~~
+**held 2026-07-09** (`design/sessions/s1.md`) → 6. **Theoria legibility phase
+(next)**: discoverability keystone (labeled track-select, visible mode) —
+**visual/paired, judged on the tablet against the Elektron bar; do not build
+blind.** P10 C2+ engine depth is independent and may run in parallel. Session-0
+runbooks (`s0-launchpad-debug.md`) remain open for the pending human LED/sound
 confirmation.
 
 Standing user offers to schedule when hardware is at hand: Digitakt

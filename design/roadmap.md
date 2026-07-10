@@ -3,8 +3,8 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** July 2026 (W1 C0–C4 shipped)
-> **Current phase:** W1 Commits 0–4 shipped July 2026 (`53caf77`/`c9468b9`/`3672d1a`/`004bf77`/`11608c8`; report: `w1-report.md`; 466 tests). The runtime side of W1 is complete and test-verified; the web client builds. **Next: paired session #1** (C5 — user, not autonomous; exit criteria in `w1-interfaces.md` §Commit 5 → `design/sessions/s1.md`). BUG-012 (device rate/buffer negotiation) remains queued for a hardware session.
+> **Last updated:** July 2026 (paired session #1 held)
+> **Current phase:** W1 C0–C4 shipped; **paired session #1 held 2026-07-09** (`design/sessions/s1.md`). Verdict: the pipe is proven (routing, contextual encoders, live-trigger, ~14 ms RTT, reconnect all verified) but the Theoria surface is **not legible** — "technically 10/10, UX Behringer, needs to be Elektron/Roland." **Next: a Theoria *legibility* phase** (keystone = discoverability of track-select + visible mode; F8/F2/F9 in s1.md) — **visual/paired work, not blind autonomous**. P10 C2+ (pattern-engine depth) is independent and may proceed in parallel. BUG-012 (device rate/buffer negotiation) remains queued for a hardware session.
 
 ---
 
@@ -43,8 +43,9 @@ properly with serializer v3 in P10 C1 — scheduled before session #1 regardless
 | 3 | ~~**P10 C1**~~ — **shipped** (`6212242`; `Pattern` struct + serializer v3 = BUG-005) | Done — data-loss class closed before sessions |
 | 3.5 | **BUG-012** — device rate/buffer negotiation + FTZ (small standalone commit) | A 48 kHz interface at session #1 would be mistuned; see audio-model review |
 | 4 | ~~**W1**~~ — **C0–C4 shipped** (trigger+velocity, path scheme, state mirror, semantic plane, theoria-web) | Runtime side done + web client builds; C5 = the session |
-| 5 | **Paired session #1** (C5, next) — structured; findings → `design/sessions/s1.md` | Re-validates P10 C2–C5 order, W2 view priorities, and the vision's session walkthrough |
-| 6 | P10 C2+ (pages, switching, polyrhythm, surface) interleaved with W2 | Order set by session findings |
+| 5 | ~~**Paired session #1**~~ — **held 2026-07-09** (`design/sessions/s1.md`) | Pipe proven; verdict = UX not legible ("Behringer, needs Elektron"). Delta: discoverability is the keystone |
+| 6 | **Theoria legibility phase (next)** — labeled track-select, visible mode, selection↔grid legibility, topology-driven track count | Keystone from session #1 (F8/F2/F9). **Visual/paired** — judged on the tablet against the Elektron bar, not built blind |
+| 7 | P10 C2+ (pages, switching, polyrhythm, surface) — independent of the tablet UX, may run in parallel | Engine depth; ordering unaffected by session #1 |
 
 **Paired sessions** are a first-class roadmap instrument from here on: one after
 each W-milestone (W1, W2, W3), notes captured append-only in `design/sessions/`,
