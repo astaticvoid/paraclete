@@ -343,3 +343,27 @@ P10 C2–C5 ordering. Carry-in items for the session: the default step-velocity
 loudness question (C0), the context enc-id mapping assumption (C2), the
 `/script/*` mirror gap for track-select read-back (C4), and BUG-015
 (FmEngine p-lock bleed) if an FM track is used.
+
+## Post-run cleanup (warnings + dependency audit)
+
+A user-run `cargo run` surfaced diagnostics that the autonomous gate missed
+because it ran `clippy` scoped to touched crates only — the flagged code lives
+in crates the runway didn't touch. Process fix: the gate now runs one
+workspace-wide `cargo build --workspace --tests 2>&1 | grep warning` before
+each commit. Cleared to zero warnings (466 tests still green):
+
+- Deleted `NodeSlot::surface_pad_count` / `hw_rgb_control_ids` (vestigial since
+  the July-4 Surface rename; no callers) + the orphaned `Control` import.
+- `paraclete-hal` keystep: removed redundant parens.
+- `paraclete-scripting` `ScriptContext::scope`: annotated `#[allow(dead_code)]`
+  with a note — it is the reserved wiring point for per-context Rhai scope
+  isolation, not dead cruft, so it is kept rather than deleted.
+- Test-only lints (`unused_mut` ×8, an unused import, the dead `make_input`
+  helper) fixed via `cargo fix` + a manual removal.
+
+**npm audit (`web/`): 1 moderate + 1 high, both esbuild/vite.** The advisory is
+GHSA-67mh-4wv8-2f99 — the esbuild **dev server** lets any origin read responses.
+Not in our threat model: Theoria ships `vite build` static output served by our
+own `tiny_http` (`StaticSource`); we never run `vite dev` network-exposed. The
+fix is `vite@8`, a major breaking change. **Decision: do not upgrade now**;
+re-evaluate if/when we adopt a dev-server workflow.
