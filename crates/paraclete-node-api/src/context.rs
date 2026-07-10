@@ -233,26 +233,7 @@ impl EventOutputBuffer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::buffer::AudioBuffer;
-    use crate::command::NodeCommand;
-    use crate::event::{ExtendedEventSlab, TimedEvent};
-    use crate::transport::TransportInfo;
-
-    fn make_input<'a>(
-        transport: &'a TransportInfo,
-        slab: &'a ExtendedEventSlab,
-    ) -> ProcessInput<'a> {
-        ProcessInput {
-            audio_inputs: &[],
-            signal_inputs: &[],
-            events: &[],
-            transport,
-            sample_rate: 44100.0,
-            block_size: 64,
-            extended_events: slab,
-            commands: &[],
-        }
-    }
+    use crate::event::TimedEvent;
 
     #[test]
     fn event_output_buffer_starts_empty() {
@@ -347,7 +328,7 @@ mod tests {
         let block = 64usize;
         let mut out_buf = vec![0.0f32; block];
         let mut events_out = EventOutputBuffer::new(16);
-        let mut out_slot = SignalOutputSlot::new(0, SignalPortKind::Modulation, &mut out_buf);
+        let out_slot = SignalOutputSlot::new(0, SignalPortKind::Modulation, &mut out_buf);
         let mut sig_outs = [out_slot];
         let mut output = ProcessOutput {
             audio_outputs: &mut [],

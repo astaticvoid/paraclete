@@ -107,7 +107,7 @@ fn parse_keystep_midi(bytes: &[u8]) -> Vec<TimedEvent> {
         0xE0 => {
             // Pitch bend: 14-bit from two bytes
             let pb = if bytes.len() >= 3 {
-                (((bytes[2] as u16) << 7) | (bytes[1] as u16))
+                ((bytes[2] as u16) << 7) | (bytes[1] as u16)
             } else { 0 };
             vec![TimedEvent::new(0, Event::Surface(SurfaceEvent::FaderMoved {
                 id: 0,

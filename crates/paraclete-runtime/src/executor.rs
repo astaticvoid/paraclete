@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use paraclete_node_api::{
-    AudioBuffer, Control, Event, EventOutputBuffer, SurfaceOutput, ExtendedEventSlab,
+    AudioBuffer, Event, EventOutputBuffer, SurfaceOutput, ExtendedEventSlab,
     NodeCommand, ProcessInput, ProcessOutput, StateBusValue,
     SignalInputSlot, SignalOutputSlot, SignalPortKind,
     TransportInfo, TransportEvent, TimedEvent,
@@ -128,26 +128,6 @@ impl NodeSlot {
         match &self.kind {
             NodeOrDevice::Node(m) => m.published_state(buf),
             NodeOrDevice::Device(d) => d.published_state(buf),
-        }
-    }
-
-    fn surface_pad_count(&self) -> Option<u32> {
-        if let NodeOrDevice::Device(d) = &self.kind {
-            Some(d.descriptor().controls.iter().filter(|c| matches!(c, Control::Pad(_))).count() as u32)
-        } else {
-            None
-        }
-    }
-
-    fn hw_rgb_control_ids(&self) -> Vec<u32> {
-        if let NodeOrDevice::Device(d) = &self.kind {
-            d.descriptor().controls.iter().filter_map(|c| match c {
-                Control::Pad(p) if p.rgb => Some(p.id),
-                Control::Button(b) if b.rgb => Some(b.id),
-                _ => None,
-            }).collect()
-        } else {
-            vec![]
         }
     }
 }

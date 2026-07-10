@@ -10,7 +10,7 @@ use paraclete_node_api::{
     AudioBuffer, Event, EventOutputBuffer, ExtendedEventSlab, Node,
     ProcessInput, ProcessOutput, TransportEvent, TransportFlags,
     TransportInfo, UmpMessage, TICKS_PER_BEAT,
-    midi::{ChannelVoice2, Channeled},
+    midi::ChannelVoice2,
 };
 use paraclete_nodes::{Sequencer, TRACKS};
 

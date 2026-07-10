@@ -47,6 +47,10 @@ struct OwnedSubscription {
 pub struct ScriptContext {
     pub name: String,
     ast: AST,
+    /// Reserved for per-context Rhai variable persistence (script-local scope
+    /// isolation between contexts). Constructed but not yet read — the eval path
+    /// does not thread it through yet. Kept as the wiring point for that feature.
+    #[allow(dead_code)]
     scope: Scope<'static>,
 }
 
@@ -774,7 +778,7 @@ mod tests {
 
     #[test]
     fn state_read_builtin_returns_value() {
-        let (mut engine, handle) = make_engine_with_bus();
+        let (engine, handle) = make_engine_with_bus();
         handle.borrow_mut().write("/node/1/state/x", StateBusValue::Float(42.0));
         assert!(engine.eval_str(r#"
             let v = state_read("/node/1/state/x");
@@ -833,7 +837,7 @@ mod tests {
 
     #[test]
     fn state_write_string_roundtrips() {
-        let (mut engine, handle) = make_engine_with_bus();
+        let (engine, handle) = make_engine_with_bus();
         engine.eval_str(r#"
             state_write("/node/1/param/mode", "sequence");
         "#).expect("state_write string failed");
@@ -846,7 +850,7 @@ mod tests {
 
     #[test]
     fn state_write_overwrites_string() {
-        let (mut engine, handle) = make_engine_with_bus();
+        let (engine, handle) = make_engine_with_bus();
         engine.eval_str(r#"
             state_write("/node/1/param/mode", "trigger");
             state_write("/node/1/param/mode", "sequence");
@@ -859,7 +863,7 @@ mod tests {
 
     #[test]
     fn state_read_after_write_string_returns_correct_value() {
-        let (mut engine, handle) = make_engine_with_bus();
+        let (engine, handle) = make_engine_with_bus();
         handle.borrow_mut().write("/node/1/param/selected", StateBusValue::Int(3));
         engine.eval_str(r#"
             state_write("/node/1/param/mode", "sequence");
@@ -883,7 +887,7 @@ mod tests {
     #[test]
     fn publish_context_writes_node_and_param_to_state_bus() {
         use paraclete_node_api::ParamDescriptor;
-        let (mut engine, handle) = make_engine_with_bus();
+        let (engine, handle) = make_engine_with_bus();
         engine.eval_str(r#"publish_context("encoder_0", 42, "decay");"#)
             .expect("publish_context failed");
         assert_eq!(
@@ -899,7 +903,7 @@ mod tests {
     #[test]
     fn publish_context_overwrites_previous_mapping() {
         use paraclete_node_api::ParamDescriptor;
-        let (mut engine, handle) = make_engine_with_bus();
+        let (engine, handle) = make_engine_with_bus();
         engine.eval_str(r#"
             publish_context("encoder_0", 42, "decay");
             publish_context("encoder_0", 99, "cutoff");
@@ -916,7 +920,7 @@ mod tests {
 
     #[test]
     fn publish_context_different_keys_do_not_collide() {
-        let (mut engine, handle) = make_engine_with_bus();
+        let (engine, handle) = make_engine_with_bus();
         engine.eval_str(r#"
             publish_context("encoder_0", 10, "decay");
             publish_context("encoder_1", 20, "cutoff");
