@@ -55,6 +55,10 @@ fn main() {
     let dev_ui = args.iter().any(|a| a == "--dev-ui");
 
     let no_antiphon = args.iter().any(|a| a == "--no-antiphon");
+    // Trusted-LAN mode: drop the session token so the client URL is a bare
+    // `http://<host>:<port>/` — tappable, no hex string. Any device on the
+    // network can then connect and control the instrument. Opt-in only.
+    let open_lan = args.iter().any(|a| a == "--open");
     let antiphon_port: u16 = args.iter()
         .find(|a| a.starts_with("--antiphon-port="))
         .and_then(|a| a.splitn(2, '=').nth(1).and_then(|s| s.parse().ok()))
@@ -151,7 +155,7 @@ fn main() {
         let static_source = theoria_static_source(theoria_dir_override.clone());
         let config = AntiphonConfig {
             port: antiphon_port,
-            token: load_or_create_token(),
+            token: if open_lan { String::new() } else { load_or_create_token() },
             static_dir: Some(static_source),
             device_id: ID_THEORIA,
         };

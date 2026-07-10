@@ -274,7 +274,14 @@ impl AntiphonServer {
             http::spawn_http(dir, config.port)?;
         }
 
-        let url = format!("http://{}:{}/?t={}", lan_ip(), config.port, config.token);
+        // Empty token = trusted-open mode: emit a bare URL (no `?t=`). The
+        // client sends `token: ""` when the query param is absent, which the
+        // handshake accepts against an empty expected token.
+        let url = if config.token.is_empty() {
+            format!("http://{}:{}/", lan_ip(), config.port)
+        } else {
+            format!("http://{}:{}/?t={}", lan_ip(), config.port, config.token)
+        };
         Ok((
             node,
             AntiphonHandle {
