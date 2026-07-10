@@ -130,8 +130,8 @@ fn on_load() {
             send_cmd(TRACK_SEQ_IDS[t], 16, eid, 0.0); // CMD_TOGGLE_STEP
         } else {
             // Trigger mode: fire sound on declared tracks.
-            // NOTE: CMD_TRIGGER (19) is not implemented by any engine yet
-            // (session-0 finding) — the flash works, the sound does not.
+            // CMD_TRIGGER (19) is implemented by AnalogEngine/FmEngine/Sampler
+            // as of W1 C0; trigger mode makes sound (confirmed paired session #1).
             if eid < TRACK_GEN_IDS.len() {
                 send_cmd(TRACK_GEN_IDS[eid], 19, 0, 0.0); // CMD_TRIGGER
                 set_led(LP_DEVICE_ID, eid, 255, 255, 255);
