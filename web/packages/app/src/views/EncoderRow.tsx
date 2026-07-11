@@ -3,8 +3,10 @@
 // drag = coarse (1 detent / 8px); dragging in the left/right edge zone of a
 // cell, or with a second finger down anywhere on the row, = fine
 // (1 detent / 24px). Deltas coalesce per animation frame. Each cell shows
-// the param name + live value (state mirror) + a 300 ms flash on external
-// change (sequencer p-lock).
+// the param name + live value (state mirror) + a value-position bar + a
+// 300 ms flash on external change (sequencer p-lock). The row lives at the
+// BOTTOM edge (s2.md F4 — at the top, upward drags were cramped against
+// the bezel); pointer capture lets a drag run the full screen height.
 //
 // Wire: a context-mapped encoder sends the semantic `bump_param` (node,
 // param, delta in param units = detents × (max−min)/256, ranges from the
@@ -96,7 +98,14 @@ export function EncoderRow({ connection, stateStore, contextStore, nodes }: Enco
       const fine = isEdgeZone(x) || dragByPointer.size >= 1;
       const drag = new DragToDetents(fine ? FINE_PX_PER_DETENT : COARSE_PX_PER_DETENT);
       dragByPointer.set(e.pointerId, { encIdx: idx, drag, lastY: y });
-      canvas!.setPointerCapture(e.pointerId);
+      // Capture lets the drag run the whole screen height; losing it
+      // (synthetic events, an already-released pointer) must not abort.
+      try {
+        canvas!.setPointerCapture(e.pointerId);
+      } catch {
+        /* uncaptured drag still works while over the row */
+      }
+      dirty = true; // held-cell highlight
     }
 
     function onPointerMove(e: PointerEvent) {
@@ -113,7 +122,7 @@ export function EncoderRow({ connection, stateStore, contextStore, nodes }: Enco
     }
 
     function onPointerUp(e: PointerEvent) {
-      dragByPointer.delete(e.pointerId);
+      if (dragByPointer.delete(e.pointerId)) dirty = true;
     }
 
     canvas.addEventListener("pointerdown", onPointerDown);
@@ -137,20 +146,27 @@ export function EncoderRow({ connection, stateStore, contextStore, nodes }: Enco
       return `/node/${slot.node}/param/${slot.param}`;
     }
 
+    /** The welcome-snapshot param a context slot maps to — the ONE place
+     * that encodes the node/param match, shared by wire scaling and the
+     * value bar so they can never disagree about a slot's range. */
+    function slotParam(slotIdx: number) {
+      const slot = contextStore.get(slotIdx);
+      if (!slot || !slot.param) return undefined;
+      return nodesRef.current
+        .find((n) => n.id === slot.node)
+        ?.params.find((p) => p.name === slot.param);
+    }
+
     /** Route one frame's coalesced detents for one encoder to the wire. */
     function sendDetents(encId: number, detents: number) {
       const conn = connectionRef.current;
       if (!conn) return;
       const slot = contextStore.get(encId - ENC_BASE);
-      if (slot && slot.param) {
-        const param = nodesRef.current
-          .find((n) => n.id === slot.node)
-          ?.params.find((p) => p.name === slot.param);
-        if (param) {
-          const delta = detents * ((param.max - param.min) / DETENTS_PER_RANGE);
-          conn.send({ t: "bump_param", node: slot.node, param: slot.param, delta });
-          return;
-        }
+      const param = slotParam(encId - ENC_BASE);
+      if (slot && slot.param && param) {
+        const delta = detents * ((param.max - param.min) / DETENTS_PER_RANGE);
+        conn.send({ t: "bump_param", node: slot.node, param: slot.param, delta });
+        return;
       }
       // Unmapped (or stale context): raw surface event for profiles.
       conn.send({ t: "enc", id: encId, delta: detents });
@@ -171,6 +187,11 @@ export function EncoderRow({ connection, stateStore, contextStore, nodes }: Enco
       const vw = canvas.width / dpr;
       const vh = canvas.height / dpr;
       ctx.clearRect(0, 0, vw, vh);
+      // Almost always empty — only allocate the lookup during a live drag.
+      const heldIdxs =
+        dragByPointer.size > 0
+          ? new Set([...dragByPointer.values()].map((s) => s.encIdx))
+          : null;
       for (let i = 0; i < ENC_COUNT; i++) {
         const x = i * cellW;
         const slot = contextStore.get(i);
@@ -178,25 +199,40 @@ export function EncoderRow({ connection, stateStore, contextStore, nodes }: Enco
         const value = path ? stateStore.get(path) : undefined;
         const msSince = path ? stateStore.msSinceChange(path) : null;
         const flashing = msSince !== null && msSince < FLASH_MS;
+        const held = heldIdxs !== null && heldIdxs.has(i);
 
-        ctx.fillStyle = flashing ? "#2a5" : "#1c1c22";
+        ctx.fillStyle = flashing ? "#2a5" : held ? "#25252e" : "#1c1c22";
         ctx.fillRect(x + 3, 3, cellW - 6, vh - 6);
-        ctx.strokeStyle = "#33333c";
+        ctx.strokeStyle = held ? "#7cc" : "#33333c";
+        ctx.lineWidth = held ? 2 : 1;
         ctx.strokeRect(x + 3, 3, cellW - 6, vh - 6);
 
-        ctx.fillStyle = flashing ? "#041" : "#999";
-        ctx.font = "600 11px ui-monospace, monospace";
+        ctx.fillStyle = flashing ? "#041" : held ? "#bbc" : "#999";
+        ctx.font = "600 12px ui-monospace, monospace";
         ctx.textAlign = "center";
-        ctx.fillText(slot?.param ? slot.param : "—", x + cellW / 2, vh / 2 - 8, cellW - 10);
+        ctx.fillText(slot?.param ? slot.param : "—", x + cellW / 2, vh * 0.28, cellW - 10);
 
         ctx.fillStyle = flashing ? "#041" : "#ddd";
-        ctx.font = "500 13px ui-monospace, monospace";
+        ctx.font = "500 18px ui-monospace, monospace";
         ctx.fillText(
           value !== undefined ? formatValue(value) : "",
           x + cellW / 2,
-          vh / 2 + 12,
+          vh * 0.58,
           cellW - 10,
         );
+
+        // Value-position bar: where the value sits in the param's declared
+        // range (welcome snapshot), so a drag reads as motion even when the
+        // number's digits barely change.
+        const param = slotParam(i);
+        if (param && value !== undefined && param.max > param.min) {
+          const frac = Math.max(0, Math.min(1, (value - param.min) / (param.max - param.min)));
+          const barY = vh - 16;
+          ctx.fillStyle = "#0f0f13";
+          ctx.fillRect(x + 10, barY, cellW - 20, 5);
+          ctx.fillStyle = held || flashing ? "#7cc" : "#4a6";
+          ctx.fillRect(x + 10, barY, (cellW - 20) * frac, 5);
+        }
       }
     }
 

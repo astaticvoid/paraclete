@@ -29,7 +29,7 @@ export function GridHeader({ stateStore, tracks }: GridHeaderProps) {
   } else if (modeN === 1) {
     const track = tracks.find((t) => t.index === selected);
     const name = track ? track.name : selected !== undefined ? `track ${selected + 1}` : "?";
-    text = `editing ${name} — pads toggle steps 1–16`;
+    text = `editing ${name} — tap or drag to paint steps 1–16`;
     modeClass = "step";
   } else {
     text = "pads play tracks — tap a track above to edit its steps";

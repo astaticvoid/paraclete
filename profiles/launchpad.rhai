@@ -28,6 +28,11 @@ fn on_load() {
     state_write("/script/lp/mode_n",   0);
     state_write("/script/lp/selected", 0);
     state_write("/script/lp/shift",    false);
+    // Numeric twin of the selected track's step bitfield (mode_n pattern):
+    // a 16-bit mask Theoria clients read for drag-draw step state — the
+    // steps Text value is not mirrored, and LED colors are ambiguous under
+    // the playhead. Rewritten at every sequence render below.
+    state_write("/script/lp/steps_n",  0);
 
     // ── Button / pad input (Launchpad/emulator + Theoria: one handler) ───────
     on_surface_event([LP_DEVICE_ID, THEORIA_DEVICE_ID], |event| {
@@ -70,6 +75,15 @@ fn on_load() {
                 let t     = if sel == () { 0 } else { sel };
                 let sid   = TRACK_SEQ_IDS[t];
                 let steps = get_step_state(sid);
+                // steps_n numeric twin (see on_load) — inline per the
+                // no-helper-calls-in-closures Rhai rule.
+                let mask = 0;
+                if type_of(steps) == "string" {
+                    for c in 0..16 {
+                        if c < steps.len() && steps[c] == '1' { mask += 1 << c; }
+                    }
+                }
+                state_write("/script/lp/steps_n", mask);
                 let cur   = state_read(`/node/${sid}/state/current_step`);
                 let step  = if cur == () { 0 } else { cur };
                 let col   = step % 8;
@@ -107,6 +121,14 @@ fn on_load() {
             // Render new selection
             let sid   = TRACK_SEQ_IDS[eid];
             let steps = get_step_state(sid);
+            // steps_n numeric twin (see on_load) — the selected track changed.
+            let mask = 0;
+            if type_of(steps) == "string" {
+                for c in 0..16 {
+                    if c < steps.len() && steps[c] == '1' { mask += 1 << c; }
+                }
+            }
+            state_write("/script/lp/steps_n", mask);
             let cur   = state_read(`/node/${sid}/state/current_step`);
             let step  = if cur == () { 0 } else { cur };
             let col   = step % 8;
@@ -213,6 +235,19 @@ fn on_load() {
             let mode  = state_read("/script/lp/mode");
             let sel   = state_read("/script/lp/selected");
             let sel_t = if sel == () { 0 } else { sel };
+
+            if sel_t == t {
+                // steps_n numeric twin (see on_load): keep the mask fresh for
+                // the selected track in any mode, so a client entering
+                // sequence mode reads current state, not the last render's.
+                let mask = 0;
+                if type_of(steps) == "string" {
+                    for c in 0..16 {
+                        if c < steps.len() && steps[c] == '1' { mask += 1 << c; }
+                    }
+                }
+                state_write("/script/lp/steps_n", mask);
+            }
 
             if mode == "sequence" && sel_t == t {
                 // Re-render 16 steps (position indicator comes from next current_step tick)

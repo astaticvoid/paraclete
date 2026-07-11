@@ -23,6 +23,20 @@ export const PATH_MODE_N = "/script/lp/mode_n";
 /** The profile's SHIFT+pad gesture only reaches pads 0-7. */
 export const MAX_SELECTABLE_TRACKS = 8;
 
+/** Step cells the profile drives in sequence mode (pads 0-15). */
+export const STEP_CELL_COUNT = 16;
+/** The profile renders steps in two banks of 8 (rows 0-7 / 8-15); step
+ * views lay cells out the same way so pad ids read left-to-right per row. */
+export const STEP_COLS = 8;
+
+/** The selected track's steps as a 16-bit mask (bit i = step i active) —
+ * the numeric twin of the unmirrored `/node/{id}/state/steps` Text
+ * bitfield, rewritten by the profile on every sequence render and on every
+ * steps change of the selected track. Drag-draw derives step state from
+ * this; LED colors are never decoded (the playhead color hides the step
+ * beneath it, so they cannot be). */
+export const PATH_STEPS_N = "/script/lp/steps_n";
+
 export interface TrackInfo {
   /** 0-based track index (order of sequencer nodes in the welcome snapshot). */
   index: number;

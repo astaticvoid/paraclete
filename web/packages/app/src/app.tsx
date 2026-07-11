@@ -103,14 +103,6 @@ export function App() {
         onVelocityChange={setVelocityPct}
       />
       <TrackBar connection={connection} stateStore={stateStore} tracks={tracks} />
-      <div class="encoder-row-container">
-        <EncoderRow
-          connection={connection}
-          stateStore={stateStore}
-          contextStore={contextStore}
-          nodes={nodes}
-        />
-      </div>
       <GridHeader stateStore={stateStore} tracks={tracks} />
       <div class="grid-container">
         <Grid
@@ -119,6 +111,16 @@ export function App() {
           stateStore={stateStore}
           tracks={tracks}
           velocityPct={velocityPct}
+        />
+      </div>
+      {/* Bottom edge (s2.md F4): an upward value drag now has the whole
+          screen above it; pointer capture lets it leave the row. */}
+      <div class="encoder-row-container">
+        <EncoderRow
+          connection={connection}
+          stateStore={stateStore}
+          contextStore={contextStore}
+          nodes={nodes}
         />
       </div>
       <div class={`overlay-stale ${status === "stale" || status === "connecting" ? "visible" : ""}`}>

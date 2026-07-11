@@ -149,8 +149,8 @@ body {
  * stylesheet applied locked the encoder row at full viewport height and the
  * grid at 0 — min-height:auto kept the flex item at its content size.) */
 .encoder-row-container {
-  flex: 0 0 96px;
-  border-bottom: 1px solid #26262e;
+  flex: 0 0 120px;
+  border-top: 1px solid #26262e;
   position: relative;
   overflow: hidden;
   min-height: 0;
