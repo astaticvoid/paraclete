@@ -403,3 +403,16 @@ resync) treat "on the grid" as the closest playable time — a negative offset
 contributes nothing there. Regression tests
 `negative_micro_offset_emits_early` / `negative_micro_offset_step_zero_wraps`.
 Partially resolves OQ-6 (signed representation unchanged: i8 ±47).
+
+---
+
+**BUG-013 PARTIAL — engines resolved** (`309a9e6`, 2026-07-11):
+AnalogEngine + FmEngine render in spans split at NoteOn sample offsets —
+voice starts are sample-accurate (regression tests
+`note_on_mid_block_starts_at_its_sample_offset` per engine), velocity is
+per-span (`two_notes_in_one_block_keep_their_own_velocities`), and
+ParamLocks apply from their offset. **Sampler half remains open:** its
+per-voice `SincFixedOut` yields fixed-size chunks and cannot render
+arbitrary spans — the fix direction's load-time-resample + playback-Hermite
+replacement is the remaining work, a real resampler redesign that should
+not be rushed; keep this entry open until it lands.
