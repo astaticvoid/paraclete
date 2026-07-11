@@ -333,7 +333,8 @@ Beyond the universal `CMD_SET_PARAM`/`CMD_BUMP_PARAM`, `Sequencer` handles:
 | 24 | `CMD_SET_FILL_B` *(P5)* | 1 = active, 0 = inactive | — |
 | 25 | `CMD_SET_STEP_TIMING` *(P5)* | step index | micro_offset (i8, ±47; 1 unit ≈ 1/96 beat) |
 | 26 | `CMD_SET_STEP_CONDITION` *(P5)* | step index | packed i64: bits 0–7 probability, 8–15 repeat_n, 16–23 repeat_m, 24–31 fill discriminant |
-| 27 | `CMD_SET_PATTERN` *(P5)* | pattern index | — (stub at P5; always plays pattern 0) |
+| 27 | `CMD_SET_PATTERN` *(P5)* | pattern index | — (stub until P10 C4; playback clamps to the allocated bank. As of P10 C2 the switch refreshes the swing conduit) |
+| 30 | `CMD_SET_PAGE_LOOP` *(P10 C2)* | start_page | end_page (inclusive; validate-or-ignore: start ≤ end, both within the active pattern's page count) |
 
 Sequencer publishes to the state bus each cycle:
 - `/node/{id}/state/steps` — 16-char ASCII bitfield (`'1'`/`'0'` per step)
@@ -343,7 +344,9 @@ Sequencer publishes to the state bus each cycle:
 - `/node/{id}/state/fill_a` *(P5)* — bool as f64
 - `/node/{id}/state/fill_b` *(P5)* — bool as f64
 
-P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, default 0.0). Swing is applied at emit time to odd-indexed steps.
+P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, default 0.0). Swing is applied at emit time to odd-indexed steps. **As of P10 C2 swing is per-pattern and authoritative in `Pattern::swing`** — the bank slot is a write-through conduit for encoders (`last_bank_swing` guard), refreshed on pattern switch/activate/deserialize; emission reads the active pattern.
+
+**Multi-page patterns (P10 C2):** a pattern of `length` steps spans `ceil(length/8)` pages (`PAGE_SIZE = 8`, max 8 pages / 64 steps). `Pattern::page_loop = (start_page, end_page)` (inclusive) is the playback window: steps advance across `[start*8, min((end+1)*8, length))` and wrap to `start*8` — that wrap is the pattern's cycle boundary (loop_count; C4 cue/chain evaluation point). Transport start enters at the window's first step; the bar-sync snap maps into the window.
 
 **`Sequencer::with_default_note(n)` (2026-07-10, BUG-022):** note given to steps never explicitly set (toggle-created, load-time re-pad). Instrument-file field `default_note:` per sequencer node; the default instrument sets 36 (the synth engines' trigger reference) on all four tracks so a toggled step and a bare `CMD_TRIGGER` fire the same pitch. Omit for sample tracks (Sampler `root_note` = 60). Struct default stays 60.
 

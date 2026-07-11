@@ -187,3 +187,62 @@ regression test.
 
 (Pre-commit review pass; findings and dispositions recorded before the code
 commit.)
+
+## Commit 2 — Multi-page patterns (page-loop window + per-pattern swing) — shipped `0a8116b`
+
+Implemented 2026-07-11 (autonomous session, spec: `p10-interfaces.md` §2).
+
+- **Page-loop playback (§2.1):** `window()` maps `page_loop` + `length` to a
+  `[start, end)` step range; `advance_step()` wraps at the window end — the
+  wrap is the cycle boundary (loop_count; C4 will evaluate cued switches /
+  chain advances there only). Transport `global_start` enters at the window's
+  first step. The bar-sync snap maps transport position into the window
+  (`wstart + ticks % wlen`), so a mid-session join lands inside the run that
+  plays. Both helpers clamp defensively; the audio thread cannot panic on a
+  transiently inconsistent window/length pair.
+- **`CMD_SET_PAGE_LOOP` (30):** validate-or-ignore (the §2.4 test wants
+  `(2,1)` rejected outright, so "clamp" from §2.1's prose reads as
+  validation, not coercion — boring option chosen). Negative fractional
+  `arg1` is rejected before the truncating cast (review finding).
+- **Steps 0–63 (§2.2):** already satisfied by C1 (steps pre-sized to 64;
+  commands bound-check against `steps.len()`); no change needed.
+- **Swing per-pattern (§2.3):** `Pattern::swing` is authoritative for
+  emission + serialization. The bank slot is a write-through conduit
+  (`last_bank_swing` detects encoder writes). Conduit refresh happens at
+  `CMD_SET_PATTERN` (C4's stated dependency, implemented early at the switch
+  site because a live switch is reachable today via a multi-pattern v3
+  blob), `activate()`, and `deserialize()`.
+
+### Review findings (pre-commit, 2 agents: correctness + spec compliance)
+
+1. **Applied — conduit stale on live pattern switch** (correctness,
+   CONFIRMED): without the refresh, the first post-switch encoder nudge
+   snapped the new pattern to the old pattern's swing, and a write of
+   exactly the stale value was dropped by the change guard. Fixed at the
+   `CMD_SET_PATTERN` site + regression test
+   `pattern_switch_refreshes_swing_conduit`.
+2. **Applied — deserialize/page_loop asymmetry** (correctness): a corrupt or
+   foreign v3 blob with an invalid window (`(4,5)` on length 16, or
+   reversed) loaded into degenerate single-step playback. deserialize_v3 now
+   sanitizes to the full span, matching CMD_SET_PAGE_LOOP's validation.
+   Regression test `deserialize_sanitizes_invalid_page_loop`.
+3. **Applied — negative `arg1` truncation** (both agents): `-0.5 as i64 = 0`
+   slipped through validation; rejected before the cast now.
+4. **Applied — page_derivation test half-missing** (spec): the §2.4 test
+   named "0–7 → page 0, 8–15 → page 1"; the first draft asserted only the
+   page-1 half. Both halves now asserted, including through playback.
+
+### Spec conflict record (handoff guardrail 1)
+
+`p10-interfaces.md` §2.3: "Keep `/state/swing` publishing (now sourced from
+the active pattern)." **No `/state/swing` path has ever existed** —
+`published_state()` never published swing, and nothing else does. The
+sentence cannot be "kept"; nothing was added (the C5 state-bus commit is the
+natural home if a swing path is wanted — decide there). Recorded rather than
+silently implemented.
+
+### Gate results
+
+- `cargo test --workspace`: **480 passed, 0 failures** (473 baseline + 5
+  spec tests + 2 review regression tests).
+- Clippy: changed hunks clean (crate warning set unchanged from baseline).
