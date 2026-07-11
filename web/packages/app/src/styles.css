@@ -45,63 +45,167 @@ body {
 
 .transport-bar .bpm { color: #aad; }
 
-.track-buttons {
+.mode-switch {
   display: flex;
-  gap: 4px;
-  margin-left: auto;
+  margin-left: 8px;
+  border: 1px solid #33333c;
+  border-radius: 7px;
+  overflow: hidden;
 }
 
-.track-btn {
-  width: 26px;
-  height: 26px;
-  border-radius: 5px;
-  border: 1px solid #33333c;
+.mode-btn {
+  min-width: 64px;
+  padding: 8px 0;
+  border: none;
   background: #1c1c22;
-  color: #999;
-  font: 600 11px ui-monospace, monospace;
+  color: #777;
+  font: 700 12px ui-monospace, monospace;
+  letter-spacing: 0.08em;
   cursor: pointer;
 }
 
-.track-btn.selected {
+.mode-btn + .mode-btn {
+  border-left: 1px solid #33333c;
+}
+
+.mode-btn.active {
+  background: #2a5;
+  color: #041;
+}
+
+.mode-btn:disabled {
+  color: #444;
+  cursor: default;
+}
+
+/* Track bar — labeled track selector (s1.md F8/F9 keystone). */
+.track-bar {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  background: #121217;
+  border-bottom: 1px solid #26262e;
+  overflow-x: auto;
+}
+
+.track-bar-label {
+  align-self: center;
+  color: #556;
+  font: 700 10px ui-monospace, monospace;
+  letter-spacing: 0.12em;
+  margin-right: 2px;
+}
+
+.track-select-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 96px;
+  padding: 8px 12px;
+  border-radius: 7px;
+  border: 1px solid #33333c;
+  background: #1c1c22;
+  color: #aab;
+  font: 500 13px ui-monospace, monospace;
+  cursor: pointer;
+}
+
+.track-select-btn .track-num {
+  color: #667;
+  font-weight: 700;
+}
+
+.track-select-btn.selected {
   background: #2a5;
   border-color: #3d7;
   color: #041;
+}
+
+.track-select-btn.selected .track-num {
+  color: #063;
+}
+
+.track-select-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
 }
 
 .velocity-slider {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-left: 10px;
+  margin-left: auto;
 }
 
 .velocity-slider input[type="range"] {
   width: 90px;
 }
 
+/* Canvas hosts: the canvases are absolutely positioned so their JS-set
+ * pixel size can never feed back into flex layout. (Found in the 2026-07-10
+ * autonomous session: sizing the canvas from clientHeight before the
+ * stylesheet applied locked the encoder row at full viewport height and the
+ * grid at 0 — min-height:auto kept the flex item at its content size.) */
 .encoder-row-container {
-  flex: 0 0 108px;
+  flex: 0 0 96px;
   border-bottom: 1px solid #26262e;
   position: relative;
+  overflow: hidden;
+  min-height: 0;
 }
 
 .encoder-row-container canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  inset: 0;
   touch-action: none;
+}
+
+.grid-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  background: #101014;
+  border-bottom: 1px solid #26262e;
+  font: 500 12px ui-monospace, monospace;
+  color: #99a;
+}
+
+.grid-header-mode {
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+}
+
+.grid-header.trig .grid-header-mode {
+  background: #244;
+  color: #7cc;
+}
+
+.grid-header.step .grid-header-mode {
+  background: #2a5;
+  color: #041;
 }
 
 .grid-container {
   flex: 1 1 auto;
   position: relative;
   min-height: 0;
+  overflow: hidden;
+}
+
+.grid-canvas-host {
+  position: absolute;
+  inset: 0;
 }
 
 .grid-container canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  inset: 0;
   touch-action: none;
 }
 

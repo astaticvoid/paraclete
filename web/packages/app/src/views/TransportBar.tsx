@@ -1,30 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Transport bar — play state + BPM (read-only at W1) from `/transport/*`,
-// track-select buttons, connection status, and the velocity slider (WQ-2).
-//
-// Track select: the physical/emulated Launchpad profile
-// (profiles/launchpad.rhai) selects a track via SHIFT (scene button 65)
-// held + a grid pad (0-7) pressed. The web client reproduces the same
-// gesture over the existing pad_down/pad_up wire vocabulary rather than
-// inventing a new message, so one profile handles either input source
-// identically. NOTE: live read-back of `/script/lp/selected` depends on
-// antiphon's state-mirror allowlist (currently `/node/*/param|state/*` and
-// `/transport/*` only — `/script/*` is intentionally out of scope for this
-// commit, see w1-interfaces.md §Commit 2); until that allowlist is
-// extended, this view's selection highlight is optimistic (set locally on
-// press) rather than server-confirmed. Flagged for paired-session/backend
-// follow-up.
+// the always-visible mode switch (s1.md F2), connection status, and the
+// velocity slider (WQ-2). Track selection moved to the dedicated TrackBar
+// (s1.md F8 — it was undiscoverable in here as unlabeled numbered buttons).
 
 import { useEffect, useState } from "preact/hooks";
-import type { Connection, MessageBus, StateStore, ConnectionStatus } from "@paraclete/core";
-
-const SHIFT_PAD_ID = 65;
-const TRACK_COUNT = 8;
+import type { Connection, StateStore, ConnectionStatus } from "@paraclete/core";
+import { PATH_MODE_N, sendModeToggle } from "../profileLink";
 
 export interface TransportBarProps {
   connection: Connection | null;
   stateStore: StateStore;
-  bus: MessageBus;
   status: ConnectionStatus;
   velocityPct: number;
   onVelocityChange: (pct: number) => void;
@@ -33,42 +19,26 @@ export interface TransportBarProps {
 export function TransportBar({
   connection,
   stateStore,
-  bus,
   status,
   velocityPct,
   onVelocityChange,
 }: TransportBarProps) {
   const [, setTick] = useState(0);
-  const [selected, setSelected] = useState<number | null>(null);
 
   useEffect(() => {
     return stateStore.subscribe(() => setTick((t) => t + 1));
   }, [stateStore]);
 
-  useEffect(() => {
-    return bus.subscribe((msg) => {
-      // Welcome carries the initial transport snapshot; live updates arrive
-      // as /transport/* paths through the state mirror (handled by the
-      // stateStore subscription above).
-      if (msg.t === "welcome") setTick((t) => t + 1);
-    });
-  }, [bus]);
-
   const playing = stateStore.get("/transport/playing");
   const bpm = stateStore.get("/transport/bpm");
-  const mirroredSelected = stateStore.get("/script/lp/selected");
+  // 0 = trigger, 1 = sequence; undefined until the mirror delivers it.
+  const modeN = stateStore.get(PATH_MODE_N);
 
-  const activeTrack = mirroredSelected ?? selected;
-
-  function selectTrack(t: number) {
-    if (!connection) return;
-    // Reproduce SHIFT-held + pad-press exactly as a physical/emulated pad
-    // sequence would arrive at the gateway.
-    connection.send({ t: "pad_down", id: SHIFT_PAD_ID, vel: 65535 });
-    connection.send({ t: "pad_down", id: t, vel: 65535 });
-    connection.send({ t: "pad_up", id: t });
-    connection.send({ t: "pad_up", id: SHIFT_PAD_ID });
-    setSelected(t);
+  // Each segment is idempotent: tapping the mode you are already in does
+  // nothing; tapping the other one sends the profile's SEQ-EDIT toggle.
+  function requestMode(target: 0 | 1) {
+    if (!connection || modeN === undefined || modeN === target) return;
+    sendModeToggle(connection);
   }
 
   return (
@@ -76,6 +46,22 @@ export function TransportBar({
       <span class={`status ${status}`}>{status}</span>
       <span>{playing === undefined ? "—" : playing > 0 ? "▶ playing" : "■ stopped"}</span>
       <span class="bpm">{bpm !== undefined ? `${bpm.toFixed(1)} BPM` : ""}</span>
+      <div class="mode-switch" role="group" aria-label="pad mode">
+        <button
+          class={`mode-btn ${modeN === 0 ? "active" : ""}`}
+          disabled={modeN === undefined}
+          onClick={() => requestMode(0)}
+        >
+          TRIG
+        </button>
+        <button
+          class={`mode-btn ${modeN === 1 ? "active" : ""}`}
+          disabled={modeN === undefined}
+          onClick={() => requestMode(1)}
+        >
+          STEP
+        </button>
+      </div>
       <div class="velocity-slider">
         <label htmlFor="velocity">vel</label>
         <input
@@ -87,17 +73,6 @@ export function TransportBar({
           onInput={(e) => onVelocityChange(Number((e.target as HTMLInputElement).value))}
         />
         <span>{velocityPct}%</span>
-      </div>
-      <div class="track-buttons">
-        {Array.from({ length: TRACK_COUNT }, (_, t) => (
-          <button
-            key={t}
-            class={`track-btn ${activeTrack === t ? "selected" : ""}`}
-            onClick={() => selectTrack(t)}
-          >
-            {t + 1}
-          </button>
-        ))}
       </div>
     </div>
   );

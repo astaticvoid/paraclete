@@ -10,11 +10,15 @@ import {
   MessageBus,
   StateStore,
   type ConnectionStatus,
+  type NodeSummary,
   type ServerMsg,
 } from "@paraclete/core";
 import { Grid } from "./views/Grid";
 import { EncoderRow } from "./views/EncoderRow";
 import { TransportBar } from "./views/TransportBar";
+import { TrackBar } from "./views/TrackBar";
+import { GridHeader } from "./views/GridHeader";
+import { tracksFromNodes } from "./profileLink";
 
 // WS listens on HTTP port + 1 (w0-report.md deviation #2, carried forward).
 function wsUrl(): string {
@@ -33,6 +37,11 @@ export function App() {
   const [rttText, setRttText] = useState("");
   const [velocityPct, setVelocityPct] = useState(100);
   const [connection, setConnection] = useState<Connection | null>(null);
+  // Full node snapshot from welcome/topology: the encoder row needs param
+  // ranges for bump scaling; tracks (count + names) derive from it — the
+  // graph is the source of truth, never a hardcoded constant (F5).
+  const [nodes, setNodes] = useState<NodeSummary[]>([]);
+  const tracks = useMemo(() => tracksFromNodes(nodes), [nodes]);
 
   useEffect(() => {
     const conn = new Connection({
@@ -48,6 +57,8 @@ export function App() {
           stateStore.applyUpdates(msg.updates);
         } else if (msg.t === "context") {
           contextStore.applySnapshot(msg.slots);
+        } else if (msg.t === "welcome" || msg.t === "topology") {
+          setNodes(msg.nodes);
         }
         bus.emit(msg);
       },
@@ -68,16 +79,28 @@ export function App() {
       <TransportBar
         connection={connection}
         stateStore={stateStore}
-        bus={bus}
         status={status}
         velocityPct={velocityPct}
         onVelocityChange={setVelocityPct}
       />
+      <TrackBar connection={connection} stateStore={stateStore} tracks={tracks} />
       <div class="encoder-row-container">
-        <EncoderRow connection={connection} stateStore={stateStore} contextStore={contextStore} />
+        <EncoderRow
+          connection={connection}
+          stateStore={stateStore}
+          contextStore={contextStore}
+          nodes={nodes}
+        />
       </div>
+      <GridHeader stateStore={stateStore} tracks={tracks} />
       <div class="grid-container">
-        <Grid connection={connection} bus={bus} velocityPct={velocityPct} />
+        <Grid
+          connection={connection}
+          bus={bus}
+          stateStore={stateStore}
+          tracks={tracks}
+          velocityPct={velocityPct}
+        />
       </div>
       <div class={`overlay-stale ${status === "stale" || status === "connecting" ? "visible" : ""}`}>
         STALE

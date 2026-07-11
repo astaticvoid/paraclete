@@ -126,7 +126,10 @@ export interface StateUpdate {
   v: number;
 }
 
-/** [W1] one resolved encoder→node/param mapping slot. */
+/** [W1] one resolved encoder→node/param mapping slot. `enc` is the encoder
+ * SLOT INDEX 0-7 (trailing int of the profile's `encoder_{i}` context key),
+ * not a surface control id — each client maps its own encoder controls
+ * (this client: canvas cells / ids 90-97) onto slot indexes. */
 export interface ContextSlot {
   enc: number;
   node: number;

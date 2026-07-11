@@ -2,10 +2,19 @@
 // Encoder row — canvas, ids 90-97 (w1-interfaces.md §Commit 4). Vertical
 // drag = coarse (1 detent / 8px); dragging in the left/right edge zone of a
 // cell, or with a second finger down anywhere on the row, = fine
-// (1 detent / 24px). The wire shape never changes — fine mode just yields
-// fewer detents per pixel; both send `{"t":"enc",id,delta}`. Deltas
-// coalesce per animation frame. Each cell shows the param name + live value
-// (state mirror) + a 300 ms flash on external change (sequencer p-lock).
+// (1 detent / 24px). Deltas coalesce per animation frame. Each cell shows
+// the param name + live value (state mirror) + a 300 ms flash on external
+// change (sequencer p-lock).
+//
+// Wire: a context-mapped encoder sends the semantic `bump_param` (node,
+// param, delta in param units = detents × (max−min)/256, ranges from the
+// welcome snapshot) — the server validates against the cap docs and the
+// node's ParameterBank clamps the result. An unmapped encoder falls back to
+// the raw `{"t":"enc",id,delta}` surface event so profiles can bind it.
+// (The W1 spec put the detent→delta scaling in the profile, but profiles
+// have no cap-doc access to know a param's range — recorded as a spec
+// conflict in the phase report, resolved via the semantic plane the same
+// phase shipped.)
 
 import { useEffect, useRef } from "preact/hooks";
 import {
@@ -15,6 +24,7 @@ import {
   FrameCoalescer,
   type Connection,
   type ContextStore,
+  type NodeSummary,
   type StateStore,
 } from "@paraclete/core";
 
@@ -22,17 +32,23 @@ const ENC_BASE = 90;
 const ENC_COUNT = 8;
 const FLASH_MS = 300;
 const EDGE_ZONE_FRAC = 0.2;
+/** Detents to sweep a param's full declared range (w1-interfaces §Commit 4). */
+const DETENTS_PER_RANGE = 256;
 
 export interface EncoderRowProps {
   connection: Connection | null;
   stateStore: StateStore;
   contextStore: ContextStore;
+  /** Welcome/topology node snapshot — param ranges for delta scaling. */
+  nodes: NodeSummary[];
 }
 
-export function EncoderRow({ connection, stateStore, contextStore }: EncoderRowProps) {
+export function EncoderRow({ connection, stateStore, contextStore, nodes }: EncoderRowProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const connectionRef = useRef(connection);
   connectionRef.current = connection;
+  const nodesRef = useRef(nodes);
+  nodesRef.current = nodes;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -112,10 +128,41 @@ export function EncoderRow({ connection, stateStore, contextStore }: EncoderRowP
       dirty = true;
     });
 
-    function paramPath(enc: number): string | null {
-      const slot = contextStore.get(enc);
-      if (!slot) return null;
+    // Context slots are keyed by SLOT INDEX 0-7 (see ContextSlot in
+    // @paraclete/core), while this view's cells double as surface encoder
+    // ids 90-97 for the raw-event fallback.
+    function paramPath(slotIdx: number): string | null {
+      const slot = contextStore.get(slotIdx);
+      if (!slot || !slot.param) return null;
       return `/node/${slot.node}/param/${slot.param}`;
+    }
+
+    /** Route one frame's coalesced detents for one encoder to the wire. */
+    function sendDetents(encId: number, detents: number) {
+      const conn = connectionRef.current;
+      if (!conn) return;
+      const slot = contextStore.get(encId - ENC_BASE);
+      if (slot && slot.param) {
+        const param = nodesRef.current
+          .find((n) => n.id === slot.node)
+          ?.params.find((p) => p.name === slot.param);
+        if (param) {
+          const delta = detents * ((param.max - param.min) / DETENTS_PER_RANGE);
+          conn.send({ t: "bump_param", node: slot.node, param: slot.param, delta });
+          return;
+        }
+      }
+      // Unmapped (or stale context): raw surface event for profiles.
+      conn.send({ t: "enc", id: encId, delta: detents });
+    }
+
+    /** Value formatting scaled to magnitude — "4000" not "4000.000". */
+    function formatValue(v: number): string {
+      const a = Math.abs(v);
+      if (a >= 100) return v.toFixed(0);
+      if (a >= 10) return v.toFixed(1);
+      if (a >= 1) return v.toFixed(2);
+      return v.toFixed(3);
     }
 
     function draw() {
@@ -125,10 +172,9 @@ export function EncoderRow({ connection, stateStore, contextStore }: EncoderRowP
       const vh = canvas.height / dpr;
       ctx.clearRect(0, 0, vw, vh);
       for (let i = 0; i < ENC_COUNT; i++) {
-        const enc = ENC_BASE + i;
         const x = i * cellW;
-        const slot = contextStore.get(enc);
-        const path = paramPath(enc);
+        const slot = contextStore.get(i);
+        const path = paramPath(i);
         const value = path ? stateStore.get(path) : undefined;
         const msSince = path ? stateStore.msSinceChange(path) : null;
         const flashing = msSince !== null && msSince < FLASH_MS;
@@ -141,12 +187,12 @@ export function EncoderRow({ connection, stateStore, contextStore }: EncoderRowP
         ctx.fillStyle = flashing ? "#041" : "#999";
         ctx.font = "600 11px ui-monospace, monospace";
         ctx.textAlign = "center";
-        ctx.fillText(slot ? slot.param : "—", x + cellW / 2, vh / 2 - 8, cellW - 10);
+        ctx.fillText(slot?.param ? slot.param : "—", x + cellW / 2, vh / 2 - 8, cellW - 10);
 
         ctx.fillStyle = flashing ? "#041" : "#ddd";
         ctx.font = "500 13px ui-monospace, monospace";
         ctx.fillText(
-          value !== undefined ? value.toFixed(3) : "",
+          value !== undefined ? formatValue(value) : "",
           x + cellW / 2,
           vh / 2 + 12,
           cellW - 10,
@@ -158,7 +204,7 @@ export function EncoderRow({ connection, stateStore, contextStore }: EncoderRowP
     function frame() {
       const drained = coalescer.drain();
       for (const { id, delta } of drained) {
-        connectionRef.current?.send({ t: "enc", id, delta });
+        sendDetents(id, delta);
       }
       if (dirty || drained.length > 0) {
         draw();
