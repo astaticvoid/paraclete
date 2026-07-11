@@ -3,8 +3,8 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** July 2026 (paired session #1 held)
-> **Current phase:** W1 C0–C4 shipped; **paired session #1 held 2026-07-09** (`design/sessions/s1.md`). Verdict: the pipe is proven (routing, contextual encoders, live-trigger, ~14 ms RTT, reconnect all verified) but the Theoria surface is **not legible** — "technically 10/10, UX Behringer, needs to be Elektron/Roland." **Next: a Theoria *legibility* phase** (keystone = discoverability of track-select + visible mode; F8/F2/F9 in s1.md) — **visual/paired work, not blind autonomous**. P10 C2+ (pattern-engine depth) is independent and may proceed in parallel. BUG-012 (device rate/buffer negotiation) remains queued for a hardware session.
+> **Last updated:** 2026-07-10 (Theoria legibility phase implemented)
+> **Current phase:** **Theoria legibility phase implemented autonomously 2026-07-10** (`design/phases/theoria-legibility-report.md`; commits `7e7a39a`/`e553c62`): labeled track-select, visible TRIG|STEP mode, selection↔grid labels, topology-driven track count, contextual encoders end-to-end — judged live in Chrome, **paired tablet judgment against the Elektron bar still pending** (that session is the phase's exit gate). Five W1 wire bugs found+fixed en route (BUG-016…020: no state replay on connect, encoder gate never opened, absolute bump cap, context-slot key mismatch, client layout race). Deferred from the s1 list: F7 LED-routing cleanup, F4 semantic pattern channel + on-glass save/reload (protocol additions — user-gated). P10 C2+ (pattern-engine depth) remains independent/parallel. BUG-012 (device rate/buffer negotiation) remains queued for a hardware session.
 
 ---
 
@@ -44,7 +44,7 @@ properly with serializer v3 in P10 C1 — scheduled before session #1 regardless
 | 3.5 | **BUG-012** — device rate/buffer negotiation + FTZ (small standalone commit) | A 48 kHz interface at session #1 would be mistuned; see audio-model review |
 | 4 | ~~**W1**~~ — **C0–C4 shipped** (trigger+velocity, path scheme, state mirror, semantic plane, theoria-web) | Runtime side done + web client builds; C5 = the session |
 | 5 | ~~**Paired session #1**~~ — **held 2026-07-09** (`design/sessions/s1.md`) | Pipe proven; verdict = UX not legible ("Behringer, needs Elektron"). Delta: discoverability is the keystone |
-| 6 | **Theoria legibility phase (next)** — labeled track-select, visible mode, selection↔grid legibility, topology-driven track count | Keystone from session #1 (F8/F2/F9). **Visual/paired** — judged on the tablet against the Elektron bar, not built blind |
+| 6 | ~~**Theoria legibility phase**~~ — **implemented 2026-07-10** (`7e7a39a`/`e553c62`; report: `theoria-legibility-report.md`) | Minimum bar items 1–4 done + contextual encoders; judged live in Chrome. **Exit gate = paired tablet judgment (next session)**; F7 cleanup + F4/save-reload deferred |
 | 7 | P10 C2+ (pages, switching, polyrhythm, surface) — independent of the tablet UX, may run in parallel | Engine depth; ordering unaffected by session #1 |
 
 **Paired sessions** are a first-class roadmap instrument from here on: one after

@@ -232,3 +232,69 @@ bank. Pre-existing (not introduced by W1 C0); left untouched there to keep the
 commit scoped. Fold into the next `fm_engine.rs`-touching commit or a small
 standalone fix; add a regression test asserting a locked step does not affect
 the next unlocked step.
+
+---
+
+### BUG-016 — State mirror had no on-connect replay (RESOLVED `7e7a39a`)
+
+**Severity:** High — any Theoria client connecting after app startup showed no
+BPM, no mode, no param values until each path happened to change again  
+**Phase found:** Theoria legibility session (2026-07-10, autonomous)  
+**Description:** `AntiphonHandle::pump()` is diff-only (shadow map); kerygma
+replays the LED shadow to new clients but nothing replayed the *state* mirror,
+so a fresh client's `StateStore` stayed empty for every already-settled path.
+Explains the empty transport bar in the session-#1 baseline screenshots.  
+**Resolution:** `needs_state_replay` flag per `ClientSlot`; `pump()` services a
+full state + context replay before diffing. Regression test
+`late_client_receives_full_state_and_context_replay`.
+
+### BUG-017 — enc/enc_push frames dropped: W0 gate never opened at W1 (RESOLVED `7e7a39a`)
+
+**Severity:** High — the W1 touch-encoder row was dead on the wire; every
+`{"t":"enc"}` frame died at `route_frame` with `Drop("encoders are W1")`  
+**Phase found:** Theoria legibility session (2026-07-10)  
+**Description:** W0 gated encoder delivery "until W1"; W1 C3/C4 shipped the
+client encoder row and the semantic plane but never lifted the surface-plane
+gate, and no profile ever handled `EncoderChanged` from Theoria either.  
+**Resolution:** Enc/EncPush route to surface events like pads (test
+`route_frame_emits_encoder_events`). The client now prefers the semantic
+`bump_param` for context-mapped encoders (see phase report for the spec
+conflict on where detent scaling lives).
+
+### BUG-018 — BUMP_DELTA_CAP froze wide-range params (RESOLVED `7e7a39a`)
+
+**Severity:** Medium — `bump_param` deltas were clamped to an absolute ±0.5 in
+param units; a 200–8000 Hz cutoff could move at most 0.5 Hz per message  
+**Phase found:** Theoria legibility session (2026-07-10)  
+**Description:** the cap assumed normalized 0–1 params (universality-directive
+class: hardcoded range assumption in a validation path).  
+**Resolution:** cap is range-relative — |delta| ≤ (max−min) × 0.5. Test
+`bump_param_delta_cap_is_range_relative`.
+
+### BUG-019 — ContextSlot key mismatch: slots 0–7 vs client lookups 90–97 (RESOLVED `7e7a39a`/`e553c62`)
+
+**Severity:** High — the encoder row could never resolve a context slot, so
+cells showed "–" even when context was published  
+**Phase found:** Theoria legibility session (2026-07-10)  
+**Description:** `build_context_frame` emits `enc` = trailing int of the
+profile's `encoder_{i}` key (0–7); the web `EncoderRow` looked up slots by
+surface control id (90–97). This was the "boring documented choice… may need a
+defined map once the web encoder row binds ids 90–97" flagged in W1 C2 — C4
+never validated it.  
+**Resolution:** semantics defined and documented on both protocol structs:
+`ContextSlot.enc` is the encoder SLOT INDEX 0–7; each client maps its own
+controls onto slot indexes.
+
+### BUG-020 — Web client layout race: canvas sizing fed back into flex (RESOLVED `e553c62`)
+
+**Severity:** Medium — at desktop viewport the encoder row locked at full
+viewport height and the grid rendered 0 px tall; tablet worked only because the
+stylesheet won the race  
+**Phase found:** Theoria legibility session (2026-07-10)  
+**Description:** `EncoderRow.resize()` set an explicit pixel height from
+`parent.clientHeight` measured before the stylesheet applied; `min-height:auto`
+then kept the flex item at content size forever (ResizeObserver never re-fired
+because nothing ever resized).  
+**Resolution:** canvases are absolutely positioned inside their containers
+(`.encoder-row-container`/`.grid-container` overflow hidden) so JS-set pixel
+sizes can never influence flex layout.
