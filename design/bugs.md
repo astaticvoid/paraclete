@@ -298,3 +298,19 @@ because nothing ever resized).
 **Resolution:** canvases are absolutely positioned inside their containers
 (`.encoder-row-container`/`.grid-container` overflow hidden) so JS-set pixel
 sizes can never influence flex layout.
+
+### BUG-021 — Hard-error status stomped to "stale": no error screen could ever show (RESOLVED `2daceac`)
+
+**Severity:** Medium — bad-token and protocol-mismatch states rendered as a
+permanent STALE overlay instead of their error message; a tablet at the bare
+URL had no path forward (driver report 2026-07-10: "if I go to root I just
+see stale")  
+**Phase found:** Theoria legibility session (2026-07-10), while adding the
+code-entry gate  
+**Description:** two paths in `connection.ts` overwrote the hard-error
+status: the WS `close` handler set "stale" *before* checking `hardError`, and
+the 500 ms stale timer armed in `connect()` (cleared only on `welcome`) fired
+after the `bye "bad token"` sequence. Verified live: server sent the bye,
+client showed STALE.  
+**Resolution:** both paths respect `hardError`; `closeHard()` also clears the
+stale timer. The bare-URL flow now reaches the TokenGate code-entry screen.

@@ -77,3 +77,18 @@ for Rhai.
   re-run a full multi-agent review when quota returns if desired.
 - Server restart while a client is connected: STALE overlay + reconnect +
   full replay verified working.
+
+## Addendum (same session): tablet-typeable session code (E2)
+
+Driver returned and hit the E1 sibling: the tokened URL is untypeable on
+glass, and the bare URL dead-ended in STALE. Shipped in `2daceac`:
+
+- `.antiphon-token` is now a **6-digit code** (auto-rotates from the 32-hex
+  format). Posture trade recorded: home-LAN threat model, `--open` still the
+  zero-token mode, delete the file to rotate.
+- **TokenGate**: the bare URL shows a code-entry card on handshake rejection;
+  the code persists in localStorage — a tablet types 6 digits once, ever.
+  `?t=` still wins over the stored code (desktop click-through unchanged).
+- The bare-URL STALE dead-end was **BUG-021**: two status-stomp paths in
+  `connection.ts` meant no hard-error screen (bad token, protocol mismatch)
+  could ever render. Found by driving the exact flow the driver described.
