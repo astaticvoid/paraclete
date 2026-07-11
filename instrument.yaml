@@ -16,18 +16,25 @@ nodes:
     type: internal_clock
 
   # ── Sequencers (one per track) ──────────────────────────────────────────
+  # default_note 36 = the synth engines' trigger reference (C2), so a toggled
+  # step and a live pad trigger fire the same pitch (BUG-022). Sample tracks
+  # would omit it (Sampler root_note is 60).
   - id: 10
     type: sequencer
     display_name: "Kick"
+    default_note: 36
   - id: 11
     type: sequencer
     display_name: "Snare"
+    default_note: 36
   - id: 12
     type: sequencer
     display_name: "HiHat"
+    default_note: 36
   - id: 13
     type: sequencer
     display_name: "Bass"
+    default_note: 36
 
   # ── Synth voices ────────────────────────────────────────────────────────
   - id: 20

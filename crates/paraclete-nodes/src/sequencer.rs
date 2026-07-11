@@ -224,6 +224,13 @@ pub struct Sequencer {
     cv_outputs:  usize,
     current_cv:  Vec<f32>,
 
+    /// Note given to steps that were never explicitly set (toggle-created,
+    /// re-padded on load). 60 by default; drum tracks driving a synth engine
+    /// set this to the engine's trigger reference (e.g. 36) via the
+    /// instrument file so a toggled step and a bare CMD_TRIGGER fire the
+    /// same pitch (BUG-022). Per-step notes remain full-range.
+    default_note: u8,
+
     /// Lazily-built `/node/{id}/state/*` path strings for the 9 unconditional
     /// `published_state()` entries (BUG-007 fix: eliminates the per-cycle
     /// `format!` on the audio thread for these fixed keys). Keyed to
@@ -266,6 +273,28 @@ impl Sequencer {
     /// `n = 0` is valid; behaves identically to `Sequencer::new()`.
     pub fn with_cv_outputs(n: usize) -> Self {
         Self::with_name_and_cv("", n)
+    }
+
+    /// Set the note used for never-explicitly-set steps (BUG-022): rewrites
+    /// the still-blank construction-time patterns and is applied to steps
+    /// re-padded at `deserialize()`. Builder-style; call before first use.
+    pub fn with_default_note(mut self, note: u8) -> Self {
+        self.default_note = note;
+        for pattern in &mut self.patterns {
+            for step in &mut pattern.steps {
+                step.note = note;
+            }
+        }
+        self
+    }
+
+    /// `Pattern::empty` with this instance's `default_note` applied (BUG-022).
+    fn blank_pattern(&self, steps: usize) -> Pattern {
+        let mut pattern = Pattern::empty(steps);
+        for step in &mut pattern.steps {
+            step.note = self.default_note;
+        }
+        pattern
     }
 
     fn with_name_and_cv(name: &str, cv_outputs: usize) -> Self {
@@ -314,6 +343,7 @@ impl Sequencer {
             sample_rate:    44100.0,
             cv_outputs,
             current_cv:  vec![0.0_f32; cv_outputs],
+            default_note: 60,
             state_path_cache: std::sync::OnceLock::new(),
         }
     }
@@ -820,7 +850,7 @@ impl Sequencer {
                              cv_locks });
         }
 
-        let mut pattern = Pattern::empty(Self::STEP_CAPACITY.max(pattern_length));
+        let mut pattern = self.blank_pattern(Self::STEP_CAPACITY.max(pattern_length));
         for (i, step) in steps.into_iter().enumerate() {
             pattern.steps[i] = step;
         }
@@ -832,7 +862,7 @@ impl Sequencer {
         let bank_size = self.patterns.len();
         let mut patterns = vec![pattern];
         while patterns.len() < bank_size {
-            patterns.push(Pattern::empty(Self::STEP_CAPACITY));
+            patterns.push(self.blank_pattern(Self::STEP_CAPACITY));
         }
         self.patterns       = patterns;
         self.active_pattern = 0;
@@ -881,7 +911,11 @@ impl Sequencer {
             // load behaves the same as after construction.
             if steps.is_empty() { return; }
             if steps.len() < Self::STEP_CAPACITY {
-                steps.resize(Self::STEP_CAPACITY, Step::empty());
+                // Padded steps carry this instance's default note (BUG-022),
+                // not the Step::empty() constant.
+                let mut pad = Step::empty();
+                pad.note = self.default_note;
+                steps.resize(Self::STEP_CAPACITY, pad);
             }
             let length = length.clamp(1, steps.len());
             patterns.push(Pattern { steps, length, page_loop: (pl_start, pl_end), swing });
@@ -891,7 +925,7 @@ impl Sequencer {
         // low indices, untouched trailing slots are recreated empty (§1.3).
         let bank_size = self.patterns.len();
         while patterns.len() < bank_size {
-            patterns.push(Pattern::empty(Self::STEP_CAPACITY));
+            patterns.push(self.blank_pattern(Self::STEP_CAPACITY));
         }
 
         self.ticks_per_step = ticks_per_step;

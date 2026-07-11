@@ -417,6 +417,113 @@ mod tests {
         audio.channel(0).to_vec()
     }
 
+    // ── BUG-022: sequenced note vs live-trigger pitch unity ──────────────────
+    #[test]
+    fn seq_note_36_and_default_trigger_fire_same_pitch() {
+        // A sequenced NoteOn at the engine's reference note (36, what the
+        // instrument file's default_note now emits) must land on the same
+        // frequency as a bare CMD_TRIGGER (arg0 < 0 → last_note default).
+        let mut via_note = AnalogEngine::kick();
+        via_note.activate(44100.0, 512);
+        run_engine(&mut via_note, &[make_note_on(36)]);
+
+        let mut via_trigger = AnalogEngine::kick();
+        via_trigger.activate(44100.0, 512);
+        run_engine_cmds(&mut via_trigger, &[], &[NodeCommand {
+            target_id: 0, type_id: CMD_TRIGGER, arg0: -1, arg1: 0.0,
+        }]);
+
+        assert!(
+            (via_note.current_hz - via_trigger.current_hz).abs() < 1e-3,
+            "sequenced 36 ({} Hz) and default trigger ({} Hz) must match",
+            via_note.current_hz, via_trigger.current_hz
+        );
+    }
+
+    // ── BUG-023: fast-retrigger ducking measurement harness ─────────────────
+    /// Render `blocks` blocks and return the peak |sample| observed.
+    fn render_peak(eng: &mut AnalogEngine, blocks: usize, trigger_first: bool) -> f32 {
+        let mut peak = 0.0f32;
+        for b in 0..blocks {
+            let cmds = if b == 0 && trigger_first {
+                vec![NodeCommand { target_id: 0, type_id: CMD_TRIGGER, arg0: -1, arg1: 0.0 }]
+            } else {
+                vec![]
+            };
+            let out = run_engine_cmds(eng, &[], &cmds);
+            for s in out {
+                peak = peak.max(s.abs());
+            }
+        }
+        peak
+    }
+
+    /// Render `blocks` blocks; return (rms, peak) over the span.
+    fn render_energy(eng: &mut AnalogEngine, blocks: usize) -> (f32, f32) {
+        let mut sum_sq = 0.0f64;
+        let mut n = 0usize;
+        let mut peak = 0.0f32;
+        for _ in 0..blocks {
+            let out = run_engine_cmds(eng, &[], &[]);
+            for s in out {
+                sum_sq += (s as f64) * (s as f64);
+                n += 1;
+                peak = peak.max(s.abs());
+            }
+        }
+        (((sum_sq / n.max(1) as f64) as f32).sqrt(), peak)
+    }
+
+    fn trigger_now(eng: &mut AnalogEngine) {
+        run_engine_cmds(eng, &[], &[NodeCommand {
+            target_id: 0, type_id: CMD_TRIGGER, arg0: -1, arg1: 0.0,
+        }]);
+    }
+
+    /// BUG-023 exploratory probe — `cargo test -p paraclete-nodes probe_rehit -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn probe_rehit_energy_vs_gap() {
+        let mut fresh = AnalogEngine::kick();
+        fresh.activate(44100.0, 512);
+        trigger_now(&mut fresh);
+        let (rms_ref, peak_ref) = render_energy(&mut fresh, 9);
+
+        for gap_blocks in [1usize, 2, 4, 8, 17, 43, 86] {
+            let mut eng = AnalogEngine::kick();
+            eng.activate(44100.0, 512);
+            trigger_now(&mut eng);
+            for _ in 0..gap_blocks { let _ = run_engine_cmds(&mut eng, &[], &[]); }
+            trigger_now(&mut eng);
+            let (rms, peak) = render_energy(&mut eng, 9);
+            println!(
+                "gap {:>3} blocks ({:>4} ms): rehit rms {:.4} ({:>5.1}% of ref) peak {:.3} ({:>5.1}% of ref)",
+                gap_blocks, gap_blocks * 512 * 1000 / 44100,
+                rms, 100.0 * rms / rms_ref, peak, 100.0 * peak / peak_ref
+            );
+        }
+    }
+
+    #[test]
+    fn fast_retrigger_is_not_ducked() {
+        // s2.md F5: "strong first hit, quiet if I hit it right after, strong
+        // again if I wait." 8 blocks @ 512/44.1k ≈ 93 ms between hits.
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+
+        let first = render_peak(&mut eng, 8, true);
+        let fast_rehit = render_peak(&mut eng, 8, true);
+        // Let everything decay (~1 s), then a rested hit for reference.
+        render_peak(&mut eng, 86, false);
+        let rested = render_peak(&mut eng, 8, true);
+
+        assert!(first > 0.05, "first hit must be audible (peak {first})");
+        assert!(
+            fast_rehit >= rested * 0.8,
+            "fast re-hit peak {fast_rehit} vs rested {rested} — engine ducks on retrigger (BUG-023)"
+        );
+    }
+
     #[test]
     fn analog_kick_produces_audio_on_note_on() {
         let mut eng = AnalogEngine::kick();

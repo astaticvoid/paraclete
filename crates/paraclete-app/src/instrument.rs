@@ -26,6 +26,10 @@ pub struct NodeDef {
     pub plugin_id:    Option<String>,
     pub plugin_path:  Option<String>,
     pub channel_count: Option<usize>,
+    /// Sequencer only: note for steps never explicitly set (BUG-022) —
+    /// match the downstream engine's trigger reference (36 for the synth
+    /// drum engines; omit for samplers, whose root_note is 60).
+    pub default_note: Option<u8>,
 }
 
 #[derive(Deserialize, Debug)]

@@ -135,10 +135,16 @@ fn construct_node(
     let tag = node_def.type_tag.as_str();
     let node: Box<dyn Node> = match tag {
         "internal_clock" => Box::new(InternalClock::with_bpm(bpm)),
-        "sequencer" => match &node_def.display_name {
-            Some(name) => Box::new(Sequencer::with_name(name)),
-            None       => Box::new(Sequencer::new()),
-        },
+        "sequencer" => {
+            let seq = match &node_def.display_name {
+                Some(name) => Sequencer::with_name(name),
+                None       => Sequencer::new(),
+            };
+            match node_def.default_note {
+                Some(note) => Box::new(seq.with_default_note(note)),
+                None       => Box::new(seq),
+            }
+        }
         "sampler"             => Box::new(Sampler::new()),
         "analog_engine:kick"  => Box::new(AnalogEngine::kick()),
         "analog_engine:snare" => Box::new(AnalogEngine::snare()),
