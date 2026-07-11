@@ -103,7 +103,11 @@ pub struct StateUpdate {
     pub v: f64,
 }
 
-/// [W1]
+/// [W1] One resolved encoder→node/param mapping slot. `enc` is the encoder
+/// SLOT INDEX 0–7 (the trailing integer of the profile's `encoder_{i}`
+/// context key), not a surface control id — each client maps its own
+/// encoder controls onto slot indexes (defined 2026-07-10; was flagged as a
+/// "boring documented choice" pending C4 validation, which never ran).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContextSlot {
     pub enc: u32,

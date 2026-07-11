@@ -32,6 +32,11 @@ pub struct ClientSlot {
     pub sender: mpsc::Sender<String>,
     /// Set at allocation; cleared by kerygma after the full-surface LED replay.
     pub needs_replay: bool,
+    /// Set at allocation; cleared by `AntiphonHandle::pump()` after the full
+    /// state + context replay. Without it a client connecting after startup
+    /// never sees values that last changed before it connected — the mirror
+    /// only sends diffs (found 2026-07-10: fresh clients showed no BPM/mode).
+    pub needs_state_replay: bool,
 }
 
 /// Fixed-slot registry of connected clients. Shared between the accept/IO
@@ -51,7 +56,8 @@ impl ClientTable {
     /// when all `MAX_CLIENTS` slots are taken.
     pub fn allocate(&mut self, sender: mpsc::Sender<String>) -> Option<usize> {
         let idx = self.slots.iter().position(|s| s.is_none())?;
-        self.slots[idx] = Some(ClientSlot { sender, needs_replay: true });
+        self.slots[idx] =
+            Some(ClientSlot { sender, needs_replay: true, needs_state_replay: true });
         Some(idx)
     }
 
@@ -79,6 +85,22 @@ impl ClientTable {
             if slot.needs_replay {
                 f(slot);
                 slot.needs_replay = false;
+            }
+        }
+    }
+
+    /// True if any connected client still awaits its state/context replay.
+    /// Cheap gate so `pump()` pays nothing on the common no-new-client tick.
+    pub fn any_state_replay_pending(&self) -> bool {
+        self.slots.iter().flatten().any(|s| s.needs_state_replay)
+    }
+
+    /// Visit every client awaiting a state/context replay, clearing the flag.
+    pub fn for_each_state_replay_pending(&mut self, mut f: impl FnMut(&ClientSlot)) {
+        for slot in self.slots.iter_mut().flatten() {
+            if slot.needs_state_replay {
+                f(slot);
+                slot.needs_state_replay = false;
             }
         }
     }

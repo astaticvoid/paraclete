@@ -223,6 +223,33 @@ fn main() {
         }
     }
 
+    // ── 10.5 Contextual encoders (w1-interfaces §Commit 4; s1 exit crit. 2) ──
+    // The selected track's voice params ride the encoder context: whenever
+    // the profile's /script/lp/selected changes, the app republishes
+    // /context/encoder_* for that track's generator straight from its
+    // capability document. The app is the layer that has both the cap docs
+    // and the track→generator map; profiles stay device-generic and clients
+    // just render the context they are mirrored. Instrument-file macros
+    // pre-populate the slots and stay authoritative until the first
+    // selection change; with no macros the slots follow selection from the
+    // first main-loop iteration (the profile writes selected=0 at load).
+    const ENCODER_SLOTS: usize = 8;
+    let track_encoder_params: Vec<(u32, Vec<String>)> = ids.generators.iter()
+        .map(|gid| {
+            let names = cap_docs.get(gid)
+                .map(|doc| doc.params.iter()
+                    .take(ENCODER_SLOTS)
+                    .map(|p| p.name.as_str().to_string())
+                    .collect())
+                .unwrap_or_default();
+            (*gid, names)
+        })
+        .collect();
+    let mut published_context_track: Option<i64> = None;
+    // A macro-less instrument opts into selection-following context; an
+    // instrument with explicit macros keeps them (they were chosen by hand).
+    let auto_context = def.macros.is_empty() && !track_encoder_params.is_empty();
+
     // ── 11. Graceful shutdown signal ──────────────────────────────────────────
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let r = std::sync::Arc::clone(&running);
@@ -260,6 +287,41 @@ fn main() {
         std::thread::sleep(Duration::from_millis(1));
 
         conf.process_main_thread();
+
+        // Step 1.4: contextual encoders — follow the profile's selected
+        // track (see step 10.5 for the policy). Before the mirror pump so a
+        // selection change and its new context leave in the same flush.
+        if auto_context {
+            let selected = match bus_handle.borrow().read("/script/lp/selected") {
+                Some(paraclete_node_api::StateBusValue::Int(i)) => Some(*i),
+                Some(paraclete_node_api::StateBusValue::Float(f)) => Some(*f as i64),
+                _ => None,
+            };
+            if let Some(t) = selected {
+                if published_context_track != Some(t) && t >= 0 {
+                    if let Some((gid, names)) = track_encoder_params.get(t as usize) {
+                        published_context_track = Some(t);
+                        let mut bus = bus_handle.borrow_mut();
+                        for i in 0..ENCODER_SLOTS {
+                            let (node, param) = match names.get(i) {
+                                Some(name) => (*gid as i64, name.clone()),
+                                // Slot beyond this machine's param count:
+                                // cleared (clients render it unmapped).
+                                None => (0, String::new()),
+                            };
+                            bus.write(
+                                &format!("/context/encoder_{i}/node"),
+                                paraclete_node_api::StateBusValue::Int(node),
+                            );
+                            bus.write(
+                                &format!("/context/encoder_{i}/param"),
+                                paraclete_node_api::StateBusValue::Text(param),
+                            );
+                        }
+                    }
+                }
+            }
+        }
 
         // Step 1.5: state/context mirror pump (after process_main_thread so
         // the bus reflects this cycle's executor updates).
@@ -459,12 +521,22 @@ fn collect_node_summaries(
     ids: &InstrumentIds,
 ) -> Vec<NodeSummary> {
     ids.all.iter()
-        .filter_map(|(_, node_id)| {
+        .filter_map(|(label, node_id)| {
             let doc = conf.get_node_cap_doc(*node_id)?;
+            let type_tag = conf.type_tag_for(*node_id).unwrap_or("").to_string();
+            // Prefer the instrument-file display_name (classify_node falls
+            // back to the type_tag when none was given) — it is the human
+            // name ("Kick", "Snare") that clients label tracks with
+            // (s1.md F8/F9); the cap-doc name is a per-type constant.
+            let name = if !label.is_empty() && *label != type_tag {
+                label.clone()
+            } else {
+                doc.name.to_string()
+            };
             Some(NodeSummary {
                 id: *node_id,
-                type_tag: conf.type_tag_for(*node_id).unwrap_or("").to_string(),
-                name: doc.name.to_string(),
+                type_tag,
+                name,
                 params: doc.params.iter().map(|p| ParamSummary {
                     id: p.id,
                     name: p.name.as_str().to_string(),

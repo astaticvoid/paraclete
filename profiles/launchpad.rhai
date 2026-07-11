@@ -22,6 +22,10 @@
 
 fn on_load() {
     state_write("/script/lp/mode",     "trigger");
+    // Numeric twin of /script/lp/mode (0 = trigger, 1 = sequence): the
+    // Antiphon state mirror carries numbers only, and Theoria clients need
+    // the mode on screen (s1.md F2). Keep both writes in lockstep.
+    state_write("/script/lp/mode_n",   0);
     state_write("/script/lp/selected", 0);
     state_write("/script/lp/shift",    false);
 
@@ -41,6 +45,7 @@ fn on_load() {
             if mode == "sequence" {
                 // Back to trigger mode
                 state_write("/script/lp/mode", "trigger");
+                state_write("/script/lp/mode_n", 0);
                 let check = state_read("/script/lp/mode");
                 debug_print(`SEQ_EDIT: wrote trigger, readback=${check}`);
                 set_led(LP_DEVICE_ID, 64, 0, 0, 0); // SEQ EDIT off
@@ -56,6 +61,7 @@ fn on_load() {
             } else {
                 // Enter sequence mode for selected track
                 state_write("/script/lp/mode", "sequence");
+                state_write("/script/lp/mode_n", 1);
                 let check = state_read("/script/lp/mode");
                 debug_print(`SEQ_EDIT: wrote sequence, readback=${check}`);
                 set_led(LP_DEVICE_ID, 64, 0, 200, 100); // SEQ EDIT lit green
@@ -96,6 +102,7 @@ fn on_load() {
             if eid >= TRACK_SEQ_IDS.len() { return; } // fewer tracks than pads
             state_write("/script/lp/selected", eid);
             state_write("/script/lp/mode", "sequence");
+            state_write("/script/lp/mode_n", 1);
             set_led(LP_DEVICE_ID, 64, 0, 200, 100);
             // Render new selection
             let sid   = TRACK_SEQ_IDS[eid];

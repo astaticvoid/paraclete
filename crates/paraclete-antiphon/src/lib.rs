@@ -107,6 +107,7 @@ impl AntiphonHandle {
     /// `now_ms` is a monotonic caller-supplied clock — antiphon does no
     /// clock reads of its own (w1-interfaces.md §Commit 2).
     pub fn pump(&mut self, bus: &StateBusHandle, now_ms: u64) {
+        self.service_state_replays(bus);
         for (path, value) in bus.iter() {
             if path.starts_with("/context/") {
                 let changed = self.context_shadow.get(path) != Some(value);
@@ -117,16 +118,24 @@ impl AntiphonHandle {
                 continue;
             }
 
+            // `/script/*` joined the mirror for the Theoria legibility phase
+            // (s1.md F2/F8): profiles publish UI-relevant state there
+            // (`/script/lp/selected`, `/script/lp/mode_n`) and clients need it
+            // to show selection/mode set from any surface. Numeric values
+            // only — same coercion rule as every other mirrored path.
             let is_mirrored_state_path = (path.starts_with("/node/")
                 && (path.contains("/param/") || path.contains("/state/")))
-                || path.starts_with("/transport/");
+                || path.starts_with("/transport/")
+                || path.starts_with("/script/");
             if !is_mirrored_state_path {
                 continue;
             }
 
             // Rule 2: Text values are skipped entirely (steps bitfield,
-            // track_name) — the grid renders from LED messages and names
-            // come from NodeSummary, not the numeric mirror.
+            // track_name, `/script/lp/mode`) — the grid renders from LED
+            // messages and names come from NodeSummary, not the numeric
+            // mirror. Profiles that want a mode visible on clients publish a
+            // numeric twin (`/script/lp/mode_n`).
             let coerced = match value {
                 StateBusValue::Float(f) => *f,
                 StateBusValue::Int(i) => *i as f64,
@@ -179,41 +188,41 @@ impl AntiphonHandle {
         }
     }
 
+    /// Full state + context replay to clients that connected since the last
+    /// pump. The diff mirror only sends changes, so without this a fresh
+    /// client would show nothing until each value next changed (the state
+    /// twin of kerygma's LED shadow replay).
+    fn service_state_replays(&mut self, bus: &StateBusHandle) {
+        let Ok(mut table) = self.clients.lock() else { return };
+        if !table.any_state_replay_pending() {
+            return;
+        }
+        let state_frame = if self.state_shadow.is_empty() {
+            None
+        } else {
+            let updates: Vec<StateUpdate> = self
+                .state_shadow
+                .iter()
+                .map(|(path, v)| StateUpdate { path: path.clone(), v: *v })
+                .collect();
+            serde_json::to_string(&ServerMsg::State { updates }).ok()
+        };
+        let context_frame = build_context_frame(bus);
+        table.for_each_state_replay_pending(|slot| {
+            if let Some(f) = &state_frame {
+                let _ = slot.sender.send(f.clone());
+            }
+            if let Some(f) = &context_frame {
+                let _ = slot.sender.send(f.clone());
+            }
+        });
+    }
+
     /// Full 8-slot `/context/*` snapshot: emitted whenever any context path
     /// changed since the last pump. Reads directly from the bus rather than
     /// the shadow so the snapshot is always complete, not just the diff.
     fn flush_context_snapshot(&self, bus: &StateBusHandle) {
-        let mut halves: HashMap<&str, (Option<i64>, Option<&str>)> = HashMap::new();
-        for (path, value) in bus.iter() {
-            let Some(rest) = path.strip_prefix("/context/") else { continue };
-            if let Some(key) = rest.strip_suffix("/node") {
-                if let StateBusValue::Int(i) = value {
-                    halves.entry(key).or_default().0 = Some(*i);
-                }
-            } else if let Some(key) = rest.strip_suffix("/param") {
-                if let StateBusValue::Text(s) = value {
-                    halves.entry(key).or_default().1 = Some(s.as_str());
-                }
-            }
-        }
-
-        let mut slots: Vec<ContextSlot> = halves
-            .into_iter()
-            .filter_map(|(key, (node, param))| {
-                let node = node?;
-                let param = param?;
-                // Boring documented choice (flagged for C4 validation): the
-                // enc id is the trailing integer in the encoder_key used by
-                // publish_context() (e.g. "encoder_3" -> 3). This assumes a
-                // one profile-encoder-key-per-slot convention; it may need a
-                // defined map once the web encoder row binds ids 90-97.
-                let enc = trailing_int(key)?;
-                Some(ContextSlot { enc, node: node as u32, param: param.to_string() })
-            })
-            .collect();
-        slots.sort_by_key(|s| s.enc);
-
-        let Ok(frame) = serde_json::to_string(&ServerMsg::Context { slots }) else { return };
+        let Some(frame) = build_context_frame(bus) else { return };
         if let Ok(table) = self.clients.lock() {
             table.send_to_all(&frame);
         }
@@ -229,6 +238,43 @@ impl AntiphonHandle {
             table.send_to_all(&frame);
         }
     }
+}
+
+/// Serialize the full `/context/*` snapshot from the bus into a `context`
+/// frame; `None` when serialization fails. Shared by the periodic flush and
+/// the new-client replay.
+fn build_context_frame(bus: &StateBusHandle) -> Option<String> {
+    let mut halves: HashMap<&str, (Option<i64>, Option<&str>)> = HashMap::new();
+    for (path, value) in bus.iter() {
+        let Some(rest) = path.strip_prefix("/context/") else { continue };
+        if let Some(key) = rest.strip_suffix("/node") {
+            if let StateBusValue::Int(i) = value {
+                halves.entry(key).or_default().0 = Some(*i);
+            }
+        } else if let Some(key) = rest.strip_suffix("/param") {
+            if let StateBusValue::Text(s) = value {
+                halves.entry(key).or_default().1 = Some(s.as_str());
+            }
+        }
+    }
+
+    let mut slots: Vec<ContextSlot> = halves
+        .into_iter()
+        .filter_map(|(key, (node, param))| {
+            let node = node?;
+            let param = param?;
+            // Boring documented choice (flagged for C4 validation): the
+            // enc id is the trailing integer in the encoder_key used by
+            // publish_context() (e.g. "encoder_3" -> 3). This assumes a
+            // one profile-encoder-key-per-slot convention; it may need a
+            // defined map once the web encoder row binds ids 90-97.
+            let enc = trailing_int(key)?;
+            Some(ContextSlot { enc, node: node as u32, param: param.to_string() })
+        })
+        .collect();
+    slots.sort_by_key(|s| s.enc);
+
+    serde_json::to_string(&ServerMsg::Context { slots }).ok()
 }
 
 /// Parse the trailing base-10 integer off a context key, e.g. `"encoder_3"`
@@ -490,6 +536,63 @@ mod pump_tests {
             "Text path must never appear in the mirror: {ups:?}");
         assert!(ups.iter().any(|u| u.path == "/node/1/state/current_step" && u.v == 3.0),
             "numeric state path is mirrored");
+    }
+
+    #[test]
+    fn late_client_receives_full_state_and_context_replay() {
+        // The mirror is diff-only; a client connecting after startup must be
+        // sent the accumulated shadow or it shows nothing until each value
+        // next changes (found 2026-07-10: fresh clients had no BPM/mode).
+        let (mut h, rx) = test_handle();
+        let mut bus = StateBusHandle::new();
+        bus.write("/transport/bpm", StateBusValue::Float(140.0));
+        bus.write("/script/lp/mode_n", StateBusValue::Int(0));
+        bus.write("/context/encoder_0/node", StateBusValue::Int(20));
+        bus.write("/context/encoder_0/param", StateBusValue::Text("cutoff".into()));
+        h.pump(&bus, 0); // first client sees the initial flush
+        let _ = drain(&rx);
+        h.pump(&bus, 40); // steady state: nothing changed, nothing sent
+        assert!(drain(&rx).is_empty());
+
+        // Second client connects; values are all unchanged since its join.
+        let (tx2, rx2) = mpsc::channel();
+        h.clients.lock().unwrap().allocate(tx2).expect("second slot");
+        h.pump(&bus, 80);
+        let msgs = drain(&rx2);
+        let ups = state_updates(&msgs);
+        assert!(ups.iter().any(|u| u.path == "/transport/bpm" && u.v == 140.0),
+            "replay carries transport state: {ups:?}");
+        assert!(ups.iter().any(|u| u.path == "/script/lp/mode_n" && u.v == 0.0),
+            "replay carries profile mode: {ups:?}");
+        assert!(msgs.iter().any(|m| matches!(m, ServerMsg::Context { slots } if slots.len() == 1)),
+            "replay carries the context snapshot: {msgs:?}");
+
+        // Replay happens exactly once; the first client got nothing extra.
+        h.pump(&bus, 120);
+        assert!(drain(&rx2).is_empty(), "no second replay");
+        assert!(drain(&rx).is_empty(), "existing client unaffected by replay");
+    }
+
+    #[test]
+    fn state_mirror_includes_script_numeric_paths() {
+        // Theoria legibility (s1.md F2/F8): numeric `/script/*` values reach
+        // clients (selection, mode_n); Text `/script/*` values stay skipped.
+        let (mut h, rx) = test_handle();
+        let mut bus = StateBusHandle::new();
+        bus.write("/script/lp/selected", StateBusValue::Int(2));
+        bus.write("/script/lp/mode_n", StateBusValue::Int(1));
+        bus.write("/script/lp/shift", StateBusValue::Bool(false));
+        bus.write("/script/lp/mode", StateBusValue::Text("sequence".into()));
+        h.pump(&bus, 0);
+        let ups = state_updates(&drain(&rx));
+        assert!(ups.iter().any(|u| u.path == "/script/lp/selected" && u.v == 2.0),
+            "Int script path mirrored: {ups:?}");
+        assert!(ups.iter().any(|u| u.path == "/script/lp/mode_n" && u.v == 1.0),
+            "numeric mode twin mirrored: {ups:?}");
+        assert!(ups.iter().any(|u| u.path == "/script/lp/shift" && u.v == 0.0),
+            "Bool script path mirrored as 0/1: {ups:?}");
+        assert!(ups.iter().all(|u| u.path != "/script/lp/mode"),
+            "Text script path must never appear in the mirror: {ups:?}");
     }
 
     #[test]

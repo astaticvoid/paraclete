@@ -29,11 +29,13 @@ use crate::surface::client_msg_to_surface_event;
 const HELLO_TIMEOUT: Duration = Duration::from_secs(3);
 /// Read timeout for the steady-state I/O loop; bounds outbound-frame latency.
 const IO_POLL: Duration = Duration::from_millis(15);
-/// Per-message rate cap on `bump_param` deltas (w1-interfaces.md §Commit 3).
-/// Distinct from the resolved param's own declared `[min, max]` range — the
-/// node's `ParameterBank` clamps the *result* of applying the delta; this
-/// only bounds how far one message can move it.
-const BUMP_DELTA_CAP: f64 = 0.5;
+/// Per-message rate cap on `bump_param` deltas (w1-interfaces.md §Commit 3),
+/// as a fraction of the resolved param's declared range. Distinct from the
+/// node-side clamp — the `ParameterBank` clamps the *result* of applying the
+/// delta; this only bounds how far one message can move it. Range-relative
+/// because deltas are in param units: a fixed absolute cap silently froze
+/// wide-range params like a 200–8000 Hz cutoff (found 2026-07-10).
+const BUMP_DELTA_RANGE_FRAC: f64 = 0.5;
 
 /// Immutable per-session data shared with every client thread.
 pub struct SessionInfo {
@@ -113,7 +115,8 @@ fn resolve_semantic(msg: ClientMsg, session: &SessionInfo) -> FrameAction {
             let Some(p) = n.params.iter().find(|p| p.name == param) else {
                 return FrameAction::Drop("bump_param: unknown node or param");
             };
-            let clamped = delta.clamp(-BUMP_DELTA_CAP, BUMP_DELTA_CAP);
+            let cap = (p.max - p.min).abs() * BUMP_DELTA_RANGE_FRAC;
+            let clamped = delta.clamp(-cap, cap);
             FrameAction::Command(NodeCommand {
                 target_id: node,
                 type_id: CMD_BUMP_PARAM,
@@ -141,18 +144,19 @@ pub fn route_frame(msg: ClientMsg, session: &SessionInfo) -> FrameAction {
         ClientMsg::Hello { .. } => FrameAction::Drop("duplicate hello"),
         // Reserved [W1+]: poly-aftertouch pressure. Parse-and-drop at W0.
         ClientMsg::PadPres { .. } => FrameAction::Drop("pad_pres is W1+"),
-        // Surface plane, gated to W1 (descriptor declares the encoders now;
-        // delivery waits so W0 builds nothing early).
-        ClientMsg::Enc { .. } | ClientMsg::EncPush { .. } => FrameAction::Drop("encoders are W1"),
         ref m @ (ClientMsg::SetParam { .. }
         | ClientMsg::BumpParam { .. }
         | ClientMsg::NodeCmd { .. }) => resolve_semantic(m.clone(), session),
-        ref m @ (ClientMsg::PadDown { .. } | ClientMsg::PadUp { .. }) => {
-            match client_msg_to_surface_event(m) {
-                Some(ev) => FrameAction::Emit(ev),
-                None => FrameAction::Drop("pad id out of range"),
-            }
-        }
+        // Surface plane. Enc/EncPush were gated "W1" at W0; the gate is open
+        // now (found closed 2026-07-10 — W1 C3 never lifted it) so encoder
+        // gestures reach profiles like any other surface event.
+        ref m @ (ClientMsg::PadDown { .. }
+        | ClientMsg::PadUp { .. }
+        | ClientMsg::Enc { .. }
+        | ClientMsg::EncPush { .. }) => match client_msg_to_surface_event(m) {
+            Some(ev) => FrameAction::Emit(ev),
+            None => FrameAction::Drop("control id out of range"),
+        },
     }
 }
 
@@ -393,9 +397,8 @@ mod tests {
     fn unresolvable_semantic_and_reserved_variants_parse_but_are_dropped() {
         // The semantic-plane variants parse (protocol reserves the shape) and
         // drop against a session with no matching node/param rather than
-        // erroring or emitting. Reserved (Enc/EncPush/PadPres) variants drop
-        // unconditionally — they are gated to W1+ surface-plane delivery,
-        // which this commit does not touch.
+        // erroring or emitting. The reserved PadPres variant drops
+        // unconditionally.
         let session = empty_session();
         let msg: ClientMsg =
             serde_json::from_str(r#"{"t":"set_param","node":20,"param":"cutoff","v":0.5}"#)
@@ -405,13 +408,65 @@ mod tests {
         for raw in [
             r#"{"t":"bump_param","node":20,"param":"cutoff","delta":0.01}"#,
             r#"{"t":"node_cmd","node":10,"cmd":16,"a0":3,"a1":0}"#,
-            r#"{"t":"enc","id":90,"delta":-3}"#,
-            r#"{"t":"enc_push","id":90,"pressed":true}"#,
             r#"{"t":"pad_pres","id":13,"v":41000}"#,
         ] {
             let msg: ClientMsg = serde_json::from_str(raw).expect("variant must parse");
             assert!(matches!(route_frame(msg, &session), FrameAction::Drop(_)), "must drop: {raw}");
         }
+    }
+
+    #[test]
+    fn route_frame_emits_encoder_events() {
+        // The W0 "encoders are W1" gate is open: enc/enc_push route to the
+        // surface plane like pads (W1 C3 gap, found 2026-07-10).
+        let session = empty_session();
+        assert!(matches!(
+            route_frame(ClientMsg::Enc { id: 90, delta: -3 }, &session),
+            FrameAction::Emit(SurfaceEvent::EncoderChanged { id: 90, delta: -3, .. })
+        ));
+        assert!(matches!(
+            route_frame(ClientMsg::EncPush { id: 97, pressed: true }, &session),
+            FrameAction::Emit(SurfaceEvent::EncoderPush { id: 97, pressed: true })
+        ));
+    }
+
+    #[test]
+    fn bump_param_delta_cap_is_range_relative() {
+        // A fixed absolute cap froze wide-range params (200-8000 Hz cutoff);
+        // the cap is a fraction of the declared range (found 2026-07-10).
+        let session = SessionInfo {
+            token: String::new(),
+            device_id: 106,
+            nodes: vec![crate::protocol::NodeSummary {
+                id: 40,
+                type_tag: "filter".into(),
+                name: "Filter".into(),
+                params: vec![crate::protocol::ParamSummary {
+                    id: 7,
+                    name: "cutoff".into(),
+                    min: 200.0,
+                    max: 8000.0,
+                    default: 4000.0,
+                }],
+            }],
+            transport: TransportSummary { playing: false, bpm: 120.0 },
+        };
+        // A sane per-detent delta passes through unclamped…
+        let FrameAction::Command(cmd) = route_frame(
+            ClientMsg::BumpParam { node: 40, param: "cutoff".into(), delta: 30.5 },
+            &session,
+        ) else {
+            panic!("expected command")
+        };
+        assert_eq!(cmd.arg1, 30.5, "in-range delta must not be clamped");
+        // …and an absurd one is bounded to half the range, not to 0.5.
+        let FrameAction::Command(cmd) = route_frame(
+            ClientMsg::BumpParam { node: 40, param: "cutoff".into(), delta: -99999.0 },
+            &session,
+        ) else {
+            panic!("expected command")
+        };
+        assert_eq!(cmd.arg1, -3900.0, "cap is (max-min) * 0.5");
     }
 
     #[test]
@@ -431,7 +486,7 @@ mod tests {
         ));
         assert!(matches!(
             route_frame(ClientMsg::PadDown { id: 99, vel: 1 }, &session),
-            FrameAction::Drop("pad id out of range")
+            FrameAction::Drop("control id out of range")
         ));
     }
 }

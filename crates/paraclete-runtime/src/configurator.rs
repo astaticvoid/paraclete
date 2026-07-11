@@ -1,5 +1,5 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use petgraph::stable_graph::NodeIndex;
@@ -175,6 +175,12 @@ pub struct NodeConfigurator {
     /// Stored as (device_id, handle) so script LED output can be routed by device_id.
     output_handles: Vec<(u32, Box<dyn SurfaceOutputHandle>)>,
 
+    /// Device ids already warned about in `deliver_script_output()` — the
+    /// "no output handle" message is once-per-device, not once-per-delivery
+    /// (a legacy-path surface like the terminal emulator would otherwise
+    /// print it every main-loop flush; s1.md F3).
+    warned_missing_handles: HashSet<u32>,
+
     /// Capability documents cached at `add_node()` time — keyed by user_id.
     /// Persists after `build_executor()`.
     cap_doc_cache: HashMap<u32, CapabilityDocument>,
@@ -210,6 +216,7 @@ impl NodeConfigurator {
             node_cmd_producer: cmd_prod,
             node_cmd_consumer_pending: Some(cmd_cons),
             output_handles: Vec::new(),
+            warned_missing_handles: HashSet::new(),
             cap_doc_cache: HashMap::new(),
             back_edges: Vec::new(),
             sample_rate,
@@ -576,8 +583,8 @@ impl NodeConfigurator {
         for (device_id, hw_out) in output {
             if let Some((_, handle)) = self.output_handles.iter_mut().find(|(id, _)| *id == device_id) {
                 handle.deliver(hw_out);
-            } else {
-                eprintln!("[deliver] no output handle for device {device_id} ({} led updates dropped); registered: {:?}",
+            } else if self.warned_missing_handles.insert(device_id) {
+                eprintln!("[deliver] no output handle for device {device_id} ({} led updates dropped; further drops for this device are silent); registered: {:?}",
                     hw_out.led_updates.len(),
                     self.output_handles.iter().map(|(id, _)| *id).collect::<Vec<_>>());
             }
