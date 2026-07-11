@@ -293,11 +293,27 @@ impl Sequencer {
     /// (window unchanged) unless start <= end and both pages exist for the
     /// active pattern's current length.
     pub const CMD_SET_PAGE_LOOP:      u32 = 30;
+    /// P10 C4: arg0 = pattern index appended to the volatile chain
+    /// (capacity CHAIN_CAP; pushes beyond it or unknown indices ignored).
+    pub const CMD_CHAIN_PUSH:         u32 = 31;
+    /// P10 C4: empty the chain and reset its position.
+    pub const CMD_CHAIN_CLEAR:        u32 = 32;
 
     /// Runtime step capacity per pattern (P10: 8 pages × 8 steps). The
     /// serialized format stores counts as plain integers and does not depend
     /// on this value (forward-extensibility amendment).
     pub const STEP_CAPACITY: usize = 64;
+
+    /// Per-track pattern bank size (P10 C4). The whole bank is allocated at
+    /// construction on the main thread — 8 patterns × 64 steps ≈ 512 Steps
+    /// per track, the deliberate cost that buys allocation-free pattern
+    /// switching on the audio thread (spec 4.3). The serialized format
+    /// stores a used-pattern count, not this value.
+    pub const PATTERN_BANK_SIZE: usize = 8;
+
+    /// Chain capacity (spec 4.2): pushes beyond this are ignored, so the
+    /// chain Vec (reserved at construction) never grows on the audio thread.
+    pub const CHAIN_CAP: usize = 8;
 
     pub fn new() -> Self {
         Self::with_name("")
@@ -349,16 +365,23 @@ impl Sequencer {
                 port_type:  PortType::Cv,
             });
         }
-        // Pattern 0 preserves the P9 default preset: 16 played steps over a
-        // 64-step (main-thread, construction-time) allocation.
+        // The full pattern bank is allocated here, on the main thread
+        // (P10 C4): pattern 0 preserves the P9 default preset (16 played
+        // steps over the 64-step capacity); the rest are empty and reachable
+        // by CMD_SET_PATTERN without any audio-thread allocation.
         let mut pattern0 = Pattern::empty(Self::STEP_CAPACITY);
         pattern0.length = 16;
         pattern0.page_loop = (0, 1);
+        let mut patterns = Vec::with_capacity(Self::PATTERN_BANK_SIZE);
+        patterns.push(pattern0);
+        while patterns.len() < Self::PATTERN_BANK_SIZE {
+            patterns.push(Pattern::empty(Self::STEP_CAPACITY));
+        }
         Self {
             ports,
             node_id: 0,
             track_name: name.to_string(),
-            patterns: vec![pattern0],
+            patterns,
             current_step: 0,
             step_tick: 0,
             ticks_per_step: TICKS_PER_BEAT / 4,
@@ -378,7 +401,7 @@ impl Sequencer {
             rng:            fastrand::Rng::new(),
             active_pattern: 0,
             cued_pattern:   None,
-            chain:          Vec::new(),
+            chain:          Vec::with_capacity(Self::CHAIN_CAP),
             chain_pos:      0,
             speed_mult:     1.0,
             swing_amount:   0.0,
@@ -391,9 +414,9 @@ impl Sequencer {
         }
     }
 
-    /// Index of the pattern playback reads, clamped into the allocated bank.
-    /// `CMD_SET_PATTERN` is still a stub until P10 C4: it stores any index,
-    /// but with a single-pattern bank playback always resolves to pattern 0.
+    /// Index of the pattern playback reads. `CMD_SET_PATTERN` validates
+    /// against the bank (P10 C4), so the clamp is a defensive invariant for
+    /// direct field manipulation (tests) and future code, not a live path.
     fn active_index(&self) -> usize {
         self.active_pattern.min(self.patterns.len() - 1)
     }
@@ -441,6 +464,20 @@ impl Sequencer {
         self.period_frac = 0.0;
         self.step_period = self.exact_period().round().max(1.0) as u32;
         self.early_fired = None;
+    }
+
+    /// Make `idx` the active pattern and refresh everything keyed to it
+    /// (P10 C4): the swing write-conduit (spec 2.3 — the encoder must show
+    /// the pattern now playing, and a stale conduit drops writes of the
+    /// stale value). Callers ensure `idx` is within the bank.
+    fn switch_pattern(&mut self, idx: usize) {
+        self.active_pattern = idx;
+        // A step pulled early belonged to the OLD pattern — it must not
+        // suppress the new pattern's entry step at the boundary.
+        self.early_fired = None;
+        let swing = self.patterns[idx].swing;
+        self.bank.set(ParamDescriptor::id_for_name("swing"), swing as f64);
+        self.last_bank_swing = swing;
     }
 
     pub fn set_step(&mut self, index: usize, note: u8, velocity: u16, active: bool) {
@@ -562,20 +599,33 @@ impl Sequencer {
                     }
                 }
                 Self::CMD_SET_PATTERN => {
-                    self.active_pattern = cmd.arg0.max(0) as usize;
-                    // stub until P10 C4: stored, but playback clamps to the
-                    // single-pattern bank (always pattern 0).
-                    // The swing conduit refresh below is C4's stated
-                    // dependency (spec 2.3) implemented at the switch site:
-                    // without it, a live switch (reachable today via a
-                    // multi-pattern v3 blob) leaves the bank showing the old
-                    // pattern's swing — the first encoder nudge would snap
-                    // the new pattern to the old value, and a write of
-                    // exactly the stale value would be dropped by the
-                    // conduit's change guard.
-                    let swing = self.patterns[self.active_index()].swing;
-                    self.bank.set(ParamDescriptor::id_for_name("swing"), swing as f64);
-                    self.last_bank_swing = swing;
+                    // P10 C4 (redefined from the P5 stub): an index outside
+                    // the pre-allocated bank is silently ignored (ADR-019 —
+                    // patterns are never grown on the audio thread). Stopped:
+                    // switch immediately (editing flow). Playing: cue; the
+                    // switch lands at the next cycle boundary.
+                    let idx = cmd.arg0;
+                    if idx < 0 || idx as usize >= self.patterns.len() {
+                        continue;
+                    }
+                    if self.playing {
+                        self.cued_pattern = Some(idx as usize);
+                    } else {
+                        self.switch_pattern(idx as usize);
+                    }
+                }
+                Self::CMD_CHAIN_PUSH => {
+                    let idx = cmd.arg0;
+                    if idx >= 0
+                        && (idx as usize) < self.patterns.len()
+                        && self.chain.len() < Self::CHAIN_CAP
+                    {
+                        self.chain.push(idx as usize);
+                    }
+                }
+                Self::CMD_CHAIN_CLEAR => {
+                    self.chain.clear();
+                    self.chain_pos = 0;
                 }
                 _ => {}
             }
@@ -659,6 +709,15 @@ impl Sequencer {
             self.playing = false;
             if self.gate_open {
                 self.emit_note_off(sample_offset, output);
+            }
+            // A pending cue collapses to an immediate switch (review
+            // finding, C4): stopped switches are immediate by contract, and
+            // the user's last selection should be what plays on restart —
+            // not one surprise cycle of the old pattern first.
+            if let Some(cue) = self.cued_pattern.take() {
+                if cue < self.patterns.len() {
+                    self.switch_pattern(cue);
+                }
             }
             return;
         }
@@ -761,12 +820,35 @@ impl Sequencer {
             let (next, wrapped) = self.advance_step(self.current_step);
             self.current_step = next;
 
-            // The page-loop wrap is THE cycle boundary (P10 C2): loop_count
-            // increments here, and (C4) cued switches / chain advances are
-            // evaluated here only.
+            // The page-loop wrap is THE cycle boundary (P10 C2/C4):
+            // loop_count increments here, and cued switches / chain
+            // advances are evaluated here only.
             if wrapped {
                 self.cycle_state.loop_count = self.cycle_state.loop_count.wrapping_add(1);
+
+                // An explicit cue wins over the chain for this one boundary
+                // (spec 4.2) — the chain does not advance that cycle.
+                if let Some(cue) = self.cued_pattern.take() {
+                    if cue < self.patterns.len() {
+                        self.switch_pattern(cue);
+                        self.current_step = self.window().0;
+                    }
+                } else if !self.chain.is_empty() {
+                    // Read-then-advance: a fresh chain [0,1,2] visits its
+                    // entries in order from the first boundary (spec 4.4
+                    // test), then wraps.
+                    let target = self.chain[self.chain_pos.min(self.chain.len() - 1)];
+                    self.chain_pos = (self.chain_pos.min(self.chain.len() - 1) + 1) % self.chain.len();
+                    if target < self.patterns.len() {
+                        self.switch_pattern(target);
+                        self.current_step = self.window().0;
+                    }
+                }
             }
+
+            // Re-resolve after a possible switch: the fire below must read
+            // the pattern that is active NOW.
+            let pat = self.active_index();
 
             // Skip re-firing only the exact step that was pulled early; if a
             // window edit landed in between, the boundary may be on a
@@ -1103,12 +1185,23 @@ impl Sequencer {
         let Some(speed_mult)     = r.f32() else { return };
         let Some(active_pattern) = r.u16().map(|v| v as usize) else { return };
         let Some(chain_len)      = r.u8().map(|v| v as usize) else { return };
-        let mut chain = Vec::with_capacity(chain_len);
+        // Capacity CHAIN_CAP regardless of the loaded length (P10 C4): a
+        // later CMD_CHAIN_PUSH on the audio thread must never reallocate.
+        // Entries beyond the cap (foreign/corrupt blob) are dropped.
+        let mut chain = Vec::with_capacity(chain_len.max(Self::CHAIN_CAP));
         for _ in 0..chain_len {
             let Some(c) = r.u16() else { return };
-            chain.push(c as usize);
+            if chain.len() < Self::CHAIN_CAP {
+                chain.push(c as usize);
+            }
         }
         let Some(pattern_count) = r.u16().map(|v| v as usize) else { return };
+        // Foreign/corrupt blobs may claim more patterns than the bank holds
+        // (u16 count × 64 Steps each = unbounded memory, and every comment
+        // in this file assumes the PATTERN_BANK_SIZE invariant). Read only
+        // the bank's worth; the leftover records land in the ignored
+        // trailing-bytes region the format already defines.
+        let pattern_count = pattern_count.min(Self::PATTERN_BANK_SIZE);
         let mut patterns = Vec::with_capacity(pattern_count.max(1));
         for _ in 0..pattern_count {
             // Pattern records are length-prefixed like step records; unknown
@@ -1163,7 +1256,7 @@ impl Sequencer {
 
         self.ticks_per_step = ticks_per_step;
         self.speed_mult     = speed_mult.clamp(0.125, 2.0);
-        self.active_pattern = active_pattern;
+        self.active_pattern = active_pattern.min(patterns.len() - 1);
         self.chain          = chain;
         self.chain_pos      = 0;
         self.cued_pattern   = None;
@@ -2104,7 +2197,11 @@ mod tests {
         }
         let mut seq = Sequencer::new();
         seq.deserialize(&blob);
-        assert_eq!(seq.patterns.len(), 1, "v2 blob must load as a single pattern");
+        // C4: the bank is restored to PATTERN_BANK_SIZE on load; the legacy
+        // single pattern fills index 0 and the rest are empty (spec 1.3).
+        assert_eq!(seq.patterns.len(), Sequencer::PATTERN_BANK_SIZE);
+        assert!(seq.patterns[1..].iter().all(|p| !pattern_is_used(p)),
+            "v2 blob fills only pattern 0");
         assert_eq!(seq.patterns[0].length, 16);
         assert_eq!(seq.patterns[0].page_loop, (0, 1), "page_loop must span the loaded length");
         assert!(seq.patterns[0].steps[3].active);
@@ -2260,20 +2357,21 @@ mod tests {
 
     #[test]
     fn serialize_persists_effective_pattern_index() {
-        // The CMD_SET_PATTERN stub stores any index, but the blob must carry
-        // the index playback actually honors — a C1 save must not select a
-        // different pattern under a future multi-pattern bank.
+        // C1 wrote the effective (clamped) index because CMD_SET_PATTERN was
+        // a stub that stored anything. C4 enforces the same property at the
+        // command site: a valid index round-trips, an out-of-bank index never
+        // lands — a save can never select a different pattern on load.
         let mut seq = Sequencer::new();
         seq.activate(44100.0, 64);
-        run_seq_with_cmds(&mut seq, &[NodeCommand {
-            target_id: 0, type_id: Sequencer::CMD_SET_PATTERN, arg0: 5, arg1: 0.0,
-        }]);
-        assert_eq!(seq.active_pattern, 5, "stub still stores the raw index");
+        run_seq_with_cmds(&mut seq, &[set_pattern_cmd(5)]);
+        assert_eq!(seq.active_pattern, 5, "valid bank index switches (stopped)");
         let blob = seq.serialize();
         let mut restored = Sequencer::new();
         restored.deserialize(&blob);
-        assert_eq!(restored.active_pattern, 0,
-            "persisted index must be the effective (clamped) one");
+        assert_eq!(restored.active_pattern, 5, "valid index round-trips");
+
+        run_seq_with_cmds(&mut seq, &[set_pattern_cmd(99)]);
+        assert_eq!(seq.active_pattern, 5, "out-of-bank index is rejected, not stored");
     }
 
     #[test]
@@ -2763,6 +2861,138 @@ mod tests {
         let early = second_fire(-12);
         assert_eq!(base - early, 120,
             "wrapped step 0 fires 120 ticks into the previous cycle's last step (base {base}, early {early})");
+    }
+
+    // ── P10 C4: seamless switching + chaining ────────────────────────────────
+
+    fn set_pattern_cmd(idx: i64) -> NodeCommand {
+        NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_PATTERN, arg0: idx, arg1: 0.0 }
+    }
+
+    fn chain_push_cmd(idx: i64) -> NodeCommand {
+        NodeCommand { target_id: 0, type_id: Sequencer::CMD_CHAIN_PUSH, arg0: idx, arg1: 0.0 }
+    }
+
+    /// Drive whole pattern cycles (16-step default) and return active_pattern
+    /// after each wrap.
+    fn drive_wraps(seq: &mut Sequencer, wraps: usize) -> Vec<usize> {
+        let mut out = Vec::with_capacity(wraps);
+        for _ in 0..wraps {
+            let before = seq.cycle_state.loop_count;
+            while seq.cycle_state.loop_count == before {
+                run_seq(seq, &[transport_tick(1, true, false, false, false)]);
+            }
+            out.push(seq.active_pattern);
+        }
+        out
+    }
+
+    #[test]
+    fn set_pattern_while_stopped_switches_immediately() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[set_pattern_cmd(2)]);
+        assert_eq!(seq.active_pattern, 2, "stopped: switch is immediate");
+        // Out-of-bank index ignored.
+        run_seq_with_cmds(&mut seq, &[set_pattern_cmd(99)]);
+        assert_eq!(seq.active_pattern, 2);
+    }
+
+    #[test]
+    fn set_pattern_while_playing_cues_until_boundary() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        drive_steps(&mut seq, 3);
+        run_seq_with_cmds(&mut seq, &[set_pattern_cmd(1)]);
+        assert_eq!(seq.active_pattern, 0, "playing: switch waits for the boundary");
+        assert_eq!(seq.cued_pattern, Some(1));
+        let actives = drive_wraps(&mut seq, 1);
+        assert_eq!(actives, vec![1], "switch lands at the cycle boundary");
+        assert_eq!(seq.current_step, 0, "entry at the new pattern's window start");
+    }
+
+    #[test]
+    fn cued_pattern_clears_after_switch() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        run_seq_with_cmds(&mut seq, &[set_pattern_cmd(1)]);
+        drive_wraps(&mut seq, 1);
+        assert_eq!(seq.cued_pattern, None);
+        assert_eq!(seq.active_pattern, 1);
+    }
+
+    #[test]
+    fn chain_advances_on_boundary() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[chain_push_cmd(0), chain_push_cmd(1), chain_push_cmd(2)]);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        // Patterns 1/2 are empty (length 64) — cycles get long after the
+        // first switch, so keep the count modest: 0 -> 1 -> 2 -> 0 wraps.
+        let actives = drive_wraps(&mut seq, 4);
+        assert_eq!(actives, vec![0, 1, 2, 0], "chain visits its entries in order, then wraps");
+    }
+
+    #[test]
+    fn explicit_cue_overrides_chain_for_one_boundary() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[chain_push_cmd(1), chain_push_cmd(2)]);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        run_seq_with_cmds(&mut seq, &[set_pattern_cmd(3)]);
+        let actives = drive_wraps(&mut seq, 2);
+        assert_eq!(actives[0], 3, "explicit cue wins the first boundary");
+        assert_eq!(actives[1], 1, "chain resumes (unadvanced) at the next boundary");
+    }
+
+    #[test]
+    fn stop_applies_pending_cue() {
+        // Review finding (C4): a cue pending at global_stop collapses to an
+        // immediate switch — restart plays the user's last selection, not
+        // one surprise cycle of the old pattern.
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        run_seq_with_cmds(&mut seq, &[set_pattern_cmd(2)]);
+        assert_eq!(seq.cued_pattern, Some(2));
+        run_seq(&mut seq, &[transport_tick(1, false, false, true, false)]);
+        assert_eq!(seq.active_pattern, 2, "stop applies the pending cue");
+        assert_eq!(seq.cued_pattern, None);
+    }
+
+    #[test]
+    fn deserialize_clamps_pattern_bank_and_active_index() {
+        // Review finding (C4): a foreign v3 blob claiming more patterns than
+        // PATTERN_BANK_SIZE must not break the bank invariant or leave
+        // active_pattern outside it.
+        let mut src = Sequencer::new();
+        src.activate(44100.0, 64);
+        // Grow past the bank by direct manipulation and mark the tail used.
+        while src.patterns.len() < 12 {
+            src.patterns.push(Pattern::empty(Sequencer::STEP_CAPACITY));
+        }
+        src.patterns[11].steps[0].active = true;
+        src.active_pattern = 11;
+        let blob = src.serialize();
+
+        let mut dst = Sequencer::new();
+        dst.activate(44100.0, 64);
+        dst.deserialize(&blob);
+        assert_eq!(dst.patterns.len(), Sequencer::PATTERN_BANK_SIZE,
+            "bank invariant holds against oversized blobs");
+        assert!(dst.active_pattern < Sequencer::PATTERN_BANK_SIZE,
+            "active index clamped into the bank");
+    }
+
+    #[test]
+    fn chain_push_caps_at_eight() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        let cmds: Vec<NodeCommand> = (0..10).map(|i| chain_push_cmd(i % 4)).collect();
+        run_seq_with_cmds(&mut seq, &cmds);
+        assert_eq!(seq.chain.len(), Sequencer::CHAIN_CAP, "pushes beyond the cap are ignored");
     }
 
     #[test]
