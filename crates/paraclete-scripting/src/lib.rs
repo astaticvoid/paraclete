@@ -630,7 +630,15 @@ impl ScriptingEngine {
 
     /// Fire subscription callbacks for any state bus paths that changed.
     /// Call after `process_main_thread()` has drained the state bus.
-    pub fn process_subscriptions(&mut self, state_bus: &StateBusHandle) {
+    ///
+    /// Takes the shared handle (not a borrowed `&StateBusHandle`) so the bus
+    /// is only borrowed around each path read — callbacks are free to call
+    /// `state_write`, which needs `borrow_mut` on the same `RefCell`. A
+    /// caller-held borrow across the dispatch panicked at the first
+    /// subscription callback that wrote state (found 2026-07-11 when
+    /// `launchpad.rhai` began publishing `/script/lp/steps_n` from its steps
+    /// subscription).
+    pub fn process_subscriptions(&mut self, state_bus: &Rc<RefCell<StateBusHandle>>) {
         for (ctx_name, ctx) in &mut self.contexts {
             let subs_len = self.script_state.borrow()
                 .context_data.get(ctx_name.as_str())
@@ -644,7 +652,9 @@ impl ScriptingEngine {
                     (d.subscriptions[i].path.clone(), d.subscriptions[i].last_value.clone())
                 };
 
-                let current = state_bus.read(&path).cloned();
+                // Borrow scoped to this statement: dropped before the
+                // callback below can state_write (borrow_mut).
+                let current = state_bus.borrow().read(&path).cloned();
                 if current != last_val {
                     // Fire callback.
                     let (fp, new_ts) = {

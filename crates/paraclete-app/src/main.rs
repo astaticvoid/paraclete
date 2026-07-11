@@ -354,10 +354,7 @@ fn main() {
             scripting.dispatch_surface_event(ev);
         }
 
-        {
-            let bus = bus_handle.borrow();
-            scripting.process_subscriptions(&*bus);
-        }
+        scripting.process_subscriptions(&bus_handle);
 
         for cmd in scripting.take_pending_commands() {
             conf.send_command(cmd).ok();
