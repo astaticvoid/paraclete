@@ -392,3 +392,14 @@ from event handlers; surfaced the moment `launchpad.rhai` published
 **Fix:** signature takes `&Rc<RefCell<StateBusHandle>>`; the bus is borrowed
 only around each path read and dropped before the callback fires. Verified by
 a headless WS client observing the steps_n mirror update across live toggles.
+
+---
+
+**BUG-004 RESOLVED** (`e8f7718`, P10 C3): negative `micro_offset` fires the
+step during the previous step's emission window, `|offset|` × 10 ticks before
+its grid boundary (tick-exact; wrap handled for step 0 via the page-loop
+advance). Steps fired directly at their grid position (transport start,
+resync) treat "on the grid" as the closest playable time — a negative offset
+contributes nothing there. Regression tests
+`negative_micro_offset_emits_early` / `negative_micro_offset_step_zero_wraps`.
+Partially resolves OQ-6 (signed representation unchanged: i8 ±47).

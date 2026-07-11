@@ -246,3 +246,53 @@ silently implemented.
 - `cargo test --workspace`: **480 passed, 0 failures** (473 baseline + 5
   spec tests + 2 review regression tests).
 - Clippy: changed hunks clean (crate warning set unchanged from baseline).
+
+## Commit 3 — Per-track length & speed (polyrhythm) + BUG-004 — shipped `e8f7718`
+
+Implemented 2026-07-11 (autonomous session, spec: `p10-interfaces.md` §3).
+
+- **`CMD_SET_LENGTH` (28):** clamps arg0 to 1..=capacity (clamp chosen over
+  reject for a scalar range, matching speed's contract; note: SET_PAGE_LOOP
+  validates-or-ignores because its test demands rejection); arg1 targets a
+  pattern index or −1 = active; unknown index ignored. Page count re-derived,
+  window clamped.
+- **`CMD_SET_SPEED` (29):** per-track, clamped [0.125, 2.0]. `step_period`
+  is computed per step; `period_frac` carries the fractional remainder so
+  non-integer multipliers alternate floor/ceil periods with an exact long-run
+  average (spec's preferred option; `fractional_speed_carries_remainder_
+  without_drift` holds 1.3× within 1 tick over 100 boundaries). Gate length
+  scales with the effective period. The bar-sync snap uses the exact
+  fractional period — nearest-tick at fractional speeds, documented.
+- **BUG-004 (§3.3):** negative micro_offset fires during the previous step's
+  window, tick-exact (1/96 beat = 10 ticks). The condition rolls once at
+  early-fire time (pre-wrap `loop_count` for a window-wrapping early step —
+  documented choice). Direct-at-grid fires (start/resync) clamp a negative
+  offset to "on the grid". Marked resolved in `bugs.md`.
+- **Polyrhythm:** emergent from per-track length/speed on one clock
+  (`two_tracks_polyrhythm`: 16 vs 12 realign only at LCM 48). No mode flag
+  (ADR-016).
+
+### Review findings (pre-commit, 2 agents: correctness + spec)
+
+Spec agent: fully compliant, no findings. Correctness agent, all three
+applied with regression tests:
+
+1. **Gate truncation for early-fired notes** (CONFIRMED): the old
+   compare-against-step_tick gate cut an early-fired note at the *previous*
+   step's gate-close tick (~1-tick gate in the common case). Gate is now an
+   absolute countdown from note-on (`gate_ticks_left`), preserving the
+   firing step's gate across the boundary. Test
+   `early_fired_note_keeps_its_gate_length`.
+2. **early_fired bool swallowed a different step's fire** when a
+   length/window edit landed between the early fire and the boundary. Now
+   stores the fired step index; the boundary skips only that exact step.
+   Test `window_edit_between_early_fire_and_boundary_does_not_swallow`.
+3. **Fractional-speed snap could strand `step_tick == step_period`**
+   (period rounds down, `new_tick` derived from the unrounded period),
+   skipping the joined step. Clamped inside the step.
+
+### Gate results
+
+- `cargo test --workspace`: **491 passed, 0 failures** (480 after C2 + 8
+  spec tests + 1 drift guard + 2 review regression tests).
+- Clippy: changed hunks clean (crate warning set unchanged).

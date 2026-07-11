@@ -334,6 +334,8 @@ Beyond the universal `CMD_SET_PARAM`/`CMD_BUMP_PARAM`, `Sequencer` handles:
 | 25 | `CMD_SET_STEP_TIMING` *(P5)* | step index | micro_offset (i8, ±47; 1 unit ≈ 1/96 beat) |
 | 26 | `CMD_SET_STEP_CONDITION` *(P5)* | step index | packed i64: bits 0–7 probability, 8–15 repeat_n, 16–23 repeat_m, 24–31 fill discriminant |
 | 27 | `CMD_SET_PATTERN` *(P5)* | pattern index | — (stub until P10 C4; playback clamps to the allocated bank. As of P10 C2 the switch refreshes the swing conduit) |
+| 28 | `CMD_SET_LENGTH` *(P10 C3)* | step count (clamped 1–64) | pattern index ≥ 0, or −1 = active; re-derives page count, clamps page_loop |
+| 29 | `CMD_SET_SPEED` *(P10 C3)* | — | per-track speed multiplier, clamped 0.125–2.0; fractional periods carry their remainder (no drift) |
 | 30 | `CMD_SET_PAGE_LOOP` *(P10 C2)* | start_page | end_page (inclusive; validate-or-ignore: start ≤ end, both within the active pattern's page count) |
 
 Sequencer publishes to the state bus each cycle:
