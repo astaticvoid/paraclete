@@ -416,3 +416,10 @@ per-voice `SincFixedOut` yields fixed-size chunks and cannot render
 arbitrary spans — the fix direction's load-time-resample + playback-Hermite
 replacement is the remaining work, a real resampler redesign that should
 not be rushed; keep this entry open until it lands.
+
+---
+
+**BUG-015 RESOLVED** (`0ff4fc7`, 2026-07-11): FmEngine now uses the ADR-019
+`node_locks` per-cycle override pattern (mirrors AnalogEngine); all
+render-path reads go through `get_param()`. Regression test
+`param_lock_does_not_bleed_into_bank`.
