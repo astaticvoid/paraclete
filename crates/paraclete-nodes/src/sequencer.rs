@@ -198,6 +198,24 @@ pub struct Sequencer {
     current_step: usize,
     step_tick: u32,
     ticks_per_step: u32,
+    /// Effective tick length of the CURRENT step: `ticks_per_step` scaled by
+    /// `speed_mult` with the fractional remainder carried in `period_frac`
+    /// (P10 C3) — non-integer multipliers alternate floor/ceil periods so
+    /// the long-run average is exact (no BUG-001-class drift).
+    step_period: u32,
+    /// Fractional tick remainder carried between steps (see `step_period`).
+    period_frac: f64,
+    /// The step that was already emitted early this window (its micro_offset
+    /// is negative — BUG-004); the boundary skips re-firing exactly that
+    /// step. Storing the index (not a bool) keeps a window/length edit
+    /// arriving between the early fire and the boundary from swallowing a
+    /// DIFFERENT step's fire (review finding, C3).
+    early_fired: Option<usize>,
+    /// Ticks until the open gate closes, counted from note-on (review
+    /// finding, C3): an absolute countdown, so an early-fired note keeps its
+    /// own step's gate length instead of being cut at the previous step's
+    /// gate-close tick.
+    gate_ticks_left: u32,
 
     gate_open: bool,
     active_note: u8,
@@ -264,6 +282,13 @@ impl Sequencer {
     pub const CMD_SET_STEP_TIMING:    u32 = 25;
     pub const CMD_SET_STEP_CONDITION: u32 = 26;
     pub const CMD_SET_PATTERN:        u32 = 27;
+    /// P10 C3: arg0 = step count (clamped 1..=64 and to the pattern's step
+    /// capacity), arg1 = pattern index (>= 0) or -1 for the active pattern.
+    /// Re-derives page count and clamps page_loop into range.
+    pub const CMD_SET_LENGTH:         u32 = 28;
+    /// P10 C3: arg1 = per-track speed multiplier, clamped to [0.125, 2.0].
+    /// Takes effect at the next step boundary.
+    pub const CMD_SET_SPEED:          u32 = 29;
     /// P10 C2: arg0 = start_page, arg1 = end_page (inclusive). Rejected
     /// (window unchanged) unless start <= end and both pages exist for the
     /// active pattern's current length.
@@ -337,6 +362,10 @@ impl Sequencer {
             current_step: 0,
             step_tick: 0,
             ticks_per_step: TICKS_PER_BEAT / 4,
+            step_period: TICKS_PER_BEAT / 4,
+            period_frac: 0.0,
+            early_fired: None,
+            gate_ticks_left: 0,
             gate_open: false,
             active_note: 60,
             playing: false,
@@ -389,6 +418,29 @@ impl Sequencer {
         let (start, end) = self.window();
         let next = current + 1;
         if next < start || next >= end { (start, true) } else { (next, false) }
+    }
+
+    /// Exact (fractional) tick length of one step at the current speed.
+    fn exact_period(&self) -> f64 {
+        self.ticks_per_step as f64 / self.speed_mult.clamp(0.125, 2.0) as f64
+    }
+
+    /// Tick length of the NEXT step (P10 C3): the exact period plus the
+    /// carried fractional remainder, rounded — non-integer speed multipliers
+    /// alternate floor/ceil periods so the long-run average stays exact.
+    fn next_step_period(&mut self) -> u32 {
+        let total = self.exact_period() + self.period_frac;
+        let period = total.round().max(1.0);
+        self.period_frac = total - period;
+        period as u32
+    }
+
+    /// Reset the period machinery to a fresh step at the current speed
+    /// (transport start / resync — deterministic, no carried remainder).
+    fn reset_period(&mut self) {
+        self.period_frac = 0.0;
+        self.step_period = self.exact_period().round().max(1.0) as u32;
+        self.early_fired = None;
     }
 
     pub fn set_step(&mut self, index: usize, note: u8, velocity: u16, active: bool) {
@@ -472,6 +524,29 @@ impl Sequencer {
                         steps[idx].condition = TrigCondition::Simple { repeat, fill, probability };
                     }
                 }
+                Self::CMD_SET_LENGTH => {
+                    // arg0 = step count (clamped); arg1 = pattern index or
+                    // -1 = active. An unknown pattern index is ignored.
+                    let idx = if cmd.arg1 < 0.0 {
+                        pat
+                    } else {
+                        let i = cmd.arg1 as usize;
+                        if i >= self.patterns.len() { continue; }
+                        i
+                    };
+                    let p = &mut self.patterns[idx];
+                    p.length = (cmd.arg0.max(1) as usize).min(p.steps.len());
+                    // Re-derive the page count and clamp the window into it
+                    // (spec 3.1) — no reallocation, steps are pre-sized.
+                    let pages = p.length.div_ceil(PAGE_SIZE).max(1) as u8;
+                    let end = p.page_loop.1.min(pages - 1);
+                    p.page_loop = (p.page_loop.0.min(end), end);
+                }
+                Self::CMD_SET_SPEED => {
+                    // Clamped multiplier; takes effect at the next boundary
+                    // (the current step finishes at its computed period).
+                    self.speed_mult = (cmd.arg1 as f32).clamp(0.125, 2.0);
+                }
                 Self::CMD_SET_PAGE_LOOP => {
                     // Validate-or-ignore (ADR-019): start <= end and both
                     // pages within the active pattern's current page count.
@@ -518,10 +593,16 @@ impl Sequencer {
                 + k.tick as u64;
             // Transport position maps into the page-loop window (P10 C2):
             // a mid-session join lands inside the run of steps that plays.
+            // Step spacing uses the exact (fractional) speed-scaled period
+            // (P10 C3) — at non-integer multipliers the snap is a
+            // nearest-tick approximation, same class as the natural path's
+            // remainder-carrying advance.
             let (wstart, wend) = self.window();
             let wlen = (wend - wstart) as u64;
-            let step_index  = wstart + ((total_ticks / self.ticks_per_step as u64) % wlen) as usize;
-            let new_tick    = (total_ticks % self.ticks_per_step as u64) as u32;
+            let exact = self.exact_period();
+            let steps_elapsed = (total_ticks as f64 / exact).floor();
+            let step_index  = wstart + (steps_elapsed as u64 % wlen) as usize;
+            let new_tick    = (total_ticks as f64 - steps_elapsed * exact).floor() as u32;
 
             // Drift correction only (BUG-001 fix, s0 re-diagnosis): when internal
             // counting is in sync, the natural advance below handles this event —
@@ -529,7 +610,7 @@ impl Sequencer {
             // "In sync" = the natural path reaches (step_index, new_tick) this
             // event: either we are already there, or we are one increment away.
             let next_tick   = self.step_tick + 1;
-            let in_sync = if next_tick >= self.ticks_per_step {
+            let in_sync = if next_tick >= self.step_period {
                 new_tick == 0
                     && step_index == self.advance_step(self.current_step).0
             } else {
@@ -537,7 +618,12 @@ impl Sequencer {
             };
             if !in_sync && self.playing {
                 self.current_step = step_index;
-                self.step_tick    = new_tick;
+                self.reset_period();
+                // At fractional speeds new_tick derives from the exact
+                // (unrounded) period and can reach step_period when the
+                // period rounded down — clamp inside the step so the joined
+                // step is not skipped by an immediate boundary.
+                self.step_tick = new_tick.min(self.step_period - 1);
             }
 
             // When a genuine resync lands at tick 0 (exact start of a step) and
@@ -553,7 +639,7 @@ impl Sequencer {
                         if self.gate_open {
                             self.emit_note_off(sample_offset, output);
                         }
-                        self.emit_note_on(note_off, output);
+                        self.emit_note_on_at(self.current_step, note_off, output);
                         for lock in &self.patterns[pat].steps[self.current_step].param_locks {
                             output.events_out.push(TimedEvent::new(
                                 note_off,
@@ -584,6 +670,7 @@ impl Sequencer {
             let (wstart, _) = self.window();
             self.current_step = wstart;
             self.step_tick    = 0;
+            self.reset_period();
             // Fire the entry step (BUG-001 fix): previously the first step
             // was never emitted by the boundary path and only sounded via
             // the bar-sync snap. The start event IS tick 0 of that step —
@@ -593,7 +680,7 @@ impl Sequencer {
                 let cond = self.patterns[pat].steps[wstart].condition.clone();
                 if cond.evaluate(&self.cycle_state, &mut self.rng) {
                     let note_off = sample_offset + self.step_sample_offset(wstart, spb);
-                    self.emit_note_on(note_off, output);
+                    self.emit_note_on_at(wstart, note_off, output);
                     for lock in &self.patterns[pat].steps[wstart].param_locks {
                         output.events_out.push(TimedEvent::new(
                             note_off,
@@ -619,14 +706,58 @@ impl Sequencer {
         self.step_tick += 1;
 
         if self.gate_open {
-            let gate_ticks = (self.patterns[pat].steps[self.current_step].length * self.ticks_per_step as f32) as u32;
-            if self.step_tick >= gate_ticks {
+            // Absolute countdown from note-on (its length × the firing
+            // step's period): an early-fired note keeps its own gate length
+            // across the boundary instead of being cut at the previous
+            // step's gate-close tick.
+            self.gate_ticks_left = self.gate_ticks_left.saturating_sub(1);
+            if self.gate_ticks_left == 0 {
                 self.emit_note_off(sample_offset, output);
             }
         }
 
-        if self.step_tick >= self.ticks_per_step {
-            self.step_tick = 0;
+        // BUG-004 (P10 C3): a negative micro_offset pulls a step EARLIER —
+        // it fires during the previous step's window, `|offset|` 1/96-beat
+        // units (10 ticks each) before its grid boundary. Tick-exact: the
+        // micro unit is a whole number of clock ticks. The boundary below
+        // then advances position without re-firing (early_fired).
+        if self.early_fired.is_none() && self.step_tick < self.step_period {
+            let (next, _) = self.advance_step(self.current_step);
+            let micro  = self.patterns[pat].steps[next].timing.micro_offset;
+            let active = self.patterns[pat].steps[next].active;
+            if active && micro < 0 {
+                let early_ticks = ((-(micro as i32)) as u32 * (TICKS_PER_BEAT / 96))
+                    .min(self.step_period - 1);
+                if self.step_tick >= self.step_period - early_ticks {
+                    // The condition rolls at fire time (pre-wrap loop_count
+                    // for a window-wrapping early step — documented choice),
+                    // and rolls exactly once: the boundary skips this step
+                    // whether or not it fired.
+                    let cond = self.patterns[pat].steps[next].condition.clone();
+                    if cond.evaluate(&self.cycle_state, &mut self.rng) {
+                        if self.gate_open {
+                            self.emit_note_off(sample_offset, output);
+                        }
+                        self.emit_note_on_at(next, sample_offset, output);
+                        for lock in &self.patterns[pat].steps[next].param_locks {
+                            output.events_out.push(TimedEvent::new(
+                                sample_offset,
+                                Event::ParamLock(ParamLockEvent {
+                                    node_id:  lock.node_id,
+                                    param_id: lock.param_id,
+                                    value:    lock.value,
+                                }),
+                            ));
+                        }
+                    }
+                    self.early_fired = Some(next);
+                }
+            }
+        }
+
+        if self.step_tick >= self.step_period {
+            self.step_tick   = 0;
+            self.step_period = self.next_step_period();
             let (next, wrapped) = self.advance_step(self.current_step);
             self.current_step = next;
 
@@ -637,13 +768,17 @@ impl Sequencer {
                 self.cycle_state.loop_count = self.cycle_state.loop_count.wrapping_add(1);
             }
 
+            // Skip re-firing only the exact step that was pulled early; if a
+            // window edit landed in between, the boundary may be on a
+            // different step, which must still fire normally.
+            let fired_early = self.early_fired.take() == Some(self.current_step);
             let step_active = self.patterns[pat].steps[self.current_step].active;
-            if step_active {
+            if step_active && !fired_early {
                 let cond = self.patterns[pat].steps[self.current_step].condition.clone();
                 let should_fire = cond.evaluate(&self.cycle_state, &mut self.rng);
                 if should_fire {
                     let note_off = sample_offset + self.step_sample_offset(self.current_step, spb);
-                    self.emit_note_on(note_off, output);
+                    self.emit_note_on_at(self.current_step, note_off, output);
                     for lock in &self.patterns[pat].steps[self.current_step].param_locks {
                         output.events_out.push(TimedEvent::new(
                             note_off,
@@ -659,13 +794,14 @@ impl Sequencer {
         }
     }
 
-    fn emit_note_on(&mut self, sample_offset: u32, output: &mut ProcessOutput) {
+    fn emit_note_on_at(&mut self, step_idx: usize, sample_offset: u32, output: &mut ProcessOutput) {
         let pat  = self.active_index();
-        let step = &self.patterns[pat].steps[self.current_step];
+        let step = &self.patterns[pat].steps[step_idx];
         self.active_note     = step.note;
         self.gate_open       = true;
+        self.gate_ticks_left = (step.length * self.step_period as f32).max(1.0) as u32;
         self.trig_count      = self.trig_count.wrapping_add(1);
-        self.last_fired_step = self.current_step;
+        self.last_fired_step = step_idx;
         output.events_out.push(TimedEvent::new(
             sample_offset,
             Event::Midi2(build_note_on(self.group, self.channel, step.note, step.velocity)),
@@ -686,9 +822,20 @@ impl Sequencer {
         ));
     }
 
-    /// Compute the sample offset for a step, combining micro-timing and swing.
+    /// Forward (positive) sample displacement for a step fired at its grid
+    /// boundary: positive micro-timing plus swing. A NEGATIVE micro_offset
+    /// contributes nothing here — pulled-early steps fire via the early-fire
+    /// path in `handle_transport` (BUG-004); when a negative-offset step is
+    /// fired directly at its grid position (transport start, bar-sync
+    /// resync), "on the grid" is the closest playable time, not `|offset|`
+    /// late.
     fn step_sample_offset(&self, step_idx: usize, samples_per_beat: f64) -> u32 {
-        let micro = self.patterns[self.active_index()].steps[step_idx].timing.to_sample_offset(samples_per_beat);
+        let timing = self.patterns[self.active_index()].steps[step_idx].timing;
+        let micro = if timing.micro_offset > 0 {
+            timing.to_sample_offset(samples_per_beat)
+        } else {
+            0
+        };
         let swing = if step_idx % 2 == 1 {
             (self.swing_amount as f64 * samples_per_beat) as u32
         } else {
@@ -947,6 +1094,7 @@ impl Sequencer {
         self.chain_pos      = 0;
         self.speed_mult     = 1.0;
         self.ticks_per_step = ticks_per_step;
+        self.reset_period();
     }
 
     fn deserialize_v3(&mut self, data: &[u8]) {
@@ -1014,12 +1162,14 @@ impl Sequencer {
         }
 
         self.ticks_per_step = ticks_per_step;
-        self.speed_mult     = speed_mult;
+        self.speed_mult     = speed_mult.clamp(0.125, 2.0);
         self.active_pattern = active_pattern;
         self.chain          = chain;
         self.chain_pos      = 0;
         self.cued_pattern   = None;
         self.patterns       = patterns;
+        // Deterministic period machinery for the loaded speed (P10 C3).
+        self.reset_period();
         // Mirror the loaded swing into the bank conduit (P10 C2: the pattern
         // is authoritative; this keeps the encoder display current). Track it
         // in last_bank_swing so process() doesn't mistake the load for an
@@ -2318,6 +2468,301 @@ mod tests {
         assert!((seq.patterns[1].swing - 0.3).abs() < 1e-6,
             "write of the stale value is not dropped");
         assert!((seq.patterns[0].swing - 0.3).abs() < 1e-6, "pattern 0 untouched by the switch");
+    }
+
+    // ── P10 C3: per-track length & speed + BUG-004 ──────────────────────────
+
+    fn set_length_cmd(count: i64, pattern: f64) -> NodeCommand {
+        NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_LENGTH, arg0: count, arg1: pattern }
+    }
+
+    fn set_speed_cmd(mult: f64) -> NodeCommand {
+        NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_SPEED, arg0: 0, arg1: mult }
+    }
+
+    fn is_note_on(e: &Event) -> bool {
+        matches!(e, Event::Midi2(ump)
+            if matches!(ump, UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_))))
+    }
+
+    /// Tick events (playing, no start/stop/sync) until the first NoteOn;
+    /// returns the 0-based tick index it appeared on.
+    fn ticks_until_note_on(seq: &mut Sequencer, max_ticks: usize) -> Option<usize> {
+        for t in 0..max_ticks {
+            let evs = run_seq(seq, &[transport_tick(1, true, false, false, false)]);
+            if evs.iter().any(is_note_on) {
+                return Some(t);
+            }
+        }
+        None
+    }
+
+    #[test]
+    fn set_length_changes_cycle_length() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[set_length_cmd(8, -1.0)]);
+        assert_eq!(seq.patterns[0].length, 8);
+        assert_eq!(seq.patterns[0].page_loop, (0, 0), "window re-clamped to the new page count");
+
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        let positions = drive_steps(&mut seq, 20);
+        assert!(positions.iter().all(|&p| p < 8), "length 8 wraps after 8 steps: {positions:?}");
+        let at7 = positions.iter().position(|&p| p == 7).unwrap();
+        assert_eq!(positions[at7 + 1], 0);
+    }
+
+    #[test]
+    fn set_length_targets_specific_pattern() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.patterns.push(Pattern::empty(Sequencer::STEP_CAPACITY));
+        run_seq_with_cmds(&mut seq, &[set_length_cmd(8, 1.0)]);
+        assert_eq!(seq.patterns[1].length, 8, "arg1 = 1 targets pattern 1");
+        assert_eq!(seq.patterns[0].length, 16, "active pattern untouched");
+        // Unknown pattern index: ignored.
+        run_seq_with_cmds(&mut seq, &[set_length_cmd(4, 9.0)]);
+        assert_eq!(seq.patterns[0].length, 16);
+        assert_eq!(seq.patterns[1].length, 8);
+    }
+
+    #[test]
+    fn speed_2x_doubles_rate() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[set_speed_cmd(2.0)]);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        // One base step of ticks (ticks_per_step) advances TWO steps at 2x.
+        let positions = drive_steps(&mut seq, 2);
+        assert_eq!(positions, vec![2, 4], "2x advances two steps per base step");
+    }
+
+    #[test]
+    fn speed_half_halves_rate() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[set_speed_cmd(0.5)]);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        // At 0.5x a step lasts two base steps of ticks.
+        let positions = drive_steps(&mut seq, 4);
+        assert_eq!(positions, vec![0, 1, 1, 2], "0.5x advances every other base step");
+    }
+
+    #[test]
+    fn speed_clamped_to_range() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[set_speed_cmd(4.0)]);
+        assert_eq!(seq.speed_mult, 2.0, "4.0 clamps to 2.0");
+        run_seq_with_cmds(&mut seq, &[set_speed_cmd(0.0)]);
+        assert_eq!(seq.speed_mult, 0.125, "0.0 clamps to 0.125");
+    }
+
+    #[test]
+    fn fractional_speed_carries_remainder_without_drift() {
+        // 1.5x: exact period 160 ticks — integral here, so use 1.3x
+        // (~184.6 ticks): over many steps the accumulated boundary ticks
+        // must track k * (240 / 1.3) within 1 tick (no BUG-001-class drift).
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[set_speed_cmd(1.3)]);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        let exact = 240.0_f64 / 1.3;
+        let mut ticks = 0u64;
+        let mut boundaries = 0u64;
+        let mut last_step = seq.current_step;
+        while boundaries < 100 {
+            run_seq(&mut seq, &[transport_tick(1, true, false, false, false)]);
+            ticks += 1;
+            if seq.current_step != last_step {
+                last_step = seq.current_step;
+                boundaries += 1;
+                let ideal = boundaries as f64 * exact;
+                assert!((ticks as f64 - ideal).abs() <= 1.0,
+                    "boundary {boundaries} at tick {ticks}, ideal {ideal:.1}");
+            }
+        }
+    }
+
+    #[test]
+    fn two_tracks_polyrhythm() {
+        // Track A: 16 steps; track B: 12 steps; one clock. They realign
+        // (both at window start together) first at LCM(16,12) = 48.
+        let mut a = Sequencer::new();
+        let mut b = Sequencer::new();
+        a.activate(44100.0, 64);
+        b.activate(44100.0, 64);
+        run_seq_with_cmds(&mut b, &[set_length_cmd(12, -1.0)]);
+
+        run_seq(&mut a, &[transport_tick(0, true, true, false, false)]);
+        run_seq(&mut b, &[transport_tick(0, true, true, false, false)]);
+        assert_eq!((a.current_step, b.current_step), (0, 0));
+
+        let tps = a.ticks_per_step;
+        for boundary in 1..=48usize {
+            for _ in 0..tps {
+                run_seq(&mut a, &[transport_tick(1, true, false, false, false)]);
+                run_seq(&mut b, &[transport_tick(1, true, false, false, false)]);
+            }
+            assert_eq!(a.current_step, boundary % 16);
+            assert_eq!(b.current_step, boundary % 12);
+            let aligned = a.current_step == 0 && b.current_step == 0;
+            if boundary < 48 {
+                assert!(!aligned, "must not realign before LCM; boundary {boundary}");
+            } else {
+                assert!(aligned, "realigns at LCM(16,12) = 48");
+            }
+        }
+    }
+
+    #[test]
+    fn negative_micro_offset_emits_early() {
+        // BUG-004 regression: micro_offset < 0 fires BEFORE the grid
+        // boundary; 0 fires on it; +N fires on it with a positive sample
+        // displacement. One unit = 1/96 beat = 10 ticks.
+        let base = {
+            let mut seq = Sequencer::new();
+            seq.activate(44100.0, 64);
+            seq.set_step(4, 60, 32768, true);
+            run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+            ticks_until_note_on(&mut seq, 2000).expect("offset 0 fires")
+        };
+
+        let early = {
+            let mut seq = Sequencer::new();
+            seq.activate(44100.0, 64);
+            seq.set_step(4, 60, 32768, true);
+            seq.patterns[0].steps[4].timing.micro_offset = -12;
+            run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+            ticks_until_note_on(&mut seq, 2000).expect("negative offset fires")
+        };
+        assert_eq!(base - early, 120, "-12 units = 120 ticks early (base {base}, early {early})");
+
+        // +N stays on the boundary tick, displaced by samples instead.
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.set_step(4, 60, 32768, true);
+        seq.patterns[0].steps[4].timing.micro_offset = 12;
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        let mut late_tick = None;
+        let mut late_sample = 0;
+        for t in 0..2000 {
+            let block = 64usize;
+            let mut audio = AudioBuffer::new(2, block);
+            let mut events_out = EventOutputBuffer::new(256);
+            let transport = TransportInfo::default();
+            let slab = ExtendedEventSlab::empty();
+            let audio_ptr: *mut AudioBuffer = &mut audio as *mut AudioBuffer;
+            let audio_ref: &mut AudioBuffer = unsafe { &mut *audio_ptr };
+            let mut outs = [audio_ref];
+            let evs = [transport_tick(1, true, false, false, false)];
+            let input = ProcessInput {
+                audio_inputs: &[], signal_inputs: &[], events: &evs,
+                transport: &transport, sample_rate: 44100.0, block_size: block,
+                extended_events: &slab, commands: &[],
+            };
+            let mut output = ProcessOutput {
+                audio_outputs: &mut outs, signal_outputs: &mut [],
+                events_out: &mut events_out,
+            };
+            seq.process(&input, &mut output);
+            if let Some(te) = events_out.as_slice().iter().find(|te| is_note_on(&te.event)) {
+                late_tick = Some(t);
+                late_sample = te.sample_offset;
+                break;
+            }
+        }
+        assert_eq!(late_tick, Some(base), "+N fires on the grid boundary tick");
+        assert!(late_sample > 0, "+N displaces by samples (got {late_sample})");
+    }
+
+    fn is_note_off(e: &Event) -> bool {
+        matches!(e, Event::Midi2(ump)
+            if matches!(ump, UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(_))))
+    }
+
+    #[test]
+    fn early_fired_note_keeps_its_gate_length() {
+        // Review finding (C3): the gate countdown is absolute from note-on,
+        // so an early-fired note holds for its own step's gate (length 0.75
+        // x 240 = 180 ticks), not until the previous step's gate-close tick.
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.set_step(4, 60, 32768, true);
+        seq.patterns[0].steps[4].timing.micro_offset = -12;
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+
+        let on_tick = ticks_until_note_on(&mut seq, 2000).expect("early note fires");
+        let mut off_after = None;
+        for t in 0..400 {
+            let evs = run_seq(&mut seq, &[transport_tick(1, true, false, false, false)]);
+            if evs.iter().any(is_note_off) {
+                off_after = Some(t + 1);
+                break;
+            }
+        }
+        let held = off_after.expect("note off arrives");
+        assert!((170..=190).contains(&held),
+            "early note holds its own gate (~180 ticks), got {held} (on at tick {on_tick})");
+    }
+
+    #[test]
+    fn window_edit_between_early_fire_and_boundary_does_not_swallow() {
+        // Review finding (C3): early_fired records WHICH step fired early;
+        // a length edit landing before the boundary must not swallow the
+        // fire of the different step the boundary now lands on.
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[set_length_cmd(8, -1.0)]);
+        seq.set_step(0, 60, 32768, true);
+        seq.set_step(7, 62, 32768, true);
+        seq.patterns[0].steps[7].timing.micro_offset = -12;
+
+        // Start fires step 0; step 7's early fire lands at 7*240 - 120 = 1560.
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        let mut saw_early = false;
+        for _ in 0..1600 {
+            let evs = run_seq(&mut seq, &[transport_tick(1, true, false, false, false)]);
+            if evs.iter().any(is_note_on) {
+                saw_early = true;
+            }
+        }
+        assert!(saw_early, "step 7 fired early during step 6's window");
+        assert_eq!(seq.early_fired, Some(7));
+
+        // Shrink to 4 steps before the boundary at 1680: the boundary wraps
+        // to step 0, which fired early NEVER — it must sound.
+        run_seq_with_cmds(&mut seq, &[set_length_cmd(4, -1.0)]);
+        let mut boundary_fired = false;
+        for _ in 0..120 {
+            let evs = run_seq(&mut seq, &[transport_tick(1, true, false, false, false)]);
+            if evs.iter().any(is_note_on) {
+                boundary_fired = true;
+                break;
+            }
+        }
+        assert!(boundary_fired, "step 0's fire must not be swallowed by step 7's early_fired");
+        assert_eq!(seq.current_step, 0);
+    }
+
+    #[test]
+    fn negative_micro_offset_step_zero_wraps() {
+        // Step 0 with a negative offset: its second occurrence fires in the
+        // PREVIOUS cycle's final window (120 ticks before the wrap).
+        let second_fire = |micro: i8| -> usize {
+            let mut seq = Sequencer::new();
+            seq.activate(44100.0, 64);
+            seq.set_step(0, 60, 32768, true);
+            seq.patterns[0].steps[0].timing.micro_offset = micro;
+            // global_start fires step 0 at the grid (no earlier time exists).
+            let evs = run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+            assert!(evs.iter().any(is_note_on), "start fires step 0");
+            ticks_until_note_on(&mut seq, 8000).expect("second occurrence fires")
+        };
+        let base  = second_fire(0);
+        let early = second_fire(-12);
+        assert_eq!(base - early, 120,
+            "wrapped step 0 fires 120 ticks into the previous cycle's last step (base {base}, early {early})");
     }
 
     #[test]
