@@ -41,6 +41,9 @@ pub struct FmEngine {
     /// Linear output-level multiplier derived from trigger velocity (0.0..=1.0).
     /// 1.0 = unity gain (full velocity, matches pre-W1 output level).
     velocity_level: f32,
+    /// Per-cycle ParamLock overrides, cleared each process() (ADR-019 —
+    /// locks must never mutate the bank, or they bleed into unlocked steps).
+    node_locks: Vec<(u32, f64)>,
 
     render_l: Vec<f32>,
     render_r: Vec<f32>,
@@ -72,6 +75,7 @@ impl FmEngine {
             node_id:    0,
             last_note:  36, // C2 — matches current_hz's initial value
             velocity_level: 1.0,
+            node_locks: Vec::new(),
             render_l:   Vec::new(),
             render_r:   Vec::new(),
             pending_initial_params: HashMap::new(),
@@ -86,6 +90,14 @@ impl FmEngine {
     pub fn kick() -> Self { Self::new(FmMachine::Kick) }
     pub fn bell() -> Self { Self::new(FmMachine::Bell) }
     pub fn bass() -> Self { Self::new(FmMachine::Bass) }
+
+    /// Parameter read honoring per-cycle ParamLock overrides (ADR-019).
+    fn get_param(&self, param_id: u32) -> f32 {
+        for &(id, val) in &self.node_locks {
+            if id == param_id { return val as f32; }
+        }
+        self.bank.get(param_id) as f32
+    }
 
     fn build_doc(machine: FmMachine) -> CapabilityDocument {
         let (name, params) = match machine {
@@ -119,7 +131,7 @@ impl FmEngine {
     }
 
     fn retrigger(&mut self, note: u8, velocity: f32) {
-        let tune = self.bank.get(fp("tune")) as f32;
+        let tune = self.get_param(fp("tune"));
         self.current_hz      = note_to_hz(note, tune);
         self.last_note        = note;
         self.velocity_level   = velocity.clamp(0.0, 1.0);
@@ -160,10 +172,10 @@ impl FmEngine {
     }
 
     fn process_kick(&mut self, start: usize, end: usize) {
-        let punch    = self.bank.get(fp("punch"))    as f32;
-        let decay_s  = self.bank.get(fp("decay"))    as f32;
-        let feedback = self.bank.get(fp("feedback")) as f32;
-        let drive    = self.bank.get(fp("drive"))    as f32;
+        let punch    = self.get_param(fp("punch"));
+        let decay_s  = self.get_param(fp("decay"));
+        let feedback = self.get_param(fp("feedback"));
+        let drive    = self.get_param(fp("drive"));
         let sr = self.sample_rate;
         let tau = std::f32::consts::TAU;
 
@@ -198,10 +210,10 @@ impl FmEngine {
     }
 
     fn process_bell(&mut self, start: usize, end: usize) {
-        let ratio    = self.bank.get(fp("ratio"))    as f32;
-        let index    = self.bank.get(fp("index"))    as f32;
-        let decay_s  = self.bank.get(fp("decay"))    as f32;
-        let feedback = self.bank.get(fp("feedback")) as f32;
+        let ratio    = self.get_param(fp("ratio"));
+        let index    = self.get_param(fp("index"));
+        let decay_s  = self.get_param(fp("decay"));
+        let feedback = self.get_param(fp("feedback"));
         let sr = self.sample_rate;
         let tau = std::f32::consts::TAU;
 
@@ -228,11 +240,11 @@ impl FmEngine {
     }
 
     fn process_bass(&mut self, start: usize, end: usize) {
-        let ratio    = self.bank.get(fp("ratio"))    as f32;
-        let index    = self.bank.get(fp("index"))    as f32;
-        let attack_s = self.bank.get(fp("attack"))   as f32;
-        let decay_s  = self.bank.get(fp("decay"))    as f32;
-        let drive    = self.bank.get(fp("drive"))    as f32;
+        let ratio    = self.get_param(fp("ratio"));
+        let index    = self.get_param(fp("index"));
+        let attack_s = self.get_param(fp("attack"));
+        let decay_s  = self.get_param(fp("decay"));
+        let drive    = self.get_param(fp("drive"));
         let sr = self.sample_rate;
         let tau = std::f32::consts::TAU;
 
@@ -303,6 +315,10 @@ impl Node for FmEngine {
         for s in &mut self.render_l { *s = 0.0; }
         for s in &mut self.render_r { *s = 0.0; }
 
+        // Per-cycle param overrides from ParamLock events — cleared each
+        // cycle so locks from one step do not bleed into unlocked steps.
+        self.node_locks.clear();
+
         // Handle NodeCommands: CMD_TRIGGER live-triggers a voice (same retrigger
         // path as NoteOn). arg0 = note (< 0 → last-triggered note); arg1 = velocity
         // 0.0..=1.0 (<= 0.0 → default 0.79).
@@ -330,12 +346,9 @@ impl Node for FmEngine {
         for timed in input.events {
             match timed.event {
                 Event::ParamLock(ref pl) if pl.node_id == self.node_id => {
-                    self.bank.handle_commands(&[paraclete_node_api::NodeCommand {
-                        target_id: self.node_id,
-                        type_id:   paraclete_node_api::CMD_SET_PARAM,
-                        arg0:      pl.param_id as i64,
-                        arg1:      pl.value as f64,
-                    }]);
+                    // Per-cycle override, never a bank write (BUG-015 /
+                    // ADR-019): a locked step must not bleed into the next.
+                    self.node_locks.push((pl.param_id, pl.value));
                 }
                 Event::Midi2(ref ump) => {
                     if let UmpMessage::ChannelVoice2(cv2) = ump {
@@ -635,6 +648,30 @@ mod tests {
             "pre-offset span must be silent");
         assert!(out[100..].iter().any(|&s| s.abs() > 1e-6),
             "voice sounds from its offset");
+    }
+
+
+    #[test]
+    fn param_lock_does_not_bleed_into_bank() {
+        // BUG-015 regression: a per-step ParamLock is a per-cycle override,
+        // never a bank write — the next unlocked step reads the original.
+        let mut eng = FmEngine::kick();
+        eng.set_node_id(9);
+        eng.activate(44100.0, 512);
+        let default_decay = eng.bank.get(fp("decay"));
+        assert!(default_decay > 0.4, "kick decay default sanity");
+
+        let lock = TimedEvent::new(0, Event::ParamLock(ParamLockEvent {
+            node_id:  9,
+            param_id: fp("decay"),
+            value:    0.01,
+        }));
+        run_fm(&mut eng, &[lock, make_note_on(36)]);
+        assert_eq!(eng.bank.get(fp("decay")), default_decay,
+            "lock must not mutate the bank");
+        run_fm(&mut eng, &[make_note_on(36)]);
+        assert!(eng.node_locks.is_empty(), "locks cleared each cycle");
+        assert_eq!(eng.bank.get(fp("decay")), default_decay);
     }
 
 }
