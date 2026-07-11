@@ -92,3 +92,33 @@ glass, and the bare URL dead-ended in STALE. Shipped in `2daceac`:
 - The bare-URL STALE dead-end was **BUG-021**: two status-stomp paths in
   `connection.ts` meant no hard-error screen (bad token, protocol mismatch)
   could ever render. Found by driving the exact flow the driver described.
+
+## Addendum 2 (same session): open by default; token is opt-in (user decision)
+
+"Why does the session need a code at all?" — it doesn't, today: the protocol
+reaches music state only. Default flipped by user decision (`--token` opts
+into the 6-digit code for untrusted networks; `--open` is a legacy no-op).
+Open mode now accepts **any** client token, so a code remembered from an
+earlier `--token` run never bounces a client. **Standing note: revisit the
+default when the protocol gains project save/overwrite** — that is the point
+where unauthenticated control starts costing real work.
+
+Also added: a `by name: http://<Bonjour-name>.local:7274/` stderr line
+(scutil on macOS; first hostname label elsewhere). This is step one of the
+no-shared-Wi-Fi story (below) — mDNS resolves on any shared link, including
+a direct ethernet cable with link-local addresses, where the routed-IP guess
+(`lan_ip()`) prints the wrong interface.
+
+### Open item: tablet link without shared Wi-Fi (user request, next hardware session)
+
+Candidate paths, in rough order of promise:
+1. **Direct ethernet cable** (tablet USB-C→ethernet adapter ↔ Mac): zero
+   config — both ends self-assign link-local 169.254/16, mDNS resolves
+   `Nimbus.local`, no router involved. Most deterministic latency.
+2. **Mac-hosted Wi-Fi** (Internet Sharing → Wi-Fi, no upstream needed):
+   tablet joins the Mac's own network; mDNS works; no house router.
+3. **USB tethering** — OS-dependent (iPad-to-Mac USB networking works via
+   Internet Sharing over the "iPad USB" interface; Android reverse
+   tethering is painful). Evaluate only if 1–2 disappoint.
+All three need a hardware session to verify; no code expected beyond what
+shipped (server already binds 0.0.0.0 and prints the mDNS name).

@@ -41,11 +41,15 @@ cargo run -- --dev-ui
 # Load/save project state (RON format, ADR-025; --load applied before build_executor, --save after)
 cargo run -- --load=project.ron --save=project.ron
 
-# Antiphon interface server (W0, ADR-031) — on by default; prints
-# "Theoria: http://<lan-ip>:7274/?t=<token>" to stderr. Open that URL on a
-# tablet for the Theoria grid. WS listens on port+1 (7275).
+# Antiphon interface server (W0, ADR-031) — on by default and OPEN on the
+# LAN by default (2026-07-10; the protocol only reaches music state). Prints
+# "Theoria: http://<lan-ip>:7274/" plus an mDNS "by name:" URL to stderr;
+# open either on a tablet for the Theoria grid. WS listens on port+1 (7275).
 cargo run -- --no-antiphon              # disable the interface server
 cargo run -- --antiphon-port=7274       # HTTP port (WS = port+1)
+cargo run -- --token                    # opt-in 6-digit session code
+    # (.antiphon-token; client shows a code-entry gate at the bare URL and
+    #  remembers the code in localStorage. --open is a legacy no-op.)
 
 # Theoria web client (W1 C4 — npm workspace in web/; @paraclete/core + app)
 cd web && npm install && npm run build  # produces web/packages/app/dist
