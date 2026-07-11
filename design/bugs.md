@@ -357,3 +357,19 @@ timing-harness precedent): render two triggers 100 ms apart vs 1 s apart,
 compare peak/RMS of the second hit. Fix whatever the measurement convicts;
 keep the anti-click property (short linear ramp-down + hard env reset is the
 usual correct form). Regression test on the measured ratio.
+
+**BUG-022 RESOLVED** (`5071c9a`): `Sequencer::with_default_note(n)` +
+per-sequencer `default_note` in the instrument file (36 on the default
+instrument's four tracks). Regression test asserts a sequenced note-36 and a
+bare CMD_TRIGGER land on identical `current_hz`.
+
+**BUG-023 STATUS** (`5071c9a`): measured — **the engine is exonerated**.
+`probe_rehit_energy_vs_gap` (ignored test, `--nocapture`): re-hit RMS/peak =
+99.2–100% of a rested hit at gaps 11 ms → 1 s. Everything downstream in the
+graph (MixNode, Freeverb) is linear. Prime suspect is now the playback
+environment: macOS built-in-speaker protection limits bass transients with
+exactly the reported signature (full → thin on fast re-hit → recovers).
+**Next action (driver): A/B on headphones or an interface.** If ducking still
+reproduces off-speaker, next step is a full-graph render harness.
+`fast_retrigger_is_not_ducked` stays as a permanent engine gate; keep this
+bug open until the headphone A/B.
