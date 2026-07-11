@@ -376,15 +376,18 @@ P5 also adds a `swing` parameter to the Sequencer ParameterBank (0.0–0.5, defa
 - **Commit 5:** Sequencer as CV source — `Sequencer::with_cv_outputs(n)`, `cv_out_{i}` ports (CvSignal), `Step::cv_locks`, sample-and-hold output. `"sequencer_cv"` registered in NodeRegistry.
 - **Commit 6:** GraphNode — `GraphNode` marker trait (LGPL3), `paraclete-graph-nodes` crate (new), `InnerGraphNode` (inner executor: clock→sequencer→kick→mix→audio_out), `"inner_graph"` registered in NodeRegistry.
 
-**P10 shipped so far** (pattern engine, in progress — see `design/phases/p10-report.md`):
+**P10 shipped — pattern engine complete** (C0–C5; see `design/phases/p10-report.md`; play-test pending):
 - **Commit 0** (`b0cf2c8`): BUG-001 (240-tick step period, re-diagnosed via measurement — the drift was the bar-sync snap, not `internal_clock.rs`) and BUG-008 (`set_initial_params` re-applied on re-activate) fixed.
 - **Commit 1 (GATED)** (`6212242`): `Pattern` struct (`steps`/`length`/`page_loop`/`swing`, `PAGE_SIZE = 8`); `Sequencer` owns `patterns: Vec<Pattern>` (one pattern); inert `cued_pattern`/`chain`/`chain_pos`/`speed_mult` staged for C3/C4; `STEP_CAPACITY = 64`. Serializer **v3** (fixes BUG-005): every `Step` field + per-pattern `length`/`page_loop`/`swing` persisted. Step **and** pattern records are length-prefixed (future fields skipped by v3 readers); counts are plain integers (engine cap can grow without a format bump). v1/v2 blobs load into `patterns[0]`. Deserialize is hardened against corrupt blobs (zero-step abort, `length` clamp, step re-pad to capacity — audio-thread playback must never panic on load).
+- **Commit 2** (`0a8116b`, 2026-07-11): page-loop playback window (`window()`/`advance_step()`; the wrap IS the cycle boundary); `CMD_SET_PAGE_LOOP` (30); swing per-pattern authoritative (bank slot = write-through conduit, `last_bank_swing` guard, refreshed on switch/activate/deserialize).
+- **Commit 3** (`e8f7718`, 2026-07-11): `CMD_SET_LENGTH` (28) / `CMD_SET_SPEED` (29); fractional speed periods carry their remainder (no drift); gate = absolute countdown from note-on; **BUG-004 fixed** — negative micro_offset fires in the previous step's window, tick-exact (1/96 beat = 10 ticks). Polyrhythm emergent (16 vs 12 realign at LCM 48).
+- **Commit 4** (`50ef64b`, 2026-07-11): pre-allocated pattern bank (`PATTERN_BANK_SIZE = 8`; zero audio-thread allocation in the switch path); `CMD_SET_PATTERN` real (stopped → immediate; playing → cued to the wrap; a cue pending at stop collapses to an immediate switch); `CMD_CHAIN_PUSH`/`CMD_CHAIN_CLEAR` (31/32, chain capacity 8, read-then-advance at the wrap, explicit cue wins one boundary).
+- **Commit 5** (`5306674`, 2026-07-11): pattern-engine state paths (`active_pattern`, `cued_pattern` −1 sentinel, `current_page`, `page_count`, `page_loop_start/end`, `speed_mult`, `chain_len` — path cache 9→17); TUI 16-step playhead window + `P{n}` cue-blink + page label + speed. §5.3 Launchpad surface **parked** per s2 (profile-only work later; paths all published).
 
 **Known deferred items (P10+):**
 - `ConnectionAgreement::baseline()` hardcodes `sample_rate=44100.0` and `block_size=512`.
 - `paraclete-hal` depends on `paraclete-runtime` (layer violation, deferred until StateBusHandle moves to L2).
 - AnalogEngine/FmEngine polyphony (monophonic with retrigger).
-- Signed micro-timing in Sequencer (negative offset not yet distinct from positive) — scheduled P10 C3 (BUG-004).
 - LadderFilter HP/BP modes, LFO tempo sync.
 - `agg_state_buf` in executor does one allocation per cycle via `mem::take()` — full elimination requires a return channel.
 - AudioBuffer feedback cycles (requires OQ-7 oversampling strategy).

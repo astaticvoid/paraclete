@@ -172,3 +172,36 @@ ReverbNode (P9). Effect-type CLAP plugins (P9). `serde_yaml` → `serde_yml`
 migration (P9). `capability_document()` Box::leak fix (P9, before dynamic
 graph). Full CLAP host callbacks, note expressions, preset management (P9+).
 Signed micro-timing, Sequencer P5 field serialisation (carried forward).
+
+### P9 — Loop Break + Dynamic Topology + CV (Complete, June 2026)
+
+Six commits (see `design/phases/p9-report.md`; 389 distinct tests, 0
+failures): encoder value publishing (`ParameterSlot::name`,
+`publish_bank_state()`, `Node::set_node_id()`); housekeeping
+(`cap_doc_cache`, `serde_yml` migration, `set_initial_params` coverage,
+effect-type CLAP plugins); `LoopBreakNode` + executor pre/post phases
+(ADR-028, resolves OQ-5); dynamic topology — `NodeRegistry`,
+`apply_patch()` pause-rebuild-resume, project format v2 with `type_tag`
+(ADR-029); Sequencer CV outputs (`with_cv_outputs`, `Step::cv_locks`,
+sample-and-hold); `GraphNode` marker + `paraclete-graph-nodes` crate with
+`InnerGraphNode` (ADR-023).
+
+### P10 — Pattern Engine (Complete, July 2026)
+
+Six commits C0–C5 (see `design/phases/p10-report.md`; 502 workspace tests,
+0 failures at close). C0: BUG-001 (240-tick period; the drift was the
+bar-sync snap) + BUG-008. C1 (gated): `Pattern` struct, serializer v3
+(fixes BUG-005; length-prefixed skip-tolerant records). C2: page-loop
+playback window — the wrap IS the cycle boundary; swing per-pattern
+authoritative (bank slot = write-through conduit). C3: per-track length +
+speed multiplier (fractional periods carry their remainder — drift-free);
+BUG-004 fixed (negative micro-timing fires in the previous step's window,
+tick-exact); gate is an absolute countdown from note-on; polyrhythm
+emergent. C4: pre-allocated 8-pattern bank — zero audio-thread allocation
+in the switch path; cued switching at the wrap; volatile chain
+(read-then-advance). C5: pattern-engine state paths + TUI playhead window
+and pattern/page/speed indicator; the Launchpad §5.3 surface parked with
+the Launchpad track (s2). Play-test pending (paired session or Theoria
+post-W2). W-track work interleaved the same weeks: Antiphon/Theoria (W0,
+W1, legibility phase, baseline interactions) — see `interface-plan.md` and
+the session records.

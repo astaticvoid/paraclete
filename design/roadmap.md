@@ -48,7 +48,7 @@ properly with serializer v3 in P10 C1 — scheduled before session #1 regardless
 | 6.1 | **BUG-022 + BUG-023** — seq/trigger pitch unity + retrigger ducking (measurement-first) | Session #2: sound correctness is baseline; sessions can't judge the engine with these live |
 | 6.2 | ~~**Theoria baseline interaction wins**~~ — **shipped 2026-07-11** (`e1f86cf` + `3356d60`; report: `theoria-baseline-interactions-report.md`) | Drag-draw paints via new authoritative `/script/lp/steps_n` mask mirror; encoder row at bottom edge w/ value bars; dead grid gone (mode-aware cells). Found+fixed BUG-024 (state_write in subscriptions panicked). Tablet judgment pending |
 | 6.3 | **W2 re-scoped: Theoria native surface, design-first** — paired reference spike (Elektron box TBD + Hydrasynth manuals) → fixed-input rail + contextual window spec → build; ADR-032 after the spec | Session #2 F1/F7 keystone: "consistent inputs, contextual screen window"; do not improvise UI |
-| 7 | P10 C2+ (pages, switching, polyrhythm, surface) — independent of the tablet UX, may run in parallel | Engine depth; ordering unaffected by sessions #1–2 |
+| 7 | ~~P10 C2–C5~~ — **shipped 2026-07-11** (`0a8116b`/`e8f7718`/`50ef64b`/`5306674`; report: `p10-report.md`) | Pattern engine complete: page-loop windows, per-track length/speed (polyrhythm), BUG-004 fixed, cued switching + chain, state-bus surface + TUI indicator. §5.3 Launchpad surface parked per s2; P10 play-test pending (Theoria/W2 or paired TUI session) |
 
 **Paired sessions** are a first-class roadmap instrument from here on: one after
 each W-milestone (W1, W2, W3), notes captured append-only in `design/sessions/`,

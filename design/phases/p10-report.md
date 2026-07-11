@@ -347,3 +347,46 @@ validation, and the test asserts that directly.
 
 - `cargo test --workspace`: **499 passed, 0 failures**.
 - Clippy: changed hunks clean (crate warning set unchanged).
+
+## Commit 5 — State-bus surface + TUI (emulator-independent parts) — shipped `5306674`
+
+Implemented 2026-07-11 (autonomous session, spec: `p10-interfaces.md` §5).
+
+- **§5.1:** all nine pattern-engine paths published by
+  `Sequencer::published_state()`, cached in the OnceLock path array
+  (9 → 17 entries — no per-cycle `format!`, BUG-007 discipline).
+  `/state/steps` stays the full active pattern (decided convention);
+  `steps_bitfield()`'s docstring was already accurate post-C1 (the spec's
+  "fix the stale docstring" item was satisfied earlier than expected).
+- **§5.2:** TUI shows the 16-step window containing the playhead
+  (window-relative marker; `Step: n/len` replaces the hardcoded `/16`),
+  plus `P{n}` (blinking `P{n}→P{m}` while a cue is pending), a page label,
+  and the speed multiplier when ≠ 1×.
+- **§5.3 NOT implemented — deviation of record:** the Launchpad
+  scene-button page-select / cued-blink surface is parked with the whole
+  Launchpad track (s2.md F2 "park the Launchpad"; handoff sequence). All
+  the state paths it would consume are published, so un-parking it later
+  is profile-only work. OQ-11 (scene-button convention) stays open.
+- **Review finding applied:** the spec's literal "slice the 8 chars for the
+  displayed page" conflicted with the TUI's 16-step row (the P8 baseline
+  view): the published `current_page` advances twice per visible window,
+  so the label could disagree with the steps shown. Resolution: the row
+  keeps 16 steps; on >2-page patterns the label names the displayed page
+  pair (`pg 3-4/8`). Spec-literal 8-step row rejected as a visible
+  regression for the default 16-step pattern.
+
+### Gate results
+
+- `cargo test --workspace`: **502 passed, 0 failures**.
+- Clippy: changed hunks clean.
+
+## P10 status after this session
+
+Commits 0–5 all shipped. Remaining before "P10 ships" per the Definition of
+Done: the **play-test** (paging a 64-step pattern, hat at 2× against the
+kick, cueing + chaining live). Commits 0–4 are unit-test-verified; the C5
+surface is TUI + state paths (test-verified) — but the DoD's play-test
+words assume the Launchpad scene-button surface, which is parked per s2.
+The play-test should therefore run on **Theoria** once the W2 native
+surface exists, or via TUI + command injection in a paired session.
+BUG-001/004/005/008 all resolved with commit references (DoD item met).

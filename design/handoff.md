@@ -99,8 +99,12 @@ They are judgment calls to make *with* the user in session, not solo.)
      row at the bottom with value bars; dead grid gone. BUG-024 (state_write
      in subscriptions panicked the app) found + fixed. One Chrome pass on
      the final bundle + tablet judgment still pending.
-   - **(b) P10 C2–C3 pattern depth** — spec'd in `p10-interfaces.md`,
-     Opus-tier solo; includes BUG-004/013 (audible micro-timing) in C3.
+   - ~~**(b) P10 C2–C3 pattern depth**~~ — **C2–C5 all shipped 2026-07-11**
+     (`0a8116b`/`e8f7718`/`50ef64b`/`5306674`; `p10-report.md`). BUG-004
+     fixed in C3; BUG-013 (block-boundary voice starts) remains open —
+     engine-side, not sequencer-side. §5.3 Launchpad surface parked per s2;
+     the P10 play-test gates on a paired session (TUI + command injection,
+     or Theoria post-W2).
    - **(c) W2 re-scoped: reference-design spike** — **paired only** (user +
      Digitakt II hardware + Syntakt/Hydrasynth manuals). Produces the
      Theoria native-surface spec (fixed input rail + contextual window,
