@@ -85,20 +85,36 @@ They are judgment calls to make *with* the user in session, not solo.)
    runs the app crate), clippy clean on touched crates, update the phase
    report as you go — not at the end.
 
-## Current sequence (mirror of roadmap, July 2026)
+## Current sequence (mirror of roadmap, updated 2026-07-10 evening)
 
-1. ~~P10 C0~~ **shipped** (`b0cf2c8`; BUG-001 re-diagnosed — read the
-p10-interfaces amendment before touching sequencer timing) → 2. ~~W0~~
-**shipped** (July 2026, both commits; `w0-report.md` has deviations + figures;
-tablet-hardware exit checks roll into the next user session) → 3. **P10 C1**
-(gated; serializer v3) → 4. ~~W1~~ **shipped** → 5. ~~paired session #1~~
-**held 2026-07-09** (`design/sessions/s1.md`) → 6. **Theoria legibility phase
-(next)**: discoverability keystone (labeled track-select, visible mode) —
-**visual/paired, judged on the tablet against the Elektron bar; do not build
-blind.** P10 C2+ engine depth is independent and may run in parallel. Session-0
-runbooks (`s0-launchpad-debug.md`) remain open for the pending human LED/sound
-confirmation.
+1. ~~P10 C0 / W0 / P10 C1 / W1 / session #1~~ shipped (roadmap history) →
+2. ~~Theoria legibility phase~~ **shipped 2026-07-10**
+   (`theoria-legibility-report.md`; BUG-016…021; open-by-default + `--token`;
+   USB-C tablet link @ 3.0 ms) → 3. ~~paired session #2~~ **held 2026-07-10**
+   (`design/sessions/s2.md` — READ IT: it re-founds the W-track) →
+4. **next, in order:**
+   - **(a) Theoria baseline interaction wins** (s2 F3/F4: drag-draw steps,
+     encoder gesture + placement, hide dead grid) — Opus-tier solo; survives
+     the redesign by construction.
+   - **(b) P10 C2–C3 pattern depth** — spec'd in `p10-interfaces.md`,
+     Opus-tier solo; includes BUG-004/013 (audible micro-timing) in C3.
+   - **(c) W2 re-scoped: reference-design spike** — **paired only** (user +
+     Digitakt II hardware + Syntakt/Hydrasynth manuals). Produces the
+     Theoria native-surface spec (fixed input rail + contextual window,
+     param/env/LFO pages, source→FX channel view) AND the P12+
+     machine-family param philosophy. ADR-032 comes after this spec.
+     Do not build W-track features ahead of it.
+5. **Parked/waiting:** Launchpad track frozen (s2 F2; s1-F7 cleanup in the
+   trigger backlog); BUG-023 open pending the driver's headphone A/B (engine
+   exonerated by measurement — see bugs.md); BUG-012 queued for a hardware
+   session; session-0 runbooks (`s0-launchpad-debug.md`) still open for the
+   pending human LED/sound confirmation.
+
+Standing design tiebreakers (s2): synthesis voices are the emotional core —
+"sit down with a nice kick engine and tune it"; interface work starts from
+studied reference manuals, never improvised. Naming policy: reference marks
+(Digitakt, Syntakt, Hydrasynth…) live in design docs only.
 
 Standing user offers to schedule when hardware is at hand: Digitakt
 relative-CC verification (last unverified assumption under the encoder path),
-session zero on the current build, BUG-001 before/after audibility check.
+BUG-001 before/after audibility check.
