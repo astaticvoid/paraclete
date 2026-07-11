@@ -159,10 +159,12 @@ pub const PAGE_SIZE: usize = 8;
 ///
 /// `steps` is sized at construction on the main thread and never grows on the
 /// audio thread; `length` gates how many steps play. `page_loop` is the
-/// inclusive `(start_page, end_page)` playback window — stored but inert until
-/// P10 C2 wires page-loop playback. `swing` is per-pattern storage; until the
-/// C2 migration the ParameterBank `swing` slot stays authoritative for
-/// emission and this field mirrors it so serialization captures it.
+/// inclusive `(start_page, end_page)` playback window (P10 C2): playback
+/// advances across `[start*8, min((end+1)*8, length))` and wraps to
+/// `start*8` — that wrap is the pattern's cycle boundary. `swing` is
+/// authoritative for emission and serialization (P10 C2); the ParameterBank
+/// `swing` slot is a write-through conduit for encoders, never the source
+/// of truth.
 #[derive(Clone, Debug)]
 pub struct Pattern {
     pub steps:     Vec<Step>,
@@ -219,6 +221,13 @@ pub struct Sequencer {
     /// Per-track speed multiplier. Inert until P10 C3.
     speed_mult:     f32,
     swing_amount:   f32,
+    /// Last bank `swing` value forwarded to the active pattern. The bank is
+    /// a write-conduit only (P10 C2, spec 2.3): a changed bank value means
+    /// an encoder/CMD_SET_PARAM wrote it, and it is forwarded to
+    /// `Pattern::swing` — which is what emission reads. Comparing against
+    /// this field (not the pattern) keeps a pattern switch from writing the
+    /// old pattern's swing into the new one.
+    last_bank_swing: f32,
     sample_rate:    f32,
 
     cv_outputs:  usize,
@@ -255,6 +264,10 @@ impl Sequencer {
     pub const CMD_SET_STEP_TIMING:    u32 = 25;
     pub const CMD_SET_STEP_CONDITION: u32 = 26;
     pub const CMD_SET_PATTERN:        u32 = 27;
+    /// P10 C2: arg0 = start_page, arg1 = end_page (inclusive). Rejected
+    /// (window unchanged) unless start <= end and both pages exist for the
+    /// active pattern's current length.
+    pub const CMD_SET_PAGE_LOOP:      u32 = 30;
 
     /// Runtime step capacity per pattern (P10: 8 pages × 8 steps). The
     /// serialized format stores counts as plain integers and does not depend
@@ -340,6 +353,7 @@ impl Sequencer {
             chain_pos:      0,
             speed_mult:     1.0,
             swing_amount:   0.0,
+            last_bank_swing: 0.0,
             sample_rate:    44100.0,
             cv_outputs,
             current_cv:  vec![0.0_f32; cv_outputs],
@@ -353,6 +367,28 @@ impl Sequencer {
     /// but with a single-pattern bank playback always resolves to pattern 0.
     fn active_index(&self) -> usize {
         self.active_pattern.min(self.patterns.len() - 1)
+    }
+
+    /// The active pattern's page-loop window as `[start, end)` step indices
+    /// (P10 C2). Defensive clamps keep the window inside `length` and
+    /// non-empty even if `page_loop` and `length` disagree transiently —
+    /// the audio thread must never panic on an index.
+    fn window(&self) -> (usize, usize) {
+        let p = &self.patterns[self.active_index()];
+        let start = (p.page_loop.0 as usize * PAGE_SIZE).min(p.length.saturating_sub(1));
+        let end = ((p.page_loop.1 as usize + 1) * PAGE_SIZE).min(p.length);
+        (start, end.max(start + 1))
+    }
+
+    /// The step after `current` under page-loop playback, and whether the
+    /// move wrapped. The wrap is THE cycle boundary (loop_count, and from
+    /// P10 C4 cued switches / chain advances). A `current` outside the
+    /// window (the window was edited mid-play) re-enters at window start,
+    /// counted as a wrap.
+    fn advance_step(&self, current: usize) -> (usize, bool) {
+        let (start, end) = self.window();
+        let next = current + 1;
+        if next < start || next >= end { (start, true) } else { (next, false) }
     }
 
     pub fn set_step(&mut self, index: usize, note: u8, velocity: u16, active: bool) {
@@ -436,10 +472,35 @@ impl Sequencer {
                         steps[idx].condition = TrigCondition::Simple { repeat, fill, probability };
                     }
                 }
+                Self::CMD_SET_PAGE_LOOP => {
+                    // Validate-or-ignore (ADR-019): start <= end and both
+                    // pages within the active pattern's current page count.
+                    // arg1 < 0 is rejected before the cast — `as i64`
+                    // truncates toward zero, so -0.5 would slip in as page 0.
+                    if cmd.arg1 < 0.0 { continue; }
+                    let start = cmd.arg0;
+                    let end   = cmd.arg1 as i64;
+                    let p = &mut self.patterns[pat];
+                    let page_count = p.length.div_ceil(PAGE_SIZE) as i64;
+                    if start >= 0 && end >= start && end < page_count {
+                        p.page_loop = (start as u8, end as u8);
+                    }
+                }
                 Self::CMD_SET_PATTERN => {
                     self.active_pattern = cmd.arg0.max(0) as usize;
                     // stub until P10 C4: stored, but playback clamps to the
-                    // single-pattern bank (always pattern 0)
+                    // single-pattern bank (always pattern 0).
+                    // The swing conduit refresh below is C4's stated
+                    // dependency (spec 2.3) implemented at the switch site:
+                    // without it, a live switch (reachable today via a
+                    // multi-pattern v3 blob) leaves the bank showing the old
+                    // pattern's swing — the first encoder nudge would snap
+                    // the new pattern to the old value, and a write of
+                    // exactly the stale value would be dropped by the
+                    // conduit's change guard.
+                    let swing = self.patterns[self.active_index()].swing;
+                    self.bank.set(ParamDescriptor::id_for_name("swing"), swing as f64);
+                    self.last_bank_swing = swing;
                 }
                 _ => {}
             }
@@ -447,16 +508,19 @@ impl Sequencer {
     }
 
     fn handle_transport(&mut self, k: &TransportEvent, sample_offset: u32, output: &mut ProcessOutput) {
-        let spb  = 60.0 * self.sample_rate as f64 / k.bpm.max(1.0);
-        let pat  = self.active_index();
-        let plen = self.patterns[pat].length;
+        let spb = 60.0 * self.sample_rate as f64 / k.bpm.max(1.0);
+        let pat = self.active_index();
 
         if k.flags.sync_pulse {
             let bars_elapsed = (k.bar - 1).max(0) as u64;
             let total_ticks  = bars_elapsed * k.time_sig_num as u64 * TICKS_PER_BEAT as u64
                 + k.beat as u64 * TICKS_PER_BEAT as u64
                 + k.tick as u64;
-            let step_index  = (total_ticks / self.ticks_per_step as u64) % plen as u64;
+            // Transport position maps into the page-loop window (P10 C2):
+            // a mid-session join lands inside the run of steps that plays.
+            let (wstart, wend) = self.window();
+            let wlen = (wend - wstart) as u64;
+            let step_index  = wstart + ((total_ticks / self.ticks_per_step as u64) % wlen) as usize;
             let new_tick    = (total_ticks % self.ticks_per_step as u64) as u32;
 
             // Drift correction only (BUG-001 fix, s0 re-diagnosis): when internal
@@ -467,12 +531,12 @@ impl Sequencer {
             let next_tick   = self.step_tick + 1;
             let in_sync = if next_tick >= self.ticks_per_step {
                 new_tick == 0
-                    && step_index as usize == (self.current_step + 1) % plen
+                    && step_index == self.advance_step(self.current_step).0
             } else {
-                step_index as usize == self.current_step && new_tick == next_tick
+                step_index == self.current_step && new_tick == next_tick
             };
             if !in_sync && self.playing {
-                self.current_step = step_index as usize;
+                self.current_step = step_index;
                 self.step_tick    = new_tick;
             }
 
@@ -515,19 +579,22 @@ impl Sequencer {
 
         if k.flags.global_start {
             self.playing      = true;
-            self.current_step = 0;
+            // Transport start enters the pattern at the page-loop window's
+            // first step (P10 C2) — step 0 for the default full window.
+            let (wstart, _) = self.window();
+            self.current_step = wstart;
             self.step_tick    = 0;
-            // Fire step 0 (BUG-001 fix): previously the first step was never
-            // emitted by the boundary path and only sounded via the bar-sync
-            // snap. The start event IS tick 0 of step 0 — return so it is not
-            // also counted as progress.
-            let step_active = self.patterns[pat].steps[0].active;
+            // Fire the entry step (BUG-001 fix): previously the first step
+            // was never emitted by the boundary path and only sounded via
+            // the bar-sync snap. The start event IS tick 0 of that step —
+            // return so it is not also counted as progress.
+            let step_active = self.patterns[pat].steps[wstart].active;
             if step_active {
-                let cond = self.patterns[pat].steps[0].condition.clone();
+                let cond = self.patterns[pat].steps[wstart].condition.clone();
                 if cond.evaluate(&self.cycle_state, &mut self.rng) {
-                    let note_off = sample_offset + self.step_sample_offset(0, spb);
+                    let note_off = sample_offset + self.step_sample_offset(wstart, spb);
                     self.emit_note_on(note_off, output);
-                    for lock in &self.patterns[pat].steps[0].param_locks {
+                    for lock in &self.patterns[pat].steps[wstart].param_locks {
                         output.events_out.push(TimedEvent::new(
                             note_off,
                             Event::ParamLock(ParamLockEvent {
@@ -559,12 +626,14 @@ impl Sequencer {
         }
 
         if self.step_tick >= self.ticks_per_step {
-            let prev_step = self.current_step;
-            self.step_tick    = 0;
-            self.current_step = (self.current_step + 1) % plen;
+            self.step_tick = 0;
+            let (next, wrapped) = self.advance_step(self.current_step);
+            self.current_step = next;
 
-            // Increment loop_count each time the pattern wraps.
-            if self.current_step == 0 && prev_step == plen - 1 {
+            // The page-loop wrap is THE cycle boundary (P10 C2): loop_count
+            // increments here, and (C4) cued switches / chain advances are
+            // evaluated here only.
+            if wrapped {
                 self.cycle_state.loop_count = self.cycle_state.loop_count.wrapping_add(1);
             }
 
@@ -682,19 +751,26 @@ impl Node for Sequencer {
         // un-activated nodes before build_executor (ADR-025), and this
         // re-apply is what carries the loaded value into the first bank.
         // It also keeps re-activation from resetting live swing (BUG-008
-        // class): process() mirrors the bank into the pattern each cycle,
-        // so the pattern always holds the latest value.
+        // class). `last_bank_swing` tracks the conduit (P10 C2) so this
+        // re-apply is not mistaken for an encoder write in process().
         let swing = self.patterns[self.active_index()].swing;
         self.bank.set(ParamDescriptor::id_for_name("swing"), swing as f64);
+        self.last_bank_swing = swing;
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
         self.handle_commands(input.commands);
-        self.swing_amount = self.bank.get(ParamDescriptor::id_for_name("swing")) as f32;
-        // Mirror the bank value into the active pattern so serialize() captures
-        // it (the bank stays authoritative for emission until P10 C2).
+        // Swing is per-pattern (P10 C2, spec 2.3): `Pattern::swing` is the
+        // source of truth for emission and serialization. The bank slot is a
+        // write-conduit only — a changed bank value means an encoder or
+        // CMD_SET_PARAM wrote it, and it is forwarded to the active pattern.
         let pat = self.active_index();
-        self.patterns[pat].swing = self.swing_amount;
+        let bank_swing = self.bank.get(ParamDescriptor::id_for_name("swing")) as f32;
+        if bank_swing != self.last_bank_swing {
+            self.patterns[pat].swing = bank_swing;
+            self.last_bank_swing = bank_swing;
+        }
+        self.swing_amount = self.patterns[pat].swing;
 
         for timed in input.events {
             match timed.event {
@@ -918,7 +994,16 @@ impl Sequencer {
                 steps.resize(Self::STEP_CAPACITY, pad);
             }
             let length = length.clamp(1, steps.len());
-            patterns.push(Pattern { steps, length, page_loop: (pl_start, pl_end), swing });
+            // Sanitize the window like CMD_SET_PAGE_LOOP would (corrupt or
+            // foreign blobs): an invalid window resets to the full span
+            // instead of loading into degenerate single-step playback.
+            let pages = length.div_ceil(PAGE_SIZE).max(1) as u8;
+            let page_loop = if pl_start <= pl_end && pl_end < pages {
+                (pl_start, pl_end)
+            } else {
+                (0, pages - 1)
+            };
+            patterns.push(Pattern { steps, length, page_loop, swing });
         }
         if patterns.is_empty() { return; }
         // Restore the construction-time bank size: saved patterns fill the
@@ -935,11 +1020,14 @@ impl Sequencer {
         self.chain_pos      = 0;
         self.cued_pattern   = None;
         self.patterns       = patterns;
-        // Re-apply the loaded swing to the bank (authoritative until P10 C2).
-        // No-op when deserialize runs before activate(); activate() then
-        // re-applies it from the pattern.
+        // Mirror the loaded swing into the bank conduit (P10 C2: the pattern
+        // is authoritative; this keeps the encoder display current). Track it
+        // in last_bank_swing so process() doesn't mistake the load for an
+        // encoder write. No-op when deserialize runs before activate();
+        // activate() then re-applies both from the pattern.
         let swing = self.patterns[self.active_index()].swing;
         self.bank.set(ParamDescriptor::id_for_name("swing"), swing as f64);
+        self.last_bank_swing = swing;
     }
 }
 
@@ -2069,5 +2157,195 @@ mod tests {
         ]);
         assert!(seq.patterns[0].steps[7].active,
             "step edit after CMD_SET_PATTERN in one batch must land");
+    }
+
+    // ── P10 C2: multi-page patterns ──────────────────────────────────────────
+
+    /// Drive `n` step boundaries (ticks_per_step transport ticks each) and
+    /// record `current_step` after each boundary.
+    fn drive_steps(seq: &mut Sequencer, n: usize) -> Vec<usize> {
+        let tps = seq.ticks_per_step;
+        let mut positions = Vec::with_capacity(n);
+        for _ in 0..n {
+            for _ in 0..tps {
+                run_seq(seq, &[transport_tick(1, true, false, false, false)]);
+            }
+            positions.push(seq.current_step);
+        }
+        positions
+    }
+
+    fn set_page_loop_cmd(start: i64, end: f64) -> NodeCommand {
+        NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_PAGE_LOOP, arg0: start, arg1: end }
+    }
+
+    #[test]
+    fn page_loop_window_wraps_within_window() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.patterns[0].length = 32;
+        run_seq_with_cmds(&mut seq, &[set_page_loop_cmd(0, 1.0)]);
+        assert_eq!(seq.patterns[0].page_loop, (0, 1));
+
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        assert_eq!(seq.current_step, 0);
+        let positions = drive_steps(&mut seq, 40);
+        assert!(positions.iter().all(|&p| p < 16),
+            "a (0,1) window must never reach step 16: {positions:?}");
+        let at15 = positions.iter().position(|&p| p == 15).expect("reaches step 15");
+        assert_eq!(positions[at15 + 1], 0, "wraps 15 -> 0");
+    }
+
+    #[test]
+    fn page_loop_opens_to_full() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.patterns[0].length = 32;
+        run_seq_with_cmds(&mut seq, &[set_page_loop_cmd(0, 3.0)]);
+        assert_eq!(seq.patterns[0].page_loop, (0, 3));
+
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        let positions = drive_steps(&mut seq, 40);
+        assert_eq!(positions.iter().max(), Some(&31), "plays out to step 31");
+        let at31 = positions.iter().position(|&p| p == 31).unwrap();
+        assert_eq!(positions[at31 + 1], 0, "wraps 31 -> 0");
+    }
+
+    #[test]
+    fn set_page_loop_clamps_start_le_end() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.patterns[0].length = 32;
+        run_seq_with_cmds(&mut seq, &[set_page_loop_cmd(1, 2.0)]);
+        assert_eq!(seq.patterns[0].page_loop, (1, 2));
+
+        // start > end: rejected, window unchanged.
+        run_seq_with_cmds(&mut seq, &[set_page_loop_cmd(2, 1.0)]);
+        assert_eq!(seq.patterns[0].page_loop, (1, 2));
+        // end beyond the pattern's page count (32 steps = pages 0-3): rejected.
+        run_seq_with_cmds(&mut seq, &[set_page_loop_cmd(0, 7.0)]);
+        assert_eq!(seq.patterns[0].page_loop, (1, 2));
+        // negative start: rejected.
+        run_seq_with_cmds(&mut seq, &[set_page_loop_cmd(-1, 2.0)]);
+        assert_eq!(seq.patterns[0].page_loop, (1, 2));
+    }
+
+    #[test]
+    fn page_derivation() {
+        // Spec 2.4: steps 0-7 derive page 0, steps 8-15 derive page 1.
+        for step in 0..8usize {
+            assert_eq!(step / PAGE_SIZE, 0, "steps 0-7 are page 0");
+            assert_eq!((step + 8) / PAGE_SIZE, 1, "steps 8-15 are page 1");
+        }
+
+        // And playback agrees: a (1,1) window on a 32-step pattern enters at
+        // the window's first step (8) and every played step derives page 1.
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.patterns[0].length = 32;
+        run_seq_with_cmds(&mut seq, &[set_page_loop_cmd(1, 1.0)]);
+
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        assert_eq!(seq.current_step, 8, "start enters at the window start");
+        assert_eq!(seq.current_step / PAGE_SIZE, 1);
+        let positions = drive_steps(&mut seq, 12);
+        assert!(positions.iter().all(|&p| p / PAGE_SIZE == 1),
+            "every step in a (1,1) window derives page 1: {positions:?}");
+        assert!(positions.contains(&8) && positions.contains(&15));
+
+        // Page-0 half through playback too: default window (0,1) on 16 steps
+        // never leaves pages 0-1, and the first 8 boundaries stay in page 0.
+        let mut seq0 = Sequencer::new();
+        seq0.activate(44100.0, 64);
+        run_seq(&mut seq0, &[transport_tick(0, true, true, false, false)]);
+        assert_eq!(seq0.current_step / PAGE_SIZE, 0, "start (step 0) is page 0");
+        let first7 = drive_steps(&mut seq0, 7);
+        assert!(first7.iter().all(|&p| p / PAGE_SIZE == 0),
+            "steps 1-7 derive page 0: {first7:?}");
+    }
+
+    #[test]
+    fn swing_is_per_pattern() {
+        let swing_id = ParamDescriptor::id_for_name("swing");
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.patterns.push(Pattern::empty(Sequencer::STEP_CAPACITY));
+
+        // Encoder write (CMD_SET_PARAM through the bank conduit) lands on the
+        // active pattern only.
+        run_seq_with_cmds(&mut seq, &[NodeCommand {
+            target_id: 0, type_id: 0, arg0: swing_id as i64, arg1: 0.3,
+        }]);
+        assert!((seq.patterns[0].swing - 0.3).abs() < 1e-6);
+        assert_eq!(seq.patterns[1].swing, 0.0, "inactive pattern untouched");
+
+        // Switch active; a new write lands on pattern 1, pattern 0 keeps its own.
+        seq.active_pattern = 1;
+        run_seq_with_cmds(&mut seq, &[NodeCommand {
+            target_id: 0, type_id: 0, arg0: swing_id as i64, arg1: 0.1,
+        }]);
+        assert!((seq.patterns[1].swing - 0.1).abs() < 1e-6);
+        assert!((seq.patterns[0].swing - 0.3).abs() < 1e-6, "patterns hold independent swing");
+        assert!((seq.swing_amount - 0.1).abs() < 1e-6, "emission reads the active pattern");
+    }
+
+    #[test]
+    fn pattern_switch_refreshes_swing_conduit() {
+        // Review finding (C2): a live CMD_SET_PATTERN must refresh the bank
+        // conduit from the new pattern, or a post-switch write of exactly the
+        // stale value is dropped by the change guard.
+        let swing_id = ParamDescriptor::id_for_name("swing");
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.patterns.push(Pattern::empty(Sequencer::STEP_CAPACITY));
+        seq.patterns[1].swing = 0.5;
+
+        // Pattern 0's swing = 0.3 via the conduit.
+        run_seq_with_cmds(&mut seq, &[NodeCommand {
+            target_id: 0, type_id: 0, arg0: swing_id as i64, arg1: 0.3,
+        }]);
+        // Live switch to pattern 1: bank must now read 0.5, not 0.3.
+        run_seq_with_cmds(&mut seq, &[NodeCommand {
+            target_id: 0, type_id: Sequencer::CMD_SET_PATTERN, arg0: 1, arg1: 0.0,
+        }]);
+        assert!((seq.bank.get(swing_id) - 0.5).abs() < 1e-6, "conduit refreshed on switch");
+        assert!((seq.swing_amount - 0.5).abs() < 1e-6);
+
+        // Writing exactly the pre-switch value (0.3) must land on pattern 1.
+        run_seq_with_cmds(&mut seq, &[NodeCommand {
+            target_id: 0, type_id: 0, arg0: swing_id as i64, arg1: 0.3,
+        }]);
+        assert!((seq.patterns[1].swing - 0.3).abs() < 1e-6,
+            "write of the stale value is not dropped");
+        assert!((seq.patterns[0].swing - 0.3).abs() < 1e-6, "pattern 0 untouched by the switch");
+    }
+
+    #[test]
+    fn deserialize_sanitizes_invalid_page_loop() {
+        // Review finding (C2): a blob whose page_loop disagrees with its
+        // length (corrupt or foreign writer) must load with a full-span
+        // window, not degenerate single-step playback.
+        let mut src = Sequencer::new();
+        src.activate(44100.0, 64);
+        src.set_step(0, 60, 32768, true);
+        src.patterns[0].page_loop = (4, 5); // invalid for length 16 (pages 0-1)
+        let blob = src.serialize();
+
+        let mut dst = Sequencer::new();
+        dst.activate(44100.0, 64);
+        dst.deserialize(&blob);
+        assert_eq!(dst.patterns[0].page_loop, (0, 1),
+            "invalid window resets to the full span of the loaded length");
+
+        // Reversed window sanitized the same way.
+        let mut src2 = Sequencer::new();
+        src2.activate(44100.0, 64);
+        src2.set_step(0, 60, 32768, true);
+        src2.patterns[0].page_loop = (1, 0);
+        let blob2 = src2.serialize();
+        let mut dst2 = Sequencer::new();
+        dst2.activate(44100.0, 64);
+        dst2.deserialize(&blob2);
+        assert_eq!(dst2.patterns[0].page_loop, (0, 1));
     }
 }
