@@ -262,7 +262,7 @@ The main loop must call `conf.process_main_thread()` each iteration — this dra
 | `/transport/*` | clock domain state | clock |
 | `/context/*` | encoder context (from `publish_context()`) | profiles |
 | `/surface/{id}/*` | per-surface state (was `/hw/*`) | devices |
-| `/script/*` | profile scratch; **numeric** values are mirrored to Antiphon clients (UI-relevant profile state: `/script/lp/selected`, `/script/lp/mode_n`), Text values are not | scripts |
+| `/script/*` | profile scratch; **numeric** values are mirrored to Antiphon clients (UI-relevant profile state: `/script/lp/selected`, `/script/lp/mode_n`, `/script/lp/steps_n` — selected track's steps as a 16-bit mask, the numeric twin of the unmirrored steps Text bitfield), Text values are not | scripts |
 
 `publish_bank_state()` caches its formatted `/node/{id}/param/{name}` paths in a per-`ParameterBank` `OnceLock` (built once, cloned thereafter) — no `format!` on the audio thread after the first cycle (BUG-007). `Sequencer::published_state()` caches its fixed `/state/*` keys the same way.
 

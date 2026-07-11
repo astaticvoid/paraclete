@@ -373,3 +373,22 @@ exactly the reported signature (full → thin on fast re-hit → recovers).
 reproduces off-speaker, next step is a full-graph render harness.
 `fast_retrigger_is_not_ducked` stays as a permanent engine gate; keep this
 bug open until the headphone A/B.
+
+---
+
+### BUG-024 — state_write inside a subscribe callback panicked the main thread (RESOLVED `3356d60`)
+
+**Severity:** High (latent) — any profile writing state from a subscription
+brought the whole app down with "RefCell already borrowed"  
+**Phase found:** Theoria baseline-interactions session (2026-07-11)  
+**Location:** `crates/paraclete-scripting/src/lib.rs` `process_subscriptions()`
++ the `main.rs` call site  
+**Description:** `process_subscriptions()` took `&StateBusHandle`, so the app
+held `bus_handle.borrow()` across the entire dispatch. The first subscription
+callback that called `state_write` (a `borrow_mut` of the same `RefCell`)
+panicked. Latent since P4 — every shipped profile had only ever written state
+from event handlers; surfaced the moment `launchpad.rhai` published
+`/script/lp/steps_n` from its steps subscription.  
+**Fix:** signature takes `&Rc<RefCell<StateBusHandle>>`; the bus is borrowed
+only around each path read and dropped before the callback fires. Verified by
+a headless WS client observing the steps_n mirror update across live toggles.

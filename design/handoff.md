@@ -93,9 +93,12 @@ They are judgment calls to make *with* the user in session, not solo.)
    USB-C tablet link @ 3.0 ms) → 3. ~~paired session #2~~ **held 2026-07-10**
    (`design/sessions/s2.md` — READ IT: it re-founds the W-track) →
 4. **next, in order:**
-   - **(a) Theoria baseline interaction wins** (s2 F3/F4: drag-draw steps,
-     encoder gesture + placement, hide dead grid) — Opus-tier solo; survives
-     the redesign by construction.
+   - ~~**(a) Theoria baseline interaction wins**~~ — **shipped 2026-07-11**
+     (`e1f86cf` + `3356d60`, `theoria-baseline-interactions-report.md`):
+     drag-draw paints via the new `/script/lp/steps_n` mask mirror; encoder
+     row at the bottom with value bars; dead grid gone. BUG-024 (state_write
+     in subscriptions panicked the app) found + fixed. One Chrome pass on
+     the final bundle + tablet judgment still pending.
    - **(b) P10 C2–C3 pattern depth** — spec'd in `p10-interfaces.md`,
      Opus-tier solo; includes BUG-004/013 (audible micro-timing) in C3.
    - **(c) W2 re-scoped: reference-design spike** — **paired only** (user +
