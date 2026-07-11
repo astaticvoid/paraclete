@@ -3,9 +3,24 @@
 pub struct TuiState {
     pub bpm:          f64,
     pub playing:      bool,
+    /// Absolute step position within the active pattern (0-63 at P10).
     pub current_step: u8,
     pub active_track: usize,
+    /// The 16-step display window's steps (see `window_base`).
     pub steps:        [bool; 16],
+    /// First absolute step of the 16-step window the row displays — the
+    /// window containing `current_step` (P10 C5: patterns reach 64 steps,
+    /// the row shows 16 at a time).
+    pub window_base:  usize,
+    /// Active pattern length in steps (1-64).
+    pub pattern_length: usize,
+    /// P10 C5 pattern-engine surface (`/node/{id}/state/*`).
+    pub active_pattern: usize,
+    /// Cued pattern index, or -1 when none.
+    pub cued_pattern: i64,
+    pub current_page: usize,
+    pub page_count:   usize,
+    pub speed_mult:   f64,
     pub encoders:     Vec<EncoderSlot>,
     pub dirty:        bool,
 }
@@ -18,6 +33,13 @@ impl Default for TuiState {
             current_step: 0,
             active_track: 0,
             steps:        [false; 16],
+            window_base:  0,
+            pattern_length: 16,
+            active_pattern: 0,
+            cued_pattern: -1,
+            current_page: 0,
+            page_count:   2,
+            speed_mult:   1.0,
             encoders:     Vec::new(),
             dirty:        true,
         }

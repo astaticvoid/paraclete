@@ -82,10 +82,59 @@ impl TuiApp {
                 }
             }
 
+            // P10 C5 pattern-engine surface: pattern/page/speed indicator
+            // sources, all published by Sequencer::published_state().
+            let read_int = |key: &str| -> Option<i64> {
+                let path = format!("/node/{}/state/{}", seq_id, key);
+                match bus.read(&path) {
+                    Some(StateBusValue::Int(v)) => Some(*v),
+                    _ => None,
+                }
+            };
+            let set_usize = |cur: usize, v: Option<i64>| -> (usize, bool) {
+                match v {
+                    Some(v) if (v.max(0) as usize) != cur => ((v.max(0) as usize), true),
+                    _ => (cur, false),
+                }
+            };
+            let (v, d) = set_usize(self.state.pattern_length, read_int("pattern_length"));
+            self.state.pattern_length = v;
+            self.state.dirty |= d;
+            let (v, d) = set_usize(self.state.active_pattern, read_int("active_pattern"));
+            self.state.active_pattern = v;
+            self.state.dirty |= d;
+            let (v, d) = set_usize(self.state.current_page, read_int("current_page"));
+            self.state.current_page = v;
+            self.state.dirty |= d;
+            let (v, d) = set_usize(self.state.page_count, read_int("page_count"));
+            self.state.page_count = v;
+            self.state.dirty |= d;
+            if let Some(v) = read_int("cued_pattern") {
+                if v != self.state.cued_pattern {
+                    self.state.cued_pattern = v;
+                    self.state.dirty = true;
+                }
+            }
+            let speed_path = format!("/node/{}/state/speed_mult", seq_id);
+            if let Some(StateBusValue::Float(v)) = bus.read(&speed_path) {
+                if *v != self.state.speed_mult {
+                    self.state.speed_mult = *v;
+                    self.state.dirty = true;
+                }
+            }
+
+            // The row shows the 16-step window containing the playhead
+            // (patterns reach 64 steps at P10; /state/steps is the full
+            // pattern by convention — consumers slice).
+            let window_base = (self.state.current_step as usize / 16) * 16;
+            if window_base != self.state.window_base {
+                self.state.window_base = window_base;
+                self.state.dirty = true;
+            }
             let steps_path = format!("/node/{}/state/steps", seq_id);
             if let Some(StateBusValue::Text(s)) = bus.read(&steps_path) {
                 let mut new_steps = [false; 16];
-                for (i, ch) in s.chars().enumerate().take(16) {
+                for (i, ch) in s.chars().skip(window_base).enumerate().take(16) {
                     new_steps[i] = ch == '1';
                 }
                 if new_steps != self.state.steps {

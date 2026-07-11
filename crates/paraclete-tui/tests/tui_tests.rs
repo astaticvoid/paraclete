@@ -151,3 +151,46 @@ fn tui_recently_changed_clears_after_500ms() {
     app.tick_with_time(&mut terminal, 1502).unwrap();
     assert!(!app.state.encoders[0].recently_changed);
 }
+
+#[test]
+fn tui_reads_pattern_engine_paths_and_windows_steps() {
+    // P10 C5: the pattern/page/speed indicator sources, and the 16-step
+    // display window slicing a 64-step bitfield around the playhead.
+    let bus = make_bus();
+    {
+        let mut b = bus.borrow_mut();
+        b.write("/node/10/state/current_step",   StateBusValue::Int(20));
+        b.write("/node/10/state/pattern_length", StateBusValue::Int(32));
+        b.write("/node/10/state/active_pattern", StateBusValue::Int(2));
+        b.write("/node/10/state/cued_pattern",   StateBusValue::Int(5));
+        b.write("/node/10/state/current_page",   StateBusValue::Int(2));
+        b.write("/node/10/state/page_count",     StateBusValue::Int(4));
+        b.write("/node/10/state/speed_mult",     StateBusValue::Float(2.0));
+        // Steps 16 and 20 active in a 32-step pattern.
+        let mut bits = vec!['0'; 32];
+        bits[16] = '1';
+        bits[20] = '1';
+        b.write(
+            "/node/10/state/steps",
+            StateBusValue::Text(bits.into_iter().collect()),
+        );
+    }
+
+    let config = make_config(1, vec![10]);
+    let mut app = TuiApp::new(bus, config, HashMap::new());
+    let mut terminal = make_terminal();
+    app.tick_with_time(&mut terminal, 1000).unwrap();
+
+    assert_eq!(app.state.pattern_length, 32);
+    assert_eq!(app.state.active_pattern, 2);
+    assert_eq!(app.state.cued_pattern, 5);
+    assert_eq!(app.state.current_page, 2);
+    assert_eq!(app.state.page_count, 4);
+    assert_eq!(app.state.speed_mult, 2.0);
+    // Playhead at 20 -> window base 16; window-relative steps 0 and 4 active.
+    assert_eq!(app.state.window_base, 16);
+    let mut expected = [false; 16];
+    expected[0] = true;
+    expected[4] = true;
+    assert_eq!(app.state.steps, expected, "steps sliced to the playhead's window");
+}

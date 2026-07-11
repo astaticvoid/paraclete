@@ -258,12 +258,13 @@ pub struct Sequencer {
     /// same pitch (BUG-022). Per-step notes remain full-range.
     default_note: u8,
 
-    /// Lazily-built `/node/{id}/state/*` path strings for the 9 unconditional
-    /// `published_state()` entries (BUG-007 fix: eliminates the per-cycle
-    /// `format!` on the audio thread for these fixed keys). Keyed to
-    /// `self.node_id` at first `published_state()` call. The conditional
-    /// `track_name` entry and all VALUEs are still computed fresh each call.
-    state_path_cache: std::sync::OnceLock<[String; 9]>,
+    /// Lazily-built `/node/{id}/state/*` path strings for the 17
+    /// unconditional `published_state()` entries (BUG-007 fix: eliminates
+    /// the per-cycle `format!` on the audio thread for these fixed keys).
+    /// Keyed to `self.node_id` at first `published_state()` call. The
+    /// conditional `track_name` entry and all VALUEs are still computed
+    /// fresh each call.
+    state_path_cache: std::sync::OnceLock<[String; 17]>,
 }
 
 impl Sequencer {
@@ -1032,10 +1033,20 @@ impl Node for Sequencer {
                 format!("/node/{id}/state/loop_count"),
                 format!("/node/{id}/state/fill_a"),
                 format!("/node/{id}/state/fill_b"),
+                // P10 C5 pattern-engine surface (spec 5.1).
+                format!("/node/{id}/state/active_pattern"),
+                format!("/node/{id}/state/cued_pattern"),
+                format!("/node/{id}/state/current_page"),
+                format!("/node/{id}/state/page_count"),
+                format!("/node/{id}/state/page_loop_start"),
+                format!("/node/{id}/state/page_loop_end"),
+                format!("/node/{id}/state/speed_mult"),
+                format!("/node/{id}/state/chain_len"),
             ]
         });
+        let p = &self.patterns[self.active_index()];
         buf.push((paths[0].clone(), StateBusValue::Int(self.current_step as i64)));
-        buf.push((paths[1].clone(), StateBusValue::Int(self.patterns[self.active_index()].length as i64)));
+        buf.push((paths[1].clone(), StateBusValue::Int(p.length as i64)));
         buf.push((paths[2].clone(), StateBusValue::Bool(self.playing)));
         buf.push((paths[3].clone(), StateBusValue::Text(self.steps_bitfield())));
         buf.push((paths[4].clone(), StateBusValue::Int(self.trig_count as i64)));
@@ -1043,10 +1054,18 @@ impl Node for Sequencer {
         buf.push((paths[6].clone(), StateBusValue::Int(self.cycle_state.loop_count as i64)));
         buf.push((paths[7].clone(), StateBusValue::Float(if self.cycle_state.fill_a { 1.0 } else { 0.0 })));
         buf.push((paths[8].clone(), StateBusValue::Float(if self.cycle_state.fill_b { 1.0 } else { 0.0 })));
+        buf.push((paths[9].clone(), StateBusValue::Int(self.active_index() as i64)));
+        buf.push((paths[10].clone(), StateBusValue::Int(self.cued_pattern.map_or(-1, |c| c as i64))));
+        buf.push((paths[11].clone(), StateBusValue::Int((self.current_step / PAGE_SIZE) as i64)));
+        buf.push((paths[12].clone(), StateBusValue::Int(p.length.div_ceil(PAGE_SIZE) as i64)));
+        buf.push((paths[13].clone(), StateBusValue::Int(p.page_loop.0 as i64)));
+        buf.push((paths[14].clone(), StateBusValue::Int(p.page_loop.1 as i64)));
+        buf.push((paths[15].clone(), StateBusValue::Float(self.speed_mult as f64)));
+        buf.push((paths[16].clone(), StateBusValue::Int(self.chain.len() as i64)));
         // Conditional entry — not cached: caching would require a second
         // OnceLock keyed on presence-at-first-call, which is fragile if
         // track_name is set after construction but before the first publish.
-        // format! here is cheap (single optional String) relative to the 9
+        // format! here is cheap (single optional String) relative to the 17
         // unconditional entries above.
         if !self.track_name.is_empty() {
             buf.push((format!("/node/{id}/state/track_name"), StateBusValue::Text(self.track_name.clone())));
@@ -2993,6 +3012,76 @@ mod tests {
         let cmds: Vec<NodeCommand> = (0..10).map(|i| chain_push_cmd(i % 4)).collect();
         run_seq_with_cmds(&mut seq, &cmds);
         assert_eq!(seq.chain.len(), Sequencer::CHAIN_CAP, "pushes beyond the cap are ignored");
+    }
+
+    // ── P10 C5: state-bus surface ────────────────────────────────────────────
+
+    #[test]
+    fn published_state_includes_pattern_paths() {
+        let mut seq = Sequencer::new();
+        seq.set_node_id(42);
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[
+            set_speed_cmd(2.0),
+            chain_push_cmd(1),
+            chain_push_cmd(2),
+        ]);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        run_seq_with_cmds(&mut seq, &[set_pattern_cmd(1)]); // playing -> cued
+
+        let mut state = Vec::new();
+        seq.published_state(&mut state);
+        let get = |key: &str| {
+            state
+                .iter()
+                .find(|(k, _)| k == &format!("/node/42/state/{key}"))
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| panic!("missing path {key}"))
+        };
+        assert!(matches!(get("active_pattern"), StateBusValue::Int(0)));
+        assert!(matches!(get("cued_pattern"), StateBusValue::Int(1)));
+        assert!(matches!(get("current_page"), StateBusValue::Int(0)));
+        assert!(matches!(get("page_count"), StateBusValue::Int(2)), "16 steps = 2 pages");
+        assert!(matches!(get("page_loop_start"), StateBusValue::Int(0)));
+        assert!(matches!(get("page_loop_end"), StateBusValue::Int(1)));
+        assert!(matches!(get("speed_mult"), StateBusValue::Float(v) if v == 2.0));
+        assert!(matches!(get("chain_len"), StateBusValue::Int(2)));
+
+        // No cue -> -1 sentinel.
+        let mut seq2 = Sequencer::new();
+        seq2.set_node_id(7);
+        seq2.activate(44100.0, 64);
+        let mut state2 = Vec::new();
+        seq2.published_state(&mut state2);
+        let cued = state2.iter().find(|(k, _)| k == "/node/7/state/cued_pattern").unwrap();
+        assert!(matches!(cued.1, StateBusValue::Int(-1)));
+    }
+
+    #[test]
+    fn steps_bitfield_reflects_current_page() {
+        // Decided convention (spec 5.1): /state/steps is the FULL active
+        // pattern (length chars); consumers slice the displayed page. On
+        // page 1, chars 8..16 are steps 8-15.
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[set_length_cmd(32, -1.0)]);
+        seq.set_step(9, 60, 32768, true);
+        seq.set_step(15, 60, 32768, true);
+
+        let mut state = Vec::new();
+        seq.set_node_id(1);
+        seq.published_state(&mut state);
+        let (_, StateBusValue::Text(bits)) = state
+            .iter()
+            .find(|(k, _)| k.ends_with("/state/steps"))
+            .unwrap()
+        else {
+            panic!("steps must be Text")
+        };
+        assert_eq!(bits.len(), 32, "full active pattern, not one page");
+        let page1: Vec<char> = bits.chars().skip(8).take(8).collect();
+        assert_eq!(page1.iter().collect::<String>(), "01000001",
+            "page-1 slice matches steps 8-15");
     }
 
     #[test]
