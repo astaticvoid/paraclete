@@ -55,10 +55,13 @@ fn main() {
     let dev_ui = args.iter().any(|a| a == "--dev-ui");
 
     let no_antiphon = args.iter().any(|a| a == "--no-antiphon");
-    // Trusted-LAN mode: drop the session token so the client URL is a bare
-    // `http://<host>:<port>/` — tappable, no hex string. Any device on the
-    // network can then connect and control the instrument. Opt-in only.
-    let open_lan = args.iter().any(|a| a == "--open");
+    // Access default flipped 2026-07-10 (user decision): the interface is
+    // OPEN on the LAN by default — an instrument you pick up and play, like
+    // any hardware box; the protocol only reaches music state today.
+    // `--token` opts into the 6-digit session code (untrusted networks);
+    // revisit the default when the protocol gains project save/overwrite.
+    // `--open` is accepted as a no-op for compatibility with older notes.
+    let want_token = args.iter().any(|a| a == "--token");
     let antiphon_port: u16 = args.iter()
         .find(|a| a.starts_with("--antiphon-port="))
         .and_then(|a| a.splitn(2, '=').nth(1).and_then(|s| s.parse().ok()))
@@ -155,7 +158,7 @@ fn main() {
         let static_source = theoria_static_source(theoria_dir_override.clone());
         let config = AntiphonConfig {
             port: antiphon_port,
-            token: if open_lan { String::new() } else { load_or_create_token() },
+            token: if want_token { load_or_create_token() } else { String::new() },
             static_dir: Some(static_source),
             device_id: ID_THEORIA,
         };
@@ -174,6 +177,12 @@ fn main() {
                 // human types 6 digits instead of a query string.
                 if let Some((base, code)) = handle.url.split_once("?t=") {
                     eprintln!("[paraclete]   tablet: open {base} and enter code {code}");
+                }
+                // mDNS name works on any link the two machines share (house
+                // Wi-Fi, Mac-hosted network, direct ethernet cable with
+                // link-local addresses) — unlike the routed-IP guess above.
+                if let Some(host) = mdns_hostname() {
+                    eprintln!("[paraclete]   by name: http://{host}:{antiphon_port}/");
                 }
                 antiphon = Some(handle);
             }
@@ -501,6 +510,37 @@ fn theoria_static_source(
     {
         StaticSource::Disk(PathBuf::from("web/packages/app/dist"))
     }
+}
+
+/// Best-effort `<name>.local` for the printed URL. Resolvable via mDNS on
+/// any shared link regardless of which interface routes (the `lan_ip()`
+/// guess assumes a 192.168/16 route and is wrong on e.g. a direct ethernet
+/// cable with link-local addressing).
+fn mdns_hostname() -> Option<String> {
+    // macOS: the Bonjour name is authoritative (`hostname` often returns a
+    // DHCP FQDN like "MacBookAir.ht.home" that mDNS will not resolve).
+    #[cfg(target_os = "macos")]
+    if let Ok(out) = std::process::Command::new("scutil")
+        .args(["--get", "LocalHostName"])
+        .output()
+    {
+        if out.status.success() {
+            if let Ok(name) = String::from_utf8(out.stdout) {
+                let name = name.trim();
+                if !name.is_empty() {
+                    return Some(format!("{name}.local"));
+                }
+            }
+        }
+    }
+    // Fallback: first label of the hostname (avahi and friends publish it).
+    let out = std::process::Command::new("hostname").output().ok()?;
+    let name = String::from_utf8(out.stdout).ok()?;
+    let name = name.trim().split('.').next()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(format!("{name}.local"))
 }
 
 fn load_or_create_token() -> String {

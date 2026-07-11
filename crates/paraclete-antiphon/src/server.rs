@@ -59,10 +59,13 @@ pub enum HandshakeDecision {
 }
 
 /// Evaluate the first frame of a session against the expected token.
+/// An empty expected token = open mode (the 2026-07-10 default): any client
+/// token is accepted, including a stale code remembered from a previous
+/// `--token` run — open must never bounce anyone.
 pub fn evaluate_hello(frame: &str, expected_token: &str) -> HandshakeDecision {
     match serde_json::from_str::<ClientMsg>(frame) {
         Ok(ClientMsg::Hello { token, client }) => {
-            if token == expected_token {
+            if expected_token.is_empty() || token == expected_token {
                 HandshakeDecision::Accept { client }
             } else {
                 HandshakeDecision::Reject { reason: "bad token" }
@@ -381,6 +384,20 @@ mod tests {
             "right",
         );
         assert_eq!(d, HandshakeDecision::Accept { client: "theoria-web/0.1".into() });
+    }
+
+    #[test]
+    fn open_mode_accepts_any_client_token() {
+        // Empty expected token = open mode: a stale code remembered from a
+        // previous --token run must not bounce the client (2026-07-10).
+        for raw in [
+            r#"{"t":"hello","token":"","client":"c"}"#,
+            r#"{"t":"hello","token":"972461","client":"c"}"#,
+            r#"{"t":"hello","token":"deadbeefdeadbeefdeadbeefdeadbeef","client":"c"}"#,
+        ] {
+            let d = evaluate_hello(raw, "");
+            assert_eq!(d, HandshakeDecision::Accept { client: "c".into() }, "must accept: {raw}");
+        }
     }
 
     #[test]
