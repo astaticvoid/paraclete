@@ -296,3 +296,54 @@ applied with regression tests:
 - `cargo test --workspace`: **491 passed, 0 failures** (480 after C2 + 8
   spec tests + 1 drift guard + 2 review regression tests).
 - Clippy: changed hunks clean (crate warning set unchanged).
+
+## Commit 4 — Seamless switching + volatile chain — shipped `50ef64b`
+
+Implemented 2026-07-11 (autonomous session, spec: `p10-interfaces.md` §4).
+
+- **Pattern bank:** `PATTERN_BANK_SIZE = 8`, allocated at construction on
+  the main thread (§4.3's stated budget). `CMD_SET_PATTERN` validates
+  against the bank — patterns are never grown on demand, so no audio-thread
+  allocation exists anywhere in the switch path (`ParameterBank::set` is
+  find+clamp, verified by review).
+- **Cue semantics (§4.1):** stopped → immediate; playing → cued, lands at
+  the page-loop wrap (the C2 cycle boundary), clears after landing. Every
+  switch refreshes the swing conduit and enters the new pattern at its
+  window start; `early_fired` clears on switch.
+- **Chain (§4.2):** capacity 8, Vec pre-reserved (deserialize rebuilds at
+  the same capacity and drops excess). Read-then-advance at the boundary;
+  explicit cue wins one boundary without advancing the chain.
+
+### Review findings (pre-commit, 2 agents)
+
+1. **Applied — deserialize bank clamp** (correctness): a foreign v3 blob's
+   u16 pattern count was honored verbatim — unbounded memory and a broken
+   bank invariant. Now clamped to `PATTERN_BANK_SIZE` (excess records fall
+   into the format's ignored-trailing-bytes region); `active_pattern`
+   clamped into the bank. Test `deserialize_clamps_pattern_bank_and_active_index`.
+2. **Applied — cue survived global_stop** (correctness): a cue pending at
+   stop now collapses to an immediate switch (stopped switches are
+   immediate by contract; restart plays the last selection, not one
+   surprise cycle of the old pattern). Test `stop_applies_pending_cue`.
+3. **Recorded — spec-internal conflict** (spec agent): §4.2's literal
+   "advances `chain_pos` (wrapping) and switches to `chain[chain_pos]`"
+   (advance-then-read) contradicts §4.4's own ordering test (a fresh chain
+   `[0,1,2]` must visit 0,1,2). Implementation uses read-then-advance,
+   which the test demands. The spec sentence should read "switches to
+   `chain[chain_pos]` and then advances it (wrapping)". Spec doc not edited
+   (append-only discipline; conflict recorded here).
+
+### Test updates required by the bank
+
+`deserialize_v2_into_single_pattern` asserted `patterns.len() == 1` (true
+under C1's single-slot construction); §1.3 says the bank is restored to
+`PATTERN_BANK_SIZE` on load, which C4 makes true — the assertion now checks
+bank size + "only pattern 0 used". `serialize_persists_effective_pattern_index`
+asserted the C1 stub's clamp; the property it protected (a save can never
+select a different pattern on load) is now enforced by command-site
+validation, and the test asserts that directly.
+
+### Gate results
+
+- `cargo test --workspace`: **499 passed, 0 failures**.
+- Clippy: changed hunks clean (crate warning set unchanged).
