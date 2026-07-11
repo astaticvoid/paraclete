@@ -3,8 +3,8 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-10 (Theoria legibility phase implemented)
-> **Current phase:** **Theoria legibility phase implemented autonomously 2026-07-10** (`design/phases/theoria-legibility-report.md`; commits `7e7a39a`/`e553c62`): labeled track-select, visible TRIG|STEP mode, selection↔grid labels, topology-driven track count, contextual encoders end-to-end — judged live in Chrome, **paired tablet judgment against the Elektron bar still pending** (that session is the phase's exit gate). Five W1 wire bugs found+fixed en route (BUG-016…020: no state replay on connect, encoder gate never opened, absolute bump cap, context-slot key mismatch, client layout race). Deferred from the s1 list: F7 LED-routing cleanup, F4 semantic pattern channel + on-glass save/reload (protocol additions — user-gated). P10 C2+ (pattern-engine depth) remains independent/parallel. BUG-012 (device rate/buffer negotiation) remains queued for a hardware session.
+> **Last updated:** 2026-07-10 evening (paired session #2 held on glass)
+> **Current phase:** Legibility phase shipped and judged on the iPad over a **USB-C direct link (3.0 ms RTT, zero config — the no-shared-Wi-Fi answer)**. Session #2 verdict (`design/sessions/s2.md`): "improved a lot… it will be the baseline" but **far below bar — the Launchpad-grid mirror is the wrong foundation for Theoria**. New sequence: **(1) BUG-022/023** (seq-vs-trigger kick pitch mismatch; fast-retrigger ducking — sound correctness moves first), **(2) baseline interaction wins** (drag-draw steps, encoder gesture/placement, hide dead grid), **(3) W2 re-scoped → "Theoria native surface", design-first**: paired reference spike (chosen Elektron box manual + Hydrasynth manual → fixed-input rail + contextual window spec, param/env/LFO pages, source→FX channel view) before any further W-feature code; ADR-032 follows the spec. **Launchpad parked** (good version frozen; s1-F7 cleanup → trigger backlog). P10 C2+ engine depth independent/parallel; P13 keystone unchanged. Earlier 2026-07-10 work: legibility items + BUG-016…021 fixed + open-by-default `--token` opt-in (`theoria-legibility-report.md`). BUG-012 still queued for a hardware session.
 
 ---
 
@@ -45,7 +45,10 @@ properly with serializer v3 in P10 C1 — scheduled before session #1 regardless
 | 4 | ~~**W1**~~ — **C0–C4 shipped** (trigger+velocity, path scheme, state mirror, semantic plane, theoria-web) | Runtime side done + web client builds; C5 = the session |
 | 5 | ~~**Paired session #1**~~ — **held 2026-07-09** (`design/sessions/s1.md`) | Pipe proven; verdict = UX not legible ("Behringer, needs Elektron"). Delta: discoverability is the keystone |
 | 6 | ~~**Theoria legibility phase**~~ — **implemented 2026-07-10** (`7e7a39a`/`e553c62`; report: `theoria-legibility-report.md`) | Minimum bar items 1–4 done + contextual encoders; judged live in Chrome. **Exit gate = paired tablet judgment (next session)**; F7 cleanup + F4/save-reload deferred |
-| 7 | P10 C2+ (pages, switching, polyrhythm, surface) — independent of the tablet UX, may run in parallel | Engine depth; ordering unaffected by session #1 |
+| 6.1 | **BUG-022 + BUG-023** — seq/trigger pitch unity + retrigger ducking (measurement-first) | Session #2: sound correctness is baseline; sessions can't judge the engine with these live |
+| 6.2 | **Theoria baseline interaction wins** — drag-draw steps, encoder gesture + placement, hide dead grid area | Session #2 F3/F4; survive the pivot, raise next-session utility |
+| 6.3 | **W2 re-scoped: Theoria native surface, design-first** — paired reference spike (Elektron box TBD + Hydrasynth manuals) → fixed-input rail + contextual window spec → build; ADR-032 after the spec | Session #2 F1/F7 keystone: "consistent inputs, contextual screen window"; do not improvise UI |
+| 7 | P10 C2+ (pages, switching, polyrhythm, surface) — independent of the tablet UX, may run in parallel | Engine depth; ordering unaffected by sessions #1–2 |
 
 **Paired sessions** are a first-class roadmap instrument from here on: one after
 each W-milestone (W1, W2, W3), notes captured append-only in `design/sessions/`,

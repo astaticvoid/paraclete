@@ -314,3 +314,46 @@ after the `bye "bad token"` sequence. Verified live: server sent the bye,
 client showed STALE.  
 **Resolution:** both paths respect `hardError`; `closeHard()` also clears the
 stale timer. The bare-URL flow now reaches the TokenGate code-entry screen.
+
+---
+
+### BUG-022 — Sequencer default step note (60) is two octaves above engine trigger reference (36)
+
+**Severity:** High — a step toggled from any surface plays the kick at C4
+while a direct CMD_TRIGGER plays C2; the same track sounds like two different
+instruments ("seq is very high pitch, params totally disconnected" — s2.md F6)  
+**Phase found:** Paired session #2 (2026-07-10)  
+**Description:** `Sequencer` steps created by `CMD_TOGGLE_STEP` default to
+`note: 60` (`sequencer.rs:141`); `AnalogEngine` initializes `last_note = 36`
+("C2 — matches current_hz's initial value", `analog_engine.rs:79`), so
+CMD_TRIGGER with arg0 < 0 fires the tuned base while sequenced NoteOns
+transpose +24 semitones through `note_to_hz(note, tune)`.  
+**Location:** `crates/paraclete-nodes/src/sequencer.rs` (default `Step.note`),
+`crates/paraclete-nodes/src/analog_engine.rs` / `fm_engine.rs` / `sampler.rs`
+(trigger reference notes)  
+**Fix direction:** make the toggle-created default note configurable per
+`Sequencer` instance (instrument-file field, e.g. `default_note: 36` for the
+drum tracks in `instrument.yaml`) rather than hardcoding either constant —
+per-step notes stay full-range (universality). Audit all three engines'
+default/reference notes against it in the same commit; add a regression test
+that a toggled step and a default CMD_TRIGGER produce the same `current_hz`.
+
+### BUG-023 — Kick ducks on fast re-trigger (strong → quiet → recovers after a pause)
+
+**Severity:** High — live finger drumming on the strongest voice is unusable
+("loud strong first hit… quiet if I hit it right after… strong again if I
+wait" — s2.md F5; no compressor exists in the graph)  
+**Phase found:** Paired session #2 (2026-07-10)  
+**Description:** symptom reproducible by ear via CMD_TRIGGER on glass.
+Suspects, unranked: `AdEnvelope::trigger()` deliberately retriggers from the
+*current* value (`engine_dsp.rs:18-21`, anti-click) so a re-hit mid-decay
+skips part of the attack/pitch trajectory; residual `pitch_env` value
+shifting the punch sweep window; un-reset SVF state (`svf_low`/`svf_band`)
+after a loud hit; interaction with the master `ReverbNode` tail. "Maybe
+compression" is confirmed absent — nothing dynamic sits in the path except
+`soft_clip`.  
+**Fix direction:** measure before touching DSP — headless A/B harness (P10 C0
+timing-harness precedent): render two triggers 100 ms apart vs 1 s apart,
+compare peak/RMS of the second hit. Fix whatever the measurement convicts;
+keep the anti-click property (short linear ramp-down + hard env reset is the
+usual correct form). Regression test on the measured ratio.
