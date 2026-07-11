@@ -150,7 +150,29 @@ impl AnalogEngine {
         self.active    = true;
     }
 
-    fn process_kick(&mut self, block_size: usize) {
+    /// Render `[start, end)` with the current voice state, dispatched by
+    /// machine. A no-op span (or inactive voice) leaves the zeroed buffer.
+    fn render_span(&mut self, start: usize, end: usize) {
+        if start >= end || !self.active {
+            return;
+        }
+        match self.machine {
+            AnalogMachine::Kick  => self.process_kick(start, end),
+            AnalogMachine::Snare => self.process_snare(start, end),
+            AnalogMachine::HiHat => self.process_hihat(start, end),
+        }
+        // Velocity is baked into the span at render time (review finding):
+        // a whole-block output multiplier would rescale an earlier span —
+        // a different note, or a prior voice's tail — to the LAST
+        // retrigger's velocity when two notes share a block.
+        let v = self.velocity_level;
+        if v != 1.0 {
+            for s in &mut self.render_l[start..end] { *s *= v; }
+            for s in &mut self.render_r[start..end] { *s *= v; }
+        }
+    }
+
+    fn process_kick(&mut self, start: usize, end: usize) {
         let punch    = self.get_param(ap("punch"));
         let decay_s  = self.get_param(ap("decay"));
         let drive    = self.get_param(ap("drive"));
@@ -163,7 +185,7 @@ impl AnalogEngine {
         let amp_decay_coeff   = 0.001f32.powf(1.0 / (decay_s * sr).max(1.0));
         let f_svf = (std::f32::consts::PI * tone_hz / sr).sin().clamp(0.0, 0.99);
 
-        for i in 0..block_size {
+        for i in start..end {
             let pitch_val = self.pitch_env.tick(pitch_attack_inc, pitch_decay_coeff);
             let freq = self.current_hz * 2.0f32.powf(pitch_val * punch * 24.0 / 12.0);
             let phase_inc = (freq / sr).clamp(0.0, 0.5);
@@ -178,7 +200,7 @@ impl AnalogEngine {
         self.active = !self.amp_env.is_idle();
     }
 
-    fn process_snare(&mut self, block_size: usize) {
+    fn process_snare(&mut self, start: usize, end: usize) {
         let snap_s   = self.get_param(ap("snap"));
         let noise_lvl= self.get_param(ap("noise"));
         let decay_s  = self.get_param(ap("decay"));
@@ -191,7 +213,7 @@ impl AnalogEngine {
         let noise_decay_coeff = 0.001f32.powf(1.0 / (decay_s * sr).max(1.0));
         let f_svf = (std::f32::consts::PI * tone_hz / sr).sin().clamp(0.0, 0.99);
 
-        for i in 0..block_size {
+        for i in start..end {
             let body_amp = self.body_env.tick(body_attack_inc, body_decay_coeff);
             self.osc_phase = (self.osc_phase + self.current_hz / sr).fract();
             let body = (self.osc_phase * std::f32::consts::TAU).sin() * body_amp;
@@ -210,7 +232,7 @@ impl AnalogEngine {
         self.active = !self.body_env.is_idle() || !self.noise_env.is_idle();
     }
 
-    fn process_hihat(&mut self, block_size: usize) {
+    fn process_hihat(&mut self, start: usize, end: usize) {
         let tone_hz = self.get_param(ap("tone"));
         let decay_s = self.get_param(ap("decay"));
         let open    = self.get_param(ap("open"));
@@ -221,7 +243,7 @@ impl AnalogEngine {
         let amp_decay_coeff = 0.001f32.powf(1.0 / (effective_decay * sr).max(1.0));
         let f_svf = (std::f32::consts::PI * tone_hz / sr).sin().clamp(0.0, 0.99);
 
-        for i in 0..block_size {
+        for i in start..end {
             let noise_raw = xorshift(&mut self.hihat_noise);
             self.svf_low  += f_svf * self.svf_band;
             self.svf_band += f_svf * (noise_raw - self.svf_low - 0.5 * self.svf_band);
@@ -306,7 +328,14 @@ impl Node for AnalogEngine {
             }
         }
 
-        // Handle events: ParamLock before NoteOn (executor guarantees ordering).
+        // Handle events in offset order (the executor sorts by
+        // (sample_offset, priority), ParamLock before NoteOn at equal
+        // offsets). A NoteOn mid-block splits the render at its offset
+        // (BUG-013): the span before it plays the old voice state, the
+        // retrigger applies, and rendering resumes — voice starts are
+        // sample-accurate instead of quantized to the block boundary, which
+        // is what makes micro-timing and swing audible in audio.
+        let mut cursor = 0usize;
         for timed in input.events {
             match timed.event {
                 Event::ParamLock(ref pl) if pl.node_id == self.node_id => {
@@ -316,6 +345,11 @@ impl Node for AnalogEngine {
                     if let UmpMessage::ChannelVoice2(cv2) = ump {
                         match cv2 {
                             ChannelVoice2::NoteOn(n) => {
+                                let off = (timed.sample_offset as usize).min(block_size);
+                                if off > cursor {
+                                    self.render_span(cursor, off);
+                                    cursor = off;
+                                }
                                 let velocity = n.velocity() as f32 / 65535.0;
                                 self.retrigger(u8::from(n.note_number()), velocity);
                             }
@@ -327,28 +361,21 @@ impl Node for AnalogEngine {
                 _ => {}
             }
         }
-
-        if self.active {
-            match self.machine {
-                AnalogMachine::Kick  => self.process_kick(block_size),
-                AnalogMachine::Snare => self.process_snare(block_size),
-                AnalogMachine::HiHat => self.process_hihat(block_size),
-            }
-        }
+        self.render_span(cursor, block_size);
 
         if let Some(buf) = output.audio_outputs.first_mut() {
             if buf.channels() >= 2 {
                 for (dst, &src) in buf.channel_mut(0).iter_mut().zip(self.render_l[..block_size].iter()) {
-                    *dst = src * self.velocity_level;
+                    *dst = src;
                 }
                 for (dst, &src) in buf.channel_mut(1).iter_mut().zip(self.render_r[..block_size].iter()) {
-                    *dst = src * self.velocity_level;
+                    *dst = src;
                 }
             } else if buf.channels() == 1 {
                 for (i, (&l, &r)) in self.render_l[..block_size].iter()
                     .zip(self.render_r[..block_size].iter()).enumerate()
                 {
-                    buf.channel_mut(0)[i] = (l + r) * 0.5 * self.velocity_level;
+                    buf.channel_mut(0)[i] = (l + r) * 0.5;
                 }
             }
         }
@@ -802,4 +829,51 @@ mod tests {
         assert!(ratio > 2.0,
             "velocity ratio (1.0 vs 0.25) should roughly scale peak amplitude, got ratio={ratio:.2}");
     }
+
+    #[test]
+    fn note_on_mid_block_starts_at_its_sample_offset() {
+        // BUG-013 regression: a NoteOn at offset 100 leaves samples 0..100
+        // silent and sounds from 100 on — voice starts are sample-accurate,
+        // not quantized to the block boundary.
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        let mut ev = make_note_on(36);
+        ev.sample_offset = 100;
+        let out = run_engine(&mut eng, &[ev]);
+        assert!(out[..100].iter().all(|&s| s == 0.0),
+            "pre-offset span must be silent");
+        assert!(out[100..].iter().any(|&s| s.abs() > 1e-6),
+            "voice sounds from its offset");
+    }
+
+
+    #[test]
+    fn two_notes_in_one_block_keep_their_own_velocities() {
+        // Review finding (BUG-013 fix): velocity is baked per span — a
+        // quiet second note must not rescale the loud first note's span.
+        fn note_with_vel(offset: u32, vel: u16) -> TimedEvent {
+            let mut msg = NoteOn::<[u32; 4]>::new();
+            msg.set_group(u4::new(0));
+            msg.set_channel(u4::new(0));
+            msg.set_note_number(u7::new(36));
+            msg.set_velocity(vel);
+            TimedEvent::new(offset, Event::Midi2(UmpMessage::from(ChannelVoice2::from(msg))))
+        }
+
+        // Reference: a lone full-velocity hit; peak of its first 400 samples.
+        let mut solo = AnalogEngine::kick();
+        solo.activate(44100.0, 512);
+        let solo_out = run_engine(&mut solo, &[note_with_vel(0, 65535)]);
+        let solo_peak = solo_out[..400].iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+
+        // Same hit followed by a near-silent hit at offset 400.
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        let out = run_engine(&mut eng, &[note_with_vel(0, 65535), note_with_vel(400, 655)]);
+        let first_peak = out[..400].iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+
+        assert!(first_peak > solo_peak * 0.9,
+            "first note's span keeps its own velocity (solo {solo_peak}, got {first_peak})");
+    }
+
 }

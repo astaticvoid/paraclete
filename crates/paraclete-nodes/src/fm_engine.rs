@@ -137,7 +137,29 @@ impl FmEngine {
         self.active = true;
     }
 
-    fn process_kick(&mut self, block_size: usize) {
+    /// Render `[start, end)` with the current voice state, dispatched by
+    /// machine. A no-op span (or inactive voice) leaves the zeroed buffer.
+    fn render_span(&mut self, start: usize, end: usize) {
+        if start >= end || !self.active {
+            return;
+        }
+        match self.machine {
+            FmMachine::Kick => self.process_kick(start, end),
+            FmMachine::Bell => self.process_bell(start, end),
+            FmMachine::Bass => self.process_bass(start, end),
+        }
+        // Velocity is baked into the span at render time (review finding):
+        // a whole-block output multiplier would rescale an earlier span —
+        // a different note, or a prior voice's tail — to the LAST
+        // retrigger's velocity when two notes share a block.
+        let v = self.velocity_level;
+        if v != 1.0 {
+            for s in &mut self.render_l[start..end] { *s *= v; }
+            for s in &mut self.render_r[start..end] { *s *= v; }
+        }
+    }
+
+    fn process_kick(&mut self, start: usize, end: usize) {
         let punch    = self.bank.get(fp("punch"))    as f32;
         let decay_s  = self.bank.get(fp("decay"))    as f32;
         let feedback = self.bank.get(fp("feedback")) as f32;
@@ -152,7 +174,7 @@ impl FmEngine {
         let amp_attack_inc    = 1.0 / (0.001 * sr);
         let amp_decay_coeff   = 0.001f32.powf(1.0 / (decay_s * sr).max(1.0));
 
-        for i in 0..block_size {
+        for i in start..end {
             let pitch_val  = self.pitch_env.tick(pitch_attack_inc, pitch_decay_coeff);
             let carrier_hz = self.current_hz * 2.0f32.powf(pitch_val * punch * 24.0 / 12.0);
 
@@ -175,7 +197,7 @@ impl FmEngine {
         self.active = !self.amp_env.is_idle();
     }
 
-    fn process_bell(&mut self, block_size: usize) {
+    fn process_bell(&mut self, start: usize, end: usize) {
         let ratio    = self.bank.get(fp("ratio"))    as f32;
         let index    = self.bank.get(fp("index"))    as f32;
         let decay_s  = self.bank.get(fp("decay"))    as f32;
@@ -186,7 +208,7 @@ impl FmEngine {
         let decay_coeff = 0.001f32.powf(1.0 / (decay_s * sr).max(1.0));
         let attack_inc  = 1.0 / (0.001 * sr);
 
-        for i in 0..block_size {
+        for i in start..end {
             let mod_env_val = self.mod_env.tick(attack_inc, decay_coeff);
             let amp_val     = self.amp_env.tick(attack_inc, decay_coeff);
 
@@ -205,7 +227,7 @@ impl FmEngine {
         self.active = !self.amp_env.is_idle();
     }
 
-    fn process_bass(&mut self, block_size: usize) {
+    fn process_bass(&mut self, start: usize, end: usize) {
         let ratio    = self.bank.get(fp("ratio"))    as f32;
         let index    = self.bank.get(fp("index"))    as f32;
         let attack_s = self.bank.get(fp("attack"))   as f32;
@@ -218,7 +240,7 @@ impl FmEngine {
         let decay_coeff     = 0.001f32.powf(1.0 / (decay_s * sr).max(1.0));
         let mod_decay_coeff = 0.001f32.powf(1.0 / ((decay_s * 0.3) * sr).max(1.0));
 
-        for i in 0..block_size {
+        for i in start..end {
             let mod_env_val = self.mod_env.tick(attack_inc, mod_decay_coeff);
             let amp_val     = self.amp_env.tick(attack_inc, decay_coeff);
 
@@ -300,6 +322,11 @@ impl Node for FmEngine {
             }
         }
 
+        // Handle events in offset order (the executor sorts by
+        // (sample_offset, priority)). A NoteOn mid-block splits the render
+        // at its offset (BUG-013) — sample-accurate voice starts; see
+        // AnalogEngine::process for the full rationale.
+        let mut cursor = 0usize;
         for timed in input.events {
             match timed.event {
                 Event::ParamLock(ref pl) if pl.node_id == self.node_id => {
@@ -313,6 +340,11 @@ impl Node for FmEngine {
                 Event::Midi2(ref ump) => {
                     if let UmpMessage::ChannelVoice2(cv2) = ump {
                         if let ChannelVoice2::NoteOn(n) = cv2 {
+                            let off = (timed.sample_offset as usize).min(block_size);
+                            if off > cursor {
+                                self.render_span(cursor, off);
+                                cursor = off;
+                            }
                             let velocity = n.velocity() as f32 / 65535.0;
                             self.retrigger(u8::from(n.note_number()), velocity);
                         }
@@ -321,28 +353,21 @@ impl Node for FmEngine {
                 _ => {}
             }
         }
-
-        if self.active {
-            match self.machine {
-                FmMachine::Kick => self.process_kick(block_size),
-                FmMachine::Bell => self.process_bell(block_size),
-                FmMachine::Bass => self.process_bass(block_size),
-            }
-        }
+        self.render_span(cursor, block_size);
 
         if let Some(buf) = output.audio_outputs.first_mut() {
             if buf.channels() >= 2 {
                 for (dst, &src) in buf.channel_mut(0).iter_mut().zip(self.render_l[..block_size].iter()) {
-                    *dst = src * self.velocity_level;
+                    *dst = src;
                 }
                 for (dst, &src) in buf.channel_mut(1).iter_mut().zip(self.render_r[..block_size].iter()) {
-                    *dst = src * self.velocity_level;
+                    *dst = src;
                 }
             } else if buf.channels() == 1 {
                 for (i, (&l, &r)) in self.render_l[..block_size].iter()
                     .zip(self.render_r[..block_size].iter()).enumerate()
                 {
-                    buf.channel_mut(0)[i] = (l + r) * 0.5 * self.velocity_level;
+                    buf.channel_mut(0)[i] = (l + r) * 0.5;
                 }
             }
         }
@@ -597,4 +622,19 @@ mod tests {
         assert!(ratio > 2.0,
             "velocity ratio (1.0 vs 0.25) should roughly scale peak amplitude, got ratio={ratio:.2}");
     }
+
+    #[test]
+    fn note_on_mid_block_starts_at_its_sample_offset() {
+        // BUG-013 regression (see AnalogEngine's twin test).
+        let mut eng = FmEngine::bass();
+        eng.activate(44100.0, 512);
+        let mut ev = make_note_on(36);
+        ev.sample_offset = 100;
+        let out = run_fm(&mut eng, &[ev]);
+        assert!(out[..100].iter().all(|&s| s == 0.0),
+            "pre-offset span must be silent");
+        assert!(out[100..].iter().any(|&s| s.abs() > 1e-6),
+            "voice sounds from its offset");
+    }
+
 }
