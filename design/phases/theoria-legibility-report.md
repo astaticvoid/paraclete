@@ -122,3 +122,15 @@ Candidate paths, in rough order of promise:
    tethering is painful). Evaluate only if 1–2 disappoint.
 All three need a hardware session to verify; no code expected beyond what
 shipped (server already binds 0.0.0.0 and prints the mDNS name).
+
+### Verified same session: USB-C direct link (no shared Wi-Fi) — WORKS
+
+iPad connected to the MacBook by USB-C cable; **zero configuration on either
+side**. macOS brought up an ethernet-over-USB interface (`en6`), both ends
+self-assigned link-local IPv4, and mDNS resolved across the cable in both
+directions (Mac saw the iPad's `.local` name; iPad loaded
+`http://Nimbus.local:7274/` — driver-confirmed). Option 1 from the list
+above is therefore the answer; options 2–3 are moot for the iPad. The
+`by name:` stderr line is the URL to use on cable (the `lan_ip()` line
+prints the Wi-Fi address, which is wrong for this link). Cable RTT reading
+to be captured in the paired session.
