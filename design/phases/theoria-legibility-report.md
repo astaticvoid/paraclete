@@ -132,5 +132,6 @@ directions (Mac saw the iPad's `.local` name; iPad loaded
 `http://Nimbus.local:7274/` — driver-confirmed). Option 1 from the list
 above is therefore the answer; options 2–3 are moot for the iPad. The
 `by name:` stderr line is the URL to use on cable (the `lan_ip()` line
-prints the Wi-Fi address, which is wrong for this link). Cable RTT reading
-to be captured in the paired session.
+prints the Wi-Fi address, which is wrong for this link). Cable RTT: **3.0 ms** (driver-read, vs ~14-15 ms on Wi-Fi in session #1) —
+5x tighter and deterministic; the cable is the primary link for serious
+playing, Wi-Fi the convenience path.
