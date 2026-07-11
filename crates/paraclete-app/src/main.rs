@@ -170,6 +170,11 @@ fn main() {
                 conf.connect(ID_THEORIA, 0, ID_GW_THEORIA, 0).ok();
                 consumer_theoria = Some(cons);
                 eprintln!("[paraclete] Theoria: {}", handle.url);
+                // Tablet path: the bare URL serves a code-entry screen, so a
+                // human types 6 digits instead of a query string.
+                if let Some((base, code)) = handle.url.split_once("?t=") {
+                    eprintln!("[paraclete]   tablet: open {base} and enter code {code}");
+                }
                 antiphon = Some(handle);
             }
             Err(e) => eprintln!("[paraclete] antiphon disabled ({e})"),
@@ -502,12 +507,17 @@ fn load_or_create_token() -> String {
     const TOKEN_FILE: &str = ".antiphon-token";
     if let Ok(existing) = std::fs::read_to_string(TOKEN_FILE) {
         let existing = existing.trim().to_ascii_lowercase();
-        if existing.len() == 32 && existing.bytes().all(|b| b.is_ascii_hexdigit()) {
+        // Human-typeable 6-digit session code (2026-07-10, tablet ergonomics:
+        // a 32-hex token cannot be typed on glass; the client now offers a
+        // code-entry screen at the bare URL). Deliberate posture trade under
+        // the recorded W0 home-LAN threat model — `--open` remains the
+        // zero-token option, and deleting the file rotates the code.
+        if existing.len() == 6 && existing.bytes().all(|b| b.is_ascii_digit()) {
             return existing;
         }
-        eprintln!("[paraclete] {TOKEN_FILE} malformed; generating a new token");
+        eprintln!("[paraclete] {TOKEN_FILE} is not a 6-digit code; rotating to the tablet-typeable format");
     }
-    let token: String = (0..16).map(|_| format!("{:02x}", fastrand::u8(..))).collect();
+    let token = format!("{:06}", fastrand::u32(0..1_000_000));
     if let Err(e) = std::fs::write(TOKEN_FILE, &token) {
         eprintln!("[paraclete] could not persist {TOKEN_FILE} ({e}); token is per-run");
     }

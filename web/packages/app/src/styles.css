@@ -238,6 +238,76 @@ body {
   z-index: 40;
 }
 
+/* Code-entry gate (bare-URL tablet flow). */
+.token-gate {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #0b0b0e;
+  z-index: 50;
+}
+
+.token-gate-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  padding: 36px 44px;
+  border: 1px solid #26262e;
+  border-radius: 12px;
+  background: #121217;
+}
+
+.token-gate-title {
+  font: 700 22px ui-monospace, monospace;
+  letter-spacing: 0.18em;
+  color: #ddd;
+}
+
+.token-gate-hint {
+  font: 400 13px system-ui, sans-serif;
+  color: #99a;
+  text-align: center;
+  line-height: 1.5;
+}
+
+.token-gate-hint code {
+  color: #7cc;
+}
+
+.token-gate-input {
+  width: 9ch;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid #33333c;
+  background: #1c1c22;
+  color: #ddd;
+  font: 600 26px ui-monospace, monospace;
+  text-align: center;
+  letter-spacing: 0.3em;
+}
+
+.token-gate-join {
+  min-width: 140px;
+  padding: 12px 0;
+  border-radius: 8px;
+  border: 1px solid #3d7;
+  background: #2a5;
+  color: #041;
+  font: 700 14px ui-monospace, monospace;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+}
+
+.token-gate-join:disabled {
+  background: #1c1c22;
+  border-color: #33333c;
+  color: #555;
+  cursor: default;
+}
+
 .rtt-readout {
   position: fixed;
   right: 8px;

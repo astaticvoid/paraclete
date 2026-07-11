@@ -41,7 +41,8 @@ export class Connection {
     this.ws = ws;
     if (this.staleTimer) clearTimeout(this.staleTimer);
     this.staleTimer = setTimeout(() => {
-      if (!this.connected) this.setStatus("stale");
+      // Same guard as the close handler: a hard error owns the status.
+      if (!this.connected && !this.hardError) this.setStatus("stale");
     }, STALE_MS);
 
     ws.addEventListener("open", () => {
@@ -62,8 +63,11 @@ export class Connection {
     ws.addEventListener("close", () => {
       this.connected = false;
       this.stopPing();
-      this.setStatus("stale");
+      // A hard error (bad token / protocol mismatch) must keep its status —
+      // the close that follows the server's bye used to stomp it to "stale",
+      // so the bare-URL bad-token screen could never appear (2026-07-10).
       if (this.hardError) return;
+      this.setStatus("stale");
       const backoff = BACKOFF_MS[Math.min(this.reconnectAttempt, BACKOFF_MS.length - 1)];
       this.reconnectAttempt += 1;
       setTimeout(() => this.connect(), backoff);
@@ -75,6 +79,7 @@ export class Connection {
   /** Hard-close: no reconnect (bad token / protocol mismatch). */
   closeHard(reason: string): void {
     this.hardError = true;
+    if (this.staleTimer) clearTimeout(this.staleTimer);
     this.setStatus("error", reason);
     this.ws?.close();
   }

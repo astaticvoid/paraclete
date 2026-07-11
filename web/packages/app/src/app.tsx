@@ -18,7 +18,10 @@ import { EncoderRow } from "./views/EncoderRow";
 import { TransportBar } from "./views/TransportBar";
 import { TrackBar } from "./views/TrackBar";
 import { GridHeader } from "./views/GridHeader";
+import { TokenGate } from "./views/TokenGate";
 import { tracksFromNodes } from "./profileLink";
+
+const TOKEN_STORAGE_KEY = "antiphon-token";
 
 // WS listens on HTTP port + 1 (w0-report.md deviation #2, carried forward).
 function wsUrl(): string {
@@ -27,7 +30,16 @@ function wsUrl(): string {
 }
 
 export function App() {
-  const token = useMemo(() => new URLSearchParams(location.search).get("t") ?? "", []);
+  // Token resolution: explicit ?t= (desktop click-through) beats the code
+  // remembered from a previous TokenGate entry; empty string is valid for
+  // --open servers. A rejected token routes back through the gate below.
+  const token = useMemo(
+    () =>
+      new URLSearchParams(location.search).get("t") ??
+      localStorage.getItem(TOKEN_STORAGE_KEY) ??
+      "",
+    [],
+  );
   const stateStore = useMemo(() => new StateStore(), []);
   const contextStore = useMemo(() => new ContextStore(), []);
   const bus = useMemo(() => new MessageBus(), []);
@@ -51,6 +63,11 @@ export function App() {
       onStatus: (s, detail) => {
         setStatus(s);
         if (s === "error" && detail) setErrorText(detail);
+        // Handshake accepted: remember the code so the bare URL works on
+        // every future visit from this device.
+        if (s === "open" && token) {
+          localStorage.setItem(TOKEN_STORAGE_KEY, token);
+        }
       },
       onMessage: (msg: ServerMsg) => {
         if (msg.t === "state") {
@@ -73,6 +90,8 @@ export function App() {
 
     return () => clearInterval(rttTimer);
   }, [token, stateStore, contextStore, bus]);
+
+  const tokenRejected = status === "error" && (errorText ?? "").includes("token");
 
   return (
     <div class="app">
@@ -105,9 +124,20 @@ export function App() {
       <div class={`overlay-stale ${status === "stale" || status === "connecting" ? "visible" : ""}`}>
         STALE
       </div>
-      <div class={`overlay-error ${status === "error" ? "visible" : ""}`}>
-        {errorText ?? "Connection error — reload after updating."}
-      </div>
+      {tokenRejected ? (
+        <TokenGate
+          onSubmit={(code) => {
+            localStorage.setItem(TOKEN_STORAGE_KEY, code);
+            // Full reload with a clean URL: the connection is rebuilt with
+            // the stored code (wrong code -> gate again, retype).
+            location.replace(location.pathname);
+          }}
+        />
+      ) : (
+        <div class={`overlay-error ${status === "error" ? "visible" : ""}`}>
+          {errorText ?? "Connection error — reload after updating."}
+        </div>
+      )}
       <div class="rtt-readout">{rttText}</div>
     </div>
   );
