@@ -638,6 +638,109 @@ fn executor_delivers_param_lock_before_midi2_at_same_sample_offset() {
     assert_eq!(received[1], "midi2");
 }
 
+// ── BUG-026: stable sort preserves same-priority same-offset ordering ─────
+
+struct NoteOrderRecorder {
+    ports: Vec<PortDescriptor>,
+    order: Arc<Mutex<Vec<String>>>,
+}
+
+impl NoteOrderRecorder {
+    fn new() -> Self {
+        Self {
+            ports: vec![PortDescriptor {
+                id: 0, name: "events_in".into(),
+                direction: PortDirection::Input, port_type: PortType::Event,
+            }],
+            order: Arc::new(Mutex::new(vec![])),
+        }
+    }
+}
+
+impl Node for NoteOrderRecorder {
+    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn process(&mut self, input: &ProcessInput, _output: &mut ProcessOutput) {
+        use paraclete_node_api::{UmpMessage, midi::ChannelVoice2};
+        for timed in input.events {
+            match timed.event {
+                Event::Midi2(ref ump) => {
+                    match *ump {
+                        UmpMessage::ChannelVoice2(cv2) => match cv2 {
+                            ChannelVoice2::NoteOn(_)  => self.order.lock().unwrap().push("on".into()),
+                            ChannelVoice2::NoteOff(_) => self.order.lock().unwrap().push("off".into()),
+                            _ => {},
+                        },
+                        _ => {},
+                    }
+                }
+                _ => {},
+            }
+        }
+    }
+}
+
+#[test]
+fn stable_sort_preserves_noteoff_before_noteon_at_same_offset() {
+    use paraclete_node_api::{UmpMessage, midi::{ChannelVoice2, Channeled, Grouped, NoteOff, NoteOn, u4, u7}};
+
+    let recorder = NoteOrderRecorder::new();
+    let order = recorder.order.clone();
+
+    let mut conf = NodeConfigurator::new(44100.0, 512);
+
+    let emitter_ports = vec![PortDescriptor {
+        id: 0, name: "events_out".into(),
+        direction: PortDirection::Output, port_type: PortType::Event,
+    }];
+    struct EventEmitter {
+        ports: Vec<PortDescriptor>,
+        events: Vec<TimedEvent>,
+    }
+    impl Node for EventEmitter {
+        fn ports(&self) -> &[PortDescriptor] { &self.ports }
+        fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
+            for e in &self.events {
+                output.events_out.push(*e);
+            }
+        }
+    }
+
+    let mut note_off = NoteOff::<[u32; 4]>::new();
+    note_off.set_group(u4::new(0));
+    note_off.set_channel(u4::new(0));
+    note_off.set_note_number(u7::new(36));
+    note_off.set_velocity(0);
+    let mut note_on = NoteOn::<[u32; 4]>::new();
+    note_on.set_group(u4::new(0));
+    note_on.set_channel(u4::new(0));
+    note_on.set_note_number(u7::new(36));
+    note_on.set_velocity(32768);
+
+    let emitter = EventEmitter {
+        ports: emitter_ports,
+        events: vec![
+            TimedEvent::new(0, Event::Midi2(UmpMessage::from(ChannelVoice2::from(note_off)))),
+            TimedEvent::new(0, Event::Midi2(UmpMessage::from(ChannelVoice2::from(note_on)))),
+        ],
+    };
+
+    conf.add_node(1, Box::new(emitter));
+    conf.add_node(2, Box::new(recorder));
+    conf.connect(1, 0, 2, 0).unwrap();
+
+    let mut exec = conf.build_executor();
+    let mut out = vec![0.0f32; 512 * 2];
+    exec.process(&mut out, 2);
+
+    let received = order.lock().unwrap();
+    assert_eq!(
+        received.as_slice(),
+        &["off", "on"],
+        "BUG-026: NoteOff must arrive before NoteOn at same sample_offset. Got: {:?}",
+        *received
+    );
+}
+
 // ── audio_inputs wiring (P4.5 Fix 4) ─────────────────────────────────────────
 
 /// A node that fills its audio output with a constant value.

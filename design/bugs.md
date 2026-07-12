@@ -474,15 +474,17 @@ since P3.
 **Location:** `crates/paraclete-runtime/src/executor.rs` (event delivery, no
 deferral), `crates/paraclete-nodes/src/sequencer.rs` (`step_sample_offset`
 emission paths), instrument nodes' `.min(block_size)` clamps  
-**Fix direction:** decide the contract first — either (a) the executor
-carries future-offset events across block boundaries, re-delivering them
-with the residual offset (making big offsets legal for every node), or (b)
-the Sequencer defers emission until the block containing the fire sample
-(offsets always < block_size). (b) is local to one node and keeps the
-executor allocation-free; (a) is the universal answer if other producers
-will ever emit ahead. Design decision — do not improvise inline; the
-negative-micro path (BUG-004) already implements block-local early firing
-and is unaffected.
+**Fix direction (decided 2026-07-11): executor defers.** The executor is
+the single point of truth for event timing — it will carry future-offset
+events across block boundaries via a fixed-capacity per-node ring buffer
+(allocation-free; ~16 slots). Events are consumed progressively: each cycle
+subtracts `block_size` from deferred offsets until they fit, then delivered
+with residual sub-block position. No node needs block awareness. The
+`TimedEvent` doc comment ("0..block_size−1") will be corrected — offsets
+represent samples from current block start, with cross-block spans legal.
+Instrument nodes' `.min(block_size)` clamps become harmless (sub-block
+offsets always < block_size after executor defers). The negative-micro path
+(BUG-004) is unaffected (block-local early fire).
 
 ### BUG-026 — Executor event sort is unstable; same-offset NoteOff/NoteOn order is unguaranteed
 
@@ -503,3 +505,7 @@ minimal fix; better, give the priority key a NoteOff-before-NoteOn
 tie-break (release-then-retrigger is the musical contract) or a monotonic
 sequence field. Small standalone commit + a regression test that feeds the
 pair pre-swapped.
+
+**RESOLVED** (2026-07-11): `sort_unstable_by_key` → `sort_by_key` in
+`executor.rs:453`. Regression test `stable_sort_preserves_noteoff_before_noteon_at_same_offset`
+feeds NoteOff then NoteOn at same offset and asserts delivery order.

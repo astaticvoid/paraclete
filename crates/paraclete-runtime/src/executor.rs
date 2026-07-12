@@ -450,7 +450,7 @@ impl NodeExecutor {
             // is returned at end of the loop body to preserve its allocation.
             let mut events: Vec<TimedEvent> = std::mem::take(&mut self.incoming[slot_idx]);
 
-            events.sort_unstable_by_key(|e| {
+            events.sort_by_key(|e| {
                 let priority: u8 = match e.event {
                     Event::ParamLock(_) => 0,
                     Event::Transport(_) => 1,

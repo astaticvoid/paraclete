@@ -2154,6 +2154,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-driver"
+version = "0.1.0"
+dependencies = [
+ "paraclete-app",
+ "paraclete-clap-host",
+ "paraclete-node-api",
+ "paraclete-nodes",
+ "paraclete-runtime",
+ "serde",
+ "serde_json",
+ "serde_yml",
+]
+
+[[package]]
 name = "thin-vec"
 version = "0.2.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

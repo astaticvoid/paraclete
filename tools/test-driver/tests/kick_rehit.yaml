@@ -2,7 +2,7 @@ format_version: 1
 instrument: instrument.yaml
 duration_secs: 3
 output: /tmp/kick_test.wav
-play: false
+play: true
 
 timeline:
   - at: 0.0
