@@ -4,11 +4,12 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ---
 
-## Status (2026-07-11)
+## Status (2026-07-12)
 
-**Actively open:** BUG-012, BUG-027, INFRA-001, INFRA-002.
+**Actively open:** BUG-012 (hardware session), BUG-027 (engine exonerated by
+measurement — pending user headphone A/B, see addendum), INFRA-002.
 **Trigger-based (fix when named trigger fires):** BUG-002, BUG-003, BUG-006.
-**Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026.
+**Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, INFRA-001.
 
 ---
 
@@ -602,3 +603,53 @@ pair pre-swapped.
 **RESOLVED** (2026-07-11): `sort_unstable_by_key` → `sort_by_key` in
 `executor.rs:453`. Regression test `stable_sort_preserves_noteoff_before_noteon_at_same_offset`
 feeds NoteOff then NoteOn at same offset and asserts delivery order.
+
+---
+
+### INFRA-001 — RESOLVED (`9655cd0`, 2026-07-12)
+
+Artifact-detection assertions landed in the test driver: `discontinuity_lt`
+(max adjacent-sample |diff|), `dc_offset_lt` (|mean| of window),
+`dropout_lt_ms` (longest bitwise-identical sample run), each windowed by
+optional `from`/`until` seconds and evaluated post-capture on the full
+buffer. Any non-finite sample (NaN/Inf) in a scanned window fails outright —
+NaN defeats ordered comparisons, so it is checked first (pre-commit review
+finding). Failure messages report the worst offender's sample index and time.
+
+Naming deviates deliberately from this entry's sketch (`discontinuity_gte`,
+`dropout_gte`): the shipped names follow the existing pass-condition
+convention (`peak_gte`/`peak_lt`), and the dropout threshold is milliseconds,
+not samples. Semantics are otherwise as specified.
+
+Known limitation, documented in `kick_reverb_clean.yaml`: timeline actions
+dispatch on wall clock while capture time runs slower (block processing +
+sleep per block, ~27% slow in debug builds), so `from`/`until` windows need
+margin around wall-clock action times. A captured-samples action clock would
+remove the skew — fold into ADR-033 v2 alongside the interactive REPL.
+
+---
+
+### BUG-027 — Addendum: engine exonerated by measurement (2026-07-12)
+
+The suspected cause is wrong: Freeverb's delay lines are already
+zero-initialized (`vec![0.0; len]` in `CombFilter::new`, `AllpassFilter::new`,
+and the pre-delay buffers in `activate()` — `reverb.rs`). There is no stale
+heap data to read.
+
+Measured with the new INFRA-001 assertions (`9655cd0`):
+
+| Scenario | Result |
+|---|---|
+| Silent 1.5s session start (`session_start_clean.yaml`) | peak < 0.001, max jump < 0.005, DC < 0.001 — **clean** |
+| First kick through mix → reverb (`kick_reverb_clean.yaml`) | pre-trigger window clean; no post-trigger dropouts — **clean** |
+| Sequencer-driven start, strict thresholds | first 50ms: max jump < 0.0001; worst jump anywhere = 0.0276 at 1.72s (inside a kick transient — musical slope, not a click) |
+
+The crackle is not present in the captured buffer under any of the repro
+conditions. Conclusion: playback-side — `afplay`/CoreAudio output-stream
+start transient, the same macOS device-behavior class that resolved BUG-023
+(speaker protection). The WAV writer was also inspected: header and i16
+conversion are correct.
+
+**Status: engine exonerated; pending user confirmation.** Same protocol as
+BUG-023: headphone A/B on `afplay` start (does the crackle follow the
+speakers or the file?). If confirmed device-side, close as environmental.
