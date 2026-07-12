@@ -192,6 +192,11 @@ Every commit: `cargo test --workspace` green, `cargo clippy --workspace` clean
 on touched crates. Design/doc changes in separate commits from code. Phase
 reports and `bugs.md` are append-only.
 
+After every implementation session, the agent must explicitly propose which
+design documents need updating — `roadmap.md`, `AGENTS.md`, `handoff.md`,
+phase reports, `bugs.md`, or "none." This is a mandatory check, not a
+suggestion.
+
 ## Design documents
 
 - `design/handoff.md` — task routing by model tier; read before implementing
