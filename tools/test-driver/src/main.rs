@@ -184,7 +184,7 @@ fn run_batch(scenario: TestScenario) -> Result<(), String> {
             let mut ex = exec.lock().unwrap();
             ex.process(&mut block, channels);
             drop(ex);
-            cap.push(block[..block_size].to_vec());
+            cap.push(block.chunks(channels).map(|ch| ch[0]).collect());
             let sleep_us = (block_size as f64 / sample_rate as f64 * 1_000_000.0) as u64;
             if sleep_us > 0 {
                 std::thread::sleep(Duration::from_micros(sleep_us));
