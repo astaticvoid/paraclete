@@ -280,16 +280,50 @@ sends commands through the ring buffer and drains the state bus. This is safe.
 The capture captures only the left channel (mono) for simplicity. The default
 instrument outputs stereo; left channel is the summed mix.
 
-### No assertions in v1
-
-V1 is "render and listen." Assertions on state bus values or audio metrics
-(pass/fail test runner) are deferred to v2. The `probe:` section logs state
-bus values to stderr for debugging but doesn't assert.
-
 ### No `hound` dependency
 
 The WAV writer is hand-rolled (~40 lines for 16-bit mono PCM header + data).
 This avoids adding a dependency to the workspace for one tool's output format.
+
+### Assertions (agent-usable)
+
+An agent needs to verify correctness, not just listen. The `assert:` section
+enables pass/fail exit codes:
+
+```yaml
+assert:
+  # State bus: exact match
+  - at: 2.0
+    path: "/node/10/state/current_step"
+    eq: 0
+
+  # State bus: numeric range
+  - at: 3.0
+    path: "/node/20/param/decay"
+    between: [0.25, 0.35]
+
+  # Audio: not silent (peak sample in last 500ms)
+  - at: 2.0
+    peak_gte: 0.05
+    window_ms: 500
+
+  # Audio: no clipping
+  - at: 3.0
+    peak_lt: 0.99
+    window_ms: 1000
+```
+
+Exit codes: **0** = all assertions passed + audio rendered, **1** = assertion
+failure (logs which one failed), **2** = error (instrument not found, graph
+build failure, etc.).
+
+The `probe:` section remains for non-failing debug output.
+
+State bus assertions check the value at the time the main loop reaches the
+`at` timestamp (via `conf.state_bus_read(path)`). Audio assertions scan the
+captured buffer from `at_secs - window_ms` to `at_secs` and check peak.
+Audio assertions are only available when `duration_secs` covers the check
+window.
 
 ### Workspace membership
 
