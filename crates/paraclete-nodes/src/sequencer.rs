@@ -2638,6 +2638,39 @@ mod tests {
         assert!((seq.patterns[0].swing - 0.3).abs() < 1e-6, "pattern 0 untouched by the switch");
     }
 
+    #[test]
+    fn swing_offset_is_beat_anchored_not_speed_scaled() {
+        // ADR latent-issue audit item #27 (BUG-031): pins the speed×swing
+        // composition rule. The step PERIOD is speed-scaled (exact_period =
+        // ticks_per_step / speed_mult), but the swing/micro sample offset is
+        // beat-anchored (swing_amount * samples_per_beat) and does NOT scale
+        // with speed_mult. Consequence: at speed_mult != 1 the swing feel is
+        // no longer a fixed proportion of the step. This test documents the
+        // current behavior so a future change to it is deliberate.
+        let spb = 22_050.0; // 120 BPM @ 44.1 kHz
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.swing_amount = 0.25; // odd steps delayed by 0.25 beat
+
+        // Period halves with speed_mult = 2.0 …
+        seq.speed_mult = 1.0;
+        let period_1x = seq.exact_period();
+        seq.speed_mult = 2.0;
+        let period_2x = seq.exact_period();
+        assert!((period_2x - period_1x / 2.0).abs() < 1e-9,
+            "step period IS speed-scaled: {period_2x} vs {period_1x}/2");
+
+        // … but the swing offset on an odd step is identical at both speeds.
+        seq.speed_mult = 1.0;
+        let swing_1x = seq.step_sample_offset(1, spb);
+        seq.speed_mult = 2.0;
+        let swing_2x = seq.step_sample_offset(1, spb);
+        assert_eq!(swing_1x, swing_2x,
+            "swing offset is beat-anchored, unaffected by speed_mult");
+        assert_eq!(swing_1x, (0.25 * spb) as u32,
+            "swing offset = swing_amount * samples_per_beat");
+    }
+
     // ── P10 C3: per-track length & speed + BUG-004 ──────────────────────────
 
     fn set_length_cmd(count: i64, pattern: f64) -> NodeCommand {
