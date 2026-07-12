@@ -742,13 +742,23 @@ harness (`design/review/adr-latent-issues.md`):
 | #5 (ADR-029 cap_doc_cache stale) | `remove_node` evicts the cache | **Clean** — but exposed BUG-030 (destroy-then-error on devices), fixed |
 | #8 (event sort) | — | Already resolved as BUG-026 |
 
-Noted for the tracker, not fixed (pre-existing, flagged in review): a
-device-targeted `RemoveNode` inside `apply_patch` reports
+Noted for the tracker, ~~not fixed~~ **both RESOLVED 2026-07-12** (see below):
+a device-targeted `RemoveNode` inside `apply_patch` reported
 `PatchError::NodeNotFound` rather than the device-refusal reason (error
-mapping discards the message); and `remove_node` on an id whose slot is
-currently drained into a live executor errors after partially mutating
+mapping discarded the message); and `remove_node` on an id whose slot is
+currently drained into a live executor errored after partially mutating
 `id_to_index` (same shape as BUG-030, unreachable via apply_patch which
 restores nodes first).
+
+**RESOLVED** (commit follows this doc): `apply_patch` now surfaces the real
+refusal reason — a known id whose removal is refused returns
+`PatchError::ConfigError(msg)`; only a genuinely absent id is
+`NodeNotFound`. The new `NodeConfigurator::contains_node()` distinguishes the
+two without string-matching. `remove_node` validates slot residency before
+touching `id_to_index`, so a refused removal never half-edits the id map.
+Regression tests: `apply_patch_remove_device_reports_refusal_reason`,
+`apply_patch_remove_unknown_id_is_node_not_found` (paraclete-app),
+`remove_node_on_drained_slot_leaves_id_map_intact` (paraclete-runtime).
 
 ---
 
