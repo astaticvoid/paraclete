@@ -135,7 +135,7 @@ Everything else open is scheduled: BUG-001/008 → P10 C0 (now), BUG-005 → P10
 | Single-pattern, 16-step only | Active | Pattern engine | P10 C2+ |
 | `Sequencer::serialize()` drops P5 fields (BUG-005) | **Fixed (P10 C1 shipped)** | Serializer v3 (`6212242`); length-prefixed step + pattern records | Done |
 | BUG-008 / BUG-001 | **Fixed (P10 C0 shipped)** | s0 re-diagnosis: 240-tick step + step-0 fire + drift-only snap; mem::take | Done |
-| Negative micro-timing == zero (BUG-004) | Active | Emit in prev step's window | P10 C3 |
+| Negative micro-timing == zero (BUG-004) | **Fixed (P10 C3)** | Emitted in prev step's early-fire window | Done |
 | Terminal emulator: no RGB, no keyboard encoders | **Accepted permanent** | Web surface supersedes; terminal stays keyboard-grid-only for no-tablet dev | — |
 | No headless input injection for CI | Active | In-process injection API, built with P10 C5 surface tests; protocol-level driver at W4 | P10 C5 |
 | Encoder hardware (EN16/MFT) unpurchased | **De-escalated** | W1 touch encoders are the only relative path (session 0: Digitakt II verified absolute-only, disqualified; BUG-009 filed); buy a true-relative box later for tactile feel | Post-W1 |
