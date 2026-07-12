@@ -67,6 +67,28 @@ each producing explicit roadmap deltas (or an explicit "no change").
 
 ---
 
+## Design Triage — Open Spec Gaps (start here, new session)
+
+Things the plan gestures at but does **not** yet specify. Triaged 2026-07-12.
+**Owner** = who must author it: **user** (design judgment, frontier-tier per
+`handoff.md`) or **agent** (mechanical / low-judgment, safe to draft in-session).
+Ordered by nearness to the critical path.
+
+| # | Gap | Owner | Next action | Priority |
+|---|---|---|---|---|
+| D1 | **W2 native surface has no spec.** "Theoria native surface" is a paragraph (fixed-input rail + contextual window; reference spike across Digitakt II / Syntakt / Digitone / Hydrasynth). It is the active next milestone. | **user** | Author the W2 surface spec + **ADR-032 (view-plugin API)** before any W2 code. Specs win; deviations stop-and-ask. | **Critical** — blocks the active milestone |
+| D2 | **P13 voice model undecided (OQ-13) + drum selection (OQ-14).** Both deferred to "the P13/P12+ spec," which is not drafted. OQ-13 (composed-from-primitives vs monolithic `AnalogVoice`) shapes the mod-matrix API and CLAP export. | **user** | Draft the P13 spec resolving OQ-13 first (it is foundational, not a detail). Keystone of the four-pillar instrument. | High (downstream keystone) |
+| D3 | **No ADR owns runtime observability.** ADR-033 covers only the offline/interactive driver. Nothing specs the live `/engine/cpu` counter path or the structured-log channel (see **INFRA-003**, bugs.md). | agent | Extend ADR-033 with a "live observability" section **or** spin ADR-034; then implement the lock-free atomic counters. | High (unblocks the whole trigger backlog — see D4) |
+| D4 | **Trigger-based backlog is un-actionable as written.** It claims "each item has a named trigger," but INFRA-003 shows we cannot *observe* triggers firing — so "quiet" is assumed, not measured. | agent | Add a note to the Deferred-Bug Backlog: it is **blocked on INFRA-003 observability**, not confirmed quiet. | Medium (one-line honesty fix) |
+| D5 | **BUG-031 residual has no rule.** ADR-030 now documents speed×swing, but not swing large enough to overshoot the step at 1× speed. | agent | One sentence in ADR-030: clamp policy (or explicit "author's responsibility") for `swing_amount` beyond the step fraction. | Low |
+| D6 | **`Cow<'static, str>` migration has no trigger.** Flagged "FREE until crates.io publication, do before v0.1.0" but sits in the Known Provisional table with no owner/milestone — the pre-publication window can close silently. | agent | Promote it to a Deferred-Bug Backlog row with a concrete trigger ("before `paraclete-node-api` v0.1.0 / first crates.io publish"). | Low (but time-boxed) |
+
+**Recommended first agent action next session:** D3 (draft the observability
+ADR + counters) — it continues the debug-posture thread and unblocks D4. D1/D2
+are the user's to author. D5/D6 are quick atomic cleanups.
+
+---
+
 ## Roadmap
 
 | Phase | Name | Deliverable | Status |
