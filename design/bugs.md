@@ -845,4 +845,7 @@ the BUG-006 profiling need). This is the concrete, buildable half of the
 roadmap's "CPU/xrun meter" gap — it does not require the full ADR-033 harness
 and unblocks confirming (rather than assuming) the trigger-based backlog.
 **Status:** Open — tracked for the debug-posture push; see roadmap Agent
-Infrastructure Gaps ("CPU/xrun meter", "Structured log channel").
+Infrastructure Gaps ("CPU/xrun meter", "Structured log channel") and roadmap
+Design Triage **D3**. Design drafted in **ADR-034** (WIP/not-accepted) —
+context, proposed atomic-counter decision, and impl sketch are seeded there for
+a fresh operator.
