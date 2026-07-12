@@ -459,26 +459,197 @@ fn resolve_action(resolver: &NameResolver, action: &scenario::TimelineAction) ->
     })
 }
 
+const QUICK_USAGE: &str = "usage: test-driver <test.yaml>
+       test-driver --trigger <target> --at <secs> [--trigger T --at S ...]
+                   [-d <secs>] [--instrument <path>] [--output <path>] [--no-play]";
+
+/// Quick mode (INFRA-002 / ADR-033 § Quick mode): build a scenario from
+/// one-liner flags. `--trigger`/`--at` pair positionally; mismatched counts
+/// error before execution. Duration defaults to the last trigger + 2s.
+fn parse_quick_args(args: &[String]) -> Result<TestScenario, String> {
+    fn value<'a>(args: &'a [String], i: &mut usize, flag: &str) -> Result<&'a str, String> {
+        *i += 1;
+        match args.get(*i).map(|s| s.as_str()) {
+            // A flag-like token means the value is missing — without this,
+            // `--output --no-play` silently sets output to "--no-play".
+            Some(v) if v.starts_with("--") => Err(format!("{} needs a value, got flag '{}'", flag, v)),
+            Some(v) => Ok(v),
+            None => Err(format!("{} needs a value", flag)),
+        }
+    }
+    fn number(args: &[String], i: &mut usize, flag: &str) -> Result<f64, String> {
+        let v = value(args, i, flag)?;
+        v.parse().map_err(|_| format!("{} needs a number, got '{}'", flag, v))
+    }
+
+    let mut triggers: Vec<String> = Vec::new();
+    let mut ats: Vec<f64> = Vec::new();
+    let mut duration: Option<f64> = None;
+    let mut instrument = "instrument.yaml".to_string();
+    let mut output = "/tmp/paraclete_test.wav".to_string();
+    let mut play = true;
+
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--trigger" => triggers.push(value(args, &mut i, "--trigger")?.to_string()),
+            "--at" => ats.push(number(args, &mut i, "--at")?),
+            d @ ("-d" | "--duration") => duration = Some(number(args, &mut i, d)?),
+            "--instrument" => instrument = value(args, &mut i, "--instrument")?.to_string(),
+            "--output" => output = value(args, &mut i, "--output")?.to_string(),
+            "--no-play" => play = false,
+            other => return Err(format!("unknown argument: {}\n{}", other, QUICK_USAGE)),
+        }
+        i += 1;
+    }
+
+    if triggers.len() != ats.len() {
+        return Err(format!(
+            "{} --trigger value(s) but {} --at value(s) — counts must match",
+            triggers.len(), ats.len()
+        ));
+    }
+    if triggers.is_empty() {
+        return Err(format!("quick mode needs at least one --trigger/--at pair\n{}", QUICK_USAGE));
+    }
+
+    if ats.iter().any(|a| !a.is_finite() || *a < 0.0) {
+        return Err("--at values must be finite and >= 0".into());
+    }
+    let last_at = ats.iter().cloned().fold(0.0f64, f64::max);
+    let duration_secs = duration.unwrap_or(last_at + 2.0);
+    // run_batch feeds this to Duration::from_secs_f64, which panics on
+    // negative/NaN — reject here for a clean CLI error instead.
+    if !duration_secs.is_finite() || duration_secs <= 0.0 {
+        return Err(format!("duration must be positive and finite, got {}", duration_secs));
+    }
+
+    let timeline = triggers.into_iter().zip(ats).map(|(target, at)| {
+        scenario::TimelineEntry {
+            at,
+            action: scenario::TimelineAction::Trigger { target, note: -1, velocity: 0.79 },
+        }
+    }).collect();
+
+    Ok(TestScenario {
+        format_version: 1,
+        instrument,
+        sample_rate: 44100.0,
+        block_size: 512,
+        duration_secs,
+        output,
+        play,
+        timeline,
+        assert: Vec::new(),
+        probe: Vec::new(),
+    })
+}
+
+#[cfg(test)]
+mod quick_mode_tests {
+    use super::*;
+
+    fn args(s: &str) -> Vec<String> {
+        s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn one_liner_builds_scenario() {
+        let s = parse_quick_args(&args("--trigger kick --at 1.0 -d 3")).unwrap();
+        assert_eq!(s.duration_secs, 3.0);
+        assert_eq!(s.timeline.len(), 1);
+        assert_eq!(s.timeline[0].at, 1.0);
+        match &s.timeline[0].action {
+            scenario::TimelineAction::Trigger { target, note, .. } => {
+                assert_eq!(target, "kick");
+                assert_eq!(*note, -1, "quick-mode trigger must use engine default note");
+            }
+            other => panic!("expected trigger, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn triggers_and_ats_pair_positionally() {
+        let s = parse_quick_args(&args("--trigger kick --at 1.0 --trigger snare --at 1.5")).unwrap();
+        assert_eq!(s.timeline.len(), 2);
+        assert_eq!(s.timeline[1].at, 1.5);
+        // duration defaults to last trigger + 2s
+        assert_eq!(s.duration_secs, 3.5);
+    }
+
+    #[test]
+    fn mismatched_counts_error_before_execution() {
+        let err = parse_quick_args(&args("--trigger kick --trigger snare --at 1.0")).unwrap_err();
+        assert!(err.contains("counts must match"), "got: {}", err);
+    }
+
+    #[test]
+    fn no_triggers_is_an_error() {
+        assert!(parse_quick_args(&args("-d 3")).is_err());
+    }
+
+    #[test]
+    fn unknown_flag_is_an_error() {
+        let err = parse_quick_args(&args("--trigger kick --at 1.0 --bogus")).unwrap_err();
+        assert!(err.contains("unknown argument: --bogus"), "got: {}", err);
+    }
+
+    #[test]
+    fn missing_value_is_an_error() {
+        assert!(parse_quick_args(&args("--trigger kick --at")).is_err());
+    }
+
+    #[test]
+    fn no_play_and_output_are_respected() {
+        let s = parse_quick_args(&args("--trigger kick --at 0.5 --no-play --output /tmp/q.wav")).unwrap();
+        assert!(!s.play);
+        assert_eq!(s.output, "/tmp/q.wav");
+    }
+
+    #[test]
+    fn flag_like_value_is_an_error_not_a_silent_swallow() {
+        let err = parse_quick_args(&args("--trigger kick --at 0.5 --output --no-play")).unwrap_err();
+        assert!(err.contains("--output needs a value"), "got: {}", err);
+    }
+
+    #[test]
+    fn negative_or_nan_duration_is_a_clean_error() {
+        assert!(parse_quick_args(&args("--trigger kick --at 0.5 -d -5")).is_err());
+        assert!(parse_quick_args(&args("--trigger kick --at 0.5 -d nan")).is_err());
+    }
+
+    #[test]
+    fn negative_at_is_an_error() {
+        assert!(parse_quick_args(&args("--trigger kick --at -1.0")).is_err());
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 {
-        eprintln!("usage: test-driver <test.yaml>");
+        eprintln!("{}", QUICK_USAGE);
         std::process::exit(2);
     }
 
-    let yaml_path = &args[1];
-    let yaml = std::fs::read_to_string(yaml_path)
-        .unwrap_or_else(|e| {
-            eprintln!("[test-driver] cannot read {}: {}", yaml_path, e);
-            std::process::exit(2);
-        });
-
-    let scenario = scenario::parse_scenario(&yaml)
-        .unwrap_or_else(|e| {
+    let scenario = if args[1].starts_with('-') {
+        parse_quick_args(&args[1..]).unwrap_or_else(|e| {
             eprintln!("[test-driver] {}", e);
             std::process::exit(2);
-        });
+        })
+    } else {
+        let yaml_path = &args[1];
+        let yaml = std::fs::read_to_string(yaml_path)
+            .unwrap_or_else(|e| {
+                eprintln!("[test-driver] cannot read {}: {}", yaml_path, e);
+                std::process::exit(2);
+            });
+        scenario::parse_scenario(&yaml)
+            .unwrap_or_else(|e| {
+                eprintln!("[test-driver] {}", e);
+                std::process::exit(2);
+            })
+    };
 
     match run_batch(scenario) {
         Ok(()) => std::process::exit(0),
