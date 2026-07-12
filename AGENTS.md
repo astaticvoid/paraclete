@@ -203,6 +203,7 @@ suggestion.
 - `design/roadmap.md` — current phase scope and sequence
 - `design/bugs.md` — append-only bug tracker
 - `design/adr/` — Architecture Decision Records (append-only — never edit past ADRs)
+- `design/review/` — post-phase code reviews and latent-issue audits
 - `design/phases/` — per-phase specs and implementation reports (append-only)
 
 `Hardware*` was renamed to `Surface*` in July 2026. Historical docs use old

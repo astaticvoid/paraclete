@@ -109,31 +109,27 @@ They are judgment calls to make *with* the user in session, not solo.)
      (`0a8116b`/`e8f7718`/`50ef64b`/`5306674`; `p10-report.md`). BUG-004
      fixed in C3; BUG-013 fully resolved 2026-07-11 (engines `309a9e6`;
      Sampler: SincFixedOut → load-time resample + Hermite playback with
-     span-split voice starts — see bugs.md). The Sampler review surfaced two
-     new pre-existing bugs: BUG-025 (swing/positive micro offsets exceed
-     block_size and quantize to the next block — contract decision needed)
-     and BUG-026 (executor event sort unstable at equal offsets; latent
-     repeated-note drop — small standalone fix). §5.3 Launchpad surface
-     parked per s2; the P10 play-test gates on a paired session (TUI +
-     command injection, or Theoria post-W2).
+      span-split voice starts — see bugs.md). BUG-025 (executor defers
+      cross-block offsets) and BUG-026 (stable sort) both fixed 2026-07-11;
+      BUG-014 (emulator ButtonPressed) fixed same session. §5.3 Launchpad
+      surface parked per s2; the P10 play-test gates on a paired session
+      (TUI + command injection, or Theoria post-W2).
     - **(c) W2 re-scoped: reference-design spike** — **paired only** (user +
       Digitakt II hardware + Syntakt/Hydrasynth manuals). Produces the
       Theoria native-surface spec (fixed input rail + contextual window,
       param/env/LFO pages, source→FX channel view) AND the P12+
       machine-family param philosophy. ADR-032 comes after this spec.
       Do not build W-track features ahead of it.
-    - **(d) Headless test driver** — **ADR-033 approved 2026-07-11,
-      implementation pending.** A `tools/test-driver/` binary that loads
-      instrument YAML + test scenario YAML, runs the graph headless, captures
-      audio to WAV, plays it. Interactive mode for live engine interrogation.
-      Two-stage: ADR (done) → implement. See also the latent-issue
-      investigation plan at `design/review/adr-latent-issues.md` — the debug
-      harness exists to test these.
+     - **(d) Headless test driver** — **ADR-033 batch mode shipped 2026-07-11**
+       (`e265666`). Loads instrument YAML + test scenario YAML, builds graph,
+       runs audio capture, executes timed commands, checks assertions, writes
+       WAV. Interactive debug REPL deferred to v2. 4 audit tests pass
+       validating 10 ADR findings. See `design/review/adr-latent-issues.md`.
 5. **Parked/waiting:** Launchpad track frozen (s2 F2; s1-F7 cleanup in the
-   trigger backlog); BUG-023 open pending the driver's headphone A/B (engine
-   exonerated by measurement — see bugs.md); BUG-012 queued for a hardware
-   session; session-0 runbooks (`s0-launchpad-debug.md`) still open for the
-   pending human LED/sound confirmation.
+    trigger backlog); BUG-023 resolved (macOS speaker protection confirmed via
+    headphone A/B); BUG-012 queued for a hardware session; BUG-027 (reverb
+    init crackle), INFRA-001 (artifact detection), INFRA-002 (test API
+    ergonomics) tracked in bugs.md.
 
 Standing design tiebreakers (s2): synthesis voices are the emotional core —
 "sit down with a nice kick engine and tune it"; interface work starts from

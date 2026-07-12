@@ -1,6 +1,14 @@
 # Paraclete — Known Bugs
 
-Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** line and the commit that fixed it.
+Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESOLVED** line and the commit that fixed it.
+
+---
+
+## Status (2026-07-11)
+
+**Actively open:** BUG-012, BUG-027, INFRA-001, INFRA-002.
+**Trigger-based (fix when named trigger fires):** BUG-002, BUG-003, BUG-006.
+**Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026.
 
 ---
 
