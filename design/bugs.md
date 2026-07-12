@@ -423,3 +423,83 @@ not be rushed; keep this entry open until it lands.
 `node_locks` per-cycle override pattern (mirrors AnalogEngine); all
 render-path reads go through `get_param()`. Regression test
 `param_lock_does_not_bleed_into_bank`.
+
+---
+
+**BUG-013 RESOLVED — Sampler half** (2026-07-11): per-voice `SincFixedOut`
+replaced with load-time resample (data always at output rate;
+`sample_rate_native` renamed `sample_data_rate` and now correctly tracks the
+output rate after load — previously stale at 44100 on non-44.1k devices) +
+4-point Hermite playback interpolation (`hermite4`, standard de Soras form,
+from scratch). `process()` renders in spans split at NoteOn/NoteOff **and
+ParamLock** offsets — the Sampler goes one step beyond the engines here: a
+p-lock without a co-timed trig applies from its own offset instead of
+leaking backward into the pre-event span (the engines still apply such locks
+from block start; latent only, since the Sequencer always emits locks
+co-timed with their trig — fold engine parity into the next engine-touching
+commit). Hermite taps are clamped to the played region (no slice/loop-edge
+bleed); loop wrap emits its post-wrap sample in the same frame (the old
+one-sample-per-cycle dropout in the linear path is gone); playback rate
+keeps the old resampler's ±4-octave bound and rejects non-finite modulation.
+Accepted tradeoff per the fix direction: no playback-side anti-aliasing on
+pitch-up (Hermite interpolates, it does not band-limit; the sinc's group
+delay was the reason it had to go). Regression tests:
+`note_on_mid_block_starts_at_its_sample_offset`,
+`note_off_mid_block_stops_at_its_sample_offset`,
+`two_notes_in_one_block_keep_their_own_velocities`,
+`param_lock_mid_block_applies_from_its_offset`,
+`loop_wrap_emits_on_every_frame`, `loaded_sample_rate_tracks_output_rate`.
+
+---
+
+### BUG-025 — Swing/positive micro-timing offsets exceed block_size and lose their sub-block position
+
+**Severity:** High for groove — swing and positive micro-offsets are
+quantized to a block boundary, the exact jitter class BUG-013 removed  
+**Phase found:** BUG-013 Sampler code review (2026-07-11, verified against
+executor + sequencer source)  
+**Description:** the Sequencer is clock-tick driven, not block-window gated:
+it emits a step's NoteOn in the block where the step's *grid tick* falls,
+with `sample_offset = tick_offset + step_sample_offset(step, spb)` — swing
+(`swing × samples_per_beat`, e.g. 22 050 samples at 60 BPM/0.5 swing) and
+positive micro-offsets (≈2 756 samples for +12 at 120 BPM) routinely exceed
+any real block size. The executor delivers events same-block with no
+cross-block deferral, and all three instrument nodes clamp with
+`sample_offset.min(block_size)` — so a swung note renders nothing in its
+delivery block and starts at the *next* block's sample 0, discarding the
+sub-block placement the feature exists to produce. Pre-existing (the
+sequencer's own test `micro_offset` asserts an emitted offset ~43× the block
+size); the engines inherited the clamp in `309a9e6`, the Sampler has had it
+since P3.  
+**Location:** `crates/paraclete-runtime/src/executor.rs` (event delivery, no
+deferral), `crates/paraclete-nodes/src/sequencer.rs` (`step_sample_offset`
+emission paths), instrument nodes' `.min(block_size)` clamps  
+**Fix direction:** decide the contract first — either (a) the executor
+carries future-offset events across block boundaries, re-delivering them
+with the residual offset (making big offsets legal for every node), or (b)
+the Sequencer defers emission until the block containing the fire sample
+(offsets always < block_size). (b) is local to one node and keeps the
+executor allocation-free; (a) is the universal answer if other producers
+will ever emit ahead. Design decision — do not improvise inline; the
+negative-micro path (BUG-004) already implements block-local early firing
+and is unaffected.
+
+### BUG-026 — Executor event sort is unstable; same-offset NoteOff/NoteOn order is unguaranteed
+
+**Severity:** Medium (latent) — a reorder silently drops a repeated note  
+**Phase found:** BUG-013 Sampler code review (2026-07-11)  
+**Description:** `executor.rs` sorts each node's incoming events with
+`sort_unstable_by_key((sample_offset, priority))`; NoteOn and NoteOff are
+both `Event::Midi2` (priority 2), so at an equal offset their relative order
+is unspecified. The Sequencer emits `NoteOff` then `NoteOn` at the identical
+offset for back-to-back steps (full gate or same-offset early fire); if the
+sort ever swaps them, `release_voice` (max `triggered_at`) kills the note
+just triggered — the repeated step goes silent. Currently masked by
+`sort_unstable`'s small-slice insertion-sort fallback (order-preserving in
+practice), which is an implementation detail, not a contract.  
+**Location:** `crates/paraclete-runtime/src/executor.rs` event sort  
+**Fix direction:** make the intended order explicit — stable sort is the
+minimal fix; better, give the priority key a NoteOff-before-NoteOn
+tie-break (release-then-retrigger is the musical contract) or a monotonic
+sequence field. Small standalone commit + a regression test that feeds the
+pair pre-swapped.

@@ -101,10 +101,15 @@ They are judgment calls to make *with* the user in session, not solo.)
      the final bundle + tablet judgment still pending.
    - ~~**(b) P10 C2–C3 pattern depth**~~ — **C2–C5 all shipped 2026-07-11**
      (`0a8116b`/`e8f7718`/`50ef64b`/`5306674`; `p10-report.md`). BUG-004
-     fixed in C3; BUG-013 (block-boundary voice starts) remains open —
-     engine-side, not sequencer-side. §5.3 Launchpad surface parked per s2;
-     the P10 play-test gates on a paired session (TUI + command injection,
-     or Theoria post-W2).
+     fixed in C3; BUG-013 fully resolved 2026-07-11 (engines `309a9e6`;
+     Sampler: SincFixedOut → load-time resample + Hermite playback with
+     span-split voice starts — see bugs.md). The Sampler review surfaced two
+     new pre-existing bugs: BUG-025 (swing/positive micro offsets exceed
+     block_size and quantize to the next block — contract decision needed)
+     and BUG-026 (executor event sort unstable at equal offsets; latent
+     repeated-note drop — small standalone fix). §5.3 Launchpad surface
+     parked per s2; the P10 play-test gates on a paired session (TUI +
+     command injection, or Theoria post-W2).
    - **(c) W2 re-scoped: reference-design spike** — **paired only** (user +
      Digitakt II hardware + Syntakt/Hydrasynth manuals). Produces the
      Theoria native-surface spec (fixed input rail + contextual window,
