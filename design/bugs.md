@@ -10,7 +10,7 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 measurement — pending user headphone A/B, see addendum), INFRA-003 (live
 dropout/xrun observability — the debug-posture gap).
 **Trigger-based (fix when named trigger fires):** BUG-002, BUG-003, BUG-006.
-**Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 031, INFRA-001.
+**Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, INFRA-001, INFRA-002.
 **Audit validation rounds 1–3 (2026-07-12):** ADR latent-issue items #1–#8,
 #10, #11, #16, #24, #27, #28, #30 validated (see round tables below); the
 rest are gated on the ADR-033 interactive harness or hardware.
