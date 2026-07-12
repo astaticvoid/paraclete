@@ -125,8 +125,10 @@ They are judgment calls to make *with* the user in session, not solo.)
     - **(d) Headless test driver** — **ADR-033 approved 2026-07-11,
       implementation pending.** A `tools/test-driver/` binary that loads
       instrument YAML + test scenario YAML, runs the graph headless, captures
-      audio to WAV, plays it. No editing engine code for tests. Two-stage:
-      ADR (done) → implement.
+      audio to WAV, plays it. Interactive mode for live engine interrogation.
+      Two-stage: ADR (done) → implement. See also the latent-issue
+      investigation plan at `design/review/adr-latent-issues.md` — the debug
+      harness exists to test these.
 5. **Parked/waiting:** Launchpad track frozen (s2 F2; s1-F7 cleanup in the
    trigger backlog); BUG-023 open pending the driver's headphone A/B (engine
    exonerated by measurement — see bugs.md); BUG-012 queued for a hardware
