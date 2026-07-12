@@ -134,6 +134,16 @@ behavior (audit item #27): it made swing drift from intent and could overshoot
 the shortened step at high speed. Pinned by
 `swing_offset_scales_with_step_speed`.
 
+*Residual (BUG-031 addendum):* the `1/speed_mult` scaling removes the
+*speed*-driven overshoot, but a `swing_amount` (or micro offset) larger than the
+step fraction can still push an off-beat past the following step at **any**
+speed. This is currently unclamped and is treated as the author's
+responsibility — `swing_amount` is expected to stay within musical range
+(≤ ~0.5 of a step). If a hard guarantee is wanted later, clamp the composed
+offset to `< step_period`; not done now because no control surface can reach an
+overshooting value and a clamp would introduce a hard, unmusical pin at the
+boundary. Tracked as the BUG-031 residual (roadmap Design Triage D5).
+
 ---
 
 ## Serialization (v3)
