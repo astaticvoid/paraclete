@@ -7,15 +7,10 @@ runtime where everything is a node.
 The closest analogies: Plan 9 (everything is a composable node), Emacs (live,
 reprogrammable runtime), and Elektron hardware (hardware-first, mouse-free workflow).
 
-**Current phase: P9 complete** — modular patchable graph (dynamic topology),
-single-sample feedback loop break, sequencer as a CV source, and a GraphNode
-that owns a nested executor. Builds on P8's YAML instrument definitions, the
-ratatui terminal UI, and the CLAP host. 391 tests.
-
-**Next: P10 — Pattern Engine.** Multi-pattern + seamless switching + chaining,
-multi-page (64-step) patterns, per-track length & speed (polyrhythm), and full
-serialization of sequencer state. See `design/roadmap.md` and
-`design/phases/p10-interfaces.md`.
+**Current phase: P10 complete** — pattern engine: multi-pattern bank (8 patterns),
+seamless cued switching + chain, multi-page (64-step) patterns with page-loop
+window, per-track length & speed (polyrhythm), full sequencer state serialization
+(v3). Builds on P9's dynamic topology, inner graphs, and loop break.
 
 ---
 
@@ -77,6 +72,8 @@ crates/
   paraclete-clap-host        GPL3 — Paraclete as a CLAP host (ADR-027)
   paraclete-tui              GPL3 — ratatui terminal UI (ADR-026)
   paraclete-graph-nodes      GPL3 — nodes that own an inner executor (ADR-023)
+  paraclete-antiphon         GPL3 — WebSocket interface server (ADR-031)
+  paraclete-machine-*        GPL3 — single-node CLAP plugin crates (kick, snare, fm-kick, fm-bell, fm-bass)
 tools/
   gen-samples/          — synthesized drum sample generator
 profiles/               — Rhai hardware profile scripts
@@ -112,9 +109,9 @@ See `design/architecture-core.md` for the full reference.
 ## Commands
 
 ```bash
-# Build
-cargo build
-cargo build --release
+# Build (must use --workspace; paraclete-app is the sole default-member)
+cargo build --workspace
+cargo build --workspace --release
 
 # Run
 cargo run                              # graph from instrument.yaml; ratatui TUI by default
@@ -123,20 +120,24 @@ cargo run -- --no-tui                  # skip the TUI (stderr logging instead)
 cargo run -- --dev-ui                  # step/pattern monitor on stderr
 cargo run -- --load=project.ron        # restore saved project state (RON)
 cargo run -- --save=project.ron        # save project state on exit
+cargo run -- --theoria-dir=web/packages/app/dist  # serve Theoria web client
+
+# Web client (Theoria)
+cd web && npm install && npm run build    # build web/packages/app/dist
 
 # Generate samples
 cargo run -p gen-samples               # writes samples/track0–7.wav
 cargo run -p gen-samples -- path/      # write to a custom directory
 
 # Build CLAP plugins (output: target/debug/*.clap)
-cargo build -p paraclete-clap
+cargo build --workspace -p paraclete-clap
 
 # Test
-cargo test
+cargo test --workspace
 cargo test -p paraclete-runtime
 cargo test -p paraclete-node-api
-cargo clippy
-cargo check
+cargo clippy --workspace
+cargo check --workspace
 ```
 
 ---
@@ -156,25 +157,27 @@ encoder mappings, and pad routing via Rhai.
 
 ---
 
-## What works at P9
+## What works at P10
 
 - 8-track graph: clock → sequencer → instrument → distortion → filter → mix → audio
 - Synthesis engines: `AnalogEngine` (kick, snare, hihat), `FmEngine` (bass, bell, kick)
-- Sampler with per-voice rubato pitch resampling (symphonia + rubato)
-- Step sequencer with swing, fill A/B, per-step probability and micro-timing
-  (single 16-step pattern per track — the full pattern engine lands in P10)
+- Sampler with Hermite pitch playback (symphonia for file loading)
+- Step sequencer with swing, fill A/B, per-step probability and micro-timing,
+  8-pattern bank, cued switching + chain, multi-page (64-step) patterns,
+  page-loop window, per-track length & speed (polyrhythm)
 - Sequencer as a CV source: per-step CV locks with sample-and-hold output
 - Reverb on the master bus
 - Declarative instrument definition in YAML (`--instrument`); set initial params per node
-- Terminal UI (`paraclete-tui`): transport bar, live encoder values, step row
+- Terminal UI (`paraclete-tui`): transport bar, live encoder values, 16-step playhead
+  with pattern/page indicator
 - Dynamic topology: add/remove nodes and edges at runtime (`apply_patch`, ~5 ms silence)
 - Single-sample feedback via `LoopBreakNode` (one `LoopBreakNode` per cycle is legal)
 - GraphNode / `InnerGraphNode`: a node that owns a nested executor
-- Project save/recall in RON format, v2 with topology (`--load`/`--save`)
+- Project save/recall in RON format, v3 with full sequencer state (`--load`/`--save`)
 - CLAP plugin output: `SingleNodePlugin`, `SubgraphPlugin`, five machine-bank `.clap` binaries
 - CLAP host: load third-party `.clap` plugins as nodes (`paraclete-clap-host`)
+- Antiphon interface server: WebSocket + HTTP, Theoria web client (`--theoria-dir`)
 - Rhai profile scripts with state bus subscriptions and LED feedback
-- 391 tests (389 distinct), 0 failures
 
 ---
 
