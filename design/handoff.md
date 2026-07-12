@@ -11,7 +11,7 @@ of implementation. The specs are the authority; implementation sessions —
 possibly by different models with different strengths — execute them. The
 design intent is captured in the documents, not in anyone's head.
 
-**Reading order for a fresh session:** `CLAUDE.md` → `design/roadmap.md`
+**Reading order for a fresh session:** `AGENTS.md` → `design/roadmap.md`
 (current sequence) → the phase spec for the commit at hand
 (`design/phases/p10-interfaces.md` or `w0-interfaces.md`) →
 `design/interface-plan.md` / relevant ADRs only as needed.
@@ -73,7 +73,7 @@ They are judgment calls to make *with* the user in session, not solo.)
    identifiers/features/UI strings; house names (Antiphon, Theoria, kerygma,
    epiclesis, Ordo, Triptych) only in their assigned slots; wire/protocol and
    standard concepts keep plain names.
-5. **Audio-thread rules are hard constraints** (CLAUDE.md): no alloc/lock/block
+5. **Audio-thread rules are hard constraints** (AGENTS.md): no alloc/lock/block
    in `process()`; JSON never touches the audio thread.
 6. **Universality check (standing user directive, July 2026):** at every spec
    or implementation pass, ask what is being hard-coded that the vision does

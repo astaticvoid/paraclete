@@ -1,7 +1,7 @@
 # Paraclete default instrument — 4-track synthesis drum machine.
 # Boots the standalone app: `cargo run`.
 # Graph: InternalClock -> 4x Sequencer -> 4x synth engine -> MixNode -> Reverb -> AudioOutput.
-# Node IDs follow the documented app graph (CLAUDE.md "App Graph Node IDs").
+# Node IDs follow the documented app graph (AGENTS.md "App graph node IDs").
 format_version: 1
 name: "paraclete-default"
 bpm: 140.0
