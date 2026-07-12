@@ -143,6 +143,7 @@ four-pillar instrument.
 | BUG-006 (`agg_state_buf` realloc/cycle) | When the web state mirror measurably raises state-bus churn (profile in W1), or any audible xrun traced to it |
 | BUG-007 (`publish_bank_state` String alloc) | Folded into W1 C1 (state-path unification) |
 | Executor cell `Mutex` → `arc-swap`; master limiter/headroom; xrun/CPU meter to `/engine/cpu`; FM 2-sample feedback average; DT node `rtrb` harmonization | See `design/review/audio-model-review.md` — each has a named trigger there |
+| `Cow<'static, str>` L2 migration (kill `Box::leak` in `paraclete-clap-host/bridge.rs`) — see Known Provisional table (D6) | **Before `paraclete-node-api` v0.1.0 / first crates.io publish** — the change is free until then, breaking after. Time-boxed, not event-driven; do it in the pre-publication pass. |
 
 Everything else open is scheduled: BUG-001/008 → P10 C0 (now), BUG-005 → P10 C1
 (now), BUG-004 → P10 C3.
