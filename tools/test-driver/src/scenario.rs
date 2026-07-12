@@ -38,7 +38,7 @@ pub struct TimelineEntry {
 pub enum TimelineAction {
     SetParam { target: String, param: String, value: f64 },
     BumpParam { target: String, param: String, delta: f64 },
-    Trigger { target: String, #[serde(default)] note: i64, #[serde(default = "default_velocity")] velocity: f64 },
+    Trigger { target: String, #[serde(default = "default_note")] note: i64, #[serde(default = "default_velocity")] velocity: f64 },
     ToggleStep { target: String, step: i64 },
     SetStep { target: String, step: i64, note: i64 },
     Clear { target: String },
@@ -75,6 +75,10 @@ pub enum ResolvedActionKind {
 }
 
 fn default_velocity() -> f64 { 0.79 }
+
+// CMD_TRIGGER contract (ADR-033): arg0 < 0 means "engine default note".
+// A plain 0 would be a valid MIDI note and retune the voice (BUG-028).
+fn default_note() -> i64 { -1 }
 
 #[derive(Debug, Deserialize)]
 pub struct Assertion {
@@ -118,4 +122,28 @@ pub fn parse_scenario(yaml: &str) -> Result<TestScenario, String> {
         return Err(format!("unsupported format_version: {}", scenario.format_version));
     }
     Ok(scenario)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trigger_without_note_defaults_to_engine_default() {
+        let yaml = r#"
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 1
+timeline:
+  - at: 0.5
+    trigger: { target: kick, velocity: 1.0 }
+"#;
+        let s = parse_scenario(yaml).unwrap();
+        match &s.timeline[0].action {
+            TimelineAction::Trigger { note, .. } => {
+                assert_eq!(*note, -1, "omitted note must mean engine default (< 0), not note 0");
+            }
+            other => panic!("expected trigger action, got {:?}", other),
+        }
+    }
 }
