@@ -7,11 +7,9 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 ## Status (2026-07-12)
 
 **Actively open:** BUG-012 (hardware session), BUG-027 (engine exonerated by
-measurement — pending user headphone A/B, see addendum), BUG-031 (latent
-speed×swing composition — behavior pinned, fix is a deliberate ADR-030
-decision), INFRA-002.
+measurement — pending user headphone A/B, see addendum), INFRA-002.
 **Trigger-based (fix when named trigger fires):** BUG-002, BUG-003, BUG-006.
-**Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, INFRA-001.
+**Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 031, INFRA-001.
 **Audit validation rounds 1–3 (2026-07-12):** ADR latent-issue items #1–#8,
 #10, #11, #16, #24, #27, #28, #30 validated (see round tables below); the
 rest are gated on the ADR-033 interactive harness or hardware.
@@ -782,11 +780,12 @@ regression. Both features are live (`swing_amount` refreshed every `process()`
 from the active pattern; `speed_mult` set via `CMD_SET_SPEED`).
 **Location:** `crates/paraclete-nodes/src/sequencer.rs` — `step_sample_offset()`
 vs `exact_period()`
-**Fix direction:** Decide the rule and document it in ADR-030. Two candidates:
-(a) scale offsets by `1.0 / speed_mult` so swing stays proportional to the step
-(likely the musical intent), or (b) keep beat-anchored but clamp the offset to
-the step period to prevent overshoot. Current behavior is pinned by
-`swing_offset_is_beat_anchored_not_speed_scaled` so the fix is a deliberate flip.
+**RESOLVED** (2026-07-12): chose candidate (a) — intra-step offsets are
+fractions of a step and scale by `1.0 / speed_mult`. `step_sample_offset` now
+computes `swing_amount * samples_per_beat / speed_mult` (and the same for
+micro-timing), so the swing feel is constant across per-track speeds and a nudge
+can never overshoot the shortened step. Rule documented in ADR-030 (Per-track
+speed section); pinned by `swing_offset_scales_with_step_speed`.
 
 ---
 

@@ -121,6 +121,19 @@ per-step rounding; accumulate the remainder across steps to avoid long-pattern
 drift (the same drift class BUG-001 caused). The p10 spec (Commit 3) carries the
 implementation note.
 
+**Intra-step timing composes proportionally with speed (BUG-031).** Swing and
+signed micro-timing are *fractions of a step*, not absolute musical times: an
+intra-step offset scales by `1 / speed_mult` so it stays the same proportion of
+the (speed-scaled) step at any per-track speed. `step_sample_offset` computes
+`swing_amount * samples_per_beat / speed_mult` and
+`(micro_offset / 96) * samples_per_beat / speed_mult`. This keeps the swing
+*feel* constant across speeds and guarantees a per-step nudge can never overshoot
+into the following step (the offset shrinks with the step). The rejected
+alternative — beat-anchored offsets independent of speed — was the pre-fix
+behavior (audit item #27): it made swing drift from intent and could overshoot
+the shortened step at high speed. Pinned by
+`swing_offset_scales_with_step_speed`.
+
 ---
 
 ## Serialization (v3)
