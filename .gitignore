@@ -7,3 +7,4 @@ web/node_modules/
 web/packages/*/node_modules/
 web/packages/*/dist/
 .aider*
+ref/
