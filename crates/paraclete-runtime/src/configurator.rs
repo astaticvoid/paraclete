@@ -315,9 +315,16 @@ impl NodeConfigurator {
         if matches!(self.nodes.get(&idx), Some(NodeOrDevice::Device(_))) {
             return Err(format!("node {user_id} is a surface device; devices cannot be removed via remove_node"));
         }
+        // Validate the slot is resident BEFORE mutating `id_to_index` — a drained
+        // slot (node currently owned by a live executor) must not leave the id
+        // map half-edited (same partial-mutation class as BUG-030). Unreachable
+        // via apply_patch, which `restore_nodes` first, but latent otherwise.
+        if !self.nodes.contains_key(&idx) {
+            return Err(format!("node {user_id} is not resident (moved to a live executor)"));
+        }
         self.id_to_index.remove(&user_id);
         let mut slot = self.nodes.remove(&idx)
-            .ok_or_else(|| format!("node {user_id} not in nodes map"))?;
+            .expect("slot presence checked above");
         slot.deactivate();
         self.graph.remove_node(idx);
         self.cap_doc_cache.remove(&user_id);
@@ -328,6 +335,13 @@ impl NodeConfigurator {
             NodeOrDevice::Node(n) => Ok(n),
             NodeOrDevice::Device(_) => unreachable!("device slots are rejected above"),
         }
+    }
+
+    /// Whether `user_id` is a registered node id (regardless of whether the
+    /// slot is currently resident or drained into a live executor). Lets callers
+    /// distinguish "unknown id" from "known id, removal refused".
+    pub fn contains_node(&self, user_id: u32) -> bool {
+        self.id_to_index.contains_key(&user_id)
     }
 
     /// Iterate all registered nodes in registration order (by user_id).

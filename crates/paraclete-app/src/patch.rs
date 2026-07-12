@@ -110,7 +110,16 @@ pub fn apply_patch(
                 }
             }
             TopologyChange::RemoveNode { id } => {
-                conf.remove_node(id).map(|_| ()).map_err(|_| PatchError::NodeNotFound(id))
+                conf.remove_node(id).map(|_| ()).map_err(|msg| {
+                    // A known id whose removal was refused (e.g. a surface
+                    // device) must surface the reason, not be masked as
+                    // "not found". Only a genuinely absent id is NodeNotFound.
+                    if conf.contains_node(id) {
+                        PatchError::ConfigError(msg)
+                    } else {
+                        PatchError::NodeNotFound(id)
+                    }
+                })
             }
             TopologyChange::AddEdge { src, src_port, dst, dst_port } => {
                 conf.connect(src, src_port, dst, dst_port)

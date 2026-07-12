@@ -4,7 +4,7 @@ use paraclete_app::{
     apply_patch, build_registry, PatchError, TopologyChange,
 };
 use paraclete_app::project::{save_project_v2, load_project_v2};
-use paraclete_hal::AudioEngine;
+use paraclete_hal::{AudioEngine, LaunchpadEmulator};
 use paraclete_nodes::{DistortionNode, FilterNode};
 use paraclete_runtime::NodeConfigurator;
 
@@ -104,6 +104,54 @@ fn apply_patch_unknown_type_tag_returns_error() {
         matches!(result, Err(PatchError::UnknownTypeTag(_))),
         "expected UnknownTypeTag, got: {:?}",
         result
+    );
+}
+
+/// A RemoveNode on a surface device must surface the real refusal reason
+/// (ConfigError with the device message), not mask it as NodeNotFound — the
+/// round-2 audit tracker note (error mapping discarded the message).
+#[test]
+fn apply_patch_remove_device_reports_refusal_reason() {
+    let mut conf = NodeConfigurator::new(SR, BLOCK);
+    let engine   = AudioEngine::new_paused();
+    let registry = build_registry();
+    conf.add_surface(55, Box::new(LaunchpadEmulator::new()));
+
+    let result = apply_patch(
+        vec![TopologyChange::RemoveNode { id: 55 }],
+        &engine,
+        &mut conf,
+        &registry,
+    );
+
+    match result {
+        Err(PatchError::ConfigError(msg)) => assert!(
+            msg.contains("surface device"),
+            "expected the device-refusal reason, got: {msg}"
+        ),
+        other => panic!("expected ConfigError with device reason, got: {other:?}"),
+    }
+    // The device must survive the refused removal.
+    assert!(conf.contains_node(55), "device must remain registered after refusal");
+}
+
+/// A RemoveNode on a genuinely absent id is still the typed NodeNotFound.
+#[test]
+fn apply_patch_remove_unknown_id_is_node_not_found() {
+    let mut conf = NodeConfigurator::new(SR, BLOCK);
+    let engine   = AudioEngine::new_paused();
+    let registry = build_registry();
+
+    let result = apply_patch(
+        vec![TopologyChange::RemoveNode { id: 9999 }],
+        &engine,
+        &mut conf,
+        &registry,
+    );
+
+    assert!(
+        matches!(result, Err(PatchError::NodeNotFound(9999))),
+        "expected NodeNotFound(9999), got: {result:?}"
     );
 }
 

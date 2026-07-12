@@ -424,6 +424,27 @@ fn remove_node_on_surface_is_nondestructive() {
     );
 }
 
+/// remove_node on a drained slot (node moved into a live executor) must refuse
+/// WITHOUT partially editing `id_to_index` — the same partial-mutation class as
+/// BUG-030. After the refusal the id is still known, so a later legitimate
+/// removal (once the node is restored) still works.
+#[test]
+fn remove_node_on_drained_slot_leaves_id_map_intact() {
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+    conf.add_node(9, Box::new(CountingNode::new(Arc::new(AtomicU32::new(0)))));
+
+    // Drain the node into an executor — the configurator's `nodes` slot is now
+    // empty for id 9, but `id_to_index` still maps it.
+    let _exec = conf.build_executor();
+
+    let result = conf.remove_node(9);
+    assert!(result.is_err(), "remove_node on a drained slot must error");
+    assert!(
+        conf.contains_node(9),
+        "a refused removal must not evict the id from id_to_index"
+    );
+}
+
 #[test]
 fn add_surface_registers_device_for_output_callbacks() {
     let update_count = Arc::new(AtomicU32::new(0));
