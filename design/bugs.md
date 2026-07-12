@@ -379,6 +379,12 @@ reproduces off-speaker, next step is a full-graph render harness.
 `fast_retrigger_is_not_ducked` stays as a permanent engine gate; keep this
 bug open until the headphone A/B.
 
+**RESOLVED** (2026-07-11): headphone A/B confirmed — kicks are clean through
+headphones, same volume across re-triggers. Engine gate verified by
+`fast_retrigger_is_not_ducked` (P10 C0). Speakers produce "POP pow pow pow"
+signature consistent with macOS bass transient protection. Not an engine
+bug — playback environment artifact.
+
 ---
 
 ### BUG-024 — state_write inside a subscribe callback panicked the main thread (RESOLVED `3356d60`)
