@@ -131,8 +131,8 @@ Everything else open is scheduled: BUG-001/008 → P10 C0 (now), BUG-005 → P10
 
 | Item | Status | Resolution | Target |
 |---|---|---|---|
-| `CMD_SET_PATTERN` stub (always pattern 0) | Active | Multi-pattern model | P10 C2+ |
-| Single-pattern, 16-step only | Active | Pattern engine | P10 C2+ |
+| `CMD_SET_PATTERN` stub (always pattern 0) | **Fixed (P10 C4)** | Multi-pattern with cued switching + chain (`sequencer.rs` `switch_pattern`/`CMD_SET_PATTERN`) | Done |
+| Single-pattern, 16-step only | **Fixed (P10 C2–C5)** | Pattern engine: pages (64-step), per-track length/speed, page-loop windows | Done |
 | `Sequencer::serialize()` drops P5 fields (BUG-005) | **Fixed (P10 C1 shipped)** | Serializer v3 (`6212242`); length-prefixed step + pattern records | Done |
 | BUG-008 / BUG-001 | **Fixed (P10 C0 shipped)** | s0 re-diagnosis: 240-tick step + step-0 fire + drift-only snap; mem::take | Done |
 | Negative micro-timing == zero (BUG-004) | **Fixed (P10 C3)** | Emitted in prev step's early-fire window | Done |
