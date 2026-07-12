@@ -690,3 +690,59 @@ dependency via crossterm's transitive deps" — it is not (`clap-sys` is the
 CLAP plugin ABI, unrelated). Parsing is hand-rolled to honor the ADR's
 no-new-crate intent; CLI shape matches the spec. The Rust builder API
 (`Scenario::new().trigger(...)`) remains deferred as this entry stated.
+
+---
+
+### BUG-029 — apply_patch failure stranded the engine paused with no executor
+
+**Severity:** High — one bad TopologyChange permanently silenced audio
+**Phase found:** ADR latent-issue audit item #4 (predicted by the review;
+confirmed by code reading 2026-07-12)
+**Description:** `apply_patch` (ADR-029 pause-rebuild-resume) returned early
+via `?` on any failed change — after `take_executor()` had drained the old
+executor, but before `rebuild_executor()`/`resume_with_executor()`. The
+engine stayed paused with no executor; audio never resumed. No live call
+site existed yet (Antiphon wiring pending), so this was latent, not field.
+**Location:** `crates/paraclete-app/src/patch.rs`
+**RESOLVED** (`32f34a6`, 2026-07-12): the change loop records the first
+error and breaks; rebuild + resume always run, then the error is returned.
+Partial changes stay applied (documented). Every abort path leaves a valid
+DAG — `connect()` removes the offending edge before erroring. Regression
+test `apply_patch_failed_change_still_installs_executor`.
+
+---
+
+### BUG-030 — remove_node on a device destroyed it while reporting failure
+
+**Severity:** Medium (latent) — device dropped, error references nonexistent API
+**Phase found:** Validating audit item #5 (2026-07-12)
+**Description:** `NodeConfigurator::remove_node` removed the slot from
+`id_to_index`/`nodes`/graph/`cap_doc_cache` and *then* returned `Err` for
+`Device` slots — the surface was silently dropped while the caller was told
+to "use remove_surface", a function that does not exist.
+**Location:** `crates/paraclete-runtime/src/configurator.rs`
+**RESOLVED** (`32f34a6`, 2026-07-12): devices are refused before any
+mutation. Regression test `remove_node_on_surface_is_nondestructive`.
+
+---
+
+### AUDIT VALIDATION — round 2 (2026-07-12)
+
+Code-level validation of ADR latent-issue items not needing the interactive
+harness (`design/review/adr-latent-issues.md`):
+
+| Item | Finding | Result |
+|---|---|---|
+| #1 (ADR-025 deserialize ordering) | Both load paths deserialize AFTER activate (`register()` activates at add_node; v2 load documents the order; rebuild_executor does NOT re-activate) | **Implementation correct** — ADR-025's "deserialize before activate" claim is a dead letter; code follows AGENTS.md |
+| #2 (ADR-025 hot-reload data race) | `load_project`/`save_project` run only at startup, before `build_executor()` — no audio thread exists yet | **Unreachable today** — becomes live when P11 temp save/reload ships; ADR-025's "engine need not be stopped" claim must be qualified before then |
+| #4 (ADR-029 failed patch strands graph) | Confirmed real | **BUG-029, fixed** |
+| #5 (ADR-029 cap_doc_cache stale) | `remove_node` evicts the cache | **Clean** — but exposed BUG-030 (destroy-then-error on devices), fixed |
+| #8 (event sort) | — | Already resolved as BUG-026 |
+
+Noted for the tracker, not fixed (pre-existing, flagged in review): a
+device-targeted `RemoveNode` inside `apply_patch` reports
+`PatchError::NodeNotFound` rather than the device-refusal reason (error
+mapping discards the message); and `remove_node` on an id whose slot is
+currently drained into a live executor errors after partially mutating
+`id_to_index` (same shape as BUG-030, unreachable via apply_patch which
+restores nodes first).
