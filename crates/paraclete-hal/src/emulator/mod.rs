@@ -114,11 +114,16 @@ impl LaunchpadEmulator {
         if let std::collections::hash_map::Entry::Vacant(slot) = self.held.entry(code) {
             slot.insert(id);
             self.pressed.insert(id);
-            self.pending.push(SurfaceEvent::PadPressed {
-                id,
-                velocity: KEY_VELOCITY,
-                pressure: 0,
-            });
+            // BUG-014: scene (64-71) and control (72-79) ids are buttons, not pads.
+            if id >= SCENE_BASE {
+                self.pending.push(SurfaceEvent::ButtonPressed { id });
+            } else {
+                self.pending.push(SurfaceEvent::PadPressed {
+                    id,
+                    velocity: KEY_VELOCITY,
+                    pressure: 0,
+                });
+            }
         }
     }
 
@@ -126,7 +131,11 @@ impl LaunchpadEmulator {
     fn apply_release(&mut self, code: KeyCode) {
         if let Some(id) = self.held.remove(&code) {
             self.pressed.remove(&id);
-            self.pending.push(SurfaceEvent::PadReleased { id });
+            if id >= SCENE_BASE {
+                self.pending.push(SurfaceEvent::ButtonReleased { id });
+            } else {
+                self.pending.push(SurfaceEvent::PadReleased { id });
+            }
         }
     }
 
@@ -310,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn scene_and_control_map_to_id_ranges() {
+    fn scene_and_control_emit_button_events() {
         let mut emu = LaunchpadEmulator::new();
         emu.apply_press(KeyCode::Char('a'), KeyTarget::Scene(0));
         emu.apply_press(KeyCode::Char('z'), KeyTarget::Control(0));
@@ -318,7 +327,7 @@ mod tests {
             .pending
             .iter()
             .filter_map(|e| match e {
-                SurfaceEvent::PadPressed { id, .. } => Some(*id),
+                SurfaceEvent::ButtonPressed { id } => Some(*id),
                 _ => None,
             })
             .collect();

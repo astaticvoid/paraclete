@@ -205,6 +205,11 @@ emulator; update the P9.5 emulator tests that assert `PadPressed` for scene/
 control ids. One-file change + test sweep; fold into the next emulator-touching
 commit or W0 C2 verification if the emulator path blocks the exit criteria.
 
+**RESOLVED** (2026-07-11): `apply_press` and `apply_release` now branch on
+`id >= SCENE_BASE` to emit `ButtonPressed`/`ButtonReleased` for scene (64-71)
+and control (72-79) ids, matching physical Launchpad behavior. Test
+`scene_and_control_emit_button_events` updated to assert `ButtonPressed`.
+
 ---
 
 ### BUG-015 — FmEngine routes ParamLock through bank.handle_commands (p-lock bleed)
