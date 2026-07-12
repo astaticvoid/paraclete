@@ -913,14 +913,21 @@ impl Sequencer {
     /// resync), "on the grid" is the closest playable time, not `|offset|`
     /// late.
     fn step_sample_offset(&self, step_idx: usize, samples_per_beat: f64) -> u32 {
+        // BUG-031 (ADR-030): intra-step displacements are proportional to the
+        // step. The step period is speed-scaled (`exact_period`), so swing and
+        // micro-timing offsets scale the same way (÷ speed_mult) — the swing
+        // feel stays a fixed fraction of the step at any per-track speed, and a
+        // per-step nudge can never overshoot into the next step because it grew
+        // with speed.
+        let speed = self.speed_mult.clamp(0.125, 2.0) as f64;
         let timing = self.patterns[self.active_index()].steps[step_idx].timing;
         let micro = if timing.micro_offset > 0 {
-            timing.to_sample_offset(samples_per_beat)
+            (timing.to_sample_offset(samples_per_beat) as f64 / speed) as u32
         } else {
             0
         };
         let swing = if step_idx % 2 == 1 {
-            (self.swing_amount as f64 * samples_per_beat) as u32
+            (self.swing_amount as f64 * samples_per_beat / speed) as u32
         } else {
             0
         };
@@ -2639,36 +2646,36 @@ mod tests {
     }
 
     #[test]
-    fn swing_offset_is_beat_anchored_not_speed_scaled() {
-        // ADR latent-issue audit item #27 (BUG-031): pins the speed×swing
-        // composition rule. The step PERIOD is speed-scaled (exact_period =
-        // ticks_per_step / speed_mult), but the swing/micro sample offset is
-        // beat-anchored (swing_amount * samples_per_beat) and does NOT scale
-        // with speed_mult. Consequence: at speed_mult != 1 the swing feel is
-        // no longer a fixed proportion of the step. This test documents the
-        // current behavior so a future change to it is deliberate.
+    fn swing_offset_scales_with_step_speed() {
+        // BUG-031 fix (ADR-030): intra-step displacements (swing + micro) are
+        // proportional to the step. The step PERIOD is speed-scaled
+        // (exact_period = ticks_per_step / speed_mult), and the swing/micro
+        // offset scales the same way (÷ speed_mult), so the swing feel stays a
+        // fixed fraction of the step at any per-track speed.
         let spb = 22_050.0; // 120 BPM @ 44.1 kHz
         let mut seq = Sequencer::new();
         seq.activate(44100.0, 64);
-        seq.swing_amount = 0.25; // odd steps delayed by 0.25 beat
+        seq.swing_amount = 0.25; // odd steps delayed by 0.25 of a step
 
-        // Period halves with speed_mult = 2.0 …
+        // Baseline at speed 1.0: swing = swing_amount * samples_per_beat.
         seq.speed_mult = 1.0;
         let period_1x = seq.exact_period();
+        let swing_1x  = seq.step_sample_offset(1, spb);
+        assert_eq!(swing_1x, (0.25 * spb) as u32,
+            "at speed 1.0 swing = swing_amount * samples_per_beat");
+
+        // At speed 2.0 the step period halves AND the swing offset halves with
+        // it — the swing stays the same fraction of the (now shorter) step.
         seq.speed_mult = 2.0;
         let period_2x = seq.exact_period();
+        let swing_2x  = seq.step_sample_offset(1, spb);
         assert!((period_2x - period_1x / 2.0).abs() < 1e-9,
-            "step period IS speed-scaled: {period_2x} vs {period_1x}/2");
+            "step period halves at speed 2.0: {period_2x} vs {period_1x}/2");
+        assert_eq!(swing_2x, swing_1x / 2,
+            "swing offset scales with the step (halves at speed 2.0)");
 
-        // … but the swing offset on an odd step is identical at both speeds.
-        seq.speed_mult = 1.0;
-        let swing_1x = seq.step_sample_offset(1, spb);
-        seq.speed_mult = 2.0;
-        let swing_2x = seq.step_sample_offset(1, spb);
-        assert_eq!(swing_1x, swing_2x,
-            "swing offset is beat-anchored, unaffected by speed_mult");
-        assert_eq!(swing_1x, (0.25 * spb) as u32,
-            "swing offset = swing_amount * samples_per_beat");
+        // Even step never swings, at any speed.
+        assert_eq!(seq.step_sample_offset(0, spb), 0, "even steps do not swing");
     }
 
     // ── P10 C3: per-track length & speed + BUG-004 ──────────────────────────
