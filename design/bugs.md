@@ -7,9 +7,14 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 ## Status (2026-07-12)
 
 **Actively open:** BUG-012 (hardware session), BUG-027 (engine exonerated by
-measurement — pending user headphone A/B, see addendum), INFRA-002.
+measurement — pending user headphone A/B, see addendum), BUG-031 (latent
+speed×swing composition — behavior pinned, fix is a deliberate ADR-030
+decision), INFRA-002.
 **Trigger-based (fix when named trigger fires):** BUG-002, BUG-003, BUG-006.
 **Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, INFRA-001.
+**Audit validation rounds 1–3 (2026-07-12):** ADR latent-issue items #1–#8,
+#10, #11, #16, #24, #27, #28, #30 validated (see round tables below); the
+rest are gated on the ADR-033 interactive harness or hardware.
 
 ---
 
@@ -756,3 +761,47 @@ restores nodes first).
 | #7 (ADR-007 Rhai infinite loop) | `set_max_operations(500_000)` + call-level/expr-depth caps configured in `paraclete-scripting` — a `while true {}` script aborts with a Rhai error; error surfacing was fixed in BUG-010 | **Clean** — bounded, recoverable |
 | #10 (ADR-023 GraphNode inner ParamLock) | `InnerGraphNode::process` ignores `input.commands` and forwards events only to the inner sequencer; outer ParamLock routes by node_id, which never matches inner ids | **Confirmed limitation, already tracked** — roadmap Known Provisional "Inner GraphNode runtime patching", P11+ |
 | #16 (ADR-012 output buffers not zeroed) | `slot.audio_out.clear()` (= `fill(0.0)`) runs every cycle before each node processes; master interleaved buffer and signal scratch likewise | **Clean** |
+
+---
+
+### BUG-031 — Swing/micro offsets not scaled by per-track speed
+
+**Severity:** Low (latent) — timing feel drifts from intent only when
+per-track speed (P10 C3) and swing/micro-timing (P10 C2) are combined
+**Phase found:** ADR latent-issue audit item #27 (2026-07-12)
+**Description:** The step *period* (boundary spacing) is speed-scaled —
+`exact_period() = ticks_per_step / speed_mult` — but the swing and micro-timing
+sample offsets are **beat-anchored**: `step_sample_offset()` computes swing as
+`swing_amount * samples_per_beat` and micro as `micro_offset/96 * samples_per_beat`,
+both independent of `speed_mult`. So at `speed_mult != 1.0` the offset is no
+longer a fixed proportion of the (now shorter/longer) step. At high `speed_mult`
+with non-trivial swing the odd-step offset can exceed the shortened step period
+and push the swung note past the following step's boundary (ordering overshoot).
+No ADR/spec documented the intended composition, so this is a design gap, not a
+regression. Both features are live (`swing_amount` refreshed every `process()`
+from the active pattern; `speed_mult` set via `CMD_SET_SPEED`).
+**Location:** `crates/paraclete-nodes/src/sequencer.rs` — `step_sample_offset()`
+vs `exact_period()`
+**Fix direction:** Decide the rule and document it in ADR-030. Two candidates:
+(a) scale offsets by `1.0 / speed_mult` so swing stays proportional to the step
+(likely the musical intent), or (b) keep beat-anchored but clamp the offset to
+the step period to prevent overshoot. Current behavior is pinned by
+`swing_offset_is_beat_anchored_not_speed_scaled` so the fix is a deliberate flip.
+
+---
+
+### AUDIT VALIDATION — round 3 (2026-07-12)
+
+Code-level validation of the remaining ADR latent-issue items reachable
+without the interactive harness (`design/review/adr-latent-issues.md`):
+
+| Item | Finding | Result |
+|---|---|---|
+| #3 (ADR-024 `translate_transport` emits GlobalStart every buffer) | The event is gated on the `!prev_playing && playing` transition; `SubgraphPlugin::process_block` writes back `self.prev_playing = transport.playing` on both branches, and the CLAP `ffi.rs` caller threads it via `prev_playing()`. GlobalStart fires exactly once per start. | **Implementation correct** — the "every buffer" concern does not reproduce |
+| #24 (ADR-028 LoopBreakNode → non-cycle consumers get wrong-cycle data) | The executor pre-phase (`back_edges`) writes `loop_break_prev()` into the LB output buffer before the main loop, and the node's own `process()` writes `prev` too; `loop_break_swap()` runs once post-execution. Every consumer — cycle or not — reads the same previous-cycle slice within a cycle. | **Clean** |
+| #27 (ADR-030 speed × swing composition) | Step period is speed-scaled; swing/micro offsets are beat-anchored and speed-independent. No documented rule; overshoot possible at high speed. | **Finding — BUG-031 filed** (pinned by test) |
+| #28 (ADR-030 cue vs chain precedence) | Boundary logic is `if let Some(cue) = cued_pattern.take() { … } else if !chain.is_empty() { … }` — an explicit cue wins for that one boundary and the chain does not advance (spec 4.2). | **Clean** — deterministic |
+| #30 (ADR-031 protocol version mismatch) | `ClientMsg::Hello` carries no protocol field — version is server-authored (`Welcome.protocol`), so a client cannot declare `protocol: 999`. Malformed/unknown client frames hit `evaluate_hello`'s `Reject` path or are dropped, never panic (`protocol_unknown_tag_is_error_not_panic`). | **Not applicable / clean by design** — client-side check of `Welcome.protocol` is a Theoria-client responsibility; note for the W4 freeze |
+
+Remaining harness-gated items (#9, #12, #13–#15, #17–#23, #25, #26, #29) need
+the ADR-033 interactive debug harness or hardware and are deferred to it.

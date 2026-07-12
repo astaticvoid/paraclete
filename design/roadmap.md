@@ -5,8 +5,11 @@
 >
 > **Last updated:** 2026-07-12 (autonomous session: INFRA-001/002 shipped;
 > BUG-028/029/030 found+fixed; BUG-027 engine exonerated pending user A/B;
-> ADR latent-issue audit items #1/#2/#5/#6/#7/#10/#11 validated — bugs.md
-> round-2 tables. Sequence below unchanged.)
+> ADR latent-issue audit round 2 (#1/#2/#5/#6/#7/#10/#11/#16) + round 3
+> (#3/#24/#27/#28/#30) validated — bugs.md round tables. Round 3 filed
+> BUG-031 (latent speed×swing composition; behavior pinned by test, fix is
+> a deliberate ADR-030 decision). Remaining audit items gated on the
+> ADR-033 interactive harness. Sequence below unchanged.)
 > Previous: 2026-07-10 evening (paired session #2 held on glass)
 > **Current phase:** Legibility phase shipped and judged on the iPad over a **USB-C direct link (3.0 ms RTT, zero config — the no-shared-Wi-Fi answer)**. Session #2 verdict (`design/sessions/s2.md`): "improved a lot… it will be the baseline" but **far below bar — the Launchpad-grid mirror is the wrong foundation for Theoria**. New sequence: **(1) BUG-022/023** (seq-vs-trigger kick pitch mismatch; fast-retrigger ducking — sound correctness moves first), **(2) baseline interaction wins** (drag-draw steps, encoder gesture/placement, hide dead grid), **(3) W2 re-scoped → "Theoria native surface", design-first**: paired reference spike (chosen Elektron box manual + Hydrasynth manual → fixed-input rail + contextual window spec, param/env/LFO pages, source→FX channel view) before any further W-feature code; ADR-032 follows the spec. **Launchpad parked** (good version frozen; s1-F7 cleanup → trigger backlog). P10 C2+ engine depth independent/parallel; P13 keystone unchanged. Earlier 2026-07-10 work: legibility items + BUG-016…021 fixed + open-by-default `--token` opt-in (`theoria-legibility-report.md`). BUG-012 still queued for a hardware session.
 
