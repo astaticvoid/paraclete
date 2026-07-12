@@ -508,6 +508,69 @@ offsets always < block_size after executor defers). The negative-micro path
   `executor_delivers_inblock_event_immediately` (offset 100 delivered in
   current block).
 
+---
+
+### BUG-027 — Reverb init crackle on first audio block
+
+**Severity:** Medium — audible click/pop at session start
+**Phase found:** Test-driver session (2026-07-11)
+**Description:** Initial crackle heard at the very start of playback ("might be
+reverb starting"). Suspect: Freeverb's internal delay-line buffers are
+uninitialized (contain whatever was on the heap) and the first `process()` call
+reads stale data, producing a click. The buffers should be zeroed in
+`activate()`.
+**Location:** `crates/paraclete-nodes/src/reverb.rs` — `activate()`, `process()`
+**Fix direction:** zero the delay-line buffers in `activate()` or in the first
+`process()` call. Small standalone fix; verify with the test driver's
+`peak_lt` assertion on the first ~50ms of audio.
+
+---
+
+### INFRA-001 — No automated artifact detection
+
+**Severity:** Medium — pop/click/dropout detection is manual (listen)
+**Found:** Test-driver session (2026-07-11)
+**Description:** The test driver can assert on peak levels and state bus values
+but has no check for audio artifacts: sample-to-sample discontinuities
+(>threshold), DC offset, zero-crossing glitches, or repeated-sample dropout.
+An agent can verify "audio exists" but not "audio is clean."
+**Fix direction:** Add `discontinuity_gte <samples>` assertion to the test
+driver that scans the captured buffer for adjacent samples with absolute
+difference exceeding a threshold. Also add `dc_offset_lt` and `dropout_gte`
+(for detecting repeated zero/hold values). Deferred to ADR-033 v2.
+
+---
+
+### INFRA-002 — Test scenario YAML too verbose for inline testing
+
+**Severity:** Low — developer ergonomics
+**Found:** Test-driver session (2026-07-11)
+**Description:** Writing a full YAML file for every test scenario is verbose.
+The one-liner CLI mode (`--trigger kick --at 1.0 -d 3`) is not yet
+implemented. A Rust builder API (`Scenario::new().trigger("kick").at(1.0).run()`)
+would enable inline `#[test]` functions without YAML files.
+**Fix direction:** Implement CLI one-liner mode (ADR-033 § Quick mode). Rust
+builder API deferred.
+
+---
+
+### AUDIT VALIDATION (2026-07-11)
+
+Results from running the test driver against the ADR latent-issue list
+(`design/review/adr-latent-issues.md`):
+
+| Finding | Test | Result |
+|---|---|---|
+| Param setting via ring buffer | `set_param` + state bus probe | **PASS** — decay=0.5, drive=0.0 confirmed |
+| Trigger produces audio | `trigger` + `peak_gte` | **PASS** — peak > 0.01 after trigger |
+| Audio returns to silence | `peak_lt` between triggers | **PASS** — peak < 0.01 during silence |
+| Sequencer step advance | `toggle_step` + probe `current_step` | **PASS** — steps advance correctly |
+| Duplicate display_name resolution | "kick" → engine (id 20), not sequencer (id 10) | **PASS** — short type_tag name wins |
+| Pattern cue during playback | `set_pattern` + probe `cued_pattern` | **PASS** — cued_pattern = -1 → 1, active stays at 0 |
+| Speed multiplier | `set_speed` 0.5 | **PASS** — speed_mult shows 0.5, step timing slows |
+| Full signal chain clock→output | Multi-track, 2 sequencers, params, audio peak | **PASS** — audio present across 5s, both tracks advance |
+| Parameter persistence via state bus | `set_param` decay=0.3 + probe | **PASS** — value 0.3 confirmed between 0.25-0.35 |
+
 ### BUG-026 — Executor event sort is unstable; same-offset NoteOff/NoteOn order is unguaranteed
 
 **Severity:** Medium (latent) — a reorder silently drops a repeated note  

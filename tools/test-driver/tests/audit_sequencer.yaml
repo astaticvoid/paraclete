@@ -1,0 +1,44 @@
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 4
+output: /tmp/audit_test.wav
+play: false
+
+timeline:
+  - at: 0.0
+    set_param:
+      target: kick
+      param: decay
+      value: 0.5
+
+  - at: 0.0
+    set_speed:
+      target: Kick
+      speed: 4.0
+
+  - at: 0.0
+    toggle_step: { target: Kick, step: 0 }
+  - at: 0.0
+    toggle_step: { target: Kick, step: 4 }
+  - at: 0.0
+    toggle_step: { target: Kick, step: 8 }
+  - at: 0.0
+    toggle_step: { target: Kick, step: 12 }
+
+probe:
+  - at: 0.3
+    path: "/node/10/state/current_step"
+  - at: 0.6
+    path: "/node/10/state/current_step"
+  - at: 1.2
+    path: "/node/10/state/current_step"
+  - at: 2.0
+    path: "/node/10/state/current_step"
+
+assert:
+  - at: 0.5
+    path: "/node/10/state/current_step"
+    between: [1, 5]
+  - at: 2.0
+    path: "/node/20/param/decay"
+    eq: 0.5

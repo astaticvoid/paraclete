@@ -1,0 +1,32 @@
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 4
+output: /tmp/audit_test.wav
+play: false
+
+timeline:
+  - at: 0.0
+    set_param: { target: kick, param: decay, value: 0.5 }
+  - at: 0.0
+    set_param: { target: kick, param: drive, value: 0.0 }
+  - at: 1.0
+    trigger: { target: kick, velocity: 1.0 }
+  - at: 3.0
+    trigger: { target: kick, velocity: 1.0 }
+
+probe:
+  - at: 0.5
+    path: "/node/20/param/decay"
+  - at: 0.5
+    path: "/node/20/param/drive"
+
+assert:
+  - at: 1.5
+    peak_gte: 0.01
+    window_ms: 500
+  - at: 2.5
+    peak_lt: 0.01
+    window_ms: 500
+  - at: 3.5
+    peak_gte: 0.01
+    window_ms: 500
