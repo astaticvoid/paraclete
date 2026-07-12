@@ -353,7 +353,7 @@ impl Node for FmEngine {
                 Event::Midi2(ref ump) => {
                     if let UmpMessage::ChannelVoice2(cv2) = ump {
                         if let ChannelVoice2::NoteOn(n) = cv2 {
-                            let off = (timed.sample_offset as usize).min(block_size);
+                            let off = timed.sample_offset as usize;
                             if off > cursor {
                                 self.render_span(cursor, off);
                                 cursor = off;

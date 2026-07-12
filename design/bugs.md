@@ -486,6 +486,17 @@ Instrument nodes' `.min(block_size)` clamps become harmless (sub-block
 offsets always < block_size after executor defers). The negative-micro path
 (BUG-004) is unaffected (block-local early fire).
 
+**RESOLVED** (2026-07-11): implemented per the decision.
+- Executor: `deferred_events` per-slot ring buffer; merge at cycle start
+  subtracts block_size and delivers events that fit; routing splits
+  oversized events into deferred at emit time (no same-cycle pickup).
+- Instrument nodes: `.min(block_size)` removed from AnalogEngine, FmEngine,
+  Sampler (offsets always < block_size after executor defers).
+- Regression tests: `executor_defers_cross_block_offset_event_to_next_block`
+  (offset 522 → deferred → delivered at offset 10 in next block),
+  `executor_delivers_inblock_event_immediately` (offset 100 delivered in
+  current block).
+
 ### BUG-026 — Executor event sort is unstable; same-offset NoteOff/NoteOn order is unguaranteed
 
 **Severity:** Medium (latent) — a reorder silently drops a repeated note  

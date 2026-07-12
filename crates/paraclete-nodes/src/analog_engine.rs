@@ -345,7 +345,7 @@ impl Node for AnalogEngine {
                     if let UmpMessage::ChannelVoice2(cv2) = ump {
                         match cv2 {
                             ChannelVoice2::NoteOn(n) => {
-                                let off = (timed.sample_offset as usize).min(block_size);
+                                let off = timed.sample_offset as usize;
                                 if off > cursor {
                                     self.render_span(cursor, off);
                                     cursor = off;

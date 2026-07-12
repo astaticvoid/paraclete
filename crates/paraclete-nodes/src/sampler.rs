@@ -560,7 +560,7 @@ impl Node for Sampler {
             };
             if !relevant { continue; }
 
-            let off = (timed.sample_offset as usize).min(block_size);
+            let off = timed.sample_offset as usize;
             if off > cursor {
                 self.render_voices_span(cursor, off, pitch_mod, volume_mod);
                 cursor = off;

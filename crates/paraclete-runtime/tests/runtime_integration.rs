@@ -741,6 +741,100 @@ fn stable_sort_preserves_noteoff_before_noteon_at_same_offset() {
     );
 }
 
+// ── BUG-025: executor defers cross-block offset events ───────────────────
+
+/// A node that emits a single event at a configurable sample_offset.
+struct DeferredEventEmitter {
+    ports: Vec<PortDescriptor>,
+    event: Option<TimedEvent>,
+}
+impl DeferredEventEmitter {
+    fn new(event: TimedEvent) -> Self {
+        Self {
+            ports: vec![PortDescriptor {
+                id: 0, name: "events_out".into(),
+                direction: PortDirection::Output, port_type: PortType::Event,
+            }],
+            event: Some(event),
+        }
+    }
+}
+impl Node for DeferredEventEmitter {
+    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
+        if let Some(e) = self.event.take() {
+            output.events_out.push(e);
+        }
+    }
+}
+
+#[test]
+fn executor_defers_cross_block_offset_event_to_next_block() {
+    use paraclete_node_api::{UmpMessage, midi::{ChannelVoice2, Channeled, Grouped, NoteOn, u4, u7}};
+
+    let recorder = NoteOrderRecorder::new();
+    let received = recorder.order.clone();
+
+    let mut note_on = NoteOn::<[u32; 4]>::new();
+    note_on.set_group(u4::new(0));
+    note_on.set_channel(u4::new(0));
+    note_on.set_note_number(u7::new(60));
+    note_on.set_velocity(32768);
+
+    let block_size = 512usize;
+    let emitter = DeferredEventEmitter::new(
+        TimedEvent::new(block_size as u32 + 10, Event::Midi2(UmpMessage::from(ChannelVoice2::from(note_on))))
+    );
+
+    let mut conf = NodeConfigurator::new(44100.0, block_size);
+    conf.add_node(1, Box::new(emitter));
+    conf.add_node(2, Box::new(recorder));
+    conf.connect(1, 0, 2, 0).unwrap();
+
+    let mut exec = conf.build_executor();
+
+    let mut out = vec![0.0f32; block_size * 2];
+    exec.process(&mut out, 2);
+    assert!(received.lock().unwrap().is_empty(),
+        "block 1: event with offset >= block_size must be deferred, not delivered");
+
+    exec.process(&mut out, 2);
+    let r = received.lock().unwrap();
+    assert_eq!(r.len(), 1, "block 2: deferred event must be delivered, got {:?}", *r);
+    assert_eq!(r[0], "on");
+}
+
+#[test]
+fn executor_delivers_inblock_event_immediately() {
+    use paraclete_node_api::{UmpMessage, midi::{ChannelVoice2, Channeled, Grouped, NoteOn, u4, u7}};
+
+    let recorder = NoteOrderRecorder::new();
+    let received = recorder.order.clone();
+
+    let mut note_on = NoteOn::<[u32; 4]>::new();
+    note_on.set_group(u4::new(0));
+    note_on.set_channel(u4::new(0));
+    note_on.set_note_number(u7::new(60));
+    note_on.set_velocity(32768);
+
+    let block_size = 512usize;
+    let emitter = DeferredEventEmitter::new(
+        TimedEvent::new(100, Event::Midi2(UmpMessage::from(ChannelVoice2::from(note_on))))
+    );
+
+    let mut conf = NodeConfigurator::new(44100.0, block_size);
+    conf.add_node(1, Box::new(emitter));
+    conf.add_node(2, Box::new(recorder));
+    conf.connect(1, 0, 2, 0).unwrap();
+
+    let mut exec = conf.build_executor();
+    let mut out = vec![0.0f32; block_size * 2];
+    exec.process(&mut out, 2);
+
+    assert_eq!(received.lock().unwrap().len(), 1,
+        "block 1: in-block event (offset=100) must be delivered immediately");
+}
+
 // ── audio_inputs wiring (P4.5 Fix 4) ─────────────────────────────────────────
 
 /// A node that fills its audio output with a constant value.

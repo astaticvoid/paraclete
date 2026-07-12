@@ -38,6 +38,10 @@ pub struct NodeExecutor {
     /// Pre-computed at build_executor() time; never changes at runtime.
     audio_routes: Vec<Vec<usize>>,
     incoming: Vec<Vec<TimedEvent>>,
+    /// Per-slot deferred events with sample_offset >= block_size (BUG-025).
+    /// Each cycle, every deferred event's offset is reduced by block_size;
+    /// events that drop below block_size are merged into `incoming` for delivery.
+    deferred_events: Vec<Vec<TimedEvent>>,
     transport: TransportInfo,
     sample_rate: f32,
     block_size: usize,
@@ -193,6 +197,7 @@ impl NodeExecutor {
             event_routes,
             audio_routes,
             incoming: (0..n).map(|_| Vec::with_capacity(16)).collect(),
+            deferred_events: (0..n).map(|_| Vec::with_capacity(8)).collect(),
             transport: TransportInfo::default(),
             sample_rate,
             block_size,
@@ -386,6 +391,24 @@ impl NodeExecutor {
             }
         }
 
+        // BUG-025: merge deferred events that now fit within the block.
+        // Runs at cycle start so events deferred this cycle are NOT picked up
+        // by downstream slots in the same cycle.
+        for slot_idx in 0..self.incoming.len() {
+            let deferred = &mut self.deferred_events[slot_idx];
+            for e in deferred.iter_mut() {
+                e.sample_offset = e.sample_offset.saturating_sub(block_size as u32);
+            }
+            let mut i = 0;
+            while i < deferred.len() {
+                if deferred[i].sample_offset < block_size as u32 {
+                    self.incoming[slot_idx].push(deferred.swap_remove(i));
+                } else {
+                    i += 1;
+                }
+            }
+        }
+
         for slot_idx in 0..self.nodes.len() {
             // Collect audio input pointers before the mutable borrow of self.nodes[slot_idx].
             // audio_routes[slot_idx] contains only src_idx < slot_idx (topological order),
@@ -515,7 +538,17 @@ impl NodeExecutor {
                 let outgoing: *const [TimedEvent] =
                     self.nodes[slot_idx].events_out.as_slice() as *const [TimedEvent];
                 for &dst_idx in &self.event_routes[slot_idx] {
-                    self.incoming[dst_idx].extend_from_slice(unsafe { &*outgoing });
+                    // BUG-025: split cross-block offset events into deferred queues.
+                    // Events with offset >= block_size are held for future cycles.
+                    for &e in unsafe { &*outgoing } {
+                        if e.sample_offset < block_size as u32 {
+                            self.incoming[dst_idx].push(e);
+                        } else {
+                            let mut deferred = e;
+                            deferred.sample_offset -= block_size as u32;
+                            self.deferred_events[dst_idx].push(deferred);
+                        }
+                    }
                 }
             }
         }
