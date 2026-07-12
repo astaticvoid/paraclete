@@ -1,0 +1,16 @@
+# BUG-027 investigation: is the engine's session start clean with no input?
+# Scans the first 1.5s of a silent session for clicks (discontinuities),
+# DC offset, and any audio at all. If this passes, the init crackle heard
+# live is not produced by the graph — it is device/stream-side (cf. BUG-023).
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 1.5
+output: /tmp/session_start_clean.wav
+play: false
+
+assert:
+  - at: 1.4
+    peak_lt: 0.001
+    window_ms: 1300
+  - discontinuity_lt: 0.005
+  - dc_offset_lt: 0.001

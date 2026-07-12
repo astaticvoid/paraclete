@@ -1,3 +1,4 @@
+mod analysis;
 mod scenario;
 mod resolve;
 mod wav;
@@ -302,6 +303,8 @@ fn run_batch(scenario: TestScenario) -> Result<(), String> {
     ctx.capture.drain(&mut all_samples, &mut last_capture_read);
     ctx.running.store(false, Ordering::SeqCst);
 
+    check_artifact_assertions(&scenario.assert, &all_samples, sample_rate, &mut failures);
+
     if !failures.is_empty() {
         for f in &failures {
             eprintln!("[test-driver] FAIL: {}", f);
@@ -327,6 +330,77 @@ fn run_batch(scenario: TestScenario) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+/// Post-capture artifact scans (INFRA-001). Unlike live assertions these run
+/// on the complete buffer once the render finishes; `from`/`until` bound the
+/// scanned window in seconds.
+fn check_artifact_assertions(
+    assertions: &[Assertion],
+    all_samples: &[f32],
+    sample_rate: f32,
+    failures: &mut Vec<String>,
+) {
+    for a in assertions {
+        if !a.has_artifact_check() {
+            continue;
+        }
+        let from = ((a.from.unwrap_or(0.0) * sample_rate as f64) as usize).min(all_samples.len());
+        let until = a.until
+            .map(|u| ((u * sample_rate as f64) as usize).min(all_samples.len()))
+            .unwrap_or(all_samples.len());
+        if from >= until {
+            failures.push(format!(
+                "artifact assertion window [{}s, {}s) is empty (capture is {:.3}s)",
+                a.from.unwrap_or(0.0),
+                a.until.map(|u| u.to_string()).unwrap_or_else(|| "end".into()),
+                all_samples.len() as f64 / sample_rate as f64
+            ));
+            continue;
+        }
+        let window = &all_samples[from..until];
+        let time_of = |idx: usize| (from + idx) as f64 / sample_rate as f64;
+
+        // NaN defeats the ordered comparisons below (NaN >= limit is
+        // false), so any non-finite sample fails the assertion outright.
+        let (nf_count, nf_idx) = analysis::non_finite(window);
+        if nf_count > 0 {
+            failures.push(format!(
+                "{} non-finite sample(s), first at sample {} ({:.4}s)",
+                nf_count, from + nf_idx, time_of(nf_idx)
+            ));
+            continue;
+        }
+
+        if let Some(limit) = a.discontinuity_lt {
+            let (jump, idx) = analysis::max_discontinuity(window);
+            if jump as f64 >= limit {
+                failures.push(format!(
+                    "discontinuity {:.4} at sample {} ({:.4}s) >= {:.4}",
+                    jump, from + idx, time_of(idx), limit
+                ));
+            }
+        }
+        if let Some(limit) = a.dc_offset_lt {
+            let offset = analysis::dc_offset(window);
+            if offset.abs() as f64 >= limit {
+                failures.push(format!(
+                    "dc offset {:.5} over [{:.3}s, {:.3}s) >= {:.5}",
+                    offset, time_of(0), until as f64 / sample_rate as f64, limit
+                ));
+            }
+        }
+        if let Some(limit_ms) = a.dropout_lt_ms {
+            let (run, idx) = analysis::longest_hold_run(window);
+            let run_ms = run as f64 / sample_rate as f64 * 1000.0;
+            if run_ms >= limit_ms {
+                failures.push(format!(
+                    "held-sample run of {:.2}ms ({} samples) starting at {:.4}s >= {:.2}ms",
+                    run_ms, run, time_of(idx), limit_ms
+                ));
+            }
+        }
+    }
 }
 
 fn resolve_action(resolver: &NameResolver, action: &scenario::TimelineAction) -> Result<ResolvedActionKind, String> {

@@ -1,0 +1,30 @@
+# BUG-027 investigation: first kick through the full chain (mix -> reverb).
+# The pre-trigger window must be silent and click-free; the trigger itself
+# is a legitimate transient, so the discontinuity window stops before it.
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 3
+output: /tmp/kick_reverb_clean.wav
+play: false
+
+timeline:
+  - at: 1.0
+    trigger: { target: kick, velocity: 1.0 }
+
+# NOTE: timeline actions dispatch on wall clock but from/until windows are in
+# capture time, which runs slower than wall clock (block processing + sleep).
+# The trigger at wall 1.0s lands around capture ~0.7s; windows leave margin.
+assert:
+  # Pre-trigger: no click while the reverb spins up empty
+  - discontinuity_lt: 0.005
+    until: 0.5
+  - dc_offset_lt: 0.001
+    until: 0.5
+  # Kick must actually sound
+  - at: 1.5
+    peak_gte: 0.01
+    window_ms: 500
+  # Post-trigger region: no dropouts once audio is flowing
+  - dropout_lt_ms: 5.0
+    from: 0.8
+    until: 1.2

@@ -78,6 +78,11 @@ fn default_velocity() -> f64 { 0.79 }
 
 #[derive(Debug, Deserialize)]
 pub struct Assertion {
+    // Live assertions (state bus / peak) fire once `at` seconds elapse.
+    // Artifact assertions ignore `at`: they scan the captured buffer after
+    // the render completes, windowed by `from`/`until` (seconds; defaults
+    // to the whole capture).
+    #[serde(default)]
     pub at: f64,
     pub path: Option<String>,
     pub eq: Option<f64>,
@@ -85,6 +90,19 @@ pub struct Assertion {
     pub peak_gte: Option<f64>,
     pub peak_lt: Option<f64>,
     pub window_ms: Option<f64>,
+    pub discontinuity_lt: Option<f64>,
+    pub dc_offset_lt: Option<f64>,
+    pub dropout_lt_ms: Option<f64>,
+    pub from: Option<f64>,
+    pub until: Option<f64>,
+}
+
+impl Assertion {
+    pub fn has_artifact_check(&self) -> bool {
+        self.discontinuity_lt.is_some()
+            || self.dc_offset_lt.is_some()
+            || self.dropout_lt_ms.is_some()
+    }
 }
 
 #[derive(Debug, Deserialize)]
