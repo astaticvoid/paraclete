@@ -653,3 +653,40 @@ conversion are correct.
 **Status: engine exonerated; pending user confirmation.** Same protocol as
 BUG-023: headphone A/B on `afplay` start (does the crackle follow the
 speakers or the file?). If confirmed device-side, close as environmental.
+
+---
+
+### BUG-028 — Test-driver omitted trigger note sent 0 instead of engine default
+
+**Severity:** Medium — every trigger render to date was mistuned
+**Phase found:** INFRA-002 implementation (2026-07-12), reading the scenario
+schema against the CMD_TRIGGER contract
+**Description:** `TimelineAction::Trigger` used `#[serde(default)]` for
+`note`, so YAML triggers omitting it sent `arg0 = 0` — a valid MIDI note that
+retunes the voice (kick: `note_to_hz(0)` ≈ 8 Hz, three octaves below the C2
+reference) and poisons `last_note` for subsequent playback. The contract
+(ADR-033; `analog_engine.rs`, `sampler.rs`, `fm_engine.rs` all agree) is
+`arg0 < 0` = engine default. Every existing test YAML omits `note`, so all
+audit/kick trigger renders were mistuned — assertions passed because they
+only checked `peak_gte`. Same defect class as BUG-022 (seq-vs-trigger pitch
+mismatch).
+**Location:** `tools/test-driver/src/scenario.rs`
+**RESOLVED** (`4841c55`, 2026-07-12): omitted note now defaults to -1;
+verified -1 means "default" in all three trigger-capable nodes. Regression
+test `trigger_without_note_defaults_to_engine_default`.
+
+---
+
+### INFRA-002 — RESOLVED (`27974fe`, 2026-07-12)
+
+Quick mode shipped per ADR-033 § Quick mode:
+`test-driver --trigger kick --at 1.0 -d 3 [--instrument p] [--output p]
+[--no-play]`. Pairs `--trigger`/`--at` positionally; mismatched counts,
+flag-like values, negative/NaN times, and unknown flags error with exit 2
+before execution; duration defaults to last trigger + 2s.
+
+Spec conflict recorded: ADR-033 claims clap is "already a workspace
+dependency via crossterm's transitive deps" — it is not (`clap-sys` is the
+CLAP plugin ABI, unrelated). Parsing is hand-rolled to honor the ADR's
+no-new-crate intent; CLI shape matches the spec. The Rust builder API
+(`Scenario::new().trigger(...)`) remains deferred as this entry stated.
