@@ -127,9 +127,18 @@ They are judgment calls to make *with* the user in session, not solo.)
        validating 10 ADR findings. See `design/review/adr-latent-issues.md`.
 5. **Parked/waiting:** Launchpad track frozen (s2 F2; s1-F7 cleanup in the
     trigger backlog); BUG-023 resolved (macOS speaker protection confirmed via
-    headphone A/B); BUG-012 queued for a hardware session; BUG-027 (reverb
-    init crackle), INFRA-001 (artifact detection), INFRA-002 (test API
-    ergonomics) tracked in bugs.md.
+    headphone A/B); BUG-012 queued for a hardware session; BUG-027 engine
+    exonerated by measurement — pending user headphone A/B on afplay start,
+    same protocol as BUG-023 (see bugs.md addendum).
+6. **Autonomous session 2026-07-12:** INFRA-001 (artifact assertions) and
+    INFRA-002 (test-driver quick mode `--trigger kick --at 1.0 -d 3`)
+    shipped. Found+fixed: BUG-028 (omitted trigger note sent 0 — all
+    test-driver trigger renders were mistuned), BUG-029 (failed apply_patch
+    stranded the engine paused; audit item #4), BUG-030 (remove_node
+    destroyed devices on refusal). ADR latent-issue audit items #1, #2, #5,
+    #6, #7, #10, #11 validated — see the round-2 tables in bugs.md.
+    Remaining audit items need the interactive harness (ADR-033 v2), stress
+    runs, or hardware.
 
 Standing design tiebreakers (s2): synthesis voices are the emotional core —
 "sit down with a nice kick engine and tune it"; interface work starts from

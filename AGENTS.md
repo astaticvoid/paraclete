@@ -30,6 +30,26 @@ cargo test -p paraclete-runtime configurator_connect_rejects_two_node_cycle
 cargo run -p gen-samples
 ```
 
+## Headless audio testing (ADR-033)
+
+`tools/test-driver` renders the graph without hardware and asserts on the
+result — use it to hear/verify sound changes without the app:
+
+```bash
+# Quick mode: trigger a voice, render, auto-play
+cargo run -p test-driver -- --trigger kick --at 1.0 -d 3
+
+# Scenario mode: timed commands + assertions (see tools/test-driver/tests/)
+cargo run -p test-driver -- tools/test-driver/tests/kick_reverb_clean.yaml
+```
+
+Assertions: state-bus `eq`/`between`, live `peak_gte`/`peak_lt`, and
+post-capture artifact scans `discontinuity_lt`/`dc_offset_lt`/`dropout_lt_ms`
+(windowed by `from`/`until` seconds; NaN/Inf fail outright). Exit 0 pass,
+1 assertion failure, 2 fatal. Caveat: timeline actions dispatch on wall
+clock but capture time runs ~25% slower in debug builds — leave margin in
+artifact windows around action times.
+
 ## Keyboard controls (terminal emulator)
 
 When no Launchpad is connected, the 8x8 grid is keyboard-driven:

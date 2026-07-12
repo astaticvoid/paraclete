@@ -746,3 +746,12 @@ mapping discards the message); and `remove_node` on an id whose slot is
 currently drained into a live executor errors after partially mutating
 `id_to_index` (same shape as BUG-030, unreachable via apply_patch which
 restores nodes first).
+
+---
+
+### AUDIT VALIDATION — round 2 addendum (2026-07-12)
+
+| Item | Finding | Result |
+|---|---|---|
+| #7 (ADR-007 Rhai infinite loop) | `set_max_operations(500_000)` + call-level/expr-depth caps configured in `paraclete-scripting` — a `while true {}` script aborts with a Rhai error; error surfacing was fixed in BUG-010 | **Clean** — bounded, recoverable |
+| #10 (ADR-023 GraphNode inner ParamLock) | `InnerGraphNode::process` ignores `input.commands` and forwards events only to the inner sequencer; outer ParamLock routes by node_id, which never matches inner ids | **Confirmed limitation, already tracked** — roadmap Known Provisional "Inner GraphNode runtime patching", P11+ |
