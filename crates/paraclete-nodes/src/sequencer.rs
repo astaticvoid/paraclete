@@ -2374,6 +2374,57 @@ mod tests {
         assert!(!seq.patterns[0].steps[63].active);
     }
 
+    /// ADR latent-issue audit item #11: a foreign/corrupt v3 blob whose
+    /// active_pattern exceeds its pattern count must load gracefully — the
+    /// index is clamped into the padded bank, never indexed out of bounds.
+    #[test]
+    fn deserialize_v3_active_pattern_beyond_count_is_clamped() {
+        let mut s = Step::empty();
+        s.active = true;
+        let mut blob = vec![3u8];
+        blob.extend_from_slice(&240u32.to_le_bytes());  // ticks_per_step
+        blob.extend_from_slice(&1.0f32.to_le_bytes());  // speed_mult
+        blob.extend_from_slice(&999u16.to_le_bytes());  // active_pattern: way out of range
+        blob.push(0);                                    // chain_len
+        blob.extend_from_slice(&2u16.to_le_bytes());    // pattern_count = 2
+        for _ in 0..2 {
+            let mut body = Vec::new();
+            body.extend_from_slice(&1u16.to_le_bytes()); // length
+            body.push(0);                                 // page_loop start
+            body.push(0);                                 // page_loop end
+            body.extend_from_slice(&0.0f32.to_le_bytes()); // swing
+            body.extend_from_slice(&1u16.to_le_bytes());  // step_count
+            write_step_record(&s, &mut body);
+            blob.extend_from_slice(&(body.len() as u32).to_le_bytes());
+            blob.extend_from_slice(&body);
+        }
+        let mut seq = Sequencer::new();
+        seq.deserialize(&blob);
+        assert!(seq.active_pattern < seq.patterns.len(),
+            "active_pattern {} must be clamped inside the bank of {}",
+            seq.active_pattern, seq.patterns.len());
+        // Playback index paths must not panic on the loaded state.
+        let _ = seq.window();
+    }
+
+    /// ADR latent-issue audit item #6: a corrupt v3 blob declaring zero
+    /// patterns must abort the load, keeping prior state — an empty patterns
+    /// Vec would panic every playback index (active_index subtracts 1).
+    #[test]
+    fn deserialize_v3_zero_pattern_count_keeps_existing_state() {
+        let mut blob = vec![3u8];
+        blob.extend_from_slice(&240u32.to_le_bytes());  // ticks_per_step
+        blob.extend_from_slice(&1.0f32.to_le_bytes());  // speed_mult
+        blob.extend_from_slice(&0u16.to_le_bytes());    // active_pattern
+        blob.push(0);                                    // chain_len
+        blob.extend_from_slice(&0u16.to_le_bytes());    // pattern_count = 0
+        let mut seq = Sequencer::new();
+        seq.set_step(3, 72, 32768, true);
+        seq.deserialize(&blob);
+        assert!(!seq.patterns.is_empty(), "patterns bank must never be empty");
+        assert!(seq.patterns[0].steps[3].active, "prior state must be retained");
+    }
+
     #[test]
     fn serialize_persists_effective_pattern_index() {
         // C1 wrote the effective (clamped) index because CMD_SET_PATTERN was
