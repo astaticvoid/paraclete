@@ -87,6 +87,17 @@ Ordered by nearness to the critical path.
 ADR + counters) — it continues the debug-posture thread and unblocks D4. D1/D2
 are the user's to author. D5/D6 are quick atomic cleanups.
 
+**Progress (2026-07-12, exhaustion-mode session):**
+- **D3** 🚧 WIP — `ADR-034-runtime-observability.md` drafted (context + proposed
+  atomic-counter decision + open questions + impl sketch); Status = WIP/NOT
+  ACCEPTED. Fresh operator: finish the **TODO** sections, move to `proposed`,
+  then implement per the sketch. Recommended: land the counters **before** the
+  `arc-swap` refactor (counters are the evidence).
+- **D4** ✅ done — Deferred-Bug Backlog now flagged blocked-on-INFRA-003.
+- **D5** ✅ done — BUG-031 residual rule documented in ADR-030.
+- **D6** ✅ done — `Cow<str>` migration given a pre-publication trigger row.
+- **D1, D2** — open, **user-owned** (unchanged).
+
 ---
 
 ## Roadmap
@@ -135,6 +146,11 @@ four-pillar instrument.
 ---
 
 ## Deferred-Bug Backlog (trigger-based, replaces P10.5)
+
+> **D4 (2026-07-12):** these triggers are **assumed quiet, not confirmed** — per
+> INFRA-003, the engine's own dropouts/overflows are invisible at runtime, so
+> "no trigger has fired" is unproven. Treat this backlog as **blocked on
+> INFRA-003 / ADR-034 observability** before relying on any "hasn't fired yet".
 
 | Bug | Fix when this trigger fires |
 |---|---|
