@@ -16,6 +16,10 @@ design intent is captured in the documents, not in anyone's head.
 (`design/phases/p10-interfaces.md` or `w0-interfaces.md`) →
 `design/interface-plan.md` / relevant ADRs only as needed.
 
+For new tools/components outside the phase structure: find the ADR in
+`design/adr/` (e.g. ADR-033 for the headless test driver). ADRs are the spec;
+implementation follows in a separate commit.
+
 ## Task routing by tier
 
 Route by the **judgment density** of the task, not its size. When in doubt,
@@ -61,6 +65,8 @@ They are judgment calls to make *with* the user in session, not solo.)
 1. **Specs win.** If the spec and reality conflict, stop, record the conflict
    in the phase report, and ask the user. Do not redesign inline. If a spec is
    silent on a detail, choose the boring option and note it in the report.
+   **New tools/components outside existing phases: write an ADR first, get
+   approval, then implement. Never jump to code.**
 2. **Do not revisit named decisions** without the user: no tokio; no Web MIDI
    as primary transport; wire names stay plain; relative-only encoders;
    surfaces are device nodes; DAG + LoopBreakNode; ADR-019 naming contracts;
@@ -110,12 +116,17 @@ They are judgment calls to make *with* the user in session, not solo.)
      repeated-note drop — small standalone fix). §5.3 Launchpad surface
      parked per s2; the P10 play-test gates on a paired session (TUI +
      command injection, or Theoria post-W2).
-   - **(c) W2 re-scoped: reference-design spike** — **paired only** (user +
-     Digitakt II hardware + Syntakt/Hydrasynth manuals). Produces the
-     Theoria native-surface spec (fixed input rail + contextual window,
-     param/env/LFO pages, source→FX channel view) AND the P12+
-     machine-family param philosophy. ADR-032 comes after this spec.
-     Do not build W-track features ahead of it.
+    - **(c) W2 re-scoped: reference-design spike** — **paired only** (user +
+      Digitakt II hardware + Syntakt/Hydrasynth manuals). Produces the
+      Theoria native-surface spec (fixed input rail + contextual window,
+      param/env/LFO pages, source→FX channel view) AND the P12+
+      machine-family param philosophy. ADR-032 comes after this spec.
+      Do not build W-track features ahead of it.
+    - **(d) Headless test driver** — **ADR-033 approved 2026-07-11,
+      implementation pending.** A `tools/test-driver/` binary that loads
+      instrument YAML + test scenario YAML, runs the graph headless, captures
+      audio to WAV, plays it. No editing engine code for tests. Two-stage:
+      ADR (done) → implement.
 5. **Parked/waiting:** Launchpad track frozen (s2 F2; s1-F7 cleanup in the
    trigger backlog); BUG-023 open pending the driver's headphone A/B (engine
    exonerated by measurement — see bugs.md); BUG-012 queued for a hardware
