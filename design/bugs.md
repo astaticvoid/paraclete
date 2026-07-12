@@ -755,3 +755,4 @@ restores nodes first).
 |---|---|---|
 | #7 (ADR-007 Rhai infinite loop) | `set_max_operations(500_000)` + call-level/expr-depth caps configured in `paraclete-scripting` — a `while true {}` script aborts with a Rhai error; error surfacing was fixed in BUG-010 | **Clean** — bounded, recoverable |
 | #10 (ADR-023 GraphNode inner ParamLock) | `InnerGraphNode::process` ignores `input.commands` and forwards events only to the inner sequencer; outer ParamLock routes by node_id, which never matches inner ids | **Confirmed limitation, already tracked** — roadmap Known Provisional "Inner GraphNode runtime patching", P11+ |
+| #16 (ADR-012 output buffers not zeroed) | `slot.audio_out.clear()` (= `fill(0.0)`) runs every cycle before each node processes; master interleaved buffer and signal scratch likewise | **Clean** |
