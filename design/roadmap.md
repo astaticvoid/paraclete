@@ -47,7 +47,7 @@ properly with serializer v3 in P10 C1 — scheduled before session #1 regardless
 | 6 | ~~**Theoria legibility phase**~~ — **implemented 2026-07-10** (`7e7a39a`/`e553c62`; report: `theoria-legibility-report.md`) | Minimum bar items 1–4 done + contextual encoders; judged live in Chrome. **Exit gate = paired tablet judgment (next session)**; F7 cleanup + F4/save-reload deferred |
 | 6.1 | **BUG-022 + BUG-023** — seq/trigger pitch unity + retrigger ducking (measurement-first) | Session #2: sound correctness is baseline; sessions can't judge the engine with these live |
 | 6.2 | ~~**Theoria baseline interaction wins**~~ — **shipped 2026-07-11** (`e1f86cf` + `3356d60`; report: `theoria-baseline-interactions-report.md`) | Drag-draw paints via new authoritative `/script/lp/steps_n` mask mirror; encoder row at bottom edge w/ value bars; dead grid gone (mode-aware cells). Found+fixed BUG-024 (state_write in subscriptions panicked). Tablet judgment pending |
-| 6.3 | **W2 re-scoped: Theoria native surface, design-first** — paired reference spike (Elektron box TBD + Hydrasynth manuals) → fixed-input rail + contextual window spec → build; ADR-032 after the spec | Session #2 F1/F7 keystone: "consistent inputs, contextual screen window"; do not improvise UI |
+| 6.3 | **W2 re-scoped: Theoria native surface, design-first** — reference spike across three Elektron boxes + Hydrasynth: **Digitakt II** for sample workflows, **Syntakt** for analog/synthesis machine-per-track param pages, **Digitone** for FM page discipline; **Hydrasynth** for signal-chain (source→effect graph) view. Common views (envelopes, LFOs, effects, sequencer) from any. ADR-032 after the spec | Session #2 F1/F7 keystone: "consistent inputs, contextual screen window"; do not improvise UI |
 | 7 | ~~P10 C2–C5~~ — **shipped 2026-07-11** (`0a8116b`/`e8f7718`/`50ef64b`/`5306674`; report: `p10-report.md`) | Pattern engine complete: page-loop windows, per-track length/speed (polyrhythm), BUG-004 fixed, cued switching + chain, state-bus surface + TUI indicator. §5.3 Launchpad surface parked per s2; P10 play-test pending (Theoria/W2 or paired TUI session) |
 
 **Paired sessions** are a first-class roadmap instrument from here on: one after
@@ -156,6 +156,22 @@ Everything else open is scheduled: BUG-001/008 → P10 C0 (now), BUG-005 → P10
 
 ---
 
+## Agent Infrastructure Gaps (July 2026)
+
+An agent working on this codebase cannot currently:
+
+| Gap | Impact | See |
+|---|---|---|
+| **Debug harness** | Can't interrogate engine state live — no REPL to send commands, read params, watch changes, or measure peaks while running | ADR-033 § interactive mode |
+| **Null audio backend** | Can't run graph without a physical audio device — blocks CI and headless agent runs | ADR-033 § prerequisite |
+| **Audio diff/snapshot** | Can't compare "before" vs "after" renders to detect regressions — no peak/RMS baselines for refactoring | Buildable on ADR-033 |
+| **Structured log channel** | No per-node debug events (step fires, voice triggers, param changes) — state bus is push-only per cycle | Buildable on ADR-033 `watch` |
+| **CPU/xrun meter** | Can't tell if a change degrades performance — each trigger named in audio-model review, none have fired | Trigger-based backlog below |
+
+The debug harness (ADR-033 interactive mode) unblocks the first four. It is the
+keystone.
+
+---
 ## Resolved Open Questions
 
 | Question | Resolution | ADR / Phase |

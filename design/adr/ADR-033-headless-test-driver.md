@@ -24,6 +24,8 @@ A headless test driver is needed that can:
 4. Send live triggers at specific times
 5. Render audio to a WAV file
 6. Play it back immediately
+7. Assert on state bus values and audio metrics (agent-usable pass/fail)
+8. Provide an interactive debug harness for live engine interrogation
 
 No TUI. No hardware. No editing engine code.
 
@@ -195,6 +197,83 @@ All actions support `target` as either:
 | `chain_clear` | `CMD_CHAIN_CLEAR` (32) | target |
 
 ### Architecture
+
+Two modes, one binary:
+
+1. **Batch mode** — load a YAML scenario, execute the timeline, check assertions,
+   write WAV, exit with pass/fail code. Use for CI, regression tests, agent
+   verification.
+
+2. **Interactive mode** — stdin/stdout JSON REPL. The agent sends commands and
+   reads state while audio renders in the background. Use for debugging,
+   exploration, live engine interrogation.
+
+Both modes share the same engine stack: instrument load → graph build →
+executor spawn → audio capture thread.
+
+#### Interactive mode protocol (JSON-lines over stdin/stdout)
+
+Each message is one JSON object per line. Commands sent on stdin; responses
+on stdout. Audio renders continuously; state is read asynchronously.
+
+```jsonc
+// ── Set a parameter ──────────────────────────────────────────
+{"cmd": "set_param", "target": "kick", "param": "decay", "value": 0.3}
+// → {"ok": true}
+
+// ── Live trigger ──────────────────────────────────────────────
+{"cmd": "trigger", "target": "kick", "note": 36, "velocity": 1.0}
+// → {"ok": true}
+
+// ── Sequencer control ─────────────────────────────────────────
+{"cmd": "toggle_step", "target": "seq0", "step": 3}
+// → {"ok": true}
+
+{"cmd": "set_pattern", "target": "seq0", "pattern": 2}
+// → {"ok": true}
+
+// ── Read state bus ────────────────────────────────────────────
+{"cmd": "read", "path": "/node/10/state/current_step"}
+// → {"path": "/node/10/state/current_step", "value": 3, "type": "float"}
+
+{"cmd": "read", "path": "/node/20/param/decay"}
+// → {"path": "/node/20/param/decay", "value": 0.3, "type": "float"}
+
+// ── Read audio peak ───────────────────────────────────────────
+{"cmd": "peak", "window_ms": 500}
+// → {"peak": 0.34, "window_ms": 500}
+
+// ── Subscribe to state bus changes ────────────────────────────
+{"cmd": "watch", "path": "/node/10/state/current_step"}
+// → {"event": "change", "path": "/node/10/state/current_step", "value": 0, "at_secs": 1.234}
+// → {"event": "change", "path": "/node/10/state/current_step", "value": 1, "at_secs": 1.468}
+
+{"cmd": "unwatch", "path": "/node/10/state/current_step"}
+// → {"ok": true}
+
+// ── Dump full state ───────────────────────────────────────────
+{"cmd": "dump"}
+// → {"paths": {"/node/10/state/current_step": 3, "/node/20/param/decay": 0.3, ...}}
+
+// ── Render and write WAV ──────────────────────────────────────
+{"cmd": "render", "duration_secs": 3, "output": "/tmp/debug.wav"}
+// → {"ok": true, "output": "/tmp/debug.wav", "duration_secs": 3}
+
+// ── Shutdown ─────────────────────────────────────────────────
+{"cmd": "quit"}
+// → {"ok": true, "peak": 0.34}
+```
+
+State bus reads return the value at the time the command is processed. Watches
+fire on each main-loop iteration when the watched path changes value.
+
+**Prerequisite: null audio backend.** Interactive mode runs headless without
+cpal. The audio thread calls `executor.process()` into a capture buffer
+regardless of whether a physical audio device is present. A null audio
+backend in `paraclete-hal` exposes this — the executor is driven by a
+dedicated thread that fills the capture buffer at the configured sample rate,
+without opening a cpal stream. This also enables CI and headless agent runs
+for batch mode.
 
 ```
 tools/test-driver/
