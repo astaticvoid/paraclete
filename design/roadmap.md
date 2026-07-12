@@ -178,10 +178,13 @@ An agent working on this codebase cannot currently:
 | ~~**Artifact detection**~~ | **Closed 2026-07-12 (INFRA-001):** `discontinuity_lt`/`dc_offset_lt`/`dropout_lt_ms` assertions + NaN/Inf checks in the test driver | Shipped `9655cd0` |
 | **Audio diff/snapshot** | Can't compare "before" vs "after" renders to detect regressions — no peak/RMS baselines for refactoring | Buildable on ADR-033 |
 | **Structured log channel** | No per-node debug events (step fires, voice triggers, param changes) — state bus is push-only per cycle | Buildable on ADR-033 `watch` |
-| **CPU/xrun meter** | Can't tell if a change degrades performance — each trigger named in audio-model review, none have fired | Trigger-based backlog below |
+| **CPU/xrun meter** | Can't tell if a change degrades performance — each trigger named in audio-model review, none have fired **because our own dropouts are invisible** (INFRA-003) | Trigger-based backlog below; **INFRA-003** (bugs.md) is the concrete first step |
+| **Live dropout/xrun detection** | Audio callback fills silence on `try_lock` miss / missing executor with no counter or log; state-bus SPSC overflow drops silently. "No trigger has fired" is unproven, not confirmed | **INFRA-003** — atomic counters on the `fill(0.0)` paths + `/engine/cpu`; lock-free, does **not** need the full ADR-033 harness |
 
 The debug harness (ADR-033 interactive mode) unblocks the first four. It is the
-keystone.
+keystone. **INFRA-003** (live dropout/xrun counters) is independent of it and is
+the cheapest way to turn the trigger-based backlog from assumed-quiet to
+measured — a good small next step for the debug-posture push.
 
 ---
 ## Resolved Open Questions

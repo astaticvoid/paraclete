@@ -7,7 +7,8 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 ## Status (2026-07-12)
 
 **Actively open:** BUG-012 (hardware session), BUG-027 (engine exonerated by
-measurement — pending user headphone A/B, see addendum), INFRA-002.
+measurement — pending user headphone A/B, see addendum), INFRA-003 (live
+dropout/xrun observability — the debug-posture gap).
 **Trigger-based (fix when named trigger fires):** BUG-002, BUG-003, BUG-006.
 **Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 031, INFRA-001.
 **Audit validation rounds 1–3 (2026-07-12):** ADR latent-issue items #1–#8,
@@ -814,3 +815,34 @@ without the interactive harness (`design/review/adr-latent-issues.md`):
 
 Remaining harness-gated items (#9, #12, #13–#15, #17–#23, #25, #26, #29) need
 the ADR-033 interactive debug harness or hardware and are deferred to it.
+
+---
+
+### INFRA-003 — Self-inflicted audio dropouts are invisible at runtime
+
+**Severity:** High (observability) — the most likely dropout source in our own
+code produces silence with no counter, log, or meter
+**Phase found:** Debug-posture review (2026-07-12)
+**Description:** The audio callback recovers from two conditions by filling the
+buffer with silence — an audible dropout — and records nothing:
+`audio.rs:159–167` / `188–196`, `if let Ok(guard) = exec_cell.try_lock() { … }
+else { data.fill(0.0) }` (lock contended with the executor swap) and the inner
+`else { data.fill(0.0) }` (no executor installed). The same silent-drop shape
+recurs at `executor.rs:588` (`let _ = state_bus_producer.push(…)` — SPSC full,
+state update dropped) and the deferred-event carry at `executor.rs:400`. Only
+LED delivery logs a drop (`configurator.rs:607`), and only the first one.
+Consequence: a `try_lock` miss (the Mutex→arc-swap trigger in the audio-model
+review) or an SPSC overflow (BUG-006, audit #9/#12) can happen in a live session
+and leave no trace — so "none of these triggers have fired" is unproven, not
+confirmed. cpal *device* xruns are logged via `err_fn`; our own are not.
+**Location:** `crates/paraclete-hal/src/audio.rs` (callback), plus the
+executor/configurator drop sites above
+**Fix direction (minimal, lock-free):** an `AtomicU64` dropout/underrun counter
+on `AudioEngine` incremented on each `fill(0.0)` recovery path, plus a
+buffers-processed counter, exposed via the deferred `/engine/cpu` state path
+(audio-model-review). Same pattern for the state-bus overflow counter (folds in
+the BUG-006 profiling need). This is the concrete, buildable half of the
+roadmap's "CPU/xrun meter" gap — it does not require the full ADR-033 harness
+and unblocks confirming (rather than assuming) the trigger-based backlog.
+**Status:** Open — tracked for the debug-posture push; see roadmap Agent
+Infrastructure Gaps ("CPU/xrun meter", "Structured log channel").
