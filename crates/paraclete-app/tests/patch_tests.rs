@@ -144,6 +144,42 @@ fn apply_patch_add_edge_cycle_without_loop_break_returns_error() {
     );
 }
 
+/// BUG-029 — a failed change mid-batch must not strand the engine paused
+/// with no executor: apply_patch rebuilds and resumes with the partial
+/// changes applied, then reports the error.
+#[test]
+fn apply_patch_failed_change_still_installs_executor() {
+    let mut conf = NodeConfigurator::new(SR, BLOCK);
+    let engine   = AudioEngine::new_paused();
+    let registry = build_registry();
+
+    let result = apply_patch(
+        vec![
+            TopologyChange::AddNode {
+                type_tag:       "distortion".to_string(),
+                initial_params: Default::default(),
+            },
+            TopologyChange::AddNode {
+                type_tag:       "nonexistent_xyz".to_string(),
+                initial_params: Default::default(),
+            },
+        ],
+        &engine,
+        &mut conf,
+        &registry,
+    );
+
+    assert!(
+        matches!(result, Err(PatchError::UnknownTypeTag(_))),
+        "expected UnknownTypeTag, got: {:?}",
+        result
+    );
+    assert!(
+        engine.take_executor().is_some(),
+        "failed patch must leave the engine with a fresh executor, not stranded paused"
+    );
+}
+
 // ── NodeConfigurator::remove_node tests ───────────────────────────────────
 
 #[test]

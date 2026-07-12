@@ -74,7 +74,10 @@ impl std::error::Error for PatchError {}
 ///
 /// Returns one new node ID per `AddNode` change, in order. If a change fails,
 /// the patch aborts at that step. Prior changes in a failed batch are **not**
-/// rolled back.
+/// rolled back, and the engine is rebuilt and resumed with them applied —
+/// a failed patch must never leave the audio thread stranded paused
+/// (BUG-029; each individual change keeps the graph valid, so the partial
+/// state is always buildable).
 pub fn apply_patch(
     changes:  Vec<TopologyChange>,
     engine:   &AudioEngine,
@@ -91,32 +94,44 @@ pub fn apply_patch(
     }
 
     let mut new_ids = Vec::new();
+    let mut error: Option<PatchError> = None;
 
     for change in changes {
-        match change {
+        let step = match change {
             TopologyChange::AddNode { type_tag, initial_params } => {
-                let mut node = registry
-                    .build(&type_tag)
-                    .ok_or_else(|| PatchError::UnknownTypeTag(type_tag.clone()))?;
-                node.set_initial_params(&initial_params);
-                let id = conf.add_node_tagged(node, &type_tag);
-                new_ids.push(id);
+                match registry.build(&type_tag) {
+                    Some(mut node) => {
+                        node.set_initial_params(&initial_params);
+                        let id = conf.add_node_tagged(node, &type_tag);
+                        new_ids.push(id);
+                        Ok(())
+                    }
+                    None => Err(PatchError::UnknownTypeTag(type_tag)),
+                }
             }
             TopologyChange::RemoveNode { id } => {
-                conf.remove_node(id).map_err(|_| PatchError::NodeNotFound(id))?;
+                conf.remove_node(id).map(|_| ()).map_err(|_| PatchError::NodeNotFound(id))
             }
             TopologyChange::AddEdge { src, src_port, dst, dst_port } => {
                 conf.connect(src, src_port, dst, dst_port)
-                    .map_err(PatchError::CycleError)?;
+                    .map(|_| ()).map_err(PatchError::CycleError)
             }
             TopologyChange::RemoveEdge { src, src_port, dst, dst_port } => {
                 conf.disconnect(src, src_port, dst, dst_port)
-                    .map_err(PatchError::ConfigError)?;
+                    .map_err(PatchError::ConfigError)
             }
+        };
+        if let Err(e) = step {
+            error = Some(e);
+            break;
         }
     }
 
     let new_executor = conf.rebuild_executor();
     engine.resume_with_executor(new_executor);
-    Ok(new_ids)
+
+    match error {
+        Some(e) => Err(e),
+        None    => Ok(new_ids),
+    }
 }

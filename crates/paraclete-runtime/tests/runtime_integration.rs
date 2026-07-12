@@ -401,6 +401,29 @@ fn led_routing_unknown_device_id_is_silently_dropped() {
     assert_eq!(deliver_count.load(Ordering::Relaxed), 0, "unknown device_id must be silently dropped");
 }
 
+/// BUG-030 — remove_node on a surface device must refuse WITHOUT destroying
+/// it. The old order removed the slot first and then errored, dropping the
+/// device while reporting failure.
+#[test]
+fn remove_node_on_surface_is_nondestructive() {
+    let update_count = Arc::new(AtomicU32::new(0));
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+    conf.add_surface(7, Box::new(TestSurface::new(update_count.clone())));
+
+    let result = conf.remove_node(7);
+    assert!(result.is_err(), "remove_node on a device must error");
+
+    // The device must still be registered: it participates in the executor
+    // and receives its per-cycle output callback.
+    let mut exec = conf.build_executor();
+    let mut out = vec![0.0f32; 64 * 2];
+    exec.process(&mut out, 2);
+    assert_eq!(
+        update_count.load(Ordering::Relaxed), 1,
+        "device must survive the refused remove_node"
+    );
+}
+
 #[test]
 fn add_surface_registers_device_for_output_callbacks() {
     let update_count = Arc::new(AtomicU32::new(0));

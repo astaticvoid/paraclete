@@ -308,8 +308,14 @@ impl NodeConfigurator {
     /// Returns the node's `Box<dyn Node>` on success, or an error string if the
     /// ID was not found. Hardware devices cannot be removed via this method.
     pub fn remove_node(&mut self, user_id: u32) -> Result<Box<dyn Node>, String> {
-        let idx = self.id_to_index.remove(&user_id)
+        // Refuse devices BEFORE mutating anything — the old order removed the
+        // slot first and then errored, silently destroying the device (BUG-030).
+        let idx = *self.id_to_index.get(&user_id)
             .ok_or_else(|| format!("no node with id {user_id}"))?;
+        if matches!(self.nodes.get(&idx), Some(NodeOrDevice::Device(_))) {
+            return Err(format!("node {user_id} is a surface device; devices cannot be removed via remove_node"));
+        }
+        self.id_to_index.remove(&user_id);
         let mut slot = self.nodes.remove(&idx)
             .ok_or_else(|| format!("node {user_id} not in nodes map"))?;
         slot.deactivate();
@@ -320,7 +326,7 @@ impl NodeConfigurator {
         self.back_edges.retain(|be| be.lb_id != user_id && be.dst_id != user_id);
         match slot {
             NodeOrDevice::Node(n) => Ok(n),
-            NodeOrDevice::Device(_) => Err(format!("node {user_id} is a hardware device; use remove_surface")),
+            NodeOrDevice::Device(_) => unreachable!("device slots are rejected above"),
         }
     }
 
