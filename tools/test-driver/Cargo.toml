@@ -1,0 +1,22 @@
+[package]
+name        = "test-driver"
+description = "Headless audio test harness for Paraclete"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license = "GPL-3.0-or-later"
+
+[[bin]]
+name = "test-driver"
+path = "src/main.rs"
+
+[dependencies]
+paraclete-app       = { path = "../../crates/paraclete-app" }
+paraclete-runtime   = { path = "../../crates/paraclete-runtime" }
+paraclete-node-api  = { path = "../../crates/paraclete-node-api" }
+paraclete-nodes     = { path = "../../crates/paraclete-nodes" }
+paraclete-clap-host   = { path = "../../crates/paraclete-clap-host" }
+serde_yml           = { workspace = true }
+serde               = { workspace = true }
+serde_json          = { workspace = true }

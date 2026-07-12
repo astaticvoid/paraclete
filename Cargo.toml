@@ -20,6 +20,7 @@ members = [
     "crates/paraclete-antiphon",
     "tools/gen-samples",
     "tools/lpx-debug",
+    "tools/test-driver",
 ]
 
 [workspace.package]
