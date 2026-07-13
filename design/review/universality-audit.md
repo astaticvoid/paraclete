@@ -22,18 +22,27 @@
 
 ---
 
-## U1 — `&'static str` throughout the L2 published API  ·  **FREEZE-CRITICAL**
+## U1 — `&'static str` in the L2 published API  ·  ~~FREEZE-CRITICAL~~ **RESOLVED 2026-07-12**
 
-The LGPL3 L2 contract (`paraclete-node-api`) hardcodes `&'static str` in the types
-every node and surface publishes:
+> **Fixed** (commit pending). Migrated the two offending types to
+> `Cow<'static, str>` and deleted both `Box::leak` sites. 554 tests pass,
+> `cargo check --all-targets` clean, no new clippy findings.
+>
+> **Scope correction (learned during the fix):** only *two* types actually needed
+> migrating. `ParamUnit::Custom`, `PortName::Static`, and `ParamDisplayAdapter`
+> **already** carry a `…Dynamic(String)` / `Dynamic(Box<…>)` sibling — they had
+> modeled the hybrid all along. The real offenders:
 
-| Type | Field | Location |
-|---|---|---|
-| `CapabilityDocument` | `name`, `vendor` | `capability.rs:132–133` |
-| `CapabilityDocument` | `extensions: Vec<&'static str>` | `capability.rs:142` |
-| `Capability::Custom` | `(&'static str)` | `capability.rs:18` |
-| `SurfaceDescriptor` | `name`, `vendor` | `surface.rs:40–41` |
-| `PortName::Static` | `(&'static str)` | `port.rs:39` |
+| Type | Field | Location | Action |
+|---|---|---|---|
+| `CapabilityDocument` | `name`, `vendor` | `capability.rs` | → `Cow<'static, str>` ✅ |
+| `CapabilityDocument` | `extensions: Vec<&'static str>` | `capability.rs` | → `Vec<Cow<'static, str>>` ✅ |
+| `SurfaceDescriptor` | `name`, `vendor` | `surface.rs` | → `Cow<'static, str>` ✅ |
+| `bridge.rs` `Box::leak` ×2 | runtime plugin name/vendor | `clap-host/bridge.rs:137–138` | deleted → owned `Cow` ✅ |
+
+~85 static construction sites now pass `"name".into()` (zero-alloc `Cow::Borrowed`);
+runtime-named nodes/surfaces carry `Cow::Owned` with no leak. `ParamUnit::Custom`
+and `PortName::Static` were left as-is (already correct).
 
 **Impact.** Any node/surface whose name is known only at runtime must leak memory:
 `paraclete-clap-host/src/bridge.rs:137–138` already calls `Box::leak` on every
@@ -126,7 +135,7 @@ Fixed by genuine topology/DSP, not composability caps:
 
 | # | Finding | Before | Owner |
 |---|---|---|---|
-| **U1** | `&'static str` in L2 → `Cow` (kill `Box::leak`) | crates.io publish **and** W2 (dynamic surfaces) | agent-capable (mechanical migration; gated commit) |
+| **U1** | ~~`&'static str` in L2 → `Cow`~~ **DONE 2026-07-12** — `CapabilityDocument`/`SurfaceDescriptor` migrated, `Box::leak` gone | ~~before publish/W2~~ shipped | done |
 | **U2** | Launchpad-shaped surface/wire consts → descriptor-driven | protocol freeze (W4); decide in W2 | user (spec) + agent |
 | **U3** | `MAX_CLIENTS=4` → configurable | W4 multi-client | agent |
 | **U4** | `STEP_CAPACITY=64` bound — confirm or grow | not freeze-blocking | user (design bound) |
