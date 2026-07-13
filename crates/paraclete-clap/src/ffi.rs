@@ -180,8 +180,8 @@ pub unsafe extern "C" fn plugin_process(
     let audio = w.inner.process_block(
         &transport_info,
         transport_event.as_ref(),
-        &external_events,
-        &commands,
+        external_events,
+        commands,
     );
 
     if !p.audio_outputs.is_null() && p.audio_outputs_count > 0 {

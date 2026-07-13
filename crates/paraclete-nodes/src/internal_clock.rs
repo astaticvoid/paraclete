@@ -30,6 +30,12 @@ pub struct InternalClock {
     first_tick: bool,
 }
 
+impl Default for InternalClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InternalClock {
     pub const PORT_BPM_MOD:   u32 = 0;
     pub const PORT_CLOCK_OUT: u32 = 1;

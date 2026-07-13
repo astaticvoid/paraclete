@@ -163,7 +163,7 @@ mod tests {
     fn event_is_copy_and_clone() {
         let original = Event::Tempo(120.0);
         let copied = original;
-        let cloned = original.clone();
+        let cloned = original;
         assert!(matches!(copied, Event::Tempo(_)));
         assert!(matches!(cloned, Event::Tempo(_)));
     }

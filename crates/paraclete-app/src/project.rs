@@ -130,7 +130,7 @@ pub fn save_project(
 
     let ron_str = ron::ser::to_string_pretty(&project, ron::ser::PrettyConfig::default())
         .map_err(|e| ProjectError::Io(
-            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+            std::io::Error::other(e.to_string())
         ))?;
     std::fs::write(path, ron_str)?;
     Ok(())
@@ -221,7 +221,7 @@ pub fn save_project_v2(
 
     let ron_str = ron::ser::to_string_pretty(&project, ron::ser::PrettyConfig::default())
         .map_err(|e| ProjectError::Io(
-            std::io::Error::new(std::io::ErrorKind::Other, e.to_string())
+            std::io::Error::other(e.to_string())
         ))?;
     std::fs::write(path, ron_str)?;
     Ok(())

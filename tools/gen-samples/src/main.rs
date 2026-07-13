@@ -91,7 +91,7 @@ fn hat_closed() -> Vec<f64> {
         let t    = i as f64 / SR as f64;
         let amp  = (-55.0 * t).exp();
         let raw  = xorshift(&mut rng);
-        hp = 0.9 * hp + raw - {let prev = raw; prev};  // simple high-pass
+        hp = 0.9 * hp + raw - { raw};  // simple high-pass
         let noise = xorshift(&mut rng); // re-draw for true noise floor
         buf.push(amp * noise * 0.5);
     }

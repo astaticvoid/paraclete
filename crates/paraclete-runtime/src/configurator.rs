@@ -463,7 +463,7 @@ impl NodeConfigurator {
                     // Find the LoopBreakNode's graph index.
                     let lb_ni = *cycle_nodes.iter()
                         .find(|ni| self.nodes.get(ni)
-                            .map_or(false, |s| s.as_node_ref().is_loop_break()))
+                            .is_some_and(|s| s.as_node_ref().is_loop_break()))
                         .unwrap();
                     let lb_user_id = self.graph[lb_ni].user_id;
 

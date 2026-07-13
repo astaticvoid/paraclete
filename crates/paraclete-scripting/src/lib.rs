@@ -196,11 +196,11 @@ fn register_builtins(engine: &mut Engine, state: Rc<RefCell<ScriptState>>) {
                 // Check bool before int — Rhai bools can coerce to int.
                 // Use is::<ImmutableString>() to detect Rhai strings correctly;
                 // try_cast::<String>() fails on ImmutableString.
-                let sv = if let Some(b) = value.as_bool().ok() {
+                let sv = if let Ok(b) = value.as_bool() {
                     StateBusValue::Bool(b)
-                } else if let Some(i) = value.as_int().ok() {
+                } else if let Ok(i) = value.as_int() {
                     StateBusValue::Int(i)
-                } else if let Some(f) = value.as_float().ok() {
+                } else if let Ok(f) = value.as_float() {
                     StateBusValue::Float(f)
                 } else if value.is::<rhai::ImmutableString>() {
                     StateBusValue::Text(value.cast::<rhai::ImmutableString>().to_string())

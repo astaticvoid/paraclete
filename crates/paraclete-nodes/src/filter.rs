@@ -96,9 +96,9 @@ impl FilterNode {
         let f = self.f_coeff.min(1.0); // stability guard
         let q = self.q_coeff;
 
-        *low  = *low + f * *band;
+        *low += f * *band;
         let high  = x - *low - q * *band;
-        *band = f * high + *band;
+        *band += f * high;
         let notch = high + *low;
 
         match filter_type {

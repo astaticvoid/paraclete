@@ -74,7 +74,7 @@ fn build_surface() -> SurfaceDescriptor {
 fn lp_x_note_to_pad_id(note: u8) -> Option<u32> {
     let phys_row = note / 10; // 1–8 (1 = bottom, 8 = top)
     let col      = note % 10; // 1–8
-    if phys_row >= 1 && phys_row <= 8 && col >= 1 && col <= 8 {
+    if (1..=8).contains(&phys_row) && (1..=8).contains(&col) {
         let our_row = 8 - phys_row; // invert: phys 8 → row 0, phys 1 → row 7
         Some(our_row as u32 * 8 + (col - 1) as u32)
     } else {
@@ -86,7 +86,7 @@ fn lp_x_note_to_pad_id(note: u8) -> Option<u32> {
 fn lp_x_scene_note_to_id(note: u8) -> Option<u32> {
     let phys_row = note / 10;
     let col      = note % 10;
-    if col == 9 && phys_row >= 1 && phys_row <= 8 {
+    if col == 9 && (1..=8).contains(&phys_row) {
         let our_row = 8 - phys_row;
         Some(64 + our_row as u32)
     } else {
@@ -96,7 +96,7 @@ fn lp_x_scene_note_to_id(note: u8) -> Option<u32> {
 
 /// Top-button CC number (91–98) → id 72–79.
 fn lp_x_top_cc_to_id(cc: u8) -> Option<u32> {
-    if cc >= 91 && cc <= 98 { Some(72 + (cc - 91) as u32) } else { None }
+    if (91..=98).contains(&cc) { Some(72 + (cc - 91) as u32) } else { None }
 }
 
 // ── MIDI parsing ──────────────────────────────────────────────────────────────

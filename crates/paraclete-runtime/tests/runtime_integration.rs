@@ -706,18 +706,12 @@ impl Node for NoteOrderRecorder {
     fn process(&mut self, input: &ProcessInput, _output: &mut ProcessOutput) {
         use paraclete_node_api::{UmpMessage, midi::ChannelVoice2};
         for timed in input.events {
-            match timed.event {
-                Event::Midi2(ref ump) => {
-                    match *ump {
-                        UmpMessage::ChannelVoice2(cv2) => match cv2 {
-                            ChannelVoice2::NoteOn(_)  => self.order.lock().unwrap().push("on".into()),
-                            ChannelVoice2::NoteOff(_) => self.order.lock().unwrap().push("off".into()),
-                            _ => {},
-                        },
-                        _ => {},
-                    }
-                }
-                _ => {},
+            if let Event::Midi2(ref ump) = timed.event {
+                if let UmpMessage::ChannelVoice2(cv2) = *ump { match cv2 {
+                    ChannelVoice2::NoteOn(_)  => self.order.lock().unwrap().push("on".into()),
+                    ChannelVoice2::NoteOff(_) => self.order.lock().unwrap().push("off".into()),
+                    _ => {},
+                } }
             }
         }
     }

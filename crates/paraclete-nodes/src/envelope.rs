@@ -289,7 +289,7 @@ mod tests {
         set_param(&mut env, "attack", 0.001);
         set_param(&mut env, "decay", 0.005);
         // One gate pulse (512 samples with gate high), then many silent blocks
-        let trigger = vec![gate_high(1), gate_low(511)].concat();
+        let trigger = [gate_high(1), gate_low(511)].concat();
         let blocks: Vec<Vec<f32>> = (0..5).map(|i| if i == 0 { trigger.clone() } else { gate_low(512) }).collect();
         let out = run_env(&mut env, &blocks);
         let last = out.last().copied().unwrap_or(0.0);
@@ -304,7 +304,7 @@ mod tests {
         set_param(&mut env, "attack", 0.001);
         set_param(&mut env, "decay", 0.001);
         // Looping: should oscillate. Run many blocks; count peaks.
-        let trigger = vec![gate_high(1), gate_low(511)].concat();
+        let trigger = [gate_high(1), gate_low(511)].concat();
         let mut blocks = vec![trigger];
         blocks.extend((0..15).map(|_| gate_low(512)));
         let out = run_env(&mut env, &blocks);

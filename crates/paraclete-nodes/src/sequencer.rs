@@ -1010,12 +1010,9 @@ impl Node for Sequencer {
         self.swing_amount = self.patterns[pat].swing;
 
         for timed in input.events {
-            match timed.event {
-                Event::Transport(ref k) => {
-                    let k = *k;
-                    self.handle_transport(&k, timed.sample_offset, output);
-                }
-                _ => {}
+            if let Event::Transport(ref k) = timed.event {
+                let k = *k;
+                self.handle_transport(&k, timed.sample_offset, output);
             }
         }
 
@@ -1707,7 +1704,7 @@ mod tests {
         let mut seq = Sequencer::new();
         seq.activate(44100.0, 64);
         // probability=75, repeat_n=1, repeat_m=2, fill=Ignore(0)
-        let enc: i64 = 75 | (1 << 8) | (2 << 16) | (0i64 << 24);
+        let enc: i64 = 75 | (1 << 8) | (2 << 16);
         run_seq_with_cmds(&mut seq, &[NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_STEP_CONDITION, arg0: 5, arg1: enc as f64 }]);
         assert!(matches!(&seq.patterns[0].steps[5].condition, TrigCondition::Simple {
             repeat: RepeatCondition::NthOfM { n: 1, m: 2 },
