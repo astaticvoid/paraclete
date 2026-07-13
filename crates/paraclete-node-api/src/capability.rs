@@ -218,4 +218,32 @@ mod tests {
         // FNV-1a of any non-empty string should not collide with the zero sentinel.
         assert_ne!(ParamDescriptor::id_for_name("x"), 0);
     }
+
+    #[test]
+    fn capability_document_carries_runtime_owned_name_without_leak() {
+        // U1: runtime-named nodes (CLAP-hosted plugins, dynamic surfaces) must
+        // carry an owned name — the whole point of the Cow migration that
+        // replaced Box::leak. Prove a String name flows through and reads back.
+        let dynamic = format!("Plugin {}", 42);
+        let doc = CapabilityDocument {
+            name: dynamic.clone().into(),
+            vendor: String::from("Runtime Vendor").into(),
+            version: (0, 1, 0),
+            ports: vec![],
+            params: vec![],
+            extensions: vec![String::from("paraclete.dynamic").into()],
+        };
+        assert!(matches!(doc.name, Cow::Owned(_)), "runtime name must be owned");
+        assert_eq!(doc.name.as_ref(), dynamic.as_str());
+        assert_eq!(doc.vendor.as_ref(), "Runtime Vendor");
+        assert_eq!(doc.extensions[0].as_ref(), "paraclete.dynamic");
+    }
+
+    #[test]
+    fn capability_document_static_name_stays_borrowed_zero_alloc() {
+        // The common case: static names remain Cow::Borrowed — no allocation.
+        let doc = CapabilityDocument::from_ports(&[]);
+        assert!(matches!(doc.name, Cow::Borrowed(_)));
+        assert!(matches!(doc.vendor, Cow::Borrowed(_)));
+    }
 }

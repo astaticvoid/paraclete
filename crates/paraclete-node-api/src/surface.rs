@@ -275,6 +275,20 @@ mod tests {
     }
 
     #[test]
+    fn surface_descriptor_carries_runtime_owned_name_without_leak() {
+        // U1: a dynamic per-client Theoria surface / hot-plugged controller
+        // carries an owned name instead of leaking a &'static str.
+        let dynamic = format!("Theoria client {}", 7);
+        let d = SurfaceDescriptor {
+            name: dynamic.clone().into(),
+            vendor: String::from("Runtime").into(),
+            controls: vec![],
+        };
+        assert!(matches!(d.name, Cow::Owned(_)), "runtime surface name must be owned");
+        assert_eq!(d.name.as_ref(), dynamic.as_str());
+    }
+
+    #[test]
     fn surface_descriptor_construction() {
         let surface = SurfaceDescriptor {
             name: "Test Controller".into(),
