@@ -2,4 +2,4 @@
 b = "build --workspace"
 t = "test --workspace"
 c = "check --workspace"
-clippy = "clippy --workspace"
+cl = "clippy --workspace"
