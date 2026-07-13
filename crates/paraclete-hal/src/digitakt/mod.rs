@@ -44,8 +44,8 @@ fn build_surface() -> SurfaceDescriptor {
         }));
     }
     SurfaceDescriptor {
-        name: "Digitakt MIDI",
-        vendor: "Elektron",
+        name: "Digitakt MIDI".into(),
+        vendor: "Elektron".into(),
         controls,
     }
 }
@@ -127,12 +127,12 @@ impl Node for DigitaktMidiNode {
 
     fn capability_document(&self) -> CapabilityDocument {
         CapabilityDocument {
-            name: "DigitaktMidiNode",
-            vendor: "Paraclete/Elektron",
+            name: "DigitaktMidiNode".into(),
+            vendor: "Paraclete/Elektron".into(),
             version: (0, 4, 0),
             ports: self.ports.to_vec(),
             params: vec![],
-            extensions: vec!["paraclete.hardware"],
+            extensions: vec!["paraclete.hardware".into()],
         }
     }
 

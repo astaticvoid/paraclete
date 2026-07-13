@@ -73,8 +73,8 @@ impl Node for MixNode {
             display: None,
         });
         CapabilityDocument {
-            name: "MixNode",
-            vendor: "Paraclete",
+            name: "MixNode".into(),
+            vendor: "Paraclete".into(),
             version: (0, 4, 0),
             ports: self.ports.clone(),
             params,

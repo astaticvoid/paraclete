@@ -137,8 +137,8 @@ fn advance_envelope(
 /// Ports are overridden with the instance's port list in capability_document().
 fn sampler_capability_document() -> CapabilityDocument {
     CapabilityDocument {
-        name: "Sampler",
-        vendor: "Paraclete",
+        name: "Sampler".into(),
+        vendor: "Paraclete".into(),
         version: (0, 5, 0),
         ports: vec![],
         params: vec![
@@ -151,7 +151,7 @@ fn sampler_capability_document() -> CapabilityDocument {
             ParamDescriptor { id: param_hash("release"),   name: "release".into(),   min: 0.0,   max: 4.0,   default: 0.1,   stepped: false, unit: ParamUnit::Seconds,   display: None },
             ParamDescriptor { id: param_hash("root_note"), name: "root_note".into(), min: 0.0,   max: 127.0, default: 60.0,  stepped: true,  unit: ParamUnit::Generic,   display: None },
         ],
-        extensions: vec!["paraclete.instrument"],
+        extensions: vec!["paraclete.instrument".into()],
     }
 }
 
@@ -907,7 +907,7 @@ mod tests {
     #[test]
     fn sampler_capability_document_extension_is_instrument() {
         let s = Sampler::new();
-        assert!(s.capability_document().extensions.contains(&"paraclete.instrument"));
+        assert!(s.capability_document().extensions.iter().any(|e| e == "paraclete.instrument"));
     }
 
     #[test]

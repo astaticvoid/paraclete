@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::node::Node;
 use crate::port::PortName;
 
@@ -37,8 +39,11 @@ pub struct SurfaceEventMsg {
 /// Complete description of a hardware controller's physical surface.
 #[derive(Clone, Debug)]
 pub struct SurfaceDescriptor {
-    pub name: &'static str,
-    pub vendor: &'static str,
+    /// `Cow` so fixed devices stay zero-alloc (`"Launchpad".into()`) while
+    /// runtime-named surfaces — dynamic per-client Theoria, hot-plugged
+    /// controllers — carry an owned name without leaking (U1 audit).
+    pub name: Cow<'static, str>,
+    pub vendor: Cow<'static, str>,
     pub controls: Vec<Control>,
 }
 
@@ -272,8 +277,8 @@ mod tests {
     #[test]
     fn surface_descriptor_construction() {
         let surface = SurfaceDescriptor {
-            name: "Test Controller",
-            vendor: "Test",
+            name: "Test Controller".into(),
+            vendor: "Test".into(),
             controls: vec![
                 Control::Pad(PadDescriptor {
                     id: 0,

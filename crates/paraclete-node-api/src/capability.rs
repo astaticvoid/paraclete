@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use crate::port::{PortDescriptor, PortName};
 
 // ── ParamUnit ─────────────────────────────────────────────────────────────────
@@ -129,8 +131,11 @@ impl ParamDescriptor {
 /// Built on the main thread — allocation is fine here.
 #[derive(Clone)]
 pub struct CapabilityDocument {
-    pub name: &'static str,
-    pub vendor: &'static str,
+    /// Node display name. `Cow` so statically-named nodes stay zero-alloc
+    /// (`"Reverb".into()`) while runtime-named nodes — CLAP-hosted plugins,
+    /// dynamic surfaces — carry an owned `String` without leaking (U1 audit).
+    pub name: Cow<'static, str>,
+    pub vendor: Cow<'static, str>,
     /// Semantic version: (major, minor, patch).
     pub version: (u32, u32, u32),
     pub ports: Vec<PortDescriptor>,
@@ -139,7 +144,7 @@ pub struct CapabilityDocument {
     /// Extension identifiers this node implements.
     /// e.g. `"paraclete.instrument"`, `"paraclete.sequencer"`,
     ///      `"com.yourcompany.custom_protocol"`.
-    pub extensions: Vec<&'static str>,
+    pub extensions: Vec<Cow<'static, str>>,
 }
 
 impl CapabilityDocument {
@@ -147,8 +152,8 @@ impl CapabilityDocument {
     /// Used as the default implementation of `Node::capability_document()`.
     pub fn from_ports(ports: &[PortDescriptor]) -> Self {
         Self {
-            name: "unnamed",
-            vendor: "unknown",
+            name: "unnamed".into(),
+            vendor: "unknown".into(),
             version: (0, 0, 0),
             ports: ports.to_vec(),
             params: vec![],

@@ -71,8 +71,8 @@ impl DelayNode {
 
     fn default_doc() -> CapabilityDocument {
         CapabilityDocument {
-            name: "DelayNode",
-            vendor: "Paraclete",
+            name: "DelayNode".into(),
+            vendor: "Paraclete".into(),
             version: (0, 5, 0),
             ports: vec![
                 PortDescriptor { id: 0, name: "audio_in".into(),  direction: PortDirection::Input,  port_type: PortType::Audio },
@@ -85,7 +85,7 @@ impl DelayNode {
                 ParamDescriptor { id: PARAM_DRY,        name: "dry".into(),           min: 0.0,   max: 1.0,    default: 1.0,    stepped: false, unit: ParamUnit::Generic, display: None },
                 ParamDescriptor { id: PARAM_FILTER_HZ,  name: "filter_hz".into(),     min: 200.0, max: 8000.0, default: 4000.0, stepped: false, unit: ParamUnit::Hz,      display: None },
             ],
-            extensions: vec!["paraclete.effect"],
+            extensions: vec!["paraclete.effect".into()],
         }
     }
 }

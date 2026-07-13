@@ -94,7 +94,7 @@ impl Node for SilentNode {
     fn process(&mut self, _input: &ProcessInput, _output: &mut ProcessOutput) {}
     fn capability_document(&self) -> CapabilityDocument {
         CapabilityDocument {
-            name: "SilentNode", vendor: "Paraclete", version: (0, 1, 0),
+            name: "SilentNode".into(), vendor: "Paraclete".into(), version: (0, 1, 0),
             ports: self.ports.to_vec(), params: vec![], extensions: vec![],
         }
     }

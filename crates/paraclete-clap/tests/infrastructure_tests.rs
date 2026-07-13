@@ -7,8 +7,8 @@ use paraclete_node_api::{CapabilityDocument, ParamDescriptor, ParamUnit, PortNam
 
 fn make_three_param_doc() -> CapabilityDocument {
     CapabilityDocument {
-        name:    "Test",
-        vendor:  "Test",
+        name:    "Test".into(),
+        vendor:  "Test".into(),
         version: (0, 1, 0),
         ports:   vec![],
         params:  vec![
@@ -37,8 +37,8 @@ fn make_three_param_doc() -> CapabilityDocument {
 
 fn make_two_param_doc() -> CapabilityDocument {
     CapabilityDocument {
-        name:    "Test",
-        vendor:  "Test",
+        name:    "Test".into(),
+        vendor:  "Test".into(),
         version: (0, 1, 0),
         ports:   vec![],
         params:  vec![

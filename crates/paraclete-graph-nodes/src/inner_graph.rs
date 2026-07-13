@@ -110,8 +110,8 @@ impl Node for InnerGraphNode {
 
     fn capability_document(&self) -> CapabilityDocument {
         CapabilityDocument {
-            name:       "InnerGraphNode",
-            vendor:     "Paraclete",
+            name:       "InnerGraphNode".into(),
+            vendor:     "Paraclete".into(),
             version:    (0, 1, 0),
             ports:      self.ports.to_vec(),
             params:     vec![],

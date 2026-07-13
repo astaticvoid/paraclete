@@ -43,7 +43,7 @@ impl LfoNode {
 
     fn default_doc() -> CapabilityDocument {
         CapabilityDocument {
-            name: "LfoNode", vendor: "Paraclete", version: (0, 6, 0),
+            name: "LfoNode".into(), vendor: "Paraclete".into(), version: (0, 6, 0),
             ports: vec![],
             params: vec![
                 ParamDescriptor { id: lp("lfo_waveform"), name: "lfo_waveform".into(), min: 0.0, max: 4.0, default: 0.0, stepped: true,  unit: ParamUnit::Generic, display: None },

@@ -282,7 +282,7 @@ impl TestSurface {
     fn new(update_count: Arc<AtomicU32>) -> Self {
         Self {
             ports: vec![],
-            surface: SurfaceDescriptor { name: "Test", vendor: "Test", controls: vec![] },
+            surface: SurfaceDescriptor { name: "Test".into(), vendor: "Test".into(), controls: vec![] },
             update_count,
         }
     }
@@ -353,7 +353,7 @@ impl DeviceWithHandle {
     fn new(deliver_count: Arc<AtomicU32>) -> Self {
         Self {
             ports: vec![],
-            surface: SurfaceDescriptor { name: "Test", vendor: "Test", controls: vec![] },
+            surface: SurfaceDescriptor { name: "Test".into(), vendor: "Test".into(), controls: vec![] },
             deliver_count,
         }
     }

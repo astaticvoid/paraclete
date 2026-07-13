@@ -97,8 +97,8 @@ impl Node for LoopBreakNode {
 
     fn capability_document(&self) -> CapabilityDocument {
         CapabilityDocument {
-            name: "LoopBreakNode",
-            vendor: "Paraclete",
+            name: "LoopBreakNode".into(),
+            vendor: "Paraclete".into(),
             version: (0, 1, 0),
             ports: self.ports.to_vec(),
             params: vec![],

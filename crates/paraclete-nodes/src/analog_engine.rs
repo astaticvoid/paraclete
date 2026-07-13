@@ -130,10 +130,10 @@ impl AnalogEngine {
         };
 
         CapabilityDocument {
-            name, vendor: "Paraclete", version: (0, 6, 0),
+            name: name.into(), vendor: "Paraclete".into(), version: (0, 6, 0),
             ports: vec![],
             params,
-            extensions: vec!["paraclete.instrument"],
+            extensions: vec!["paraclete.instrument".into()],
         }
     }
 

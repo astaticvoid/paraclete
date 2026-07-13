@@ -59,7 +59,7 @@ fn build_surface() -> SurfaceDescriptor {
             velocity_sensitive: false, pressure_sensitive: false, rgb: true,
         }));
     }
-    SurfaceDescriptor { name: "Launchpad X", vendor: "Novation", controls }
+    SurfaceDescriptor { name: "Launchpad X".into(), vendor: "Novation".into(), controls }
 }
 
 // ── Note → pad ID conversion ──────────────────────────────────────────────────
@@ -331,10 +331,10 @@ impl Node for LaunchpadNode {
 
     fn capability_document(&self) -> CapabilityDocument {
         CapabilityDocument {
-            name: "LaunchpadNode", vendor: "Paraclete/Novation",
+            name: "LaunchpadNode".into(), vendor: "Paraclete/Novation".into(),
             version: (0, 4, 0),
             ports: self.ports.to_vec(), params: vec![],
-            extensions: vec!["paraclete.hardware"],
+            extensions: vec!["paraclete.hardware".into()],
         }
     }
 

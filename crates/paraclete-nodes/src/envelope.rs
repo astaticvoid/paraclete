@@ -46,7 +46,7 @@ impl EnvelopeNode {
 
     fn default_doc() -> CapabilityDocument {
         CapabilityDocument {
-            name: "EnvelopeNode", vendor: "Paraclete", version: (0, 6, 0),
+            name: "EnvelopeNode".into(), vendor: "Paraclete".into(), version: (0, 6, 0),
             ports: vec![],
             params: vec![
                 ParamDescriptor { id: ep("env_mode"), name: "env_mode".into(), min: 0.0, max: 2.0, default: 0.0, stepped: true,  unit: ParamUnit::Generic, display: None },

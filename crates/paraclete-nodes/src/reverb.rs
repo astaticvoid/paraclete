@@ -133,8 +133,8 @@ impl ReverbNode {
 
     fn default_doc() -> CapabilityDocument {
         CapabilityDocument {
-            name: "ReverbNode",
-            vendor: "Paraclete",
+            name: "ReverbNode".into(),
+            vendor: "Paraclete".into(),
             version: (0, 5, 0),
             ports: vec![
                 PortDescriptor { id: 0, name: "audio_in".into(),  direction: PortDirection::Input,  port_type: PortType::Audio },
@@ -148,7 +148,7 @@ impl ReverbNode {
                 ParamDescriptor { id: PARAM_WIDTH,     name: "width".into(),        min: 0.0, max: 1.0,   default: 1.0, stepped: false, unit: ParamUnit::Generic, display: None },
                 ParamDescriptor { id: PARAM_PRE_DELAY, name: "pre_delay_ms".into(), min: 0.0, max: 100.0, default: 0.0, stepped: false, unit: ParamUnit::Generic, display: None },
             ],
-            extensions: vec!["paraclete.effect"],
+            extensions: vec!["paraclete.effect".into()],
         }
     }
 }

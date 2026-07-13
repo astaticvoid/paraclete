@@ -132,8 +132,8 @@ mod tests {
         use crate::capability::{ParamDescriptor, ParamUnit};
         use crate::port::{PortDescriptor, PortDirection, PortType};
         CapabilityDocument {
-            name: "Test",
-            vendor: "Test",
+            name: "Test".into(),
+            vendor: "Test".into(),
             version: (0, 1, 0),
             ports: vec![PortDescriptor {
                 id: 0,
@@ -224,7 +224,7 @@ mod tests {
         use crate::capability::{ParamDescriptor, ParamUnit};
         use crate::port::{PortDescriptor, PortDirection, PortType};
         CapabilityDocument {
-            name: "Test", vendor: "Test", version: (0, 1, 0),
+            name: "Test".into(), vendor: "Test".into(), version: (0, 1, 0),
             ports: vec![PortDescriptor { id: 0, name: "out".into(), direction: PortDirection::Output, port_type: PortType::Audio }],
             params: vec![
                 ParamDescriptor { id: ParamDescriptor::id_for_name(name), name: name.into(), min: 0.0, max: 1.0, default, stepped: false, unit: ParamUnit::Generic, display: None },

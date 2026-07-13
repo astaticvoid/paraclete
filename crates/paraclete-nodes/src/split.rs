@@ -37,8 +37,8 @@ impl SplitNode {
 
     fn default_doc() -> CapabilityDocument {
         CapabilityDocument {
-            name: "SplitNode",
-            vendor: "Paraclete",
+            name: "SplitNode".into(),
+            vendor: "Paraclete".into(),
             version: (0, 5, 0),
             ports: vec![
                 PortDescriptor { id: 0, name: "audio_in".into(),    direction: PortDirection::Input,  port_type: PortType::Audio },
@@ -49,7 +49,7 @@ impl SplitNode {
                 ParamDescriptor { id: PARAM_GAIN_0, name: "gain_0".into(), min: 0.0, max: 2.0, default: 1.0, stepped: false, unit: ParamUnit::Generic, display: None },
                 ParamDescriptor { id: PARAM_GAIN_1, name: "gain_1".into(), min: 0.0, max: 2.0, default: 1.0, stepped: false, unit: ParamUnit::Generic, display: None },
             ],
-            extensions: vec!["paraclete.split"],
+            extensions: vec!["paraclete.split".into()],
         }
     }
 }

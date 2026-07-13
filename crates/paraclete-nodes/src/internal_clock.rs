@@ -140,8 +140,8 @@ impl Node for InternalClock {
 
     fn capability_document(&self) -> CapabilityDocument {
         CapabilityDocument {
-            name: "InternalClock",
-            vendor: "Paraclete",
+            name: "InternalClock".into(),
+            vendor: "Paraclete".into(),
             version: (0, 2, 0),
             ports: self.ports.to_vec(),
             params: vec![
@@ -156,7 +156,7 @@ impl Node for InternalClock {
                     display: None,
                 },
             ],
-            extensions: vec!["paraclete.tempo_source"],
+            extensions: vec!["paraclete.tempo_source".into()],
         }
     }
 

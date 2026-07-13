@@ -67,8 +67,8 @@ impl FilterNode {
 
     fn default_doc() -> CapabilityDocument {
         CapabilityDocument {
-            name: "FilterNode",
-            vendor: "Paraclete",
+            name: "FilterNode".into(),
+            vendor: "Paraclete".into(),
             version: (0, 4, 0),
             ports: vec![
                 PortDescriptor { id: 0, name: "audio_in".into(),  direction: PortDirection::Input,  port_type: PortType::Audio },
@@ -79,7 +79,7 @@ impl FilterNode {
                 ParamDescriptor { id: PARAM_RESONANCE,   name: "resonance".into(),   min: 0.1,   max: 4.0,     default: 0.7,    stepped: false, unit: ParamUnit::Generic, display: None },
                 ParamDescriptor { id: PARAM_FILTER_TYPE, name: "filter_type".into(), min: 0.0,   max: 3.0,     default: 0.0,    stepped: true,  unit: ParamUnit::Generic, display: None },
             ],
-            extensions: vec!["paraclete.effect"],
+            extensions: vec!["paraclete.effect".into()],
         }
     }
 

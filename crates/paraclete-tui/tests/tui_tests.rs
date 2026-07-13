@@ -30,8 +30,8 @@ fn make_config(clock_id: u32, seq_ids: Vec<u32>) -> TuiConfig {
 
 fn make_cap_doc_with_cutoff() -> CapabilityDocument {
     CapabilityDocument {
-        name: "TestNode",
-        vendor: "test",
+        name: "TestNode".into(),
+        vendor: "test".into(),
         version: (0, 1, 0),
         ports: vec![PortDescriptor {
             id: 0,

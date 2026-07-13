@@ -948,8 +948,8 @@ impl Node for Sequencer {
 
     fn capability_document(&self) -> CapabilityDocument {
         CapabilityDocument {
-            name: "Sequencer",
-            vendor: "Paraclete",
+            name: "Sequencer".into(),
+            vendor: "Paraclete".into(),
             version: (0, 5, 0),
             ports: self.ports.to_vec(),
             params: vec![
@@ -972,7 +972,7 @@ impl Node for Sequencer {
                     stepped: false, unit: ParamUnit::Generic, display: None,
                 },
             ],
-            extensions: vec!["paraclete.sequencer"],
+            extensions: vec!["paraclete.sequencer".into()],
         }
     }
 

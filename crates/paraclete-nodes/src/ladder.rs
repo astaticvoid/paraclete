@@ -40,14 +40,14 @@ impl LadderFilterNode {
 
     fn default_doc() -> CapabilityDocument {
         CapabilityDocument {
-            name: "LadderFilterNode", vendor: "Paraclete", version: (0, 6, 0),
+            name: "LadderFilterNode".into(), vendor: "Paraclete".into(), version: (0, 6, 0),
             ports: vec![],
             params: vec![
                 ParamDescriptor { id: lad("cutoff"),    name: "cutoff".into(),    min: 20.0, max: 18000.0, default: 4000.0, stepped: false, unit: ParamUnit::Hz,      display: None },
                 ParamDescriptor { id: lad("resonance"), name: "resonance".into(), min: 0.0,  max: 1.0,    default: 0.0,    stepped: false, unit: ParamUnit::Generic, display: None },
                 ParamDescriptor { id: lad("drive"),     name: "drive".into(),     min: 0.0,  max: 1.0,    default: 0.0,    stepped: false, unit: ParamUnit::Generic, display: None },
             ],
-            extensions: vec!["paraclete.effect"],
+            extensions: vec!["paraclete.effect".into()],
         }
     }
 }

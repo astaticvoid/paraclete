@@ -119,8 +119,8 @@ impl HostParamBridge {
     }
 
     /// Synthesise a `CapabilityDocument` from the bridge entries.
-    /// Uses `Box::leak` for name/vendor so they satisfy `&'static str`.
-    /// Each call leaks two strings; callers should cache the result.
+    /// Runtime plugin name/vendor are carried as owned `Cow<'static, str>` — no
+    /// leak (U1 audit; was `Box::leak` when the fields were `&'static str`).
     pub fn to_capability_document(&self, name: &str, vendor: &str) -> CapabilityDocument {
         let params = self.entries.iter().map(|e| ParamDescriptor {
             id:      e.paraclete_id,
@@ -134,8 +134,9 @@ impl HostParamBridge {
         }).collect();
 
         CapabilityDocument {
-            name:       Box::leak(name.to_string().into_boxed_str()),
-            vendor:     Box::leak(vendor.to_string().into_boxed_str()),
+            // Runtime plugin names: owned Cow, no leak (U1 audit). Was Box::leak.
+            name:       name.to_string().into(),
+            vendor:     vendor.to_string().into(),
             version:    (0, 1, 0),
             // Port id=1 matches PORT_AUDIO_OUT in PluginNode::ports().
             // Port id=0 is the events_in port declared in ports() but not in the cap doc.

@@ -52,8 +52,8 @@ pub(super) fn build_launchpad_surface() -> SurfaceDescriptor {
     }
 
     SurfaceDescriptor {
-        name: "Launchpad Emulator",
-        vendor: "Paraclete",
+        name: "Launchpad Emulator".into(),
+        vendor: "Paraclete".into(),
         controls,
     }
 }

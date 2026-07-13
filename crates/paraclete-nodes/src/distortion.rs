@@ -57,8 +57,8 @@ impl DistortionNode {
 
     pub fn default_doc() -> CapabilityDocument {
         CapabilityDocument {
-            name: "DistortionNode",
-            vendor: "Paraclete",
+            name: "DistortionNode".into(),
+            vendor: "Paraclete".into(),
             version: (0, 4, 0),
             ports: vec![
                 PortDescriptor { id: 0, name: "audio_in".into(),  direction: PortDirection::Input,  port_type: PortType::Audio },
@@ -69,7 +69,7 @@ impl DistortionNode {
                 ParamDescriptor { id: PARAM_OUTPUT_LEVEL, name: "output_level".into(), min: -24.0, max: 6.0, default: 0.0, stepped: false, unit: ParamUnit::Decibels, display: None },
                 ParamDescriptor { id: PARAM_BLEND,        name: "blend".into(),        min: 0.0, max: 1.0, default: 1.0,  stepped: false, unit: ParamUnit::Generic, display: None },
             ],
-            extensions: vec!["paraclete.effect"],
+            extensions: vec!["paraclete.effect".into()],
         }
     }
 }

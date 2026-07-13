@@ -107,8 +107,8 @@ impl Node for Level2GainNode {
 
     fn capability_document(&self) -> CapabilityDocument {
         CapabilityDocument {
-            name: "GainNode",
-            vendor: "Paraclete",
+            name: "GainNode".into(),
+            vendor: "Paraclete".into(),
             version: (0, 1, 0),
             ports: self.ports.to_vec(),
             params: vec![ParamDescriptor {

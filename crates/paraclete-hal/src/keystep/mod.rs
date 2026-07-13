@@ -39,8 +39,8 @@ fn build_note_off(note: u8) -> UmpMessage {
 
 fn build_surface() -> SurfaceDescriptor {
     SurfaceDescriptor {
-        name: "Keystep 37",
-        vendor: "Arturia",
+        name: "Keystep 37".into(),
+        vendor: "Arturia".into(),
         controls: vec![
             // Pitch bend as fader id=0
             Control::Fader(FaderDescriptor { id: 0, name: PortName::Static("pitch_bend"), motorised: false }),
@@ -124,12 +124,12 @@ impl Node for KeystepNode {
 
     fn capability_document(&self) -> CapabilityDocument {
         CapabilityDocument {
-            name: "KeystepNode",
-            vendor: "Paraclete/Arturia",
+            name: "KeystepNode".into(),
+            vendor: "Paraclete/Arturia".into(),
             version: (0, 4, 0),
             ports: self.ports.to_vec(),
             params: vec![],
-            extensions: vec!["paraclete.hardware"],
+            extensions: vec!["paraclete.hardware".into()],
         }
     }
 

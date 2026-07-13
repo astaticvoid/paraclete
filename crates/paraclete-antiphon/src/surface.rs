@@ -124,7 +124,7 @@ fn build_descriptor() -> SurfaceDescriptor {
             behaviour: EncoderBehaviour::Relative,
         }));
     }
-    SurfaceDescriptor { name: "Theoria Surface", vendor: "Paraclete", controls }
+    SurfaceDescriptor { name: "Theoria Surface".into(), vendor: "Paraclete".into(), controls }
 }
 
 // ── Output handle ─────────────────────────────────────────────────────────────
@@ -208,12 +208,12 @@ impl Node for TheoriaSurfaceNode {
 
     fn capability_document(&self) -> CapabilityDocument {
         CapabilityDocument {
-            name: "TheoriaSurfaceNode",
-            vendor: "Paraclete",
+            name: "TheoriaSurfaceNode".into(),
+            vendor: "Paraclete".into(),
             version: (0, 1, 0),
             ports: self.ports.to_vec(),
             params: vec![],
-            extensions: vec!["paraclete.hardware"],
+            extensions: vec!["paraclete.hardware".into()],
         }
     }
 

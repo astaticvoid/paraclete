@@ -62,12 +62,12 @@ impl Node for ScriptingGatewayNode {
 
     fn capability_document(&self) -> CapabilityDocument {
         CapabilityDocument {
-            name: "ScriptingGatewayNode",
-            vendor: "Paraclete",
+            name: "ScriptingGatewayNode".into(),
+            vendor: "Paraclete".into(),
             version: (0, 4, 0),
             ports: self.ports.to_vec(),
             params: vec![],
-            extensions: vec!["paraclete.gateway"],
+            extensions: vec!["paraclete.gateway".into()],
         }
     }
 
