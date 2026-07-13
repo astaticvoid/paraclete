@@ -181,6 +181,20 @@ the real rate through; chunk the cpal callback into internal fixed blocks via
 a small ring buffer. Set FTZ/DAZ on the audio thread in the same commit.
 Schedule before the first paired session on external audio hardware.
 
+**Empirically confirmed (2026-07-12).** The new load test
+(`patch_tests.rs::loadtest_topology_churn_under_live_audio`, run against real
+CoreAudio) first ran with `block_size = 256` while this MacBook Air's cpal
+default buffer is 512 frames. Result: the audio thread **panicked immediately**
+at `executor.rs:612` (`debug_assert_eq!(out_interleaved.len(), block_size *
+channels)`) — a hard crash, not graceful degradation. `audio.rs:137` uses
+`BufferSize::Default` (device-native) and `:132` takes the device rate, neither
+pinned to `block_size`; the app only survives because its hardcoded
+`BLOCK_SIZE = 512` happens to equal this device's default. Confirms the
+predicted failure mode and raises confidence that a 48 kHz / non-512 interface
+at a paired session would crash (debug) or OOB/half-fill (release). The trigger
+"first non-44.1 kHz/512 deployment" (roadmap backlog) is therefore a crash, not
+a mistuning — worth pulling forward if any external interface is in play.
+
 ### BUG-013 — Engines ignore event sample_offset: voice starts quantized to block boundaries
 
 **Severity:** High for the instrument's identity — ±11.6 ms trigger jitter at
@@ -850,3 +864,43 @@ executor via `Arc`. Published to state bus as `/engine/*` paths each cycle and
 mirrored to Antiphon clients at ~30 Hz. Unit-tested in `runtime_integration.rs`.
 The deferred-event-carry and LED-drop counters are deferred to the structured-log
 channel (separate ADR/infra item).
+
+**Measurement (2026-07-12).** First live read of the counters, closing the D4
+"assumed quiet vs measured quiet" gap for the executor path. Scenario
+`tools/test-driver/tests/engine_counters_quiet.yaml` runs the full default
+instrument busy for 8 s (all four tracks stepping + a mid-run polyrhythm speed
+change) and reads `/engine/*` at 7.5 s:
+
+| Counter | Value | Read as |
+|---|---|---|
+| `buffers_processed` | 459 | counter live and advancing |
+| `state_bus_overflows` | **0** | SPSC never overflowed under full 4-track state churn — **measured**, no longer assumed |
+| `dropout_lock_miss` | 0 | trivially 0 — see caveat |
+| `dropout_no_executor` | 0 | trivially 0 — see caveat |
+
+The two dropout counters are NOT exercised by the test-driver — they increment
+only inside the cpal callback (`audio.rs`) on a `try_lock` miss or an empty
+executor cell, and the test-driver drives `ex.process()` directly (holding the
+lock itself), so they read 0 by construction there.
+
+**Load test — callback path measured (2026-07-12).** The two dropout counters
+are now measured under real audio via
+`crates/paraclete-app/tests/patch_tests.rs::loadtest_topology_churn_under_live_audio`
+(`#[ignore]`, opt-in — needs an output device). It boots the default instrument
+through the **real cpal callback** and hammers `apply_patch` (topology swaps) for
+~15 s, driving the ADR-029 pause-rebuild-resume cycle against the live audio
+thread, then reads the counters straight off the executor's shared `Arc`:
+
+| Counter | Value | Read as |
+|---|---|---|
+| topology swaps applied | 703 (0 failures) | heavy live churn |
+| `buffers_processed` | 731 | real cpal callback ran |
+| `dropout_lock_miss` | **0** | pause protocol never lost a lock race across 703 executor swaps — **measured** |
+| `dropout_no_executor` | **0** | callback never caught the cell empty — **measured** |
+| `state_bus_overflows` | 0 | SPSC kept up under churn |
+
+**Conclusion:** all four counters are now **measured quiet** — the executor path
+under an 8 s busy render (test-driver) and the audio-callback path under 703 live
+topology swaps (load test). The pause-rebuild-resume protocol holds under stress:
+zero self-inflicted dropouts. (The load test also surfaced BUG-012 as a hard
+crash on buffer-size mismatch — see that entry's 2026-07-12 confirmation.)

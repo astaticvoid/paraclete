@@ -83,7 +83,15 @@ Ordered by nearness to the critical path.
   audio callback and executor, published to state bus as `/engine/*` paths,
   mirrored by Antiphon. INFRA-003 resolved. 4 unit tests in
   `runtime_integration.rs`. D4 unblocked.
-- **D4** ✅ done (earlier pass).
+- **D4** ✅ done (earlier pass). **Measured quiet 2026-07-12 — all four counters,
+  both paths.** Executor path: `engine_counters_quiet.yaml` (8 s busy 4-track
+  render) → `state_bus_overflows = 0`. Callback path: the load test
+  `patch_tests.rs::loadtest_topology_churn_under_live_audio` (real cpal, 703 live
+  `apply_patch` swaps in 15 s) → `dropout_lock_miss = 0`, `dropout_no_executor =
+  0`. The ADR-029 pause-rebuild-resume protocol produces zero self-inflicted
+  dropouts under stress. Bonus: the load test surfaced **BUG-012** as a hard
+  audio-thread crash on buffer-size mismatch (not graceful degradation) — see
+  bugs.md 2026-07-12 confirmation.
 - **D5** ✅ done (earlier pass).
 - **D6** ✅ done (earlier pass).
 - **D1, D2** — open, **user-owned** (unchanged).
@@ -137,10 +145,13 @@ four-pillar instrument.
 
 ## Deferred-Bug Backlog (trigger-based, replaces P10.5)
 
-> **D4 (2026-07-12):** these triggers are **assumed quiet, not confirmed** — per
-> INFRA-003, the engine's own dropouts/overflows are invisible at runtime, so
-> "no trigger has fired" is unproven. Treat this backlog as **blocked on
-> INFRA-003 / ADR-034 observability** before relying on any "hasn't fired yet".
+> **D4 (2026-07-12):** ADR-034 made the engine's dropouts/overflows observable,
+> and both paths are now **measured quiet** (no longer assumed): executor path
+> `state_bus_overflows = 0` (`engine_counters_quiet.yaml`, 8 s busy render);
+> audio-callback path `dropout_lock_miss = 0` / `dropout_no_executor = 0` under
+> 703 live topology swaps (`loadtest_topology_churn_under_live_audio`, real cpal).
+> The BUG-002/BUG-012 buffer-size trigger, however, is now known to **crash**
+> (debug) rather than degrade — pull it forward if any external interface is in play.
 
 | Bug | Fix when this trigger fires |
 |---|---|
