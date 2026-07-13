@@ -131,6 +131,30 @@ Fixed by genuine topology/DSP, not composability caps:
 
 ---
 
+## U7 — Wire protocol & serializer are forward-compatible  ·  **OK (verified 2026-07-12)**
+
+Deeper sweep of the two surfaces that freeze *permanently*, to confirm the freeze
+is safe once U1/U2 are handled:
+
+- **Antiphon wire protocol** (`protocol.rs`): `PROTOCOL_VERSION` byte; messages are
+  **event-based and id-addressed** (`PadDown { id, vel }`, `Enc { id, delta }`),
+  params are dynamic `String`, colors are `rgb: [u8;3]`. **No fixed-count arrays**
+  in the message schema — a controller with any pad/encoder count fits. (The only
+  count assumption is the *server-side* shadow table, = U2.)
+- **Sequencer serializer v3** (`sequencer.rs`): a version byte + **length-prefixed
+  records** with `pattern_count: u16`, explicitly designed to append fields in
+  future versions (per the in-code comments). So `PATTERN_BANK_SIZE = 8` and
+  `STEP_CAPACITY = 64` are **runtime allocation caps, not baked into the format** —
+  same category as U4. The format tolerates far more.
+
+**Conclusion:** the permanent-freeze risk was concentrated in **U1 (done)** and
+**U2 (surface shape, user-owned)**. The wire protocol and serializer do not lock in
+any count — the W2/W4 freeze is materially safer than the vision's "no hardcoded
+counts" worry implied. `MAX_CLIENTS`, `STEP_CAPACITY`, `PATTERN_BANK_SIZE`,
+`[Voice;4]` are all runtime-changeable.
+
+---
+
 ## Summary — what to fix before which freeze
 
 | # | Finding | Before | Owner |
