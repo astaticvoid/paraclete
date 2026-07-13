@@ -25,8 +25,10 @@ impl TuiApp {
         cap_docs: HashMap<u32, CapabilityDocument>,
     ) -> Self {
         let encoder_count = config.encoder_count as usize;
-        let mut state = TuiState::default();
-        state.encoders = (0..encoder_count).map(|_| EncoderSlot::default()).collect();
+        let state = TuiState {
+            encoders: (0..encoder_count).map(|_| EncoderSlot::default()).collect(),
+            ..Default::default()
+        };
         Self { state, bus, config, cap_docs }
     }
 

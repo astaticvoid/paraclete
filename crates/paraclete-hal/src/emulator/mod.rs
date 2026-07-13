@@ -141,11 +141,7 @@ impl LaunchpadEmulator {
 
     /// Non-blocking poll of crossterm keyboard events.
     fn poll_keyboard(&mut self) {
-        loop {
-            match crossterm::event::poll(Duration::ZERO) {
-                Ok(true) => {}
-                _ => break,
-            }
+        while let Ok(true) = crossterm::event::poll(Duration::ZERO) {
             let Ok(event) = crossterm::event::read() else { break };
             match event {
                 // Esc or Ctrl-C: restore terminal then exit.

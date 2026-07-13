@@ -40,16 +40,16 @@ fn main() {
 
     let instrument_path: PathBuf = args.iter()
         .find(|a| a.starts_with("--instrument="))
-        .and_then(|a| a.splitn(2, '=').nth(1).filter(|s| !s.is_empty()).map(PathBuf::from))
+        .and_then(|a| a.split_once('=').map(|(_, v)| v).filter(|s| !s.is_empty()).map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("instrument.yaml"));
 
     let load_path: Option<PathBuf> = args.iter()
         .find(|a| a.starts_with("--load="))
-        .and_then(|a| a.splitn(2, '=').nth(1).filter(|s| !s.is_empty()).map(PathBuf::from));
+        .and_then(|a| a.split_once('=').map(|(_, v)| v).filter(|s| !s.is_empty()).map(PathBuf::from));
 
     let save_path: Option<PathBuf> = args.iter()
         .find(|a| a.starts_with("--save="))
-        .and_then(|a| a.splitn(2, '=').nth(1).filter(|s| !s.is_empty()).map(PathBuf::from));
+        .and_then(|a| a.split_once('=').map(|(_, v)| v).filter(|s| !s.is_empty()).map(PathBuf::from));
 
     let no_tui = args.iter().any(|a| a == "--no-tui");
     let dev_ui = args.iter().any(|a| a == "--dev-ui");
@@ -64,14 +64,14 @@ fn main() {
     let want_token = args.iter().any(|a| a == "--token");
     let antiphon_port: u16 = args.iter()
         .find(|a| a.starts_with("--antiphon-port="))
-        .and_then(|a| a.splitn(2, '=').nth(1).and_then(|s| s.parse().ok()))
+        .and_then(|a| a.split_once('=').map(|(_, v)| v).and_then(|s| s.parse().ok()))
         .unwrap_or(paraclete_antiphon::DEFAULT_PORT);
     // `--theoria-dir` overrides whatever the build would otherwise serve
     // (the embedded bundle if `embed-ui` is compiled in, else the on-disk
     // build output directory) — always explicit, never a silent fallback.
     let theoria_dir_override: Option<PathBuf> = args.iter()
         .find(|a| a.starts_with("--theoria-dir="))
-        .and_then(|a| a.splitn(2, '=').nth(1).filter(|s| !s.is_empty()).map(PathBuf::from));
+        .and_then(|a| a.split_once('=').map(|(_, v)| v).filter(|s| !s.is_empty()).map(PathBuf::from));
 
     // ── 1. Load instrument definition ────────────────────────────────────────
     let def = match load_instrument_definition(&instrument_path) {
