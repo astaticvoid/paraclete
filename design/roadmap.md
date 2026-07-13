@@ -3,7 +3,14 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-12 (late). **Vision crystallized + W2 groundwork
+> **Last updated:** 2026-07-13. **Debug/test harness (ADR-033) promoted to
+> Rank 2.** The agent lane pivots from the (completed) universality audit to
+> building live-engine interrogation, a null audio backend, audio snapshot/diff,
+> and a structured log channel — so W2, P13, and every later feature are
+> developed and tested against real engine state (quality upfront, not late
+> bug-fixing). W2 *code* now gates on it; the W2 *spec* (Rank 1, user-paired) is
+> unaffected.
+> Previous: 2026-07-12 (late). **Vision crystallized + W2 groundwork
 > done.** North-star thesis captured in `instrument-vision.md` ("Performance Meets
 > Limitless Composability"): one graph, layered surfaces (hardware-style
 > performance / signal-flow graph / mouse+keyboard floor); every node has a
@@ -26,21 +33,30 @@
 
 ## Active Priorities (2026-07-12) — triage against the vision
 
-Ranked. Rank 1 is the critical-path milestone (user-owned); Rank 2 is the active
-agent task. **A fresh agent starts here.**
+Ranked. Rank 1 is the critical-path **design** milestone (user-owned, paired);
+Rank 2 is the active **agent** task — now the debug/test harness, which gates W2
+*code* and de-risks every subsequent feature. **A fresh agent starts here.**
 
 | Rank | Work | Owner | Status | Notes |
 |---|---|---|---|---|
-| **1** | **W2 surface spec + ADR-032** — the universal node-view contract; the layered-surface model | **user (paired)** | groundwork done, spec pending | Reference analysis + decision menus: `design/specs/w2-reference-analysis.md`. §6.0 track-vs-module axis **resolved by the vision** (layered, not either/or). Blocks all W2 code. Decide §6.1–6.7 + the ADR-032 contract with the user; do not improvise (`handoff.md`). |
-| **2** | **Pre-W2 universality / hardcoded-count audit** | agent | **DONE 2026-07-12** → `design/review/universality-audit.md` | 6 findings triaged by permanence. **Headline: U1 (`&'static str` across the L2 API → `Cow`, killing `Box::leak`) is both the highest-permanence risk AND W2-blocking** — dynamic per-client Theoria surfaces need it; promote D6 from "pre-publication someday" to *part of the W2 surface work*. U2 (Launchpad-shaped surface consts `SHADOW_SLOTS`/`ENCODER_COUNT` → descriptor-driven) is the other freeze-critical, belongs in ADR-032. U3–U5 are runtime caps (not permanent). **U1 SHIPPED 2026-07-12**: `CapabilityDocument`/`SurfaceDescriptor` → `Cow<'static, str>`, both `Box::leak` sites deleted, ~85 sites migrated, 554 tests green. Dynamic per-client Theoria surfaces are now unblocked for W2. |
-| **3** | **P13 voice: OQ-13 + OQ-14** — two-tier engine model | **user** | brief drafted | `w2-reference-analysis.md` P13 appendix. OQ-13 (monolithic vs composed-from-primitives) is **coupled to §6.0** — decide together. OQ-14 = machine-as-parameter (recommended: a topology swap is an audible gap, measured via BUG-012 load test). |
+| **1** | **W2 surface spec + ADR-032** — the universal node-view contract; the layered-surface model | **user (paired)** | groundwork done, spec pending | Reference analysis + decision menus: `design/specs/w2-reference-analysis.md`. §6.0 track-vs-module axis **resolved by the vision** (layered, not either/or). Pure design work — **does not need the harness**. Decide §6.1–6.7 + the ADR-032 contract with the user; do not improvise (`handoff.md`). W2 **implementation** is gated on Rank 2. |
+| **2** | **Debug/test harness (ADR-033)** — null audio backend → interactive JSON-lines REPL → audio snapshot/diff baselines → structured per-node log channel; **+ CPU-% meter to `/engine/cpu`** | **agent** | ADR-033 written (**proposed, not implemented**); foundations shipped: INFRA-001 (artifact assertions, `9655cd0`) + INFRA-003/ADR-034 (dropout/overflow counters, measured quiet) | **Promoted 2026-07-13 (was the completed audit).** The keystone that lets us develop **and test** W2, P13, and all later features against live engine state — interrogate params, run headless in CI without a physical device, catch regressions via peak/RMS snapshots, and watch per-node events. **Quality upfront instead of bugs found late** (`roadmap.md` "Agent Infrastructure Gaps"). Build order: **null backend** (prereq) → **interactive mode** → **audio diff/snapshot + structured log** (both build on the harness). Lands before W2 code begins. |
+| **3** | **P13 voice: OQ-13 + OQ-14** — two-tier engine model | **user** | brief drafted | `w2-reference-analysis.md` P13 appendix. OQ-13 (monolithic vs composed-from-primitives) is **coupled to §6.0** — decide together. OQ-14 = machine-as-parameter (recommended: a topology swap is an audible gap, measured via BUG-012 load test). Now developed/tested against the Rank 2 harness. |
 | **4** | **Openable engines** — Tier-1 monolithic becomes graph-openable | user (later) | north-star, parked | The deepest "elisp of machines." Needs GraphNode / `InnerGraphNode::serialize()` maturity (a stub today). P13→P14+; **not** a W2 gate. |
 
+**Recently completed (former Rank 2):** the pre-W2 universality / hardcoded-count
+audit shipped 2026-07-12 — 6 findings triaged by permanence; **U1** (`&'static
+str` across the L2 API → `Cow<'static, str>`, both `Box::leak` sites deleted, ~85
+sites migrated, 554 tests green) unblocked dynamic per-client Theoria surfaces for
+W2. Detail: `design/review/universality-audit.md`. **U2** (Launchpad-shaped
+surface consts → descriptor-driven) folds into ADR-032.
+
 **Fresh-agent reading order:** `instrument-vision.md` ("Performance Meets
-Limitless Composability") → this section → `design/specs/w2-reference-analysis.md`
-→ `handoff.md`. The user owns Ranks 1/3/4 (paired); the agent's lane is Rank 2
-(the audit) plus any other agent-actionable/verifiable work. **Do not author the
-W2 spec or freeze ADR-032 solo.**
+Limitless Composability") → this section → **ADR-033** (Rank 2) →
+`design/specs/w2-reference-analysis.md` → `handoff.md`. The user owns Ranks 1/3/4
+(paired); the agent's lane is Rank 2 (the debug/test harness) plus any other
+agent-actionable/verifiable work. **Do not author the W2 spec or freeze ADR-032
+solo.**
 
 ---
 
@@ -257,9 +273,13 @@ An agent working on this codebase cannot currently:
 | **Live dropout/xrun detection** | Audio callback fills silence on `try_lock` miss / missing executor with no counter or log; state-bus SPSC overflow drops silently. "No trigger has fired" is unproven, not confirmed | **INFRA-003** — atomic counters on the `fill(0.0)` paths + `/engine/cpu`; lock-free, does **not** need the full ADR-033 harness |
 
 The debug harness (ADR-033 interactive mode) unblocks the first four. It is the
-keystone. **INFRA-003** (live dropout/xrun counters) is independent of it and is
-the cheapest way to turn the trigger-based backlog from assumed-quiet to
-measured — a good small next step for the debug-posture push.
+keystone, and as of 2026-07-13 it is **Rank 2 in Active Priorities** — the active
+agent lane, sequenced to land before W2 code so W2/P13 and every later feature
+are built and tested against live engine state. **INFRA-003** (live dropout/xrun
+counters) was the cheap independent first step and **shipped** with ADR-034
+(counters measured quiet); the remaining debug-posture work — null backend →
+interactive mode → audio diff/snapshot → structured log, plus a CPU-% meter — is
+tracked under that Rank 2 entry.
 
 ---
 ## Agent Tooling Investigation Spikes (July 2026)
