@@ -40,6 +40,82 @@ palette is hosted as a CLAP plugin rather than re-implemented.
 
 ---
 
+## Performance Meets Limitless Composability
+
+The instrument has two ambitions most tools force you to choose between, and
+Paraclete refuses the choice:
+
+1. **Real-time performance as close to hardware as possible** — the immediacy of a
+   dedicated groovebox in the Elektron mold. Sit down and an industrial / EBM /
+   techno drum machine, synths, and a deep effects chain are there to *play*,
+   mouse-free, from grids and encoders.
+2. **Limitless composability, all the way down** — beyond presets and macros: dive
+   into the signal graph with mouse and keyboard to build new instruments from
+   primitives and compose novel chains. Signal-flow patching, in the spirit of the
+   Hydrasynth's mod matrix, as a first-class surface rather than a buried menu.
+
+Elektron and Ashun set the bar here, and it is a high one — the work of teams who
+have poured years and real craft into that feel. It's worth being clear-eyed that
+matching their per-surface polish is a tall order for a small, open project.
+Paraclete's bet is not to out-polish them but to hold together what they do
+separately — performance immediacy *and* open, limitless signal-flow composability
+— in one graph, on a laptop, with any controller, under a free license. Keep their
+bar in view; aim at the combination.
+
+**One graph, layered surfaces.** These are not two apps. They are zoom levels onto
+a single runtime node graph:
+
+- **Performance surface** — the graph collapsed to its playable knobs and grid.
+  Track-oriented, fixed input rail + contextual window, in the Elektron mold. What
+  you *perform*.
+- **Signal-flow surface** — the graph as sources → mixer / routing → filters →
+  effects, modulation shown as the edges it is — the Hydrasynth's mod-matrix idea
+  as a first-class view. Where you *patch and compose*.
+- **Composition floor (mouse + keyboard)** — full graph editing, always available
+  underneath everything. Build a new instrument, rewire a chain, reach any node.
+
+**Every composable bit has a view.** From a whole instrument down to a single LFO,
+every node declares how it renders, and that view *degrades gracefully*:
+knob-grid on hardware → touch page → full graph node under mouse + keyboard.
+Nothing is a black box; nothing is unreachable. This is the interface expression of
+"every component is a Node" (ADR-018), and the contract that carries it is the
+view-plugin API (ADR-032), scoped as *the universal node-view contract* — not
+merely "param pages for engines."
+
+**Limitless elisp of machines.** The reference is Emacs: a fast C core *and*
+limitless elisp on top. Paraclete is the same two tiers, and you never have to
+choose between them:
+
+- **Fast monolithic engines** (the analog kick you sit and tune; the FM voice) —
+  hand-written DSP, great-sounding, CLAP-exportable, fully knob-editable. The "C
+  primitives." Swapped as a *parameter*, not a topology change — so machine
+  selection is a live, sequenceable, per-step gesture (a topology swap is an
+  audible gap; measured, see BUG-012 load test).
+- **Graph-composed instruments** — built from primitives, openable and rewireable.
+  The "elisp": the build-your-own path.
+
+Both wear the same view grammar; the second additionally opens into its graph. The
+north star is that even a monolithic engine is *openable* — dive in and see its
+structure — collapsing the two tiers into one continuum. (Today engines are opaque
+DSP and `InnerGraphNode::serialize()` is a stub; "openable engines" is the
+direction, not a near-term gate.)
+
+**Everything is modulatable, without limit.** Modulation is not a fixed pool of
+slots — it *is* the graph. An LFO is a node; add as many as you want. An envelope
+is a node. Any node's output routes to any parameter as an edge. The performance
+surface shows a curated few routes; the signal-flow surface shows and edits them
+all. "Limitless LFOs and envelopes" is a structural fact, not a feature with a
+number.
+
+**Hard consequence for the platform: no hardcoded counts.** Limitlessness dies at
+the first `[T; 8]`. No fixed count — of mod slots, LFOs, sends, pages, tracks, or
+voices — may survive into any frozen format (serializer, wire protocol, published
+API). Every format freeze is audited against this before it lands. This is the
+Universality directive made structural, and it is why the pre-W2 count audit runs
+before the interface/protocol surface freezes.
+
+---
+
 ## The Hardware
 
 **Novation Launchpad (8×8 RGB grid)**

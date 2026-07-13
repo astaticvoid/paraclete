@@ -140,10 +140,33 @@ They are judgment calls to make *with* the user in session, not solo.)
     Remaining audit items need the interactive harness (ADR-033 v2), stress
     runs, or hardware.
 
+7. **Session 2026-07-12 (late):** vision crystallized
+    (`instrument-vision.md` — "Performance Meets Limitless Composability") and the
+    W2 reference spike finished (`design/specs/w2-reference-analysis.md`, all four
+    manuals, 8 convergent patterns, decision menus). Roadmap **"Active
+    Priorities"** is now the current ranked view; start there. Runtime
+    observability measured quiet (ADR-034 counters + live-audio load test);
+    BUG-012 confirmed a hard crash on buffer-size mismatch. **Active agent task:
+    the pre-W2 universality / hardcoded-count audit** (must land before the
+    interface/protocol/serializer freeze).
+
 Standing design tiebreakers (s2): synthesis voices are the emotional core —
 "sit down with a nice kick engine and tune it"; interface work starts from
 studied reference manuals, never improvised. Naming policy: reference marks
 (Digitakt, Syntakt, Hydrasynth…) live in design docs only.
+
+Standing design tiebreakers (added 2026-07-12): **one graph, layered surfaces**
+(hardware-style performance / signal-flow graph / mouse+keyboard floor); **every
+node has a graceful-degrading view** (ADR-032 = the *universal node-view
+contract*, not just engine param pages); **two-tier engines** ("elisp of
+machines" — fast monolithic *and* graph-composed, never forced to choose);
+**modulation is graph edges** (limitless LFOs/envs, no slot count); **no
+hardcoded counts in any frozen format**. **Tone (public repo):** *do* name
+Elektron / Hydrasynth as the aspirational bar — they set the standard, built by
+teams who love the craft, and we keep them in view. Frame humbly and clear-eyed:
+a small open project may not match their per-surface polish. The pitch is the
+*combination* (performance immediacy + open composability, one graph, any
+controller, free license), **never** superiority over a named product.
 
 Standing user offers to schedule when hardware is at hand: Digitakt
 relative-CC verification (last unverified assumption under the encoder path),

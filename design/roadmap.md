@@ -3,12 +3,44 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-12 (ADR-034 implemented: D3/D4 closed, INFRA-003
-> resolved. `RuntimeCounters` with 4 atomic counters shared between audio
-> callback and executor; state-bus `/engine/*` publishing; Antiphon mirror.
-> D1/D2 are user-owned remaining gaps.)
+> **Last updated:** 2026-07-12 (late). **Vision crystallized + W2 groundwork
+> done.** North-star thesis captured in `instrument-vision.md` ("Performance Meets
+> Limitless Composability"): one graph, layered surfaces (hardware-style
+> performance / signal-flow graph / mouse+keyboard floor); every node has a
+> graceful-degrading view; "limitless elisp of machines" = two-tier engines (fast
+> monolithic + graph-composed); modulation IS the graph; **no hardcoded counts in
+> any frozen format.** W2 reference spike complete
+> (`design/specs/w2-reference-analysis.md` — all four manuals, 8 convergent
+> patterns, decision menus). **§6.0 axis resolved** (layered, not either/or).
+> **ADR-032 reframed** as the universal node-view contract. **Active agent work:
+> pre-W2 universality/hardcoded-count audit** (must land before the interface/
+> protocol/serializer freeze). D1 (W2 spec+ADR-032) and D2 (P13, now two-tier
+> framed) remain **user-owned/paired**. See "Active Priorities" below.
+> Previous: 2026-07-12 (ADR-034 implemented: D3/D4 closed, INFRA-003 resolved;
+> RuntimeCounters + `/engine/*`; both counter paths measured quiet; BUG-012
+> confirmed as a hard crash via the live-audio load test).
 > Previous: 2026-07-10 evening (paired session #2 held on glass)
 > **Current phase:** Legibility phase shipped and judged on the iPad over a **USB-C direct link (3.0 ms RTT, zero config — the no-shared-Wi-Fi answer)**. Session #2 verdict (`design/sessions/s2.md`): "improved a lot… it will be the baseline" but **far below bar — the Launchpad-grid mirror is the wrong foundation for Theoria**. New sequence: **(1) BUG-022/023** (seq-vs-trigger kick pitch mismatch; fast-retrigger ducking — sound correctness moves first), **(2) baseline interaction wins** (drag-draw steps, encoder gesture/placement, hide dead grid), **(3) W2 re-scoped → "Theoria native surface", design-first**: paired reference spike (chosen Elektron box manual + Hydrasynth manual → fixed-input rail + contextual window spec, param/env/LFO pages, source→FX channel view) before any further W-feature code; ADR-032 follows the spec. **Launchpad parked** (good version frozen; s1-F7 cleanup → trigger backlog). P10 C2+ engine depth independent/parallel; P13 keystone unchanged. Earlier 2026-07-10 work: legibility items + BUG-016…021 fixed + open-by-default `--token` opt-in (`theoria-legibility-report.md`). BUG-012 still queued for a hardware session.
+
+---
+
+## Active Priorities (2026-07-12) — triage against the vision
+
+Ranked. Rank 1 is the critical-path milestone (user-owned); Rank 2 is the active
+agent task. **A fresh agent starts here.**
+
+| Rank | Work | Owner | Status | Notes |
+|---|---|---|---|---|
+| **1** | **W2 surface spec + ADR-032** — the universal node-view contract; the layered-surface model | **user (paired)** | groundwork done, spec pending | Reference analysis + decision menus: `design/specs/w2-reference-analysis.md`. §6.0 track-vs-module axis **resolved by the vision** (layered, not either/or). Blocks all W2 code. Decide §6.1–6.7 + the ADR-032 contract with the user; do not improvise (`handoff.md`). |
+| **2** | **Pre-W2 universality / hardcoded-count audit** | agent | **ACTIVE** | Sweep for fixed counts (mod slots, LFO/env, sends, pages, tracks, voices) and `&'static str` in published APIs, across serializer + wire protocol + node/surface APIs. Must land **before** the interface/protocol/serializer freeze — after the W4 freeze the ceilings are permanent. Serves the "limitless" thesis; standing Universality directive. Output → Deferred-Bug Backlog / findings doc. |
+| **3** | **P13 voice: OQ-13 + OQ-14** — two-tier engine model | **user** | brief drafted | `w2-reference-analysis.md` P13 appendix. OQ-13 (monolithic vs composed-from-primitives) is **coupled to §6.0** — decide together. OQ-14 = machine-as-parameter (recommended: a topology swap is an audible gap, measured via BUG-012 load test). |
+| **4** | **Openable engines** — Tier-1 monolithic becomes graph-openable | user (later) | north-star, parked | The deepest "elisp of machines." Needs GraphNode / `InnerGraphNode::serialize()` maturity (a stub today). P13→P14+; **not** a W2 gate. |
+
+**Fresh-agent reading order:** `instrument-vision.md` ("Performance Meets
+Limitless Composability") → this section → `design/specs/w2-reference-analysis.md`
+→ `handoff.md`. The user owns Ranks 1/3/4 (paired); the agent's lane is Rank 2
+(the audit) plus any other agent-actionable/verifiable work. **Do not author the
+W2 spec or freeze ADR-032 solo.**
 
 ---
 
@@ -60,7 +92,10 @@ each producing explicit roadmap deltas (or an explicit "no change").
 
 ---
 
-## Design Triage — Open Spec Gaps (start here, new session)
+## Design Triage — Open Spec Gaps
+
+> **See "Active Priorities" above for the current ranked view** — it folds this
+> triage against the crystallized vision. This section keeps the per-gap detail.
 
 Things the plan gestures at but does **not** yet specify. Triaged 2026-07-12.
 **Owner** = who must author it: **user** (design judgment, frontier-tier per
