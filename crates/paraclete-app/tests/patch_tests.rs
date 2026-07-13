@@ -331,3 +331,132 @@ fn project_v1_load_emits_warning() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+// ── Load test (opt-in) ──────────────────────────────────────────────────────
+
+/// LOAD TEST — `#[ignore]`, needs a real audio output device.
+///
+/// Runs the default instrument through the **real cpal callback** and hammers
+/// `apply_patch` (topology swaps) for ~15 s, then reads the ADR-034
+/// `RuntimeCounters` directly off the executor. This is the only way to
+/// exercise the two audio-callback dropout counters
+/// (`dropout_lock_miss` / `dropout_no_executor`) — the headless test-driver
+/// drives `ex.process()` directly and never touches the callback path, so it
+/// leaves those two trivially 0 (see `engine_counters_quiet.yaml`).
+///
+/// The pause-rebuild-resume protocol (ADR-029) sets `pause()` before it touches
+/// the executor lock, and the callback's pause path early-returns without
+/// counting — so a correct implementation must show **zero** self-inflicted
+/// dropouts even under heavy churn. A non-zero count here is a real race, not
+/// noise: that is the tripwire this test arms.
+///
+/// Run:
+///   cargo test -p paraclete-app --test patch_tests \
+///       -- --ignored --nocapture loadtest_topology_churn_under_live_audio
+#[test]
+#[ignore]
+fn loadtest_topology_churn_under_live_audio() {
+    use std::collections::HashMap;
+    use std::sync::atomic::Ordering;
+    use std::time::{Duration, Instant};
+
+    use paraclete_app::builder::{build_from_instrument, load_instrument_definition};
+    use paraclete_node_api::NodeCommand;
+    use paraclete_nodes::Sequencer;
+
+    // 1. Build the default instrument graph (analog + FM voices; no samples).
+    let instrument =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instrument.yaml");
+    let def = load_instrument_definition(&instrument).expect("load instrument.yaml");
+    // NOTE: audio.rs starts the cpal stream with BufferSize::Default — the
+    // device's native buffer size, NOT the executor's block_size — so this
+    // MUST match the device or the executor's `debug_assert_eq!(out.len(),
+    // block_size * channels)` fires on the audio thread. 512 matches the app's
+    // hardcoded BLOCK_SIZE and this dev machine. That coupling *is* BUG-002 /
+    // BUG-012 (rate + buffer assumed, not negotiated); this test surfaced it.
+    const DEVICE_BLOCK: usize = 512;
+    let mut conf = NodeConfigurator::new(SR, DEVICE_BLOCK);
+    let ids = build_from_instrument(&def, &mut conf, &HashMap::new()).expect("build graph");
+
+    // 2. Build the executor and start REAL audio. Headless CI without an output
+    //    device skips cleanly — this is an opt-in hardware-ish measurement.
+    let executor = conf.build_executor();
+    let engine = match AudioEngine::start(executor) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("[loadtest] no audio device ({e:?}) — skipping");
+            return;
+        }
+    };
+
+    // 3. Put real load on the audio thread: four-on-the-floor on every track,
+    //    then let the audio thread drain the commands before churn begins.
+    for &seq in &ids.sequencers {
+        for step in [0i64, 4, 8, 12] {
+            let _ = conf.send_command(NodeCommand {
+                target_id: seq,
+                type_id: Sequencer::CMD_TOGGLE_STEP,
+                arg0: step,
+                arg1: 0.0,
+            });
+        }
+    }
+    std::thread::sleep(Duration::from_millis(300));
+
+    // 4. Hammer topology swaps for ~15 s. Each iteration removes the node added
+    //    last round and adds a fresh (disconnected, harmless) one, driving the
+    //    full pause → take → rebuild → resume cycle against the live callback.
+    let registry = build_registry();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut swaps = 0u64;
+    let mut patch_failures = 0u64;
+    let mut last_added: Option<u32> = None;
+    while Instant::now() < deadline {
+        let mut changes = Vec::new();
+        if let Some(id) = last_added.take() {
+            changes.push(TopologyChange::RemoveNode { id });
+        }
+        changes.push(TopologyChange::AddNode {
+            type_tag: "distortion".to_string(),
+            initial_params: Default::default(),
+        });
+        match apply_patch(changes, &engine, &mut conf, &registry) {
+            Ok(new_ids) => {
+                last_added = new_ids.last().copied();
+                swaps += 1;
+            }
+            Err(e) => {
+                eprintln!("[loadtest] patch failed: {e:?}");
+                patch_failures += 1;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+
+    // 5. Quiesce and read the counters straight off the executor (the Arc is
+    //    shared with the audio callback, so these are the live totals).
+    engine.pause();
+    engine.wait_paused();
+    let executor = engine.take_executor().expect("executor present after run");
+    let c = executor.counters();
+    let buffers = c.buffers_processed.load(Ordering::Relaxed);
+    let lock_miss = c.dropout_lock_miss.load(Ordering::Relaxed);
+    let no_exec = c.dropout_no_executor.load(Ordering::Relaxed);
+    let overflows = c.state_bus_overflows.load(Ordering::Relaxed);
+
+    eprintln!("[loadtest] --- results over ~15 s of live audio ---");
+    eprintln!("[loadtest]   topology swaps applied : {swaps}");
+    eprintln!("[loadtest]   patch failures         : {patch_failures}");
+    eprintln!("[loadtest]   buffers_processed      : {buffers}");
+    eprintln!("[loadtest]   dropout_lock_miss      : {lock_miss}");
+    eprintln!("[loadtest]   dropout_no_executor    : {no_exec}");
+    eprintln!("[loadtest]   state_bus_overflows    : {overflows}");
+
+    // Liveness: the real callback ran and topology actually churned.
+    assert!(buffers > 0, "audio callback never processed a buffer");
+    assert!(swaps > 0, "no topology swaps applied");
+    // Tripwire: zero self-inflicted dropouts even under heavy churn.
+    assert_eq!(lock_miss, 0, "audio callback missed the executor lock {lock_miss}x");
+    assert_eq!(no_exec, 0, "audio callback found no executor {no_exec}x");
+    assert_eq!(overflows, 0, "state bus overflowed {overflows}x");
+}

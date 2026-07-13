@@ -1,0 +1,67 @@
+# INFRA-003 / ADR-034 measurement: confirm the runtime is self-quiet.
+#
+# Runs the full default instrument busy for 8 s (all four tracks stepping,
+# a mid-run polyrhythm speed change to churn state) and reads the /engine/*
+# RuntimeCounters at the end.
+#
+# What this scenario CAN measure (executor-path counters):
+#   /engine/buffers_processed   — liveness; must be a large positive count
+#   /engine/state_bus_overflows — the SPSC-overflow half of INFRA-003; must be 0
+#
+# What it CANNOT measure (audio-callback-path counters):
+#   /engine/dropout_lock_miss   — only increments in the cpal callback on a
+#   /engine/dropout_no_executor — try_lock miss / empty executor cell. The
+#   test-driver drives ex.process() directly and holds the lock in its own
+#   loop, so these are trivially 0 here. Exercising them needs a live app run
+#   against a real (or null) cpal device. They are probed below for the record.
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 8
+output: /tmp/engine_counters_quiet.wav
+play: false
+
+timeline:
+  # Track 0 (Kick) — four-on-the-floor
+  - { at: 0.0, toggle_step: { target: "10", step: 0 } }
+  - { at: 0.0, toggle_step: { target: "10", step: 4 } }
+  - { at: 0.0, toggle_step: { target: "10", step: 8 } }
+  - { at: 0.0, toggle_step: { target: "10", step: 12 } }
+  # Track 1 (Snare) — backbeat
+  - { at: 0.0, toggle_step: { target: "11", step: 4 } }
+  - { at: 0.0, toggle_step: { target: "11", step: 12 } }
+  # Track 2 (HiHat) — every other step
+  - { at: 0.0, toggle_step: { target: "12", step: 2 } }
+  - { at: 0.0, toggle_step: { target: "12", step: 6 } }
+  - { at: 0.0, toggle_step: { target: "12", step: 10 } }
+  - { at: 0.0, toggle_step: { target: "12", step: 14 } }
+  # Track 3 (Bass) — offbeats
+  - { at: 0.0, toggle_step: { target: "13", step: 3 } }
+  - { at: 0.0, toggle_step: { target: "13", step: 11 } }
+
+  # Mid-run polyrhythm: pull hats + bass off the grid to churn per-cycle state.
+  - { at: 4.0, set_speed: { target: "12", speed: 0.75 } }
+  - { at: 4.0, set_speed: { target: "13", speed: 1.5 } }
+
+probe:
+  - { at: 7.5, path: "/engine/buffers_processed" }
+  - { at: 7.5, path: "/engine/state_bus_overflows" }
+  - { at: 7.5, path: "/engine/dropout_lock_miss" }
+  - { at: 7.5, path: "/engine/dropout_no_executor" }
+
+assert:
+  # Liveness: the counter is wired and advancing (hundreds of blocks in 8 s).
+  - at: 7.5
+    path: "/engine/buffers_processed"
+    between: [50.0, 1000000.0]
+  # The measurable INFRA-003 claim: the state-bus SPSC never overflowed.
+  - at: 7.5
+    path: "/engine/state_bus_overflows"
+    eq: 0
+  # Trivially 0 in the test-driver path (documented above); asserted so a
+  # future change that routes through the callback here would surface.
+  - at: 7.5
+    path: "/engine/dropout_lock_miss"
+    eq: 0
+  - at: 7.5
+    path: "/engine/dropout_no_executor"
+    eq: 0
