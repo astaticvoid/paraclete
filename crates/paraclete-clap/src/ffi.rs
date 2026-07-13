@@ -7,7 +7,7 @@
 
 use clap_sys::entry::clap_plugin_entry;
 use clap_sys::events::{
-    clap_event_header, clap_event_note, clap_event_param_value,
+    clap_event_note, clap_event_param_value,
     CLAP_EVENT_NOTE_OFF, CLAP_EVENT_NOTE_ON, CLAP_EVENT_PARAM_VALUE,
 };
 use clap_sys::factory::plugin_factory::clap_plugin_factory;
@@ -71,14 +71,29 @@ pub fn plugin_class() -> clap_plugin {
     }
 }
 
+// CLAP C-ABI vtable thunks. Shared contract: `plugin` is a valid `*const
+// clap_plugin` produced by this factory, whose `plugin_data` is a live
+// `PluginWrapper`; the host calls each per the CLAP plugin lifecycle and upholds
+// the threading rules (activate/deactivate on the main thread, process on the
+// audio thread). Violating any of this is UB — enforced by the host, not us.
+
+/// # Safety
+/// See the vtable-thunk contract above: `plugin` must be a valid `clap_plugin`
+/// from this factory.
 pub unsafe extern "C" fn plugin_init(_plugin: *const clap_plugin) -> bool {
     true
 }
 
+/// # Safety
+/// Consumes the plugin: `plugin` must be a valid `clap_plugin` from this factory
+/// and must not be used again after this returns.
 pub unsafe extern "C" fn plugin_destroy(plugin: *const clap_plugin) {
     drop(Box::from_raw(plugin as *mut PluginWrapper));
 }
 
+/// # Safety
+/// `plugin` must be a valid `clap_plugin` from this factory; called on the main
+/// thread while audio is stopped.
 pub unsafe extern "C" fn plugin_activate(
     plugin:      *const clap_plugin,
     sample_rate: f64,
@@ -90,19 +105,32 @@ pub unsafe extern "C" fn plugin_activate(
     true
 }
 
+/// # Safety
+/// `plugin` must be a valid `clap_plugin` from this factory; called on the main
+/// thread while audio is stopped.
 pub unsafe extern "C" fn plugin_deactivate(plugin: *const clap_plugin) {
     let w = &mut *(plugin as *mut PluginWrapper);
     w.inner.deactivate();
 }
 
+/// # Safety
+/// `plugin` must be a valid `clap_plugin` from this factory.
 pub unsafe extern "C" fn plugin_start_processing(_plugin: *const clap_plugin) -> bool {
     true
 }
 
+/// # Safety
+/// `plugin` must be a valid `clap_plugin` from this factory.
 pub unsafe extern "C" fn plugin_stop_processing(_plugin: *const clap_plugin) {}
 
+/// # Safety
+/// `plugin` must be a valid `clap_plugin` from this factory.
 pub unsafe extern "C" fn plugin_reset(_plugin: *const clap_plugin) {}
 
+/// # Safety
+/// `plugin` must be a valid `clap_plugin` from this factory and `process` a
+/// valid `clap_process` for the duration of the call; invoked on the audio
+/// thread per the CLAP contract.
 pub unsafe extern "C" fn plugin_process(
     plugin:  *const clap_plugin,
     process: *const clap_process,
@@ -133,7 +161,7 @@ pub unsafe extern "C" fn plugin_process(
         for i in 0..count {
             let raw = (in_ev.get.unwrap())(p.in_events, i);
             if raw.is_null() { continue; }
-            let hdr = &*(raw as *const clap_event_header);
+            let hdr = &*raw;
             match hdr.type_ {
                 CLAP_EVENT_NOTE_ON => {
                     let ev = &*(raw as *const clap_event_note);
@@ -208,6 +236,9 @@ pub unsafe extern "C" fn plugin_process(
     CLAP_PROCESS_CONTINUE
 }
 
+/// # Safety
+/// `plugin` must be a valid `clap_plugin` from this factory and `id` a valid
+/// C string. (No extensions supported yet; always returns null.)
 pub unsafe extern "C" fn plugin_get_extension(
     _plugin: *const clap_plugin,
     _id: *const c_char,
@@ -215,6 +246,8 @@ pub unsafe extern "C" fn plugin_get_extension(
     std::ptr::null()
 }
 
+/// # Safety
+/// `plugin` must be a valid `clap_plugin` from this factory.
 pub unsafe extern "C" fn plugin_on_main_thread(_plugin: *const clap_plugin) {}
 
 /// Returns the plugin factory pointer as `*const c_void` for use in `get_factory`.
