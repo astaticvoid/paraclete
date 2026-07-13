@@ -39,4 +39,11 @@ impl NameResolver {
         self.resolve(target)
             .ok_or_else(|| format!("target not found: {}", target))
     }
+
+    /// Empty resolver for unit tests. Numeric targets still resolve (they parse
+    /// directly); name lookups all miss.
+    #[cfg(test)]
+    pub fn empty() -> Self {
+        Self { names: HashMap::new() }
+    }
 }

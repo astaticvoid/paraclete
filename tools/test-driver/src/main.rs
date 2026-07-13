@@ -154,30 +154,30 @@ fn param_id_for_name(name: &str) -> u32 {
     ParamDescriptor::id_for_name(name)
 }
 
-fn run_batch(scenario: TestScenario) -> Result<(), String> {
-    let instrument_path = PathBuf::from(&scenario.instrument);
-    let def = load_instrument_definition(&instrument_path)
-        .map_err(|e| format!("failed to load instrument: {}", e))?;
-    let resolver = NameResolver::from_instrument(&def);
-
-    let sample_rate = scenario.sample_rate;
-    let block_size = scenario.block_size;
+/// Shared engine stack for both batch and interactive modes: the built graph and
+/// its executor behind a `Mutex`, a spawned null-backend audio thread writing
+/// into the lock-free capture ring, and the name resolver. The audio thread runs
+/// until `TestContext::running` is cleared. (ADR-033 § null audio backend.)
+fn build_context(
+    def: &paraclete_app::instrument::InstrumentDefinition,
+    sample_rate: f32,
+    block_size: usize,
+) -> Result<TestContext, String> {
+    let resolver = NameResolver::from_instrument(def);
 
     let mut conf = NodeConfigurator::new(sample_rate, block_size);
     let libraries = HashMap::new();
-    let _ids = build_from_instrument(&def, &mut conf, &libraries)
+    let _ids = build_from_instrument(def, &mut conf, &libraries)
         .map_err(|e| format!("failed to build graph: {}", e))?;
 
     let bus_handle = conf.state_bus_handle();
-    let executor = conf.build_executor();
+    let executor = Arc::new(Mutex::new(conf.build_executor()));
     let capture = Arc::new(CaptureRing::new(CAPTURE_RING_CAPACITY));
     let running = Arc::new(AtomicBool::new(true));
 
-    let executor = Arc::new(Mutex::new(executor));
     let cap = capture.clone();
     let exec = executor.clone();
     let run = running.clone();
-
     let channels = 2usize;
     std::thread::spawn(move || {
         let mut block = vec![0.0f32; block_size * channels];
@@ -193,10 +193,21 @@ fn run_batch(scenario: TestScenario) -> Result<(), String> {
         }
     });
 
-    let mut ctx = TestContext {
+    Ok(TestContext {
         conf, executor, bus_handle, capture, running,
         resolver, sample_rate, block_size,
-    };
+    })
+}
+
+fn run_batch(scenario: TestScenario) -> Result<(), String> {
+    let instrument_path = PathBuf::from(&scenario.instrument);
+    let def = load_instrument_definition(&instrument_path)
+        .map_err(|e| format!("failed to load instrument: {}", e))?;
+
+    let sample_rate = scenario.sample_rate;
+    let block_size = scenario.block_size;
+
+    let mut ctx = build_context(&def, sample_rate, block_size)?;
 
     let mut timeline: Vec<(f64, ResolvedActionKind)> = scenario.timeline.iter().map(|entry| {
         let kind = resolve_action(&ctx.resolver, &entry.action)?;
@@ -332,6 +343,308 @@ fn run_batch(scenario: TestScenario) -> Result<(), String> {
     Ok(())
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Interactive mode (ADR-033 § interactive) — a JSON-lines REPL over the same
+// engine stack as batch mode. A dedicated reader thread keeps stdin off the main
+// loop so the state-bus drain and audio capture never stall (hostile-review
+// issue #1). Deviation from the ADR: an unbounded `std::sync::mpsc` channel
+// replaces the bounded `rtrb` SPSC — the core requirement (the main thread never
+// blocks on stdin) holds, and an unbounded queue loses no commands under a burst
+// rather than dropping the oldest.
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct InteractiveConfig {
+    instrument: String,
+    sample_rate: f32,
+    block_size: usize,
+}
+
+fn parse_interactive_args(args: &[String]) -> Result<InteractiveConfig, String> {
+    let mut cfg = InteractiveConfig {
+        instrument: "instrument.yaml".to_string(),
+        sample_rate: 44100.0,
+        block_size: 512,
+    };
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--instrument" => {
+                i += 1;
+                cfg.instrument = args.get(i).ok_or("--instrument needs a value")?.clone();
+            }
+            "--sample-rate" => {
+                i += 1;
+                cfg.sample_rate = args.get(i).ok_or("--sample-rate needs a value")?
+                    .parse().map_err(|_| "--sample-rate must be a number".to_string())?;
+            }
+            "--block-size" => {
+                i += 1;
+                cfg.block_size = args.get(i).ok_or("--block-size needs a value")?
+                    .parse().map_err(|_| "--block-size must be an integer".to_string())?;
+            }
+            other => return Err(format!("unknown interactive flag: {}", other)),
+        }
+        i += 1;
+    }
+    if !cfg.sample_rate.is_finite() || cfg.sample_rate <= 0.0 {
+        return Err("--sample-rate must be positive".into());
+    }
+    if cfg.block_size == 0 {
+        return Err("--block-size must be > 0".into());
+    }
+    Ok(cfg)
+}
+
+fn run_interactive(cfg: &InteractiveConfig) -> Result<(), String> {
+    use std::io::Write;
+
+    let def = load_instrument_definition(&PathBuf::from(&cfg.instrument))
+        .map_err(|e| format!("failed to load instrument: {}", e))?;
+    let mut ctx = build_context(&def, cfg.sample_rate, cfg.block_size)?;
+
+    // Reader thread: blocks on stdin, forwards each line to the main loop. It
+    // never touches the engine, so a blocked read cannot stall audio or state.
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match stdin.read_line(&mut line) {
+                Ok(0) => break, // EOF → drop tx → main loop exits
+                Ok(_) => {
+                    if tx.send(line.clone()).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
+    eprintln!("[test-driver] interactive mode ready — JSON commands on stdin, responses on stdout");
+
+    let mut all_samples: Vec<f32> = Vec::new();
+    let mut last_capture_read: usize = 0;
+    let stdout = std::io::stdout();
+
+    loop {
+        std::thread::sleep(Duration::from_millis(1));
+        ctx.conf.process_main_thread();
+        ctx.capture.drain(&mut all_samples, &mut last_capture_read);
+
+        match rx.try_recv() {
+            Ok(line) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let (resp, quit) = handle_json_command(&mut ctx, trimmed, &all_samples);
+                let mut out = stdout.lock();
+                let _ = writeln!(out, "{}", resp);
+                let _ = out.flush();
+                if quit {
+                    break;
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+        }
+    }
+
+    ctx.running.store(false, Ordering::SeqCst);
+    Ok(())
+}
+
+fn ok_json() -> String {
+    "{\"ok\":true}".to_string()
+}
+
+fn err_json(msg: &str) -> String {
+    serde_json::json!({ "error": msg }).to_string()
+}
+
+fn value_to_json(v: &StateBusValue) -> serde_json::Value {
+    match v {
+        StateBusValue::Float(f) => serde_json::json!(f),
+        StateBusValue::Int(i) => serde_json::json!(i),
+        StateBusValue::Bool(b) => serde_json::json!(b),
+        StateBusValue::Text(s) => serde_json::json!(s),
+    }
+}
+
+fn jstr<'a>(v: &'a serde_json::Value, k: &str) -> Option<&'a str> {
+    v.get(k).and_then(|x| x.as_str())
+}
+
+fn need_f64(v: &serde_json::Value, k: &str, cmd: &str) -> Result<f64, String> {
+    v.get(k).and_then(|x| x.as_f64()).ok_or_else(|| format!("{} needs numeric '{}'", cmd, k))
+}
+
+fn need_i64(v: &serde_json::Value, k: &str, cmd: &str) -> Result<i64, String> {
+    v.get(k).and_then(|x| x.as_i64()).ok_or_else(|| format!("{} needs integer '{}'", cmd, k))
+}
+
+fn resolve_json_target(resolver: &NameResolver, v: &serde_json::Value) -> Result<u32, String> {
+    let t = v.get("target").ok_or_else(|| "missing 'target'".to_string())?;
+    if let Some(n) = t.as_i64() {
+        resolver.resolve_required(&n.to_string())
+    } else if let Some(s) = t.as_str() {
+        resolver.resolve_required(s)
+    } else {
+        Err("'target' must be a node id or name".into())
+    }
+}
+
+/// Map an interactive command name + its JSON fields to a `ResolvedActionKind`.
+/// `Ok(None)` means the command is not an engine mutation (caller handles the
+/// interactive-only `read`/`dump`/`peak`/`render`/`quit` verbs).
+fn json_to_action(
+    resolver: &NameResolver,
+    cmd: &str,
+    v: &serde_json::Value,
+) -> Result<Option<ResolvedActionKind>, String> {
+    use ResolvedActionKind as A;
+    let action = match cmd {
+        "set_param" => A::SetParam {
+            target_id: resolve_json_target(resolver, v)?,
+            param_name: jstr(v, "param").ok_or("set_param needs 'param'")?.to_string(),
+            value: need_f64(v, "value", cmd)?,
+        },
+        "bump_param" => A::BumpParam {
+            target_id: resolve_json_target(resolver, v)?,
+            param_name: jstr(v, "param").ok_or("bump_param needs 'param'")?.to_string(),
+            delta: need_f64(v, "delta", cmd)?,
+        },
+        "trigger" => A::Trigger {
+            target_id: resolve_json_target(resolver, v)?,
+            note: v.get("note").and_then(|x| x.as_i64()).unwrap_or(-1),
+            velocity: v.get("velocity").and_then(|x| x.as_f64()).unwrap_or(0.79),
+        },
+        "toggle_step" => A::ToggleStep {
+            target_id: resolve_json_target(resolver, v)?,
+            step: need_i64(v, "step", cmd)?,
+        },
+        "set_step" => A::SetStep {
+            target_id: resolve_json_target(resolver, v)?,
+            step: need_i64(v, "step", cmd)?,
+            note: need_i64(v, "note", cmd)?,
+        },
+        "clear" => A::Clear { target_id: resolve_json_target(resolver, v)? },
+        "set_pattern" => A::SetPattern {
+            target_id: resolve_json_target(resolver, v)?,
+            pattern: need_i64(v, "pattern", cmd)?,
+        },
+        "set_length" => A::SetLength {
+            target_id: resolve_json_target(resolver, v)?,
+            steps: need_i64(v, "steps", cmd)?,
+        },
+        "set_speed" => A::SetSpeed {
+            target_id: resolve_json_target(resolver, v)?,
+            speed: need_f64(v, "speed", cmd)?,
+        },
+        "set_page_loop" => A::SetPageLoop {
+            target_id: resolve_json_target(resolver, v)?,
+            start_page: need_i64(v, "start_page", cmd)?,
+            end_page: need_i64(v, "end_page", cmd)?,
+        },
+        "set_step_timing" => A::SetStepTiming {
+            target_id: resolve_json_target(resolver, v)?,
+            step: need_i64(v, "step", cmd)?,
+            micro_offset: need_i64(v, "micro_offset", cmd)?,
+        },
+        "set_fill_a" => A::SetFillA {
+            target_id: resolve_json_target(resolver, v)?,
+            active: v.get("active").and_then(|x| x.as_bool()).ok_or("set_fill_a needs bool 'active'")?,
+        },
+        "set_fill_b" => A::SetFillB {
+            target_id: resolve_json_target(resolver, v)?,
+            active: v.get("active").and_then(|x| x.as_bool()).ok_or("set_fill_b needs bool 'active'")?,
+        },
+        "set_step_condition" => A::SetStepCondition {
+            target_id: resolve_json_target(resolver, v)?,
+            step: need_i64(v, "step", cmd)?,
+            probability: need_i64(v, "probability", cmd)? as u8,
+            repeat_n: need_i64(v, "repeat_n", cmd)? as u8,
+            repeat_m: need_i64(v, "repeat_m", cmd)? as u8,
+            fill: need_i64(v, "fill", cmd)? as u8,
+        },
+        "chain_push" => A::ChainPush {
+            target_id: resolve_json_target(resolver, v)?,
+            pattern: need_i64(v, "pattern", cmd)?,
+        },
+        "chain_clear" => A::ChainClear { target_id: resolve_json_target(resolver, v)? },
+        _ => return Ok(None),
+    };
+    Ok(Some(action))
+}
+
+/// Dispatch one parsed interactive command. Returns the JSON response line and
+/// whether the session should quit. Engine mutations reuse the batch
+/// `dispatch_action` path; `read`/`dump`/`peak`/`render` are interactive-only.
+fn handle_json_command(ctx: &mut TestContext, line: &str, all_samples: &[f32]) -> (String, bool) {
+    let v: serde_json::Value = match serde_json::from_str(line) {
+        Ok(v) => v,
+        Err(e) => return (err_json(&format!("invalid JSON: {}", e)), false),
+    };
+    let cmd = match v.get("cmd").and_then(|c| c.as_str()) {
+        Some(c) => c,
+        None => return (err_json("missing 'cmd' field"), false),
+    };
+
+    match cmd {
+        "quit" => (ok_json(), true),
+
+        "read" => match jstr(&v, "path") {
+            None => (err_json("read needs a 'path'"), false),
+            Some(path) => match ctx.conf.state_bus_read(path) {
+                Some(val) => (
+                    serde_json::json!({ "path": path, "value": value_to_json(&val) }).to_string(),
+                    false,
+                ),
+                None => (err_json(&format!("no value at path {}", path)), false),
+            },
+        },
+
+        "dump" => {
+            let bus = ctx.bus_handle.borrow();
+            let mut paths = serde_json::Map::new();
+            for (path, val) in bus.iter() {
+                paths.insert(path.to_string(), value_to_json(val));
+            }
+            (serde_json::json!({ "paths": paths }).to_string(), false)
+        }
+
+        "peak" => {
+            let window_ms = v.get("window_ms").and_then(|w| w.as_f64()).unwrap_or(500.0);
+            let window_samples = (window_ms / 1000.0 * ctx.sample_rate as f64) as usize;
+            let start = all_samples.len().saturating_sub(window_samples);
+            let peak = all_samples[start..].iter().fold(0.0f32, |m, s| m.max(s.abs()));
+            (serde_json::json!({ "peak": peak, "window_ms": window_ms }).to_string(), false)
+        }
+
+        "render" => {
+            let output = jstr(&v, "output").unwrap_or("/tmp/paraclete_debug.wav");
+            match wav::write_wav(output, all_samples, ctx.sample_rate as u32) {
+                Ok(()) => (
+                    serde_json::json!({ "ok": true, "output": output, "samples": all_samples.len() }).to_string(),
+                    false,
+                ),
+                Err(e) => (err_json(&format!("render failed: {}", e)), false),
+            }
+        }
+
+        other => match json_to_action(&ctx.resolver, other, &v) {
+            Ok(Some(action)) => match dispatch_action(ctx, &action) {
+                Ok(()) => (ok_json(), false),
+                Err(e) => (err_json(&e), false),
+            },
+            Ok(None) => (err_json(&format!("unknown command: {}", other)), false),
+            Err(e) => (err_json(&e), false),
+        },
+    }
+}
+
 /// Post-capture artifact scans (INFRA-001). Unlike live assertions these run
 /// on the complete buffer once the render finishes; `from`/`until` bound the
 /// scanned window in seconds.
@@ -461,7 +774,8 @@ fn resolve_action(resolver: &NameResolver, action: &scenario::TimelineAction) ->
 
 const QUICK_USAGE: &str = "usage: test-driver <test.yaml>
        test-driver --trigger <target> --at <secs> [--trigger T --at S ...]
-                   [-d <secs>] [--instrument <path>] [--output <path>] [--no-play]";
+                   [-d <secs>] [--instrument <path>] [--output <path>] [--no-play]
+       test-driver --interactive [--instrument <path>] [--sample-rate <hz>] [--block-size <n>]";
 
 /// Quick mode (INFRA-002 / ADR-033 § Quick mode): build a scenario from
 /// one-liner flags. `--trigger`/`--at` pair positionally; mismatched counts
@@ -624,12 +938,97 @@ mod quick_mode_tests {
     }
 }
 
+#[cfg(test)]
+mod interactive_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn value_to_json_covers_all_variants() {
+        assert_eq!(value_to_json(&StateBusValue::Float(1.5)), json!(1.5));
+        assert_eq!(value_to_json(&StateBusValue::Int(3)), json!(3));
+        assert_eq!(value_to_json(&StateBusValue::Bool(true)), json!(true));
+        assert_eq!(value_to_json(&StateBusValue::Text("x".into())), json!("x"));
+    }
+
+    #[test]
+    fn need_helpers_enforce_presence_and_type() {
+        let v = json!({ "value": 0.3, "step": 4 });
+        assert_eq!(need_f64(&v, "value", "set_param").unwrap(), 0.3);
+        assert!(need_f64(&v, "missing", "set_param").is_err());
+        assert_eq!(need_i64(&v, "step", "toggle_step").unwrap(), 4);
+        // a float is not an integer
+        assert!(need_i64(&v, "value", "toggle_step").is_err());
+    }
+
+    #[test]
+    fn unknown_command_is_none_not_error() {
+        let r = NameResolver::empty();
+        assert!(matches!(json_to_action(&r, "frobnicate", &json!({})), Ok(None)));
+    }
+
+    #[test]
+    fn set_param_parses_with_numeric_target() {
+        let r = NameResolver::empty();
+        let action = json_to_action(&r, "set_param",
+            &json!({ "target": 20, "param": "decay", "value": 0.3 })).unwrap().unwrap();
+        match action {
+            ResolvedActionKind::SetParam { target_id, param_name, value } => {
+                assert_eq!(target_id, 20);
+                assert_eq!(param_name, "decay");
+                assert_eq!(value, 0.3);
+            }
+            other => panic!("expected SetParam, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_param_missing_field_is_error() {
+        let r = NameResolver::empty();
+        assert!(json_to_action(&r, "set_param", &json!({ "target": 20, "value": 0.3 })).is_err());
+    }
+
+    #[test]
+    fn trigger_defaults_note_and_velocity() {
+        let r = NameResolver::empty();
+        let action = json_to_action(&r, "trigger", &json!({ "target": 20 })).unwrap().unwrap();
+        match action {
+            // ADR-033: note < 0 = engine default (not 0, which would retune — BUG-028)
+            ResolvedActionKind::Trigger { note, velocity, .. } => {
+                assert_eq!(note, -1);
+                assert!((velocity - 0.79).abs() < 1e-9);
+            }
+            other => panic!("expected Trigger, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn unresolvable_name_target_is_error() {
+        let r = NameResolver::empty();
+        assert!(json_to_action(&r, "clear", &json!({ "target": "ghost" })).is_err());
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
     if args.len() < 2 {
         eprintln!("{}", QUICK_USAGE);
         std::process::exit(2);
+    }
+
+    if args[1] == "--interactive" || args[1] == "-i" {
+        let cfg = parse_interactive_args(&args[2..]).unwrap_or_else(|e| {
+            eprintln!("[test-driver] {}", e);
+            std::process::exit(2);
+        });
+        match run_interactive(&cfg) {
+            Ok(()) => std::process::exit(0),
+            Err(e) => {
+                eprintln!("[test-driver] error: {}", e);
+                std::process::exit(2);
+            }
+        }
     }
 
     let scenario = if args[1].starts_with('-') {
