@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, SampleRate, StreamConfig};
 
-use paraclete_runtime::NodeExecutor;
+use paraclete_runtime::{NodeExecutor, RuntimeCounters};
 
 pub struct AudioBackend {
     _stream: cpal::Stream,
@@ -107,6 +107,7 @@ impl AudioBackend {
         executor_cell: Arc<Mutex<Option<NodeExecutor>>>,
         pause_requested: Arc<AtomicBool>,
         is_paused: Arc<AtomicBool>,
+        counters: Arc<RuntimeCounters>,
     ) -> Result<Self, AudioError> {
         let host = cpal::default_host();
 
@@ -137,14 +138,16 @@ impl AudioBackend {
         };
 
         let err_fn = |err| log::error!("audio stream error: {err}");
+        let ct = counters.clone();
 
         // Macro to build the callback for a given sample type via an f32 intermediate.
-        // The closure captures the three Arcs and converts samples after processing.
+        // The closure captures the three Arcs, the counters, and converts samples after processing.
         macro_rules! build_f32_callback {
             ($data_type:ty, $convert:expr) => {{
                 let exec_cell = executor_cell.clone();
                 let pause_req = pause_requested.clone();
                 let is_pau    = is_paused.clone();
+                let c         = ct.clone();
                 let mut f32_buf: Vec<f32> = Vec::new();
                 move |data: &mut [$data_type], _| {
                     if pause_req.load(Ordering::Acquire) {
@@ -160,9 +163,11 @@ impl AudioBackend {
                         if let Some(exec) = guard.as_mut() {
                             exec.process(&mut f32_buf, channels);
                         } else {
+                            c.dropout_no_executor.fetch_add(1, Ordering::Relaxed);
                             f32_buf.fill(0.0);
                         }
                     } else {
+                        c.dropout_lock_miss.fetch_add(1, Ordering::Relaxed);
                         f32_buf.fill(0.0);
                     }
                     for (dst, &src) in data.iter_mut().zip(f32_buf.iter()) {
@@ -177,6 +182,7 @@ impl AudioBackend {
                 let exec_cell = executor_cell.clone();
                 let pause_req = pause_requested.clone();
                 let is_pau    = is_paused.clone();
+                let c         = ct.clone();
                 device.build_output_stream(
                     &config,
                     move |data: &mut [f32], _| {
@@ -190,9 +196,11 @@ impl AudioBackend {
                             if let Some(exec) = guard.as_mut() {
                                 exec.process(data, channels);
                             } else {
+                                c.dropout_no_executor.fetch_add(1, Ordering::Relaxed);
                                 data.fill(0.0);
                             }
                         } else {
+                            c.dropout_lock_miss.fetch_add(1, Ordering::Relaxed);
                             data.fill(0.0);
                         }
                     },
@@ -235,6 +243,7 @@ pub struct AudioEngine {
     executor_cell:   Arc<Mutex<Option<NodeExecutor>>>,
     pause_requested: Arc<AtomicBool>,
     is_paused:       Arc<AtomicBool>,
+    counters:        Arc<RuntimeCounters>,
     _backend:        Option<AudioBackend>,
 }
 
@@ -246,12 +255,16 @@ impl AudioEngine {
             executor_cell:   Arc::new(Mutex::new(None)),
             pause_requested: Arc::new(AtomicBool::new(true)),
             is_paused:       Arc::new(AtomicBool::new(true)),
+            counters:        Arc::new(RuntimeCounters::default()),
             _backend:        None,
         }
     }
 
     /// Start audio with the given executor.
-    pub fn start(executor: NodeExecutor) -> Result<Self, AudioError> {
+    pub fn start(mut executor: NodeExecutor) -> Result<Self, AudioError> {
+        let counters         = Arc::new(RuntimeCounters::default());
+        executor.set_counters(counters.clone());
+
         let executor_cell    = Arc::new(Mutex::new(Some(executor)));
         let pause_requested  = Arc::new(AtomicBool::new(false));
         let is_paused        = Arc::new(AtomicBool::new(false));
@@ -260,12 +273,14 @@ impl AudioEngine {
             executor_cell.clone(),
             pause_requested.clone(),
             is_paused.clone(),
+            counters.clone(),
         )?;
 
         Ok(AudioEngine {
             executor_cell,
             pause_requested,
             is_paused,
+            counters,
             _backend: Some(backend),
         })
     }
@@ -297,7 +312,8 @@ impl AudioEngine {
     /// Replace the executor and resume audio processing.
     ///
     /// Must only be called after `wait_paused()` has returned.
-    pub fn resume_with_executor(&self, executor: NodeExecutor) {
+    pub fn resume_with_executor(&self, mut executor: NodeExecutor) {
+        executor.set_counters(self.counters.clone());
         *self.executor_cell.lock().unwrap() = Some(executor);
         self.is_paused.store(false, Ordering::Release);
         self.pause_requested.store(false, Ordering::Release);

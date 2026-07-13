@@ -7,10 +7,9 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 ## Status (2026-07-12)
 
 **Actively open:** BUG-012 (hardware session), BUG-027 (engine exonerated by
-measurement — pending user headphone A/B, see addendum), INFRA-003 (live
-dropout/xrun observability — the debug-posture gap).
+measurement — pending user headphone A/B, see addendum).
 **Trigger-based (fix when named trigger fires):** BUG-002, BUG-003, BUG-006.
-**Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, INFRA-001, INFRA-002.
+**Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, INFRA-001, INFRA-002, INFRA-003.
 **Audit validation rounds 1–3 (2026-07-12):** ADR latent-issue items #1–#8,
 #10, #11, #16, #24, #27, #28, #30 validated (see round tables below); the
 rest are gated on the ADR-033 interactive harness or hardware.
@@ -844,8 +843,10 @@ buffers-processed counter, exposed via the deferred `/engine/cpu` state path
 the BUG-006 profiling need). This is the concrete, buildable half of the
 roadmap's "CPU/xrun meter" gap — it does not require the full ADR-033 harness
 and unblocks confirming (rather than assuming) the trigger-based backlog.
-**Status:** Open — tracked for the debug-posture push; see roadmap Agent
-Infrastructure Gaps ("CPU/xrun meter", "Structured log channel") and roadmap
-Design Triage **D3**. Design drafted in **ADR-034** (WIP/not-accepted) —
-context, proposed atomic-counter decision, and impl sketch are seeded there for
-a fresh operator.
+**Status:** **Fixed (ADR-034 shipped 2026-07-12).** `RuntimeCounters` struct
+with four `AtomicU64` counters (`buffers_processed`, `dropout_lock_miss`,
+`dropout_no_executor`, `state_bus_overflows`) shared between audio callback and
+executor via `Arc`. Published to state bus as `/engine/*` paths each cycle and
+mirrored to Antiphon clients at ~30 Hz. Unit-tested in `runtime_integration.rs`.
+The deferred-event-carry and LED-drop counters are deferred to the structured-log
+channel (separate ADR/infra item).

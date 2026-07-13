@@ -1472,3 +1472,65 @@ impl Node for CvPassthroughAndEmit {
         cv_out.fill(self.emit_value);
     }
 }
+
+// ── ADR-034: runtime counter tests ─────────────────────────────────────────────
+
+#[test]
+fn runtime_counters_buffers_processed_increments_each_cycle() {
+    let mut conf = NodeConfigurator::new(44100.0, 512);
+    conf.add_node(1, Box::new(CountingNode::new(Arc::new(AtomicU32::new(0)))));
+    let mut exec = conf.build_executor();
+    let counters = exec.counters().clone();
+
+    let mut out = vec![0.0f32; 512 * 2];
+    assert_eq!(counters.buffers_processed.load(Ordering::Relaxed), 0);
+    exec.process(&mut out, 2);
+    assert_eq!(counters.buffers_processed.load(Ordering::Relaxed), 1);
+    exec.process(&mut out, 2);
+    assert_eq!(counters.buffers_processed.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn runtime_counters_state_bus_overflow_increments_when_ring_full() {
+    let mut conf = NodeConfigurator::new(44100.0, 512);
+    conf.add_node(1, Box::new(CountingNode::new(Arc::new(AtomicU32::new(0)))));
+    let mut exec = conf.build_executor();
+    let counters = exec.counters().clone();
+
+    // Ring capacity is 256 (STATE_BUS_RING_CAPACITY). Run enough cycles
+    // without draining the consumer to overflow the ring.
+    let mut out = vec![0.0f32; 512 * 2];
+    for _ in 0..260 {
+        exec.process(&mut out, 2);
+    }
+
+    assert!(counters.state_bus_overflows.load(Ordering::Relaxed) >= 1);
+}
+
+#[test]
+fn runtime_counters_set_counters_injects_shared_reference() {
+    let mut conf = NodeConfigurator::new(44100.0, 512);
+    conf.add_node(1, Box::new(CountingNode::new(Arc::new(AtomicU32::new(0)))));
+    let mut exec = conf.build_executor();
+
+    let fresh = Arc::new(paraclete_runtime::RuntimeCounters::default());
+    exec.set_counters(fresh.clone());
+    assert!(std::ptr::eq(Arc::as_ptr(&fresh), Arc::as_ptr(exec.counters())));
+
+    let mut out = vec![0.0f32; 512 * 2];
+    exec.process(&mut out, 2);
+    assert_eq!(fresh.buffers_processed.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn runtime_counters_zero_at_start() {
+    let mut conf = NodeConfigurator::new(44100.0, 512);
+    conf.add_node(1, Box::new(CountingNode::new(Arc::new(AtomicU32::new(0)))));
+    let exec = conf.build_executor();
+    let counters = exec.counters();
+
+    assert_eq!(counters.buffers_processed.load(Ordering::Relaxed), 0);
+    assert_eq!(counters.dropout_lock_miss.load(Ordering::Relaxed), 0);
+    assert_eq!(counters.dropout_no_executor.load(Ordering::Relaxed), 0);
+    assert_eq!(counters.state_bus_overflows.load(Ordering::Relaxed), 0);
+}

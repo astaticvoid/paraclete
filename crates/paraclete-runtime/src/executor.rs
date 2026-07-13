@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use paraclete_node_api::{
     AudioBuffer, Event, EventOutputBuffer, SurfaceOutput, ExtendedEventSlab,
@@ -8,6 +9,7 @@ use paraclete_node_api::{
 };
 
 use crate::configurator::{LoopBackEdge, NodeOrDevice};
+use crate::runtime_counters::RuntimeCounters;
 use crate::state_bus::StateBusUpdate;
 use crate::message::ConfigMessage;
 use crate::ring_buffer::Receiver;
@@ -105,6 +107,10 @@ pub struct NodeExecutor {
     /// Used in pre/post execution phases to inject delayed signal values and
     /// rotate buffers.
     back_edges: Vec<ResolvedLoopBackEdge>,
+
+    /// Lock-free runtime counters shared with AudioEngine callback for
+    /// dropout detection (ADR-034).
+    counters: Arc<RuntimeCounters>,
 }
 
 struct NodeSlot {
@@ -157,6 +163,7 @@ impl NodeExecutor {
         state_bus_producer: rtrb::Producer<StateBusUpdate>,
         cmd_consumer: rtrb::Consumer<NodeCommand>,
         raw_back_edges: Vec<LoopBackEdge>,
+        counters: Arc<RuntimeCounters>,
     ) -> Self {
         let node_id_to_slot: HashMap<u32, usize> = nodes.iter().enumerate()
             .map(|(idx, (id, _))| (*id, idx))
@@ -221,7 +228,16 @@ impl NodeExecutor {
             extra_events: Vec::with_capacity(64),
             extra_cmds:   Vec::with_capacity(64),
             back_edges,
+            counters,
         }
+    }
+
+    pub fn set_counters(&mut self, counters: Arc<RuntimeCounters>) {
+        self.counters = counters;
+    }
+
+    pub fn counters(&self) -> &Arc<RuntimeCounters> {
+        &self.counters
     }
 
     /// Inject DAW transport for the next `process()` cycle.
@@ -332,6 +348,9 @@ impl NodeExecutor {
     }
 
     pub fn process(&mut self, out_interleaved: &mut [f32], channels: usize) {
+        use std::sync::atomic::Ordering;
+        self.counters.buffers_processed.fetch_add(1, Ordering::Relaxed);
+
         self.apply_messages();
         self.drain_commands();
 
@@ -573,6 +592,7 @@ impl NodeExecutor {
             slot.published_state(&mut self.state_bufs[slot_idx]);
             self.agg_state_buf.extend_from_slice(&self.state_bufs[slot_idx]);
         }
+        self.counters.publish_state(&mut self.agg_state_buf);
 
         // Devices that implement take_output_handle() handle their own output on the
         // main thread; the legacy update_output() path serves the remaining devices.
@@ -582,10 +602,10 @@ impl NodeExecutor {
         }
 
         if !self.agg_state_buf.is_empty() {
-            // mem::take transfers ownership to the StateBusUpdate without a collect().
-            // agg_state_buf grows back to stable capacity within a few cycles.
             let entries = std::mem::take(&mut self.agg_state_buf);
-            let _ = self.state_bus_producer.push(StateBusUpdate { entries });
+            if self.state_bus_producer.push(StateBusUpdate { entries }).is_err() {
+                self.counters.state_bus_overflows.fetch_add(1, Ordering::Relaxed);
+            }
         }
 
         let frames = self.block_size;

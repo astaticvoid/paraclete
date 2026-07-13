@@ -3,17 +3,10 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-12 (autonomous session: INFRA-001/002 shipped;
-> BUG-028/029/030 found+fixed; BUG-027 engine exonerated pending user A/B;
-> ADR latent-issue audit round 2 (#1/#2/#5/#6/#7/#10/#11/#16) + round 3
-> (#3/#24/#27/#28/#30) validated — bugs.md round tables. BUG-031 filed AND
-> fixed (speed×swing composition: intra-step offsets now scale by
-> 1/speed_mult; rule documented in ADR-030). Also cleared the two round-2
-> "noted but unfixed" items: apply_patch now surfaces device-refusal reasons
-> instead of masking them as NodeNotFound, and remove_node no longer
-> half-edits id_to_index on a drained slot (regression tests added).
-> Remaining audit items gated on the ADR-033 interactive harness. Sequence
-> below unchanged.)
+> **Last updated:** 2026-07-12 (ADR-034 implemented: D3/D4 closed, INFRA-003
+> resolved. `RuntimeCounters` with 4 atomic counters shared between audio
+> callback and executor; state-bus `/engine/*` publishing; Antiphon mirror.
+> D1/D2 are user-owned remaining gaps.)
 > Previous: 2026-07-10 evening (paired session #2 held on glass)
 > **Current phase:** Legibility phase shipped and judged on the iPad over a **USB-C direct link (3.0 ms RTT, zero config — the no-shared-Wi-Fi answer)**. Session #2 verdict (`design/sessions/s2.md`): "improved a lot… it will be the baseline" but **far below bar — the Launchpad-grid mirror is the wrong foundation for Theoria**. New sequence: **(1) BUG-022/023** (seq-vs-trigger kick pitch mismatch; fast-retrigger ducking — sound correctness moves first), **(2) baseline interaction wins** (drag-draw steps, encoder gesture/placement, hide dead grid), **(3) W2 re-scoped → "Theoria native surface", design-first**: paired reference spike (chosen Elektron box manual + Hydrasynth manual → fixed-input rail + contextual window spec, param/env/LFO pages, source→FX channel view) before any further W-feature code; ADR-032 follows the spec. **Launchpad parked** (good version frozen; s1-F7 cleanup → trigger backlog). P10 C2+ engine depth independent/parallel; P13 keystone unchanged. Earlier 2026-07-10 work: legibility items + BUG-016…021 fixed + open-by-default `--token` opt-in (`theoria-legibility-report.md`). BUG-012 still queued for a hardware session.
 
@@ -78,24 +71,21 @@ Ordered by nearness to the critical path.
 |---|---|---|---|---|
 | D1 | **W2 native surface has no spec.** "Theoria native surface" is a paragraph (fixed-input rail + contextual window; reference spike across Digitakt II / Syntakt / Digitone / Hydrasynth). It is the active next milestone. | **user** | Author the W2 surface spec + **ADR-032 (view-plugin API)** before any W2 code. Specs win; deviations stop-and-ask. | **Critical** — blocks the active milestone |
 | D2 | **P13 voice model undecided (OQ-13) + drum selection (OQ-14).** Both deferred to "the P13/P12+ spec," which is not drafted. OQ-13 (composed-from-primitives vs monolithic `AnalogVoice`) shapes the mod-matrix API and CLAP export. | **user** | Draft the P13 spec resolving OQ-13 first (it is foundational, not a detail). Keystone of the four-pillar instrument. | High (downstream keystone) |
-| D3 | **No ADR owns runtime observability.** ADR-033 covers only the offline/interactive driver. Nothing specs the live `/engine/cpu` counter path or the structured-log channel (see **INFRA-003**, bugs.md). | agent | Extend ADR-033 with a "live observability" section **or** spin ADR-034; then implement the lock-free atomic counters. | High (unblocks the whole trigger backlog — see D4) |
-| D4 | **Trigger-based backlog is un-actionable as written.** It claims "each item has a named trigger," but INFRA-003 shows we cannot *observe* triggers firing — so "quiet" is assumed, not measured. | agent | Add a note to the Deferred-Bug Backlog: it is **blocked on INFRA-003 observability**, not confirmed quiet. | Medium (one-line honesty fix) |
+| D3 | **No ADR owns runtime observability.** ADR-033 covers only the offline/interactive driver. Nothing specs the live `/engine/cpu` counter path or the structured-log channel (see **INFRA-003**, bugs.md). | agent | **✅ Done (2026-07-12).** ADR-034 authored + implemented: `RuntimeCounters` with 4 atomic counters, state-bus `/engine/*` publishing, Antiphon mirror. INFRA-003 resolved; D4 unblocked. | ~~High~~ ✅ Done |
+| D4 | **Trigger-based backlog is un-actionable as written.** It claims "each item has a named trigger," but INFRA-003 shows we cannot *observe* triggers firing — so "quiet" is assumed, not measured. | agent | **✅ Done (2026-07-12).** Backlog flagged blocked-on-INFRA-003 in earlier pass; INFRA-003 now resolved with live counters. Triggers are now observable. | ~~Medium~~ ✅ Done |
 | D5 | **BUG-031 residual has no rule.** ADR-030 now documents speed×swing, but not swing large enough to overshoot the step at 1× speed. | agent | One sentence in ADR-030: clamp policy (or explicit "author's responsibility") for `swing_amount` beyond the step fraction. | Low |
 | D6 | **`Cow<'static, str>` migration has no trigger.** Flagged "FREE until crates.io publication, do before v0.1.0" but sits in the Known Provisional table with no owner/milestone — the pre-publication window can close silently. | agent | Promote it to a Deferred-Bug Backlog row with a concrete trigger ("before `paraclete-node-api` v0.1.0 / first crates.io publish"). | Low (but time-boxed) |
 
-**Recommended first agent action next session:** D3 (draft the observability
-ADR + counters) — it continues the debug-posture thread and unblocks D4. D1/D2
-are the user's to author. D5/D6 are quick atomic cleanups.
-
-**Progress (2026-07-12, exhaustion-mode session):**
-- **D3** 🚧 WIP — `ADR-034-runtime-observability.md` drafted (context + proposed
-  atomic-counter decision + open questions + impl sketch); Status = WIP/NOT
-  ACCEPTED. Fresh operator: finish the **TODO** sections, move to `proposed`,
-  then implement per the sketch. Recommended: land the counters **before** the
-  `arc-swap` refactor (counters are the evidence).
-- **D4** ✅ done — Deferred-Bug Backlog now flagged blocked-on-INFRA-003.
-- **D5** ✅ done — BUG-031 residual rule documented in ADR-030.
-- **D6** ✅ done — `Cow<str>` migration given a pre-publication trigger row.
+**Progress (2026-07-12):**
+- **D3** ✅ done — ADR-034 authored (proposed), implemented: `RuntimeCounters`
+  with 4 `AtomicU64` counters (`buffers_processed`, `dropout_lock_miss`,
+  `dropout_no_executor`, `state_bus_overflows`), shared via `Arc` between
+  audio callback and executor, published to state bus as `/engine/*` paths,
+  mirrored by Antiphon. INFRA-003 resolved. 4 unit tests in
+  `runtime_integration.rs`. D4 unblocked.
+- **D4** ✅ done (earlier pass).
+- **D5** ✅ done (earlier pass).
+- **D6** ✅ done (earlier pass).
 - **D1, D2** — open, **user-owned** (unchanged).
 
 ---
@@ -224,6 +214,20 @@ The debug harness (ADR-033 interactive mode) unblocks the first four. It is the
 keystone. **INFRA-003** (live dropout/xrun counters) is independent of it and is
 the cheapest way to turn the trigger-based backlog from assumed-quiet to
 measured — a good small next step for the debug-posture push.
+
+---
+## Agent Tooling Investigation Spikes (July 2026)
+
+These are proposed tooling changes that carry risk or trade-offs. Do not
+implement without investigation; each needs a spike to confirm feasibility.
+
+| # | Spike | Risk | Investigation needed |
+|---|---|---|---|
+| SPIKE-001 | **`unwrap_used = "deny"` lint** | 148 call sites across the workspace. Many unwraps in the audio hot path reflect invariants guaranteed by graph topology (e.g., `connect()` validation before `process()`). Denying them forces either `unsafe` or per-cycle `Result` allocation — both worse than the status quo. | Catalog unwraps by category (hot-path invariant vs error-recoverable). Determine which could become `expect()` with meaningful messages. Time-box: 2h audit. |
+| SPIKE-002 | **`panic = "deny"` lint** | 28 panics, mostly `published_state()` test assertions in production source files (not behind `#[cfg(test)]`). A blanket deny would either break the build or require a migration of all test assertions to test-only gating. | Extract `published_state()` test assertions into `#[cfg(test)]` blocks or separate test modules. Confirm no production panics remain. Then re-evaluate the lint. |
+| SPIKE-003 | **Layer-boundary lint enforcement** | `clippy`'s `disallowed-dependencies` only works on external crate names, not workspace-internal deps. A custom `cargo-deny` config or hand-rolled script is needed. Even then, `paraclete-hal` → `paraclete-runtime` is an acknowledged violation (BUG-003) that the spec itself permits. | Prototype a `cargo tree`-based check script in `tools/`. Decide whether it gates CI or is advisory-only. |
+| SPIKE-004 | **Remove `default-members`** | The single `paraclete-app` default was likely intentional for cross-platform portability. Some crates (e.g., `paraclete-clap-host`) may pull platform-specific deps that don't compile on all targets. Blowing open to `--workspace` could regress `cargo build` on non-macOS platforms. | Test `cargo build --workspace` on Linux and Windows (or review dependency chains for platform-gated crates). The `.cargo/config.toml` aliases added in this session are the safe alternative. |
+| SPIKE-005 | **`insta` snapshot tests for TUI** | Terminal rendering varies by terminal type, color support, and unicode width. Even with `ratatui::TestBackend`, insta snapshots create diff noise on any rendering change — intentional or not. Maintenance cost may outweigh value unless the TUI is under active refactoring. | Add one snapshot test for the grid render path. Run for one week of active development; measure snapshot churn vs catch rate. Decide after the trial. |
 
 ---
 ## Resolved Open Questions

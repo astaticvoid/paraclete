@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
@@ -13,6 +14,7 @@ use paraclete_node_api::{
 };
 
 use crate::executor::NodeExecutor;
+use crate::runtime_counters::RuntimeCounters;
 use crate::graph::{EdgeMeta, NodeId, NodeMeta, RuntimeGraph};
 use crate::state_bus::StateBusUpdate;
 use crate::message::ConfigMessage;
@@ -799,6 +801,7 @@ impl NodeConfigurator {
         }
 
         let back_edges = self.back_edges.clone();
+        let counters = Arc::new(RuntimeCounters::default());
 
         NodeExecutor::new(
             ordered,
@@ -812,6 +815,7 @@ impl NodeConfigurator {
             state_bus_producer,
             cmd_consumer,
             back_edges,
+            counters,
         )
     }
 }

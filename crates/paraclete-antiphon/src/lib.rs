@@ -126,7 +126,8 @@ impl AntiphonHandle {
             let is_mirrored_state_path = (path.starts_with("/node/")
                 && (path.contains("/param/") || path.contains("/state/")))
                 || path.starts_with("/transport/")
-                || path.starts_with("/script/");
+                || path.starts_with("/script/")
+                || path.starts_with("/engine/");
             if !is_mirrored_state_path {
                 continue;
             }
