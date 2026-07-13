@@ -375,23 +375,6 @@ impl Node for PluginNode {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    #[ignore = "requires an effect .clap binary"]
-    fn plugin_node_effect_has_audio_in_port() {
-        // Would load an effect plugin and assert ports() contains an Audio/Input port.
-        // Skipped: no effect binary available in CI.
-    }
-
-    #[test]
-    #[ignore = "requires a generator .clap binary"]
-    fn plugin_node_generator_no_audio_in_port() {
-        // Would load a generator and assert no Audio/Input port.
-        // Skipped: no binary available in CI.
-    }
-}
-
 /// Convert a UMP NoteOn/NoteOff message to a CLAP note event.
 fn ump_to_note_event(offset: u32, ump: &UmpMessage) -> Option<clap_event_note> {
     if let UmpMessage::ChannelVoice2(cv2) = ump {
@@ -434,5 +417,22 @@ fn ump_to_note_event(offset: u32, ump: &UmpMessage) -> Option<clap_event_note> {
         }
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    #[ignore = "requires an effect .clap binary"]
+    fn plugin_node_effect_has_audio_in_port() {
+        // Would load an effect plugin and assert ports() contains an Audio/Input port.
+        // Skipped: no effect binary available in CI.
+    }
+
+    #[test]
+    #[ignore = "requires a generator .clap binary"]
+    fn plugin_node_generator_no_audio_in_port() {
+        // Would load a generator and assert no Audio/Input port.
+        // Skipped: no binary available in CI.
     }
 }
