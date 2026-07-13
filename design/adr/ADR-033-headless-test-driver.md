@@ -1,7 +1,19 @@
 # ADR-033 — Headless Test Driver
 
-**Status:** proposed (not yet implemented)
+**Status:** accepted — batch, quick, and interactive modes implemented
+(interactive mode 2026-07-13, `92b8795`)
 **Date:** 2026-07-11
+
+> **Implementation note (2026-07-13):** batch + quick modes shipped earlier
+> (INFRA-001 artifact assertions, INFRA-002 quick mode). Interactive mode now
+> lands: a JSON-lines REPL sharing the batch engine stack via `build_context`,
+> with a dedicated stdin reader thread feeding the ~1 ms main loop. One
+> deviation from the spec below: the reader→main channel is an unbounded
+> `std::sync::mpsc`, not the bounded `rtrb` SPSC of the threading-model section
+> — the "main thread never blocks on stdin" guarantee still holds, and an
+> unbounded queue loses no commands under a burst (see Open Question 1, now moot).
+> Still unbuilt from the surrounding debug-posture push: audio diff/snapshot
+> baselines and the structured per-node log channel (both roadmap Rank 2).
 
 ## Context
 
