@@ -41,6 +41,16 @@ cargo run -p test-driver -- --trigger kick --at 1.0 -d 3
 
 # Scenario mode: timed commands + assertions (see tools/test-driver/tests/)
 cargo run -p test-driver -- tools/test-driver/tests/kick_reverb_clean.yaml
+
+# Interactive mode: JSON-lines REPL for live engine interrogation
+cargo run -p test-driver -- --interactive --instrument instrument.yaml
+# stdin commands, one JSON object per line; responses on stdout:
+#   {"cmd":"trigger","target":"kick","velocity":1.0}   engine mutations:
+#   {"cmd":"set_param","target":"kick","param":"decay","value":0.3}   set/bump/
+#   {"cmd":"read","path":"/node/20/param/decay"}   sequencer/chain, same as batch
+#   {"cmd":"peak","window_ms":500}   read/dump/peak/render/quit are REPL-only
+#   {"cmd":"dump"}   {"cmd":"render","output":"/tmp/x.wav"}   {"cmd":"quit"}
+# Errors are non-fatal JSON ({"error":"..."}); the session continues.
 ```
 
 Assertions: state-bus `eq`/`between`, live `peak_gte`/`peak_lt`, and
@@ -213,16 +223,32 @@ on touched crates. Design/doc changes in separate commits from code. Phase
 reports and `bugs.md` are append-only.
 
 After every implementation session, the agent must explicitly propose which
-design documents need updating — `roadmap.md`, `AGENTS.md`, `handoff.md`,
-phase reports, `bugs.md`, or "none." This is a mandatory check, not a
-suggestion.
+design documents need updating, then update **all** that apply before the
+session is done — not just the obvious one. This is a mandatory check, not a
+suggestion. Keep-current set (with what changes in each):
+
+| Doc | Update when… |
+|-----|--------------|
+| `design/roadmap.md` | a phase/rank ships, is reprioritized, or a status changes |
+| `design/bugs.md` | a bug/INFRA item is found, resolved, or a gating assumption changes (append-only; also refresh the top Status block) |
+| `design/adr/*` | a decision is **implemented** — update its `Status:` line and add an implementation note. The decision/context/alternatives body stays append-only (see below) |
+| phase reports (`design/phases/*`) | a phase commit lands (append-only) |
+| `AGENTS.md` | a workflow, command, tool mode, node ID, or convention changes (e.g. a new test-driver mode) |
+| `design/handoff.md` | task routing or a model-tier guardrail changes |
+
+If a change touches code *and* the tool/tracker/roadmap that describe it, all of
+those are in scope in the same session — a code commit that leaves the tracker
+stale is an incomplete session.
 
 ## Design documents
 
 - `design/handoff.md` — task routing by model tier; read before implementing
 - `design/roadmap.md` — current phase scope and sequence
 - `design/bugs.md` — append-only bug tracker
-- `design/adr/` — Architecture Decision Records (append-only — never edit past ADRs)
+- `design/adr/` — Architecture Decision Records. The **decision/context/
+  alternatives body is append-only** — never rewrite a past decision. The
+  `Status:` line and an appended implementation note *are* updated when the ADR
+  is implemented (e.g. ADR-033 `proposed → accepted`).
 - `design/review/` — post-phase code reviews and latent-issue audits
 - `design/phases/` — per-phase specs and implementation reports (append-only)
 
