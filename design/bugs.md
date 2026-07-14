@@ -4,15 +4,18 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ---
 
-## Status (2026-07-12)
+## Status (2026-07-13)
 
 **Actively open:** BUG-012 (hardware session), BUG-027 (engine exonerated by
 measurement — pending user headphone A/B, see addendum).
 **Trigger-based (fix when named trigger fires):** BUG-002, BUG-003, BUG-006.
 **Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, INFRA-001, INFRA-002, INFRA-003.
+**Debug harness:** ADR-033 interactive mode **shipped 2026-07-13 (`92b8795`)** —
+the harness-gated audit items below are now reachable without hardware (see the
+2026-07-13 entry at the bottom).
 **Audit validation rounds 1–3 (2026-07-12):** ADR latent-issue items #1–#8,
 #10, #11, #16, #24, #27, #28, #30 validated (see round tables below); the
-rest are gated on the ADR-033 interactive harness or hardware.
+rest were gated on the ADR-033 interactive harness (now available) or hardware.
 
 ---
 
@@ -904,3 +907,24 @@ under an 8 s busy render (test-driver) and the audio-callback path under 703 liv
 topology swaps (load test). The pause-rebuild-resume protocol holds under stress:
 zero self-inflicted dropouts. (The load test also surfaced BUG-012 as a hard
 crash on buffer-size mismatch — see that entry's 2026-07-12 confirmation.)
+
+---
+
+### DEBUG HARNESS — ADR-033 interactive mode shipped (2026-07-13, `92b8795`)
+
+The interactive debug harness (roadmap Rank 2 keystone) now exists:
+`test-driver --interactive` opens a JSON-lines REPL over the null-backend engine
+stack — `set_param`/`trigger`/sequencer/chain mutations plus `read` / `dump` /
+`peak` / `render` / `quit`. Live engine interrogation with no hardware, no TUI.
+
+**Unblocks the harness-gated audit items.** Round 3 (2026-07-12) deferred items
+#9, #12, #13–#15, #17–#23, #25, #26, #29 to "the ADR-033 interactive debug
+harness or hardware." The ones that needed *the harness* (not physical hardware)
+are now reachable — walk them with the REPL: set the relevant params, trigger,
+and `read`/`peak` the state and audio to confirm or file. Only genuinely
+hardware-gated items (e.g. BUG-012, device rate/buffer negotiation) still wait on
+a hardware session.
+
+**Still open in the debug-posture push (roadmap Rank 2):** audio diff/snapshot
+baselines, the structured per-node log channel, and the CPU-% meter to
+`/engine/cpu`. These build on the harness and are the next increments.
