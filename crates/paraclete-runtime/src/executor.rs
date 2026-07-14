@@ -1,8 +1,9 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use paraclete_node_api::{
-    AudioBuffer, Event, EventOutputBuffer, SurfaceOutput, ExtendedEventSlab,
+    AudioBuffer, DebugEvent, Event, EventOutputBuffer, SurfaceOutput, ExtendedEventSlab,
     NodeCommand, ProcessInput, ProcessOutput, StateBusValue,
     SignalInputSlot, SignalOutputSlot, SignalPortKind,
     TransportInfo, TransportEvent, TimedEvent,
@@ -111,6 +112,25 @@ pub struct NodeExecutor {
     /// Lock-free runtime counters shared with AudioEngine callback for
     /// dropout detection (ADR-034).
     counters: Arc<RuntimeCounters>,
+
+    /// SPSC producer for structured debug events (ADR-035 Part B).
+    /// Pushed once per cycle after all nodes have processed. Gated by
+    /// `debug_log_enabled` — when false the consumer end is never polled
+    /// and events are discarded.
+    debug_event_producer: rtrb::Producer<DebugEvent>,
+
+    /// Enable structured debug logging. Toggled by the test-driver; always
+    /// false in the shipping app (zero-cost — the executor skips the buffer
+    /// clear/pass/drain path when off).
+    debug_log_enabled: AtomicBool,
+
+    /// Per-node pre-allocated debug event buffers. Cleared and optionally
+    /// passed into `ProcessOutput` each cycle. Capacity is retained.
+    debug_bufs: Vec<Vec<DebugEvent>>,
+
+    /// Aggregate debug buffer for SPSC transfer. Cleared, filled from
+    /// per-node buffers, then `mem::take`'d into the SPSC push.
+    agg_debug_buf: Vec<DebugEvent>,
 }
 
 struct NodeSlot {
@@ -164,6 +184,7 @@ impl NodeExecutor {
         cmd_consumer: rtrb::Consumer<NodeCommand>,
         raw_back_edges: Vec<LoopBackEdge>,
         counters: Arc<RuntimeCounters>,
+        debug_event_producer: rtrb::Producer<DebugEvent>,
     ) -> Self {
         let node_id_to_slot: HashMap<u32, usize> = nodes.iter().enumerate()
             .map(|(idx, (id, _))| (*id, idx))
@@ -229,11 +250,21 @@ impl NodeExecutor {
             extra_cmds:   Vec::with_capacity(64),
             back_edges,
             counters,
+            debug_event_producer,
+            debug_log_enabled: AtomicBool::new(false),
+            debug_bufs: (0..n).map(|_| Vec::with_capacity(64)).collect(),
+            agg_debug_buf: Vec::with_capacity(256),
         }
     }
 
     pub fn set_counters(&mut self, counters: Arc<RuntimeCounters>) {
         self.counters = counters;
+    }
+
+    /// Enable or disable structured debug logging (ADR-035 Part B).
+    /// When disabled (default), the executor skips debug buffer work entirely.
+    pub fn set_debug_log_enabled(&self, enabled: bool) {
+        self.debug_log_enabled.store(enabled, Ordering::Relaxed);
     }
 
     pub fn counters(&self) -> &Arc<RuntimeCounters> {
@@ -536,6 +567,16 @@ impl NodeExecutor {
                 commands: cmds,
             };
 
+            let debug_enabled = self.debug_log_enabled.load(Ordering::Relaxed);
+            if debug_enabled {
+                self.debug_bufs[slot_idx].clear();
+            }
+            let debug_buf = if debug_enabled {
+                Some(&mut self.debug_bufs[slot_idx])
+            } else {
+                None
+            };
+
             let mut output = ProcessOutput {
                 audio_outputs: &mut outs,
                 // SAFETY: sig_out_ptr/sig_out_len from self.signal_out_scratch; stable for
@@ -543,6 +584,7 @@ impl NodeExecutor {
                 // signal_output_bufs[slot_idx], distinct from nodes.
                 signal_outputs: unsafe { std::slice::from_raw_parts_mut(sig_out_ptr, sig_out_len) },
                 events_out: events_out_ref,
+                debug: debug_buf,
             };
 
             slot.process(&input, &mut output);
@@ -568,6 +610,15 @@ impl NodeExecutor {
                             self.deferred_events[dst_idx].push(deferred);
                         }
                     }
+                }
+            }
+
+            if debug_enabled {
+                for ev in self.debug_bufs[slot_idx].drain(..) {
+                    self.agg_debug_buf.push(DebugEvent {
+                        node_id,
+                        ..ev
+                    });
                 }
             }
         }
@@ -605,6 +656,15 @@ impl NodeExecutor {
             let entries = std::mem::take(&mut self.agg_state_buf);
             if self.state_bus_producer.push(StateBusUpdate { entries }).is_err() {
                 self.counters.state_bus_overflows.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+
+        // Push structured debug events (ADR-035 Part B). Gated by debug_log_enabled;
+        // when off, agg_debug_buf is never populated and this is a no-op.
+        if self.debug_log_enabled.load(Ordering::Relaxed) && !self.agg_debug_buf.is_empty() {
+            let entries = std::mem::take(&mut self.agg_debug_buf);
+            for ev in entries {
+                let _ = self.debug_event_producer.push(ev);
             }
         }
 

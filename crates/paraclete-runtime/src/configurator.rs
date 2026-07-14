@@ -7,7 +7,7 @@ use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 
 use paraclete_node_api::{
-    CapabilityDocument, ConnectionAgreement, ConnectionRecord,
+    CapabilityDocument, ConnectionAgreement, ConnectionRecord, DebugEvent,
     Surface, SurfaceOutputHandle, NodeCommand,
     StateBusHandle, StateBusSubscription, StateBusValue,
     Node, PortDescriptor, PortDirection, PortType, SignalPortKind,
@@ -23,6 +23,7 @@ use crate::ring_buffer;
 const RING_CAPACITY: usize = 256;
 const STATE_BUS_RING_CAPACITY: usize = 256;
 const NODE_CMD_RING_CAPACITY: usize = 512;
+const DEBUG_EVENT_RING_CAPACITY: usize = 1024;
 
 /// Error returned by `NodeConfigurator::connect()`.
 #[derive(Debug)]
@@ -173,6 +174,14 @@ pub struct NodeConfigurator {
     node_cmd_producer: rtrb::Producer<NodeCommand>,
     node_cmd_consumer_pending: Option<rtrb::Consumer<NodeCommand>>,
 
+    /// Debug event SPSC (ADR-035 Part B). Executor pushes structured debug
+    /// events per-cycle; configurator drains them in `process_main_thread()`.
+    debug_event_consumer: rtrb::Consumer<DebugEvent>,
+    debug_event_producer_pending: Option<rtrb::Producer<DebugEvent>>,
+
+    /// Accumulated debug events since last `debug_events()` call (test-driver poll).
+    debug_event_buf: Vec<DebugEvent>,
+
     /// SurfaceOutputHandles from devices that implement take_output_handle().
     /// Stored as (device_id, handle) so script LED output can be routed by device_id.
     output_handles: Vec<(u32, Box<dyn SurfaceOutputHandle>)>,
@@ -204,6 +213,7 @@ impl NodeConfigurator {
         let (sender, receiver) = ring_buffer::channel(RING_CAPACITY);
         let (producer, consumer) = rtrb::RingBuffer::<StateBusUpdate>::new(STATE_BUS_RING_CAPACITY);
         let (cmd_prod, cmd_cons) = rtrb::RingBuffer::<NodeCommand>::new(NODE_CMD_RING_CAPACITY);
+        let (debug_prod, debug_cons) = rtrb::RingBuffer::<DebugEvent>::new(DEBUG_EVENT_RING_CAPACITY);
         Self {
             graph: RuntimeGraph::new(),
             id_to_index: HashMap::new(),
@@ -217,6 +227,9 @@ impl NodeConfigurator {
             state_bus_producer_pending: Some(producer),
             node_cmd_producer: cmd_prod,
             node_cmd_consumer_pending: Some(cmd_cons),
+            debug_event_consumer: debug_cons,
+            debug_event_producer_pending: Some(debug_prod),
+            debug_event_buf: Vec::with_capacity(256),
             output_handles: Vec::new(),
             warned_missing_handles: HashSet::new(),
             cap_doc_cache: HashMap::new(),
@@ -591,9 +604,18 @@ impl NodeConfigurator {
             bus.apply_updates(update.entries);
         }
         drop(bus);
+        while let Ok(ev) = self.debug_event_consumer.pop() {
+            self.debug_event_buf.push(ev);
+        }
         for (_, handle) in &mut self.output_handles {
             handle.tick();
         }
+    }
+
+    /// Drain and return all accumulated debug events since the last call.
+    /// Returns `None` when debug logging is not enabled (no events to drain).
+    pub fn debug_events(&mut self) -> Vec<DebugEvent> {
+        std::mem::take(&mut self.debug_event_buf)
     }
 
     /// Route script-generated LED output (from `set_led()` calls) to the matching
@@ -688,16 +710,19 @@ impl NodeConfigurator {
         let (new_sender, new_receiver)     = ring_buffer::channel(RING_CAPACITY);
         let (new_sb_prod, new_sb_cons)     = rtrb::RingBuffer::<StateBusUpdate>::new(STATE_BUS_RING_CAPACITY);
         let (new_cmd_prod, new_cmd_cons)   = rtrb::RingBuffer::<NodeCommand>::new(NODE_CMD_RING_CAPACITY);
+        let (new_debug_prod, new_debug_cons) = rtrb::RingBuffer::<DebugEvent>::new(DEBUG_EVENT_RING_CAPACITY);
 
         // Replace configurator-side handles so `send()` and `send_command()` stay live.
         self.sender                    = new_sender;
         self.node_cmd_producer         = new_cmd_prod;
         self.state_bus_consumer        = new_sb_cons;
+        self.debug_event_consumer      = new_debug_cons;
 
         // Install executor-side ends as pending so `build_executor()` can take them.
         self.pending_receiver          = Some(new_receiver);
         self.state_bus_producer_pending = Some(new_sb_prod);
         self.node_cmd_consumer_pending = Some(new_cmd_cons);
+        self.debug_event_producer_pending = Some(new_debug_prod);
 
         self.build_executor()
     }
@@ -720,6 +745,8 @@ impl NodeConfigurator {
         let state_bus_producer = self.state_bus_producer_pending.take()
             .expect("build_executor called twice");
         let cmd_consumer = self.node_cmd_consumer_pending.take()
+            .expect("build_executor called twice");
+        let debug_event_producer = self.debug_event_producer_pending.take()
             .expect("build_executor called twice");
 
         let order = crate::graph::execution_order(&self.graph)
@@ -816,6 +843,7 @@ impl NodeConfigurator {
             cmd_consumer,
             back_edges,
             counters,
+            debug_event_producer,
         )
     }
 }

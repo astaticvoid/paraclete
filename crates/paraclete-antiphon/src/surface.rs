@@ -283,11 +283,11 @@ mod tests {
         };
         let mut audio_refs: Vec<&mut AudioBuffer> = vec![];
         let mut ev_out = EventOutputBuffer::new(capacity);
-        let mut output = ProcessOutput {
-            audio_outputs: &mut audio_refs,
-            signal_outputs: &mut [],
-            events_out: &mut ev_out,
-        };
+        let mut output = ProcessOutput::new(
+            &mut audio_refs,
+            &mut [],
+            &mut ev_out,
+        );
         node.process(&input, &mut output);
         ev_out.as_slice().to_vec()
     }

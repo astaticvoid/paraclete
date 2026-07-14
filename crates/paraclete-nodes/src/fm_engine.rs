@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use paraclete_node_api::{
-    CapabilityDocument, Event, Node, ParamDescriptor, ParamUnit, ParameterBank,
+    CapabilityDocument, DebugEventKind, Event, Node, ParamDescriptor, ParamUnit, ParameterBank,
     PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
     UmpMessage, midi::ChannelVoice2, CMD_TRIGGER,
 };
@@ -335,6 +335,7 @@ impl Node for FmEngine {
                     cmd.arg1.clamp(0.0, 1.0) as f32
                 };
                 self.retrigger(note, velocity);
+                output.emit_debug(0, DebugEventKind::VoiceTrigger, note as i64, velocity as f64);
             }
         }
 
@@ -360,6 +361,7 @@ impl Node for FmEngine {
                             }
                             let velocity = n.velocity() as f32 / 65535.0;
                             self.retrigger(u8::from(n.note_number()), velocity);
+                            output.emit_debug(off as u32, DebugEventKind::VoiceTrigger, u8::from(n.note_number()) as i64, velocity as f64);
                         }
                     }
                 }
@@ -422,7 +424,7 @@ mod tests {
             transport: &transport, sample_rate: 44100.0, block_size: block,
             extended_events: &slab, commands: &[],
         };
-        let mut output = ProcessOutput { audio_outputs: &mut outs, signal_outputs: &mut [], events_out: &mut events_out };
+        let mut output = ProcessOutput::new(&mut outs, &mut [], &mut events_out);
         eng.process(&input, &mut output);
         audio.channel(0).to_vec()
     }
@@ -442,7 +444,7 @@ mod tests {
             transport: &transport, sample_rate: 44100.0, block_size: block,
             extended_events: &slab, commands: cmds,
         };
-        let mut output = ProcessOutput { audio_outputs: &mut outs, signal_outputs: &mut [], events_out: &mut events_out };
+        let mut output = ProcessOutput::new(&mut outs, &mut [], &mut events_out);
         eng.process(&input, &mut output);
         audio.channel(0).to_vec()
     }

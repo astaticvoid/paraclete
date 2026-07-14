@@ -1,5 +1,5 @@
 use paraclete_node_api::{
-    CapabilityDocument, Event, NodeCommand, ParameterBank, ParamDescriptor,
+    CapabilityDocument, DebugEventKind, Event, NodeCommand, ParameterBank, ParamDescriptor,
     ParamLockEvent, ParamUnit, PortDescriptor, PortDirection, PortName, PortType, ProcessInput,
     ProcessOutput, StateBusValue, TimedEvent, TransportEvent, Node, TICKS_PER_BEAT,
 };
@@ -885,6 +885,7 @@ impl Sequencer {
         self.gate_ticks_left = (step.length * self.step_period as f32).max(1.0) as u32;
         self.trig_count      = self.trig_count.wrapping_add(1);
         self.last_fired_step = step_idx;
+        output.emit_debug(sample_offset, DebugEventKind::StepFired, step_idx as i64, step.note as f64);
         output.events_out.push(TimedEvent::new(
             sample_offset,
             Event::Midi2(build_note_on(self.group, self.channel, step.note, step.velocity)),
@@ -1510,10 +1511,10 @@ mod tests {
             transport: &transport, sample_rate: 44100.0, block_size: block,
             extended_events: &slab, commands: &[],
         };
-        let mut output = ProcessOutput {
-            audio_outputs: &mut outs, signal_outputs: &mut [],
-            events_out: &mut events_out,
-        };
+        let mut output = ProcessOutput::new(
+            &mut outs, &mut [],
+            &mut events_out,
+        );
         seq.process(&input, &mut output);
         events_out.as_slice().iter().map(|e| e.event).collect()
     }
@@ -1532,10 +1533,10 @@ mod tests {
             transport: &transport, sample_rate: 44100.0, block_size: block,
             extended_events: &slab, commands: cmds,
         };
-        let mut output = ProcessOutput {
-            audio_outputs: &mut outs, signal_outputs: &mut [],
-            events_out: &mut events_out,
-        };
+        let mut output = ProcessOutput::new(
+            &mut outs, &mut [],
+            &mut events_out,
+        );
         seq.process(&input, &mut output);
     }
 
@@ -1991,11 +1992,11 @@ mod tests {
             transport: &transport, sample_rate: 44100.0, block_size: block,
             extended_events: &slab, commands: &[],
         };
-        let mut output = ProcessOutput {
-            audio_outputs: &mut outs,
-            signal_outputs: &mut sig_outs,
-            events_out: &mut events_out,
-        };
+        let mut output = ProcessOutput::new(
+            &mut outs,
+            &mut sig_outs,
+            &mut events_out,
+        );
         seq.process(&input, &mut output);
         cv_buf
     }
@@ -2866,10 +2867,10 @@ mod tests {
                 transport: &transport, sample_rate: 44100.0, block_size: block,
                 extended_events: &slab, commands: &[],
             };
-            let mut output = ProcessOutput {
-                audio_outputs: &mut outs, signal_outputs: &mut [],
-                events_out: &mut events_out,
-            };
+            let mut output = ProcessOutput::new(
+                &mut outs, &mut [],
+                &mut events_out,
+            );
             seq.process(&input, &mut output);
             if let Some(te) = events_out.as_slice().iter().find(|te| is_note_on(&te.event)) {
                 late_tick = Some(t);

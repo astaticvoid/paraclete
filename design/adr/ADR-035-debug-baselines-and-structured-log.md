@@ -1,6 +1,8 @@
 # ADR-035 — Regression Baselines & Structured Debug Log
 
-**Status:** ✅ **Accepted — Part A implemented (2026-07-13, `b74b853`); Part B open for review**
+**Status:** ✅ **Accepted — Part A implemented (2026-07-13, `b74b853`); Part B implemented (2026-07-13)**
+
+**Date:** 2026-07-13
 
 **Date:** 2026-07-13
 **Relates to:** roadmap Rank 2 (debug-posture push; the two remaining
@@ -246,3 +248,41 @@ run. `dispatch_action` now takes `&mut NodeConfigurator` so both paths share it.
 The first real baseline (`kick_reverb_clean.baseline.json`) is committed as a
 regression fixture. Verified: 3 identical passing checks confirm determinism;
 a velocity 1.0→0.3 regression trips peak/rms/dc + envelope windows 1-3.
+
+## Implementation note — Part B (2026-07-13)
+
+Structured debug-log channel shipped. The design matched the ADR with two minor
+deviations:
+
+1. **`emit_debug` includes `sample_offset`.** The node provides it (only the node
+   knows sub-cycle timing). The executor fills `node_id` post-`process()` via a
+   drain loop that copies events from per-node buffers into an aggregate SPSC
+   buffer using `DebugEvent { node_id, ..ev }` struct update syntax.
+
+2. **`ProcessOutput::new()` constructor.** A `ProcessOutput::new(audio_outputs,
+   signal_outputs, events_out)` convenience constructor with `debug: None` was
+   added so all existing construction sites (26) use one function. Only the
+   executor uses the struct literal (to pass `debug: Some(buf)`).
+
+Infrastructure:
+- `DebugEvent` / `DebugEventKind` in `paraclete-node-api/src/debug.rs` (L2)
+- `ProcessOutput.debug: Option<&mut Vec<DebugEvent>>` + `emit_debug()` in L2
+- Per-node pre-allocated `debug_bufs` (capacity 64), `agg_debug_buf` (256),
+  `debug_event_producer: SPSC<DebugEvent>` (cap 1024), `debug_log_enabled:
+  AtomicBool` in `NodeExecutor` (L1)
+- `debug_event_consumer`, drain in `process_main_thread()`, `debug_events()`
+  accessor in `NodeConfigurator` (L1)
+- `log` REPL command + batch-mode dump in test-driver
+- Debug logging enabled on executor at test-driver `build_executor()` time;
+  disabled by default in the shipping app (zero-cost: the `debug_log_enabled`
+  path skips buffer clear/pass/drain when false)
+
+Three node types emit debug events:
+- `Sequencer::emit_note_on_at` — `StepFired { step_idx, note }`
+- `AnalogEngine::process` — `VoiceTrigger { note, velocity }` (both CMD_TRIGGER and NoteOn paths)
+- `FmEngine::process` — same as AnalogEngine
+
+Verified via `test-driver --trigger kick` — a kick trigger produces a
+`VoiceTrigger { note=36, velocity=0.79 }` event. Sequencer mode verified via
+a 3-second scenario with a toggled step: `StepFired { step=0, note=36 }`
+emitted at sample 355, followed by the downstream `VoiceTrigger`.

@@ -204,11 +204,11 @@ mod tests {
             transport: &transport, sample_rate: ignode.sample_rate,
             block_size: block, extended_events: &slab, commands: &[],
         };
-        let mut output = ProcessOutput {
-            audio_outputs: &mut outs,
-            signal_outputs: &mut [],
-            events_out: &mut events_out,
-        };
+        let mut output = ProcessOutput::new(
+            &mut outs,
+            &mut [],
+            &mut events_out,
+        );
         ignode.process(&input, &mut output);
         // Collect all samples from both channels.
         let ch0 = audio.channel(0).to_vec();

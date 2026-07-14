@@ -72,11 +72,11 @@ impl SingleNodePlugin {
 
         self.events_out.clear();
         // Sequencer is a MIDI effect — no audio outputs.
-        let mut output = ProcessOutput {
-            audio_outputs:  &mut [],
-            signal_outputs: &mut [],
-            events_out:     &mut self.events_out,
-        };
+        let mut output = ProcessOutput::new(
+            &mut [],
+            &mut [],
+            &mut self.events_out,
+        );
 
         self.node.process(&input, &mut output);
         self.events_out.as_slice().to_vec()

@@ -303,11 +303,11 @@ mod tests {
             extended_events: &slab,
             commands: &[],
         };
-        reverb.process(&input, &mut ProcessOutput {
-            audio_outputs: &mut outs,
-            signal_outputs: &mut [],
-            events_out: &mut events_out,
-        });
+        reverb.process(&input, &mut ProcessOutput::new(
+            &mut outs,
+            &mut [],
+            &mut events_out,
+        ));
         (dst.channel(0).to_vec(), dst.channel(1).to_vec())
     }
 

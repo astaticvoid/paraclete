@@ -266,11 +266,11 @@ fn test_node_process_receives_sample_rate_and_block_size() {
             commands: &[],
     };
 
-    let mut output = ProcessOutput {
-        audio_outputs: &mut [],
-        signal_outputs: &mut [],
-        events_out: &mut events_out,
-    };
+    let mut output = ProcessOutput::new(
+        &mut [],
+        &mut [],
+        &mut events_out,
+    );
 
     node.process(&input, &mut output);
 

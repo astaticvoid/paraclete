@@ -2,6 +2,7 @@ use crate::buffer::{
     AudioBuffer, CvBuffer, PhaseBuffer, PitchBuffer,
 };
 use crate::command::NodeCommand;
+use crate::debug::{DebugEvent, DebugEventKind};
 use crate::event::{ExtendedEventSlab, TimedEvent};
 use crate::transport::TransportInfo;
 
@@ -168,9 +169,23 @@ pub struct ProcessOutput<'a> {
     pub audio_outputs: &'a mut [&'a mut AudioBuffer],
     pub signal_outputs: &'a mut [SignalOutputSlot],
     pub events_out: &'a mut EventOutputBuffer,
+    /// Pre-allocated debug event buffer (executor-owned, cleared each cycle).
+    /// `None` when debug logging is disabled (zero-cost in shipping builds).
+    pub debug: Option<&'a mut Vec<DebugEvent>>,
 }
 
 impl<'a> ProcessOutput<'a> {
+    /// Create a ProcessOutput with debug logging disabled (the default).
+    /// Use the struct literal directly only when passing a debug buffer
+    /// (executor only — see ADR-035 Part B).
+    pub fn new(
+        audio_outputs: &'a mut [&'a mut AudioBuffer],
+        signal_outputs: &'a mut [SignalOutputSlot],
+        events_out: &'a mut EventOutputBuffer,
+    ) -> Self {
+        Self { audio_outputs, signal_outputs, events_out, debug: None }
+    }
+
     fn find_output(&mut self, port_id: u32, kind: SignalPortKind) -> &mut [f32] {
         for slot in self.signal_outputs.iter_mut() {
             if slot.port_id == port_id {
@@ -199,6 +214,23 @@ impl<'a> ProcessOutput<'a> {
     /// Used by `LoopBreakNode` and other nodes that declare `PortType::Cv` output ports.
     pub fn cv_signal_output_mut(&mut self, port_id: u32) -> &mut [f32] {
         self.find_output(port_id, SignalPortKind::Cv)
+    }
+
+    /// Emit a debug event from the current node.
+    ///
+    /// `node_id` is filled by the executor after `process()` returns.
+    /// `sample_offset` is relative to the start of the current audio block.
+    /// When `debug` is `None` (logging disabled), this is a no-op.
+    pub fn emit_debug(&mut self, sample_offset: u32, kind: DebugEventKind, arg0: i64, arg1: f64) {
+        if let Some(buf) = &mut self.debug {
+            buf.push(DebugEvent {
+                sample_offset,
+                node_id: 0, // executor fills in
+                kind,
+                arg0,
+                arg1,
+            });
+        }
     }
 }
 
@@ -330,11 +362,11 @@ mod tests {
         let mut events_out = EventOutputBuffer::new(16);
         let out_slot = SignalOutputSlot::new(0, SignalPortKind::Modulation, &mut out_buf);
         let mut sig_outs = [out_slot];
-        let mut output = ProcessOutput {
-            audio_outputs: &mut [],
-            signal_outputs: &mut sig_outs,
-            events_out: &mut events_out,
-        };
+        let mut output = ProcessOutput::new(
+            &mut [],
+            &mut sig_outs,
+            &mut events_out,
+        );
         let slice = output.mod_output_mut(0);
         assert_eq!(slice.len(), block);
     }
@@ -346,11 +378,11 @@ mod tests {
         let out_ptr: *mut AudioBuffer = &mut buf as *mut AudioBuffer;
         let out_ref: &mut AudioBuffer = unsafe { &mut *out_ptr };
         let mut outs = [out_ref];
-        let output = ProcessOutput {
-            audio_outputs: &mut outs,
-            signal_outputs: &mut [],
-            events_out: &mut events_out,
-        };
+        let output = ProcessOutput::new(
+            &mut outs,
+            &mut [],
+            &mut events_out,
+        );
         output.audio_outputs[0].channel_mut(0).fill(0.5);
         assert_eq!(buf.channel(0)[0], 0.5);
     }

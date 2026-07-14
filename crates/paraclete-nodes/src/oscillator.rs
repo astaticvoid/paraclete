@@ -192,11 +192,11 @@ mod oscillator_node_tests {
             extended_events: &slab,
             commands: &[],
         };
-        let mut output = ProcessOutput {
-            audio_outputs: &mut outs,
-            signal_outputs: &mut [],
-            events_out: &mut events_out,
-        };
+        let mut output = ProcessOutput::new(
+            &mut outs,
+            &mut [],
+            &mut events_out,
+        );
         osc.process(&input, &mut output);
         audio.channel(0).to_vec()
     }
@@ -450,11 +450,11 @@ mod tests {
             extended_events: &slab,
             commands: &[],
         };
-        let mut output = ProcessOutput {
-            audio_outputs: &mut outs,
-            signal_outputs: &mut [],
-            events_out: &mut events_out,
-        };
+        let mut output = ProcessOutput::new(
+            &mut outs,
+            &mut [],
+            &mut events_out,
+        );
         osc.process(&input, &mut output);
         audio.channel(0).to_vec()
     }

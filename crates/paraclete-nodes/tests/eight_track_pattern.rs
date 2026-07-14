@@ -41,10 +41,10 @@ fn run_seq(seq: &mut Sequencer, events: &[paraclete_node_api::TimedEvent]) -> Ve
         transport: &transport, sample_rate: 44100.0, block_size: block,
         extended_events: &slab, commands: &[],
     };
-    let mut output = ProcessOutput {
-        audio_outputs: &mut outs, signal_outputs: &mut [],
-        events_out: &mut events_out,
-    };
+    let mut output = ProcessOutput::new(
+        &mut outs, &mut [],
+        &mut events_out,
+    );
     seq.process(&input, &mut output);
     events_out.as_slice().iter().map(|e| e.event).collect()
 }

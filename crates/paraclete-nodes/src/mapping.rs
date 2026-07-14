@@ -111,11 +111,11 @@ mod tests {
             extended_events: &extended,
         commands: &[],
         };
-        let mut output = ProcessOutput {
-            audio_outputs: &mut outs,
-            signal_outputs: &mut [],
-            events_out: &mut events_out,
-        };
+        let mut output = ProcessOutput::new(
+            &mut outs,
+            &mut [],
+            &mut events_out,
+        );
         mapper.process(&input, &mut output);
         events_out.as_slice().to_vec()
     }

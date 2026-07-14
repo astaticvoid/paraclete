@@ -155,11 +155,11 @@ mod tests {
         let mut events_out = EventOutputBuffer::new(16);
         let out_slot = SignalOutputSlot::new(1, SignalPortKind::Cv, &mut out_buf);
         let mut sig_outs = [out_slot];
-        let mut output = ProcessOutput {
-            audio_outputs: &mut [],
-            signal_outputs: &mut sig_outs,
-            events_out: &mut events_out,
-        };
+        let mut output = ProcessOutput::new(
+            &mut [],
+            &mut sig_outs,
+            &mut events_out,
+        );
 
         lb.process(&input, &mut output);
         out_buf

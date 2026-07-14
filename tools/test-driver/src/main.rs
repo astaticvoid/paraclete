@@ -182,6 +182,7 @@ fn build_context(
 
     let bus_handle = conf.state_bus_handle();
     let executor = Arc::new(Mutex::new(conf.build_executor()));
+    executor.lock().unwrap().set_debug_log_enabled(true);
     let capture = Arc::new(CaptureRing::new(CAPTURE_RING_CAPACITY));
     let running = Arc::new(AtomicBool::new(true));
 
@@ -347,6 +348,15 @@ fn run_batch(scenario: TestScenario) -> Result<(), String> {
     eprintln!("[test-driver] wrote {} ({} samples, {:.1}s)",
         scenario.output, all_samples.len(),
         all_samples.len() as f64 / sample_rate as f64);
+
+    let debug_events = ctx.conf.debug_events();
+    if !debug_events.is_empty() {
+        eprintln!("[test-driver] debug events ({}):", debug_events.len());
+        for ev in &debug_events {
+            eprintln!("  node={} kind={} sample={} arg0={} arg1={}",
+                ev.node_id, ev.kind.as_str(), ev.sample_offset, ev.arg0, ev.arg1);
+        }
+    }
 
     if scenario.play {
         let output = scenario.output.clone();
@@ -653,6 +663,20 @@ fn handle_json_command(ctx: &mut TestContext, line: &str, all_samples: &[f32]) -
             }
         }
 
+        "log" => {
+            let events = ctx.conf.debug_events();
+            let json_events: Vec<serde_json::Value> = events.iter().map(|ev| {
+                serde_json::json!({
+                    "t": ev.sample_offset,
+                    "node": ev.node_id,
+                    "kind": ev.kind.as_str(),
+                    "arg0": ev.arg0,
+                    "arg1": ev.arg1,
+                })
+            }).collect();
+            (serde_json::json!({ "events": json_events }).to_string(), false)
+        }
+
         other => match json_to_action(&ctx.resolver, other, &v) {
             Ok(Some(action)) => match dispatch_action(&mut ctx.conf, &action) {
                 Ok(()) => (ok_json(), false),
@@ -850,6 +874,7 @@ fn render_deterministic(scenario: &TestScenario) -> Result<Vec<f32>, String> {
     build_from_instrument(&def, &mut conf, &libraries)
         .map_err(|e| format!("failed to build graph: {}", e))?;
     let mut executor = conf.build_executor();
+    executor.set_debug_log_enabled(true);
 
     let mut timeline: Vec<(usize, ResolvedActionKind)> = scenario
         .timeline

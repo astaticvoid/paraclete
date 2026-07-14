@@ -124,11 +124,11 @@ fn plugin_node_from_kick_clap_produces_audio() {
             extended_events: &extended,
             commands:        &commands,
         };
-        let mut output = ProcessOutput {
-            audio_outputs:  &mut audio_outs,
-            signal_outputs: &mut sig_outs,
-            events_out:     &mut out_events,
-        };
+        let mut output = ProcessOutput::new(
+            &mut audio_outs,
+            &mut sig_outs,
+            &mut out_events,
+        );
         node.process(&input, &mut output);
         for &s in out_audio.channel(0) {
             max_val = max_val.max(s.abs());

@@ -175,10 +175,10 @@ pub(crate) fn run_envelope_blocks(env: &mut EnvelopeNode, gate_blocks: &[Vec<f32
             transport: &transport, sample_rate: 44100.0, block_size: block,
             extended_events: &slab, commands: &[],
         };
-        let mut output = paraclete_node_api::ProcessOutput {
-            audio_outputs: &mut [], signal_outputs: &mut sig_outs,
-            events_out: &mut events_out,
-        };
+        let mut output = paraclete_node_api::ProcessOutput::new(
+            &mut [], &mut sig_outs,
+            &mut events_out,
+        );
         env.process(&input, &mut output);
         all_out.extend_from_slice(&out_buf);
     }

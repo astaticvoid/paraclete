@@ -132,10 +132,10 @@ mod tests {
             audio_inputs: &[&src], signal_inputs: &[], events: &[],
             transport: &transport, sample_rate: 44100.0, block_size: frames,
             extended_events: &slab, commands: &[],
-        }, &mut ProcessOutput {
-            audio_outputs: &mut outs, signal_outputs: &mut [],
-            events_out: &mut events_out,
-        });
+        },     &mut ProcessOutput::new(
+            &mut outs, &mut [],
+            &mut events_out,
+        ));
         dst.channel(0)[0]
     }
 

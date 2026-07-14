@@ -12,6 +12,7 @@ pub mod capability;
 pub mod command;
 pub mod constants;
 pub mod context;
+pub mod debug;
 pub mod event;
 pub mod surface;
 pub mod midi;
@@ -53,6 +54,8 @@ pub use context::{
     EventOutputBuffer, ProcessInput, ProcessOutput, SignalInputSlot, SignalOutputSlot,
     SignalPortKind,
 };
+
+pub use debug::{DebugEvent, DebugEventKind};
 
 pub use capability::{
     CapabilityDocument, ParamDescriptor, ParamDisplay, ParamDisplayAdapter, ParamUnit,

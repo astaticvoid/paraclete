@@ -157,11 +157,11 @@ mod tests {
             extended_events: &slab,
             commands: &[],
         };
-        let mut output = ProcessOutput {
-            audio_outputs: &mut outs,
-            signal_outputs: &mut [],
-            events_out: &mut events_out,
-        };
+        let mut output = ProcessOutput::new(
+            &mut outs,
+            &mut [],
+            &mut events_out,
+        );
         mix.process(&input, &mut output);
         out
     }

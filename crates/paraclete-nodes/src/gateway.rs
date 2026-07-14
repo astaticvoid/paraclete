@@ -112,11 +112,11 @@ mod tests {
         let mut audio_out: Vec<AudioBuffer> = vec![];
         let mut audio_refs: Vec<&mut AudioBuffer> = audio_out.iter_mut().collect();
         let mut ev_out = EventOutputBuffer::new(16);
-        let mut output = ProcessOutput {
-            audio_outputs: &mut audio_refs,
-            signal_outputs: &mut [],
-            events_out: &mut ev_out,
-        };
+        let mut output = ProcessOutput::new(
+            &mut audio_refs,
+            &mut [],
+            &mut ev_out,
+        );
         gw.process(&input, &mut output);
     }
 
