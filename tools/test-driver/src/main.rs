@@ -92,6 +92,21 @@ struct TestContext {
     sample_rate: f32,
     #[allow(dead_code)]
     block_size: usize,
+    /// Tracks dispatched engine mutations so read/dump/peak can auto-wait.
+    mutation_seq: u64,
+    last_read_seq: u64,
+}
+
+/// Wait one audio block for pending mutations to reach the executor, then drain.
+fn sync_for_read(ctx: &mut TestContext) {
+    if ctx.last_read_seq >= ctx.mutation_seq {
+        return;
+    }
+    ctx.conf.process_main_thread();
+    let block_us = (ctx.block_size as f64 / ctx.sample_rate as f64 * 1_000_000.0) as u64;
+    std::thread::sleep(std::time::Duration::from_micros(block_us + 1000));
+    ctx.conf.process_main_thread();
+    ctx.last_read_seq = ctx.mutation_seq;
 }
 
 fn resolve_target(resolver: &NameResolver, target: &str) -> Result<u32, String> {
@@ -206,6 +221,8 @@ fn build_context(
     Ok(TestContext {
         conf, executor, bus_handle, capture, running,
         resolver, sample_rate, block_size,
+        mutation_seq: 0,
+        last_read_seq: 0,
     })
 }
 
@@ -623,18 +640,22 @@ fn handle_json_command(ctx: &mut TestContext, line: &str, all_samples: &[f32]) -
     match cmd {
         "quit" => (ok_json(), true),
 
-        "read" => match jstr(&v, "path") {
-            None => (err_json("read needs a 'path'"), false),
-            Some(path) => match ctx.conf.state_bus_read(path) {
-                Some(val) => (
-                    serde_json::json!({ "path": path, "value": value_to_json(&val) }).to_string(),
-                    false,
-                ),
-                None => (err_json(&format!("no value at path {}", path)), false),
-            },
+        "read" => {
+            sync_for_read(ctx);
+            match jstr(&v, "path") {
+                None => (err_json("read needs a 'path'"), false),
+                Some(path) => match ctx.conf.state_bus_read(path) {
+                    Some(val) => (
+                        serde_json::json!({ "path": path, "value": value_to_json(&val) }).to_string(),
+                        false,
+                    ),
+                    None => (err_json(&format!("no value at path {}", path)), false),
+                },
+            }
         },
 
         "dump" => {
+            sync_for_read(ctx);
             let bus = ctx.bus_handle.borrow();
             let mut paths = serde_json::Map::new();
             for (path, val) in bus.iter() {
@@ -644,6 +665,7 @@ fn handle_json_command(ctx: &mut TestContext, line: &str, all_samples: &[f32]) -
         }
 
         "peak" => {
+            sync_for_read(ctx);
             let window_ms = v.get("window_ms").and_then(|w| w.as_f64()).unwrap_or(500.0);
             let window_samples = (window_ms / 1000.0 * ctx.sample_rate as f64) as usize;
             let start = all_samples.len().saturating_sub(window_samples);
@@ -663,15 +685,7 @@ fn handle_json_command(ctx: &mut TestContext, line: &str, all_samples: &[f32]) -
         }
 
         "log" => {
-            // The null backend sleeps block_size/sample_rate seconds between
-            // process() calls to simulate wall-clock time. Commands dispatched
-            // before `log` won't be processed until the audio thread wakes.
-            // Drain what's already buffered, then wait for one full block cycle
-            // so the executor has time to process pending work and push results.
-            ctx.conf.process_main_thread();
-            let block_us = (ctx.block_size as f64 / ctx.sample_rate as f64 * 1_000_000.0) as u64;
-            std::thread::sleep(std::time::Duration::from_micros(block_us + 1000));
-            ctx.conf.process_main_thread();
+            sync_for_read(ctx);
             let events = ctx.conf.debug_events();
             let json_events: Vec<serde_json::Value> = events.iter().map(|ev| {
                 serde_json::json!({
@@ -686,10 +700,13 @@ fn handle_json_command(ctx: &mut TestContext, line: &str, all_samples: &[f32]) -
         }
 
         other => match json_to_action(&ctx.resolver, other, &v) {
-            Ok(Some(action)) => match dispatch_action(&mut ctx.conf, &action) {
-                Ok(()) => (ok_json(), false),
-                Err(e) => (err_json(&e), false),
-            },
+            Ok(Some(action)) => {
+                ctx.mutation_seq += 1;
+                match dispatch_action(&mut ctx.conf, &action) {
+                    Ok(()) => (ok_json(), false),
+                    Err(e) => (err_json(&e), false),
+                }
+            }
             Ok(None) => (err_json(&format!("unknown command: {}", other)), false),
             Err(e) => (err_json(&e), false),
         },
