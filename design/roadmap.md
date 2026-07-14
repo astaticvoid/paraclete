@@ -3,7 +3,12 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-13. **Debug/test harness (ADR-033) promoted to
+> **Last updated:** 2026-07-13. **Rank 2 (debug/test harness) COMPLETE.**
+> All four items shipped: null audio backend + interactive REPL (ADR-033),
+> regression baselines (ADR-035 Part A), structured per-node debug-log channel
+> (ADR-035 Part B), CPU meter `/engine/cpu_us` (ADR-034 follow-up). W2 code gate
+> is lifted — harness is ready for quality-upfront development.
+> Previous: 2026-07-13. **Debug/test harness (ADR-033) promoted to
 > Rank 2.** The agent lane pivots from the (completed) universality audit to
 > building live-engine interrogation, a null audio backend, audio snapshot/diff,
 > and a structured log channel — so W2, P13, and every later feature are
@@ -40,7 +45,7 @@ Rank 2 is the active **agent** task — now the debug/test harness, which gates 
 | Rank | Work | Owner | Status | Notes |
 |---|---|---|---|---|
 | **1** | **W2 surface spec + ADR-032** — the universal node-view contract; the layered-surface model | **user (paired)** | groundwork done, spec pending | Reference analysis + decision menus: `design/specs/w2-reference-analysis.md`. §6.0 track-vs-module axis **resolved by the vision** (layered, not either/or). Pure design work — **does not need the harness**. Decide §6.1–6.7 + the ADR-032 contract with the user; do not improvise (`handoff.md`). W2 **implementation** is gated on Rank 2. |
-| **2** | **Debug/test harness (ADR-033)** — ~~null audio backend~~ → ~~interactive JSON-lines REPL~~ → ~~audio snapshot/diff baselines~~ → structured per-node log channel; **+ CPU-% meter to `/engine/cpu`** | **agent** | **Part A baselines SHIPPED 2026-07-13 (`b74b853`)** — deterministic single-threaded render, fingerprint (peak/rms/dc + 50ms windowed-RMS envelope), per-metric tolerances in `.baseline.json`, `--check-baseline` exits 1 on drift, CI-ready. Foundations already shipped: INFRA-001 (`9655cd0`) + INFRA-003/ADR-034 (measured quiet) + ADR-033 interactive REPL (`92b8795`). **Remaining: structured per-node log channel (ADR-035 Part B, pending L2 `ProcessOutput` sign-off), CPU-% meter (ADR-034 follow-up).** | **Promoted 2026-07-13 (was the completed audit).** The keystone that lets us develop **and test** W2, P13, and all later features against live engine state — interrogate params, run headless in CI without a physical device, catch regressions via peak/RMS baselines, and watch per-node events. **Quality upfront instead of bugs found late** (`roadmap.md` "Agent Infrastructure Gaps"). ✅ **null backend + interactive REPL** (`read`/`dump`/`peak`/`render`/`quit` + all engine mutations over stdin JSON; 258-command end-to-end drive green). ✅ **Regression baselines** (fingerprint + deterministic render; first fixture committed). Next: **structured log channel** (ADR-035 Part B), then the CPU meter. Lands before W2 code begins. |
+| **2** | **Debug/test harness (ADR-033/ADR-035)** — structured per-node debug log, regression baselines, CPU meter | **agent** | **COMPLETE 2026-07-13** | ✅ null backend + REPL (ADR-033, `92b8795`), ✅ regression baselines (ADR-035 Part A, `b74b853`), ✅ structured per-node debug log (ADR-035 Part B, `73332d5`), ✅ CPU meter /engine/cpu_us (`aad9e52`). W2 code gate lifted. |
 | **3** | **P13 voice: OQ-13 + OQ-14** — two-tier engine model | **user** | brief drafted | `w2-reference-analysis.md` P13 appendix. OQ-13 (monolithic vs composed-from-primitives) is **coupled to §6.0** — decide together. OQ-14 = machine-as-parameter (recommended: a topology swap is an audible gap, measured via BUG-012 load test). Now developed/tested against the Rank 2 harness. |
 | **4** | **Openable engines** — Tier-1 monolithic becomes graph-openable | user (later) | north-star, parked | The deepest "elisp of machines." Needs GraphNode / `InnerGraphNode::serialize()` maturity (a stub today). P13→P14+; **not** a W2 gate. |
 
