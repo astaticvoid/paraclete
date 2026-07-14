@@ -14,6 +14,11 @@
 > unbounded queue loses no commands under a burst (see Open Question 1, now moot).
 > Still unbuilt from the surrounding debug-posture push: audio diff/snapshot
 > baselines and the structured per-node log channel (both roadmap Rank 2).
+>
+> **Implementation note (2026-07-13):** auto-play now uses platform-appropriate
+> commands via `auto_play_command()`: `afplay` on macOS, `pw-play` on Linux.
+> Previously the Linux path called `afplay` unconditionally, which always failed
+> and required manual playback. Tested on Arch/KDE with PipeWire.
 
 ## Context
 

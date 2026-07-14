@@ -35,6 +35,15 @@ const CMD_SET_STEP_CONDITION: u32 = Sequencer::CMD_SET_STEP_CONDITION;
 const CMD_CHAIN_PUSH: u32 = Sequencer::CMD_CHAIN_PUSH;
 const CMD_CHAIN_CLEAR: u32 = Sequencer::CMD_CHAIN_CLEAR;
 
+fn auto_play_command() -> &'static str {
+    #[cfg(target_os = "macos")]
+    { return "afplay"; }
+    #[cfg(target_os = "linux")]
+    { "pw-play" }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    { return "afplay"; }
+}
+
 const CAPTURE_RING_CAPACITY: usize = 512;
 
 struct CaptureRing {
@@ -341,11 +350,12 @@ fn run_batch(scenario: TestScenario) -> Result<(), String> {
 
     if scenario.play {
         let output = scenario.output.clone();
-        let status = std::process::Command::new("afplay")
+        let player = auto_play_command();
+        let status = std::process::Command::new(player)
             .arg(&output)
             .status();
         if let Err(e) = status {
-            eprintln!("[test-driver] afplay failed: {} (output at {})", e, output);
+            eprintln!("[test-driver] {} failed: {} (output at {})", player, e, output);
         }
     }
 
