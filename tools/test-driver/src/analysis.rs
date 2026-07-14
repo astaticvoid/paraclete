@@ -44,6 +44,24 @@ pub fn non_finite(samples: &[f32]) -> (usize, usize) {
     (count, first)
 }
 
+/// Root-mean-square of the window — overall energy. Empty → 0.
+pub fn rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum_sq: f64 = samples.iter().map(|&s| (s as f64) * (s as f64)).sum();
+    (sum_sq / samples.len() as f64).sqrt() as f32
+}
+
+/// RMS per fixed-size window — the envelope shape. A trailing partial window is
+/// included (it still carries signal). `window` of 0 yields an empty envelope.
+pub fn rms_windows(samples: &[f32], window: usize) -> Vec<f32> {
+    if window == 0 {
+        return Vec::new();
+    }
+    samples.chunks(window).map(rms).collect()
+}
+
 /// Longest run of bitwise-identical consecutive samples (held value or
 /// zeros — the dropout signature). Returns (run length, start index).
 /// A run of intended silence counts; scope the assertion window past it.
@@ -135,6 +153,30 @@ mod tests {
     fn non_finite_of_clean_signal_is_zero() {
         let s = [0.1, -0.2, 0.0, 1.0];
         assert_eq!(non_finite(&s).0, 0);
+    }
+
+    #[test]
+    fn rms_of_constant_is_the_constant() {
+        assert!((rms(&[0.5, 0.5, 0.5, 0.5]) - 0.5).abs() < 1e-6);
+        assert_eq!(rms(&[]), 0.0);
+    }
+
+    #[test]
+    fn rms_of_unit_square_wave_is_one() {
+        let s = [1.0, -1.0, 1.0, -1.0];
+        assert!((rms(&s) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rms_windows_chunks_including_partial_tail() {
+        // 5 samples, window 2 → [win(0,1), win(2,3), win(4)]
+        let s = [1.0, -1.0, 0.5, -0.5, 1.0];
+        let env = rms_windows(&s, 2);
+        assert_eq!(env.len(), 3);
+        assert!((env[0] - 1.0).abs() < 1e-6);
+        assert!((env[1] - 0.5).abs() < 1e-6);
+        assert!((env[2] - 1.0).abs() < 1e-6); // partial tail
+        assert!(rms_windows(&s, 0).is_empty());
     }
 
     #[test]

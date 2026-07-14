@@ -1,4 +1,5 @@
 mod analysis;
+mod baseline;
 mod scenario;
 mod resolve;
 mod wav;
@@ -89,7 +90,7 @@ fn resolve_target(resolver: &NameResolver, target: &str) -> Result<u32, String> 
     resolver.resolve_required(target)
 }
 
-fn dispatch_action(ctx: &mut TestContext, action: &ResolvedActionKind) -> Result<(), String> {
+fn dispatch_action(conf: &mut NodeConfigurator, action: &ResolvedActionKind) -> Result<(), String> {
     let cmd = match action {
         ResolvedActionKind::SetParam { target_id, param_name, value } => {
             let param_id = param_id_for_name(param_name);
@@ -147,7 +148,7 @@ fn dispatch_action(ctx: &mut TestContext, action: &ResolvedActionKind) -> Result
             NodeCommand { target_id: *target_id, type_id: CMD_CHAIN_CLEAR, arg0: 0, arg1: 0.0 }
         }
     };
-    ctx.conf.send_command(cmd).map_err(|_| "command ring buffer full".into())
+    conf.send_command(cmd).map_err(|_| "command ring buffer full".into())
 }
 
 fn param_id_for_name(name: &str) -> u32 {
@@ -199,6 +200,14 @@ fn build_context(
     })
 }
 
+/// Regression-baseline action (ADR-035 Part A). The `String` is the resolved
+/// `<scenario>.baseline.json` path.
+enum BaselineMode {
+    Off,
+    Update(String),
+    Check(String),
+}
+
 fn run_batch(scenario: TestScenario) -> Result<(), String> {
     let instrument_path = PathBuf::from(&scenario.instrument);
     let def = load_instrument_definition(&instrument_path)
@@ -233,7 +242,7 @@ fn run_batch(scenario: TestScenario) -> Result<(), String> {
 
         while next_action < timeline.len() && timeline[next_action].0 <= elapsed {
             let action = &timeline[next_action];
-            dispatch_action(&mut ctx, &action.1)?;
+            dispatch_action(&mut ctx.conf, &action.1)?;
             next_action += 1;
         }
 
@@ -635,7 +644,7 @@ fn handle_json_command(ctx: &mut TestContext, line: &str, all_samples: &[f32]) -
         }
 
         other => match json_to_action(&ctx.resolver, other, &v) {
-            Ok(Some(action)) => match dispatch_action(ctx, &action) {
+            Ok(Some(action)) => match dispatch_action(&mut ctx.conf, &action) {
                 Ok(()) => (ok_json(), false),
                 Err(e) => (err_json(&e), false),
             },
@@ -772,10 +781,153 @@ fn resolve_action(resolver: &NameResolver, action: &scenario::TimelineAction) ->
     })
 }
 
-const QUICK_USAGE: &str = "usage: test-driver <test.yaml>
+const QUICK_USAGE: &str = "usage: test-driver <test.yaml> [--update-baseline | --check-baseline]
        test-driver --trigger <target> --at <secs> [--trigger T --at S ...]
                    [-d <secs>] [--instrument <path>] [--output <path>] [--no-play]
        test-driver --interactive [--instrument <path>] [--sample-rate <hz>] [--block-size <n>]";
+
+/// Truncate/zero-pad the captured buffer to exactly `duration_secs × sample_rate`
+/// samples. Wall-clock-bounded capture jitters by a block or two run-to-run
+/// (AGENTS.md); a fixed length makes the baseline fingerprint's sample_count and
+/// envelope-window count deterministic. Trailing samples are the decayed tail;
+/// a short render pads with silence (deterministic, negligible energy).
+fn fixed_len(samples: &[f32], sample_rate: f32, duration_secs: f64) -> Vec<f32> {
+    let target = (sample_rate as f64 * duration_secs).round() as usize;
+    let mut v = Vec::with_capacity(target);
+    v.extend_from_slice(&samples[..samples.len().min(target)]);
+    v.resize(target, 0.0);
+    v
+}
+
+/// `<scenario>.yaml` → `<scenario>.baseline.json` beside it.
+fn baseline_path_for(scenario_yaml: &str) -> String {
+    let stem = scenario_yaml
+        .strip_suffix(".yaml")
+        .or_else(|| scenario_yaml.strip_suffix(".yml"))
+        .unwrap_or(scenario_yaml);
+    format!("{}.baseline.json", stem)
+}
+
+/// Parse the optional trailing baseline flag after a scenario file. Unknown
+/// trailing args are an error (a typo shouldn't silently run a plain render).
+fn parse_baseline_flag(args: &[String], yaml_path: &str) -> Result<BaselineMode, String> {
+    let mut mode = BaselineMode::Off;
+    for arg in args {
+        match arg.as_str() {
+            "--update-baseline" => mode = BaselineMode::Update(baseline_path_for(yaml_path)),
+            "--check-baseline" => mode = BaselineMode::Check(baseline_path_for(yaml_path)),
+            other => return Err(format!("unknown flag after scenario: {}", other)),
+        }
+    }
+    Ok(mode)
+}
+
+/// Deterministic, single-threaded render for baseline runs (ADR-035 Part A). No
+/// audio thread and no wall clock: step the executor block-by-block, applying
+/// each timeline action at its sample-accurate block boundary. The result is
+/// bit-identical run to run, so an envelope fingerprint is meaningful — the
+/// threaded `run_batch` path jitters by a block (a trigger lands in different
+/// blocks each run), which makes per-window comparison unstable.
+fn render_deterministic(scenario: &TestScenario) -> Result<Vec<f32>, String> {
+    let def = load_instrument_definition(&PathBuf::from(&scenario.instrument))
+        .map_err(|e| format!("failed to load instrument: {}", e))?;
+    let sample_rate = scenario.sample_rate;
+    let block_size = scenario.block_size;
+    let resolver = NameResolver::from_instrument(&def);
+
+    let mut conf = NodeConfigurator::new(sample_rate, block_size);
+    let libraries = HashMap::new();
+    build_from_instrument(&def, &mut conf, &libraries)
+        .map_err(|e| format!("failed to build graph: {}", e))?;
+    let mut executor = conf.build_executor();
+
+    let mut timeline: Vec<(usize, ResolvedActionKind)> = scenario
+        .timeline
+        .iter()
+        .map(|entry| {
+            let kind = resolve_action(&resolver, &entry.action)?;
+            let at = (entry.at.max(0.0) * sample_rate as f64).round() as usize;
+            Ok((at, kind))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    timeline.sort_by_key(|(at, _)| *at);
+
+    let channels = 2usize;
+    let target = (sample_rate as f64 * scenario.duration_secs).round() as usize;
+    let n_blocks = target.div_ceil(block_size);
+    let mut all = Vec::with_capacity(n_blocks * block_size);
+    let mut block = vec![0.0f32; block_size * channels];
+    let mut next = 0usize;
+
+    for b in 0..n_blocks {
+        let block_end = (b + 1) * block_size;
+        // Commands sent before process() are drained and applied by the executor
+        // in that same call, so an action fires in the block its offset lands in.
+        while next < timeline.len() && timeline[next].0 < block_end {
+            dispatch_action(&mut conf, &timeline[next].1)?;
+            next += 1;
+        }
+        block.iter_mut().for_each(|s| *s = 0.0);
+        executor.process(&mut block, channels);
+        all.extend(block.chunks(channels).map(|ch| ch[0]));
+        conf.process_main_thread();
+    }
+    Ok(all)
+}
+
+/// Baseline update/check over a deterministic render (ADR-035 Part A). Update
+/// writes only over a clean render (never bake a failing render into a
+/// baseline); check folds drift into the same failure path as assertions, so a
+/// regression exits 1 like any other failed check.
+fn run_baseline(scenario: TestScenario, mode: BaselineMode) -> Result<(), String> {
+    let sample_rate = scenario.sample_rate;
+    let block_size = scenario.block_size;
+
+    let all_samples = render_deterministic(&scenario)?;
+    let mut failures: Vec<String> = Vec::new();
+
+    // The baseline fingerprint IS the regression check — we don't re-run the
+    // scenario's artifact assertions here (they are tuned for the threaded
+    // render; the deterministic render legitimately differs, e.g. exact-zero
+    // silence). The only render-sanity guard is non-finite samples.
+    let fp = baseline::compute_fingerprint(
+        &fixed_len(&all_samples, sample_rate, scenario.duration_secs),
+        sample_rate,
+    );
+
+    match &mode {
+        BaselineMode::Off => {}
+        BaselineMode::Update(path) => {
+            if fp.non_finite > 0 {
+                eprintln!("[test-driver] NOT updating baseline — {} non-finite sample(s) in render", fp.non_finite);
+            } else {
+                // Preserve hand-tuned tolerances across an update; refresh only
+                // the fingerprint.
+                let tolerances = baseline::load(path).map(|b| b.tolerances).unwrap_or_default();
+                baseline::save(path, &baseline::Baseline { fingerprint: fp, tolerances })?;
+                eprintln!("[test-driver] wrote baseline {}", path);
+            }
+        }
+        BaselineMode::Check(path) => match baseline::load(path) {
+            Ok(b) => {
+                for d in baseline::compare(&b, &fp, block_size) {
+                    failures.push(format!("baseline drift: {}", d));
+                }
+            }
+            Err(e) => failures.push(e),
+        },
+    }
+
+    if !failures.is_empty() {
+        for f in &failures {
+            eprintln!("[test-driver] FAIL: {}", f);
+        }
+        eprintln!("[test-driver] {} check(s) failed", failures.len());
+        return Err("assertions failed".into());
+    }
+    eprintln!("[test-driver] baseline OK ({} samples)", all_samples.len());
+    Ok(())
+}
 
 /// Quick mode (INFRA-002 / ADR-033 § Quick mode): build a scenario from
 /// one-liner flags. `--trigger`/`--at` pair positionally; mismatched counts
@@ -1031,11 +1183,12 @@ fn main() {
         }
     }
 
-    let scenario = if args[1].starts_with('-') {
-        parse_quick_args(&args[1..]).unwrap_or_else(|e| {
+    let (scenario, baseline_mode) = if args[1].starts_with('-') {
+        let s = parse_quick_args(&args[1..]).unwrap_or_else(|e| {
             eprintln!("[test-driver] {}", e);
             std::process::exit(2);
-        })
+        });
+        (s, BaselineMode::Off)
     } else {
         let yaml_path = &args[1];
         let yaml = std::fs::read_to_string(yaml_path)
@@ -1043,14 +1196,24 @@ fn main() {
                 eprintln!("[test-driver] cannot read {}: {}", yaml_path, e);
                 std::process::exit(2);
             });
-        scenario::parse_scenario(&yaml)
+        let s = scenario::parse_scenario(&yaml)
             .unwrap_or_else(|e| {
                 eprintln!("[test-driver] {}", e);
                 std::process::exit(2);
-            })
+            });
+        let mode = parse_baseline_flag(&args[2..], yaml_path).unwrap_or_else(|e| {
+            eprintln!("[test-driver] {}", e);
+            std::process::exit(2);
+        });
+        (s, mode)
     };
 
-    match run_batch(scenario) {
+    let result = match baseline_mode {
+        BaselineMode::Off => run_batch(scenario),
+        mode => run_baseline(scenario, mode),
+    };
+
+    match result {
         Ok(()) => std::process::exit(0),
         Err(e) => {
             if e.contains("assertions failed") {
