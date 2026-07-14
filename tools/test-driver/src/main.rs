@@ -89,9 +89,7 @@ struct TestContext {
     capture: Arc<CaptureRing>,
     running: Arc<AtomicBool>,
     resolver: NameResolver,
-    #[allow(dead_code)]
     sample_rate: f32,
-    #[allow(dead_code)]
     block_size: usize,
 }
 
@@ -664,6 +662,14 @@ fn handle_json_command(ctx: &mut TestContext, line: &str, all_samples: &[f32]) -
         }
 
         "log" => {
+            // Drain any events already in the SPSC, then wait one audio-block
+            // for the executor to process pending commands (the null backend
+            // sleeps block_size/sample_rate between process() calls).
+            ctx.conf.process_main_thread();
+            std::thread::sleep(std::time::Duration::from_micros(
+                (ctx.block_size as f64 / ctx.sample_rate as f64 * 1_000_000.0) as u64 + 1000,
+            ));
+            ctx.conf.process_main_thread();
             let events = ctx.conf.debug_events();
             let json_events: Vec<serde_json::Value> = events.iter().map(|ev| {
                 serde_json::json!({
