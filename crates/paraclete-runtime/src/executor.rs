@@ -379,6 +379,7 @@ impl NodeExecutor {
     }
 
     pub fn process(&mut self, out_interleaved: &mut [f32], channels: usize) {
+        let t0 = std::time::Instant::now();
         use std::sync::atomic::Ordering;
         self.counters.buffers_processed.fetch_add(1, Ordering::Relaxed);
 
@@ -680,6 +681,7 @@ impl NodeExecutor {
                 }
             }
         }
+        self.counters.update_cpu_time(t0.elapsed().as_micros() as f64);
     }
 
     pub fn transport(&self) -> &TransportInfo {
