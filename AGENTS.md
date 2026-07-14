@@ -42,6 +42,13 @@ cargo run -p test-driver -- --trigger kick --at 1.0 -d 3
 # Scenario mode: timed commands + assertions (see tools/test-driver/tests/)
 cargo run -p test-driver -- tools/test-driver/tests/kick_reverb_clean.yaml
 
+# Regression baselines (ADR-035 Part A): fingerprint a scenario, diff later
+cargo run -p test-driver -- <scenario>.yaml --update-baseline   # write <scenario>.baseline.json
+cargo run -p test-driver -- <scenario>.yaml --check-baseline    # diff; exit 1 on drift
+# Baseline runs use a DETERMINISTIC single-threaded render (not the wall-clock
+# threaded path), so the peak/rms/dc + 50ms windowed-RMS envelope fingerprint is
+# bit-stable run-to-run. Tolerances live in the .baseline.json (edit to loosen).
+
 # Interactive mode: JSON-lines REPL for live engine interrogation
 cargo run -p test-driver -- --interactive --instrument instrument.yaml
 # stdin commands, one JSON object per line; responses on stdout:

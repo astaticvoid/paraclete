@@ -1,9 +1,6 @@
 # ADR-035 — Regression Baselines & Structured Debug Log
 
-**Status:** 🟡 **Proposed / spike draft** — decisions below are recommendations
-for review, not frozen. Part A (baselines) is low-judgment and implementable as
-written. Part B (structured log) touches the L2 `ProcessOutput` struct — see
-**Open Questions for Review** before implementing.
+**Status:** ✅ **Accepted — Part A implemented (2026-07-13, `b74b853`); Part B open for review**
 
 **Date:** 2026-07-13
 **Relates to:** roadmap Rank 2 (debug-posture push; the two remaining
@@ -228,3 +225,24 @@ ADR-034 addendum when picked up.
   stage. Revisit if the envelope misses a real regression.
 - **Logging via the state bus** — rejected (B.2): wrong data model for discrete,
   sub-cycle, possibly-repeated events.
+
+## Implementation note (2026-07-13)
+
+Part A shipped in `b74b853`. The baseline workflow is:
+
+- `test-driver <scenario> --update-baseline` renders and writes `<scenario>.baseline.json`.
+- `test-driver <scenario> --check-baseline` renders, compares within per-metric
+  tolerances (peak/rms 1%, envelope windows 1.5%, dc_offset < 1e-3 absolute,
+  non_finite = 0, sample_count ±1 block), exits 1 on drift.
+- Absent either flag, batch mode is unchanged.
+
+Key implementation finding: the threaded batch render jitters by a block
+run-to-run (trigger lands in different blocks), which makes the per-window
+envelope unstable. Baseline runs therefore use a new deterministic
+single-threaded render (`render_deterministic`): step the executor block-by-block,
+applying each action at its sample-accurate block boundary — bit-identical every
+run. `dispatch_action` now takes `&mut NodeConfigurator` so both paths share it.
+
+The first real baseline (`kick_reverb_clean.baseline.json`) is committed as a
+regression fixture. Verified: 3 identical passing checks confirm determinism;
+a velocity 1.0→0.3 regression trips peak/rms/dc + envelope windows 1-3.
