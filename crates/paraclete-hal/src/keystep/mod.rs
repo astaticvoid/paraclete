@@ -7,14 +7,11 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
+use paraclete_node_api::midi::{u4, u7, ChannelVoice2, Channeled, Grouped, NoteOff, NoteOn};
 use paraclete_node_api::{
-    CapabilityDocument, Control, Surface,
-    SurfaceEvent, SurfaceOutput, Node, PortDescriptor, PortDirection, PortName,
-    PortType, ProcessInput, ProcessOutput, SurfaceDescriptor, TimedEvent, Event,
-    UmpMessage, FaderDescriptor,
-};
-use paraclete_node_api::midi::{
-    ChannelVoice2, Channeled, Grouped, NoteOn, NoteOff, u4, u7,
+    CapabilityDocument, Control, Event, FaderDescriptor, Node, PortDescriptor, PortDirection,
+    PortName, PortType, ProcessInput, ProcessOutput, Surface, SurfaceDescriptor, SurfaceEvent,
+    SurfaceOutput, TimedEvent, UmpMessage,
 };
 
 use crate::midi::{MidiDeviceError, MidiDeviceRegistry};
@@ -43,9 +40,17 @@ fn build_surface() -> SurfaceDescriptor {
         vendor: "Arturia".into(),
         controls: vec![
             // Pitch bend as fader id=0
-            Control::Fader(FaderDescriptor { id: 0, name: PortName::Static("pitch_bend"), motorised: false }),
+            Control::Fader(FaderDescriptor {
+                id: 0,
+                name: PortName::Static("pitch_bend"),
+                motorised: false,
+            }),
             // Mod wheel as fader id=1
-            Control::Fader(FaderDescriptor { id: 1, name: PortName::Static("mod_wheel"), motorised: false }),
+            Control::Fader(FaderDescriptor {
+                id: 1,
+                name: PortName::Static("mod_wheel"),
+                motorised: false,
+            }),
         ],
     }
 }
@@ -89,38 +94,49 @@ impl KeystepNode {
 }
 
 fn parse_keystep_midi(bytes: &[u8]) -> Vec<TimedEvent> {
-    if bytes.len() < 2 { return vec![]; }
+    if bytes.len() < 2 {
+        return vec![];
+    }
     let status = bytes[0] & 0xF0;
     let note = bytes[1];
-    let vel  = bytes.get(2).copied().unwrap_or(0);
+    let vel = bytes.get(2).copied().unwrap_or(0);
 
     match status {
         0x90 if vel > 0 => vec![TimedEvent::new(0, Event::Midi2(build_note_on(note, vel)))],
-        0x90 | 0x80     => vec![TimedEvent::new(0, Event::Midi2(build_note_off(note)))],
+        0x90 | 0x80 => vec![TimedEvent::new(0, Event::Midi2(build_note_off(note)))],
         0xB0 if note == 1 => {
             // Mod wheel CC1
-            vec![TimedEvent::new(0, Event::Surface(SurfaceEvent::FaderMoved {
-                id: 1,
-                value: (vel as u16) << 9,
-            }))]
+            vec![TimedEvent::new(
+                0,
+                Event::Surface(SurfaceEvent::FaderMoved {
+                    id: 1,
+                    value: (vel as u16) << 9,
+                }),
+            )]
         }
         0xE0 => {
             // Pitch bend: 14-bit from two bytes
             let pb = if bytes.len() >= 3 {
                 ((bytes[2] as u16) << 7) | (bytes[1] as u16)
-            } else { 0 };
-            vec![TimedEvent::new(0, Event::Surface(SurfaceEvent::FaderMoved {
-                id: 0,
-                value: pb,
-            }))]
+            } else {
+                0
+            };
+            vec![TimedEvent::new(
+                0,
+                Event::Surface(SurfaceEvent::FaderMoved { id: 0, value: pb }),
+            )]
         }
         _ => vec![],
     }
 }
 
 impl Node for KeystepNode {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
-    fn set_node_id(&mut self, id: u32) { self.node_id = id; }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
+    fn set_node_id(&mut self, id: u32) {
+        self.node_id = id;
+    }
 
     fn capability_document(&self) -> CapabilityDocument {
         CapabilityDocument {
@@ -130,6 +146,7 @@ impl Node for KeystepNode {
             ports: self.ports.to_vec(),
             params: vec![],
             extensions: vec!["paraclete.hardware".into()],
+            view: None,
         }
     }
 
@@ -143,7 +160,9 @@ impl Node for KeystepNode {
 }
 
 impl Surface for KeystepNode {
-    fn descriptor(&self) -> &SurfaceDescriptor { &self.surface }
+    fn descriptor(&self) -> &SurfaceDescriptor {
+        &self.surface
+    }
     fn update_output(&mut self, _: &SurfaceOutput) {}
     // No output handle — Keystep has no LED feedback.
 }
@@ -170,6 +189,9 @@ mod tests {
     fn keystep_mod_wheel_produces_fader_event() {
         let events = parse_keystep_midi(&[0xB0, 1, 64]);
         assert_eq!(events.len(), 1);
-        assert!(matches!(events[0].event, Event::Surface(SurfaceEvent::FaderMoved { id: 1, .. })));
+        assert!(matches!(
+            events[0].event,
+            Event::Surface(SurfaceEvent::FaderMoved { id: 1, .. })
+        ));
     }
 }

@@ -10,8 +10,8 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::terminal as ct;
 
 use paraclete_node_api::{
-    Event, Surface, SurfaceEvent, SurfaceOutput, Node, PortDescriptor, PortDirection,
-    PortType, ProcessInput, ProcessOutput, SurfaceDescriptor, TimedEvent,
+    Event, Node, PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, Surface,
+    SurfaceDescriptor, SurfaceEvent, SurfaceOutput, TimedEvent,
 };
 
 const RENDER_INTERVAL: Duration = Duration::from_millis(16);
@@ -142,7 +142,9 @@ impl LaunchpadEmulator {
     /// Non-blocking poll of crossterm keyboard events.
     fn poll_keyboard(&mut self) {
         while let Ok(true) = crossterm::event::poll(Duration::ZERO) {
-            let Ok(event) = crossterm::event::read() else { break };
+            let Ok(event) = crossterm::event::read() else {
+                break;
+            };
             match event {
                 // Esc or Ctrl-C: restore terminal then exit.
                 // In raw mode Ctrl-C is a raw key event, not SIGINT.
@@ -200,18 +202,20 @@ impl LaunchpadEmulator {
 
     fn maybe_render(&mut self) {
         let now = Instant::now();
-        let should_render =
-            self.last_render.map_or(true, |t| now.duration_since(t) >= RENDER_INTERVAL);
+        let should_render = self
+            .last_render
+            .map_or(true, |t| now.duration_since(t) >= RENDER_INTERVAL);
         if should_render {
             terminal::render(self.active_row, &self.pressed, self.mode.label());
             self.last_render = Some(now);
         }
     }
-
 }
 
 impl Default for LaunchpadEmulator {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Node for LaunchpadEmulator {
@@ -256,7 +260,9 @@ impl Node for LaunchpadEmulator {
         self.maybe_render();
 
         for event in self.pending.drain(..) {
-            output.events_out.push(TimedEvent::new(0, Event::Surface(event)));
+            output
+                .events_out
+                .push(TimedEvent::new(0, Event::Surface(event)));
         }
     }
 }

@@ -1,4 +1,4 @@
-use paraclete_node_api::{Control, PadDescriptor, SurfaceDescriptor, PortName};
+use paraclete_node_api::{Control, PadDescriptor, PortName, SurfaceDescriptor};
 
 /// Build the Launchpad surface descriptor — 8×8 pad grid (ids 0–63, row-major),
 /// 8 scene buttons (ids 64–71, right column), and 8 top control-row buttons

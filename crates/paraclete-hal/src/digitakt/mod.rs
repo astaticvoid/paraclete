@@ -8,10 +8,9 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use paraclete_node_api::{
-    CapabilityDocument, Control, EncoderBehaviour, EncoderDescriptor, Surface,
-    SurfaceEvent, SurfaceOutput, Node, PortDescriptor, PortDirection, PortName,
-    PortType, ProcessInput, ProcessOutput, SurfaceDescriptor, TimedEvent, Event,
-    ButtonDescriptor,
+    ButtonDescriptor, CapabilityDocument, Control, EncoderBehaviour, EncoderDescriptor, Event,
+    Node, PortDescriptor, PortDirection, PortName, PortType, ProcessInput, ProcessOutput, Surface,
+    SurfaceDescriptor, SurfaceEvent, SurfaceOutput, TimedEvent,
 };
 
 use crate::midi::{MidiDeviceError, MidiDeviceRegistry};
@@ -92,18 +91,20 @@ impl DigitaktMidiNode {
 /// Value 64 = center/no-movement. Value 0 should not occur in relative mode.
 fn decode_relative_delta(value: u8) -> i16 {
     match value {
-        1..=63   => value as i16,
+        1..=63 => value as i16,
         65..=127 => (value as i16) - 128,
-        0 | 64   => 0, // 64 = no movement (center detent); 0 should not occur
-        _        => 0, // values > 127 are not valid 7-bit MIDI CC
+        0 | 64 => 0, // 64 = no movement (center detent); 0 should not occur
+        _ => 0,      // values > 127 are not valid 7-bit MIDI CC
     }
 }
 
 fn parse_digitakt_midi(bytes: &[u8]) -> Option<SurfaceEvent> {
-    if bytes.len() < 3 { return None; }
+    if bytes.len() < 3 {
+        return None;
+    }
     let status = bytes[0] & 0xF0;
     let note = bytes[1];
-    let vel  = bytes[2];
+    let vel = bytes[2];
 
     match status {
         0xB0 => {
@@ -116,14 +117,18 @@ fn parse_digitakt_midi(bytes: &[u8]) -> Option<SurfaceEvent> {
             })
         }
         0x90 if vel > 0 => Some(SurfaceEvent::ButtonPressed { id: note as u32 }),
-        0x90 | 0x80     => Some(SurfaceEvent::ButtonReleased { id: note as u32 }),
+        0x90 | 0x80 => Some(SurfaceEvent::ButtonReleased { id: note as u32 }),
         _ => None,
     }
 }
 
 impl Node for DigitaktMidiNode {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
-    fn set_node_id(&mut self, id: u32) { self.node_id = id; }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
+    fn set_node_id(&mut self, id: u32) {
+        self.node_id = id;
+    }
 
     fn capability_document(&self) -> CapabilityDocument {
         CapabilityDocument {
@@ -133,20 +138,25 @@ impl Node for DigitaktMidiNode {
             ports: self.ports.to_vec(),
             params: vec![],
             extensions: vec!["paraclete.hardware".into()],
+            view: None,
         }
     }
 
     fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
         if let Ok(mut q) = self.incoming.try_lock() {
             while let Some(ev) = q.pop_front() {
-                output.events_out.push(TimedEvent::new(0, Event::Surface(ev)));
+                output
+                    .events_out
+                    .push(TimedEvent::new(0, Event::Surface(ev)));
             }
         }
     }
 }
 
 impl Surface for DigitaktMidiNode {
-    fn descriptor(&self) -> &SurfaceDescriptor { &self.surface }
+    fn descriptor(&self) -> &SurfaceDescriptor {
+        &self.surface
+    }
     fn update_output(&mut self, _: &SurfaceOutput) {}
     // No output handle — Digitakt has no LED feedback in standard MIDI mode.
 }

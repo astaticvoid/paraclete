@@ -110,8 +110,14 @@ mod tests {
 
     #[test]
     fn key_to_target_maps_number_row_to_row_select() {
-        assert_eq!(key_to_target(KeyCode::Char('1')), Some(KeyTarget::RowSelect(0)));
-        assert_eq!(key_to_target(KeyCode::Char('8')), Some(KeyTarget::RowSelect(7)));
+        assert_eq!(
+            key_to_target(KeyCode::Char('1')),
+            Some(KeyTarget::RowSelect(0))
+        );
+        assert_eq!(
+            key_to_target(KeyCode::Char('8')),
+            Some(KeyTarget::RowSelect(7))
+        );
     }
 
     #[test]
@@ -130,8 +136,14 @@ mod tests {
 
     #[test]
     fn key_to_target_maps_bottom_row_to_control() {
-        assert_eq!(key_to_target(KeyCode::Char('z')), Some(KeyTarget::Control(0)));
-        assert_eq!(key_to_target(KeyCode::Char(',')), Some(KeyTarget::Control(7)));
+        assert_eq!(
+            key_to_target(KeyCode::Char('z')),
+            Some(KeyTarget::Control(0))
+        );
+        assert_eq!(
+            key_to_target(KeyCode::Char(',')),
+            Some(KeyTarget::Control(7))
+        );
     }
 
     #[test]
