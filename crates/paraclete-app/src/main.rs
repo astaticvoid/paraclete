@@ -73,6 +73,7 @@ fn main() {
         });
 
     let no_tui = args.iter().any(|a| a == "--no-tui");
+    let no_emulator = args.iter().any(|a| a == "--no-emulator");
     let dev_ui = args.iter().any(|a| a == "--dev-ui");
 
     let no_antiphon = args.iter().any(|a| a == "--no-antiphon");
@@ -141,14 +142,17 @@ fn main() {
     };
 
     // ── 4. Hardware devices ───────────────────────────────────────────────────
-    let launchpad_id = try_open_launchpad(&mut conf);
+    let launchpad_id = try_open_launchpad(&mut conf, no_emulator);
     let digitakt_id = try_open_digitakt(&mut conf);
     let keystep_id = try_open_keystep(&mut conf);
 
-    let lp_dev_id = launchpad_id.unwrap_or(ID_EMULATOR);
-    let (gw_lp, mut consumer_lp) = ScriptingGatewayNode::new(lp_dev_id, 512);
-    conf.add_node(ID_GW_LP, Box::new(gw_lp));
-    conf.connect(lp_dev_id, 0, ID_GW_LP, 0).ok();
+    let mut consumer_lp: Option<ScriptEventConsumer> = None;
+    if let Some(lp_dev_id) = launchpad_id {
+        let (gw_lp, cons) = ScriptingGatewayNode::new(lp_dev_id, 512);
+        conf.add_node(ID_GW_LP, Box::new(gw_lp));
+        conf.connect(lp_dev_id, 0, ID_GW_LP, 0).ok();
+        consumer_lp = Some(cons);
+    }
 
     let mut consumer_dt: Option<ScriptEventConsumer> = None;
     if let Some(did) = digitakt_id {
@@ -278,7 +282,7 @@ fn main() {
     let mut scripting = ScriptingEngine::new();
     scripting.bind_state_bus(bus_handle.clone());
 
-    let constants = build_constants(lp_dev_id, digitakt_id, keystep_id, &ids);
+    let constants = build_constants(launchpad_id, digitakt_id, keystep_id, &ids);
 
     for profile_path in &def.profiles {
         let label = Path::new(profile_path)
@@ -421,7 +425,9 @@ fn main() {
         }
 
         event_buf.clear();
-        consumer_lp.drain(&mut event_buf);
+        if let Some(ref mut c) = consumer_lp {
+            c.drain(&mut event_buf);
+        }
         if let Some(ref mut c) = consumer_dt {
             c.drain(&mut event_buf);
         }
@@ -453,16 +459,18 @@ fn main() {
         // Mirror LED output addressed to the Launchpad/emulator onto the
         // Theoria surface so both show the same state (w0-interfaces §wiring).
         if antiphon.is_some() {
-            if let Some(mut lp_out) = led_output.get(&lp_dev_id).cloned() {
-                led_output
-                    .entry(ID_THEORIA)
-                    .and_modify(|o| {
-                        // Mirrored updates first: downstream is last-write-wins,
-                        // so a profile's direct-to-Theoria write beats the mirror.
-                        std::mem::swap(&mut lp_out.led_updates, &mut o.led_updates);
-                        o.led_updates.extend(lp_out.led_updates.drain(..));
-                    })
-                    .or_insert(lp_out);
+            if let Some(lp_id) = launchpad_id {
+                if let Some(mut lp_out) = led_output.get(&lp_id).cloned() {
+                    led_output
+                        .entry(ID_THEORIA)
+                        .and_modify(|o| {
+                            // Mirrored updates first: downstream is last-write-wins,
+                            // so a profile's direct-to-Theoria write beats the mirror.
+                            std::mem::swap(&mut lp_out.led_updates, &mut o.led_updates);
+                            o.led_updates.extend(lp_out.led_updates.drain(..));
+                        })
+                        .or_insert(lp_out);
+                }
             }
         }
         if !led_output.is_empty() {
@@ -754,7 +762,7 @@ fn build_view_registry(conf: &NodeConfigurator, summaries: &[NodeSummary]) -> Vi
 }
 
 fn build_constants(
-    lp_dev_id: u32,
+    lp_dev_id: Option<u32>,
     digitakt_id: Option<u32>,
     keystep_id: Option<u32>,
     ids: &InstrumentIds,
@@ -767,7 +775,7 @@ fn build_constants(
         )
     }
     vec![
-        ("LP_DEVICE_ID".into(), rhai::Dynamic::from(lp_dev_id as i64)),
+        ("LP_DEVICE_ID".into(), rhai::Dynamic::from(lp_dev_id.unwrap_or(0) as i64)),
         (
             "DT_DEVICE_ID".into(),
             rhai::Dynamic::from(digitakt_id.unwrap_or(0) as i64),
@@ -812,7 +820,7 @@ fn restore_terminal(
     terminal.show_cursor()
 }
 
-fn try_open_launchpad(conf: &mut NodeConfigurator) -> Option<u32> {
+fn try_open_launchpad(conf: &mut NodeConfigurator, no_emulator: bool) -> Option<u32> {
     match LaunchpadNode::open() {
         Ok(node) => {
             conf.add_surface(ID_LAUNCHPAD, Box::new(node));
@@ -820,9 +828,14 @@ fn try_open_launchpad(conf: &mut NodeConfigurator) -> Option<u32> {
             Some(ID_LAUNCHPAD)
         }
         Err(e) => {
-            eprintln!("[paraclete] Launchpad not found ({e}), using terminal emulator");
-            conf.add_surface(ID_EMULATOR, Box::new(LaunchpadEmulator::new()));
-            Some(ID_EMULATOR)
+            if no_emulator {
+                eprintln!("[paraclete] Launchpad not found ({e}), running headless");
+                None
+            } else {
+                eprintln!("[paraclete] Launchpad not found ({e}), using terminal emulator");
+                conf.add_surface(ID_EMULATOR, Box::new(LaunchpadEmulator::new()));
+                Some(ID_EMULATOR)
+            }
         }
     }
 }

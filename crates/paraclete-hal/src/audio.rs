@@ -65,6 +65,11 @@ impl AudioBackend {
         let config = StreamConfig {
             channels: supported.channels(),
             sample_rate: SampleRate(sample_rate),
+            // Use Default buffer size — the output ring bridge handles any
+            // mismatch between the device buffer and internal block size.
+            // Fixed would skip the ring for exact-match hardware but some
+            // ALSA devices reject it at open time even when their reported
+            // config ranges include the size.
             buffer_size: BufferSize::Default,
         };
 
@@ -200,6 +205,11 @@ impl AudioBackend {
         let config = StreamConfig {
             channels: supported.channels(),
             sample_rate: SampleRate(sample_rate),
+            // Use Default buffer size — the output ring bridge handles any
+            // mismatch between the device buffer and internal block size.
+            // Fixed would skip the ring for exact-match hardware but some
+            // ALSA devices reject it at open time even when their reported
+            // config ranges include the size.
             buffer_size: BufferSize::Default,
         };
 
