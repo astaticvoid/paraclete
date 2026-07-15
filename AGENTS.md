@@ -86,6 +86,27 @@ Tab               cycle input mode (Grid/Encoder/Piano)
 Esc / Ctrl-C      quit
 ```
 
+## Starting the app for paired tablet sessions
+
+```bash
+# The LaunchpadEmulator requires a TTY even with --no-tui.
+# Starting in the background with & will kill the process when the
+# shell exits. Use setsid to detach into a new session:
+
+# Build and start in background (fully detached):
+setsid cargo run --release -- --no-tui --theoria-dir=web/packages/app/dist \
+  >> /tmp/paraclete.log 2>&1 &
+
+# Server prints the tablet URL to stderr on startup, e.g.:
+#   [paraclete] Theoria: http://192.168.4.40:7274/
+
+# Verify it's listening:
+timeout 2 bash -c 'echo >/dev/tcp/127.0.0.1/7274' && echo "up" || echo "down"
+
+# Or keep the process alive while freeing the terminal:
+# (emulator will print TUI grid to stdout but app won't crash)
+```
+
 ## Architecture: five-layer model
 
 No layer may reach across another. Hard constraint.

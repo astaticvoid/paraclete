@@ -4,9 +4,9 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ---
 
-## Status (2026-07-13)
+## Status (2026-07-14)
 
-**Actively open:** BUG-027 (engine exonerated by measurement — pending user headphone A/B, see addendum).
+**Actively open:** BUG-027 (engine exonerated by measurement — pending user headphone A/B, see addendum), INFRA-004 (no headless mode — emulator requires TTY).
 **Fixed, pending hardware verification:** BUG-012 (sample rate auto-detection + ring buffer chunking; see resolution entry).
 **Trigger-based (fix when named trigger fires):** BUG-003, BUG-006.
 **Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, INFRA-001, INFRA-002, INFRA-003.
@@ -968,3 +968,21 @@ baselines, the structured per-node log channel, and the CPU-% meter to
 **Partial BUG-002 resolution:** `sample_rate` is no longer hardcoded for
 `NodeConfigurator` graph build. The `ConnectionAgreement::baseline()` hardcodes
 remain (trigger-based, lower priority).
+
+---
+
+### INFRA-004 — No headless mode; LaunchpadEmulator requires a TTY
+
+**Severity:** Medium — cannot run the app in background without a PTY shim
+**Phase found:** W2 paired session #3 (2026-07-14)
+**Description:** `LaunchpadEmulator::activate()` calls
+`crossterm::enable_raw_mode()` which fails without a real TTY, and the emulator
+continuously writes ANSI escape sequences to stdout. Starting the app with
+`cargo run -- --no-tui ... &` kills the process when the shell exits. Workaround
+is `setsid` (new session) but the emulator still spews grid output.
+**Location:** `crates/paraclete-hal/src/emulator/mod.rs` — `activate()`, `process()`
+**Fix direction:** Add a `--headless` flag (or `--no-emulator`) that skips
+`LaunchpadEmulator` creation entirely. In headless mode the app runs as a pure
+Antiphon server with no TUI and no emulator — stdin/stdout are unused. The
+emulator's `--no-tui` flag already controls the ratatui layer; this is a separate
+concern (the HAL-layer hardware node itself).
