@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use rubato::{
@@ -7,10 +8,10 @@ use rubato::{
 
 use paraclete_node_api::{
     CapabilityDocument, ConnectionAgreement, ConnectionRecord, Event, LockableParam,
-    Negotiable, Node, ParamDescriptor, ParamUnit,
+    Negotiable, Node, PageRef, ParamDescriptor, ParamUnit,
     ParameterBank,
-    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, UmpMessage,
-    midi::ChannelVoice2,
+    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, Rule, UmpMessage,
+    ViewPlugin, midi::ChannelVoice2,
 };
 
 // ── Sampler envelope phase ─────────────────────────────────────────────────────
@@ -152,6 +153,7 @@ fn sampler_capability_document() -> CapabilityDocument {
             ParamDescriptor { id: param_hash("root_note"), name: "root_note".into(), min: 0.0,   max: 127.0, default: 60.0,  stepped: true,  unit: ParamUnit::Generic,   display: None },
         ],
         extensions: vec!["paraclete.instrument".into()],
+    view: None,
     }
 }
 
@@ -436,6 +438,32 @@ impl Default for Sampler {
     fn default() -> Self { Self::new() }
 }
 
+impl ViewPlugin for Sampler {
+    fn to_rule(&self, _node_id: u64, _sub_nodes: &[(u64, &dyn ViewPlugin)]) -> Rule {
+        Rule {
+            name: Cow::Borrowed("Sampler"),
+            page_groups: Cow::Owned(vec![Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
+            param_pages: Cow::Owned(vec![
+                (P_PITCH,     PageRef { page: Cow::Borrowed("SRC"), slot: 0 }),
+                (P_START,     PageRef { page: Cow::Borrowed("SRC"), slot: 1 }),
+                (P_END,       PageRef { page: Cow::Borrowed("SRC"), slot: 2 }),
+                (P_ROOT_NOTE, PageRef { page: Cow::Borrowed("SRC"), slot: 3 }),
+                (P_LOOP,      PageRef { page: Cow::Borrowed("SRC"), slot: 4 }),
+                (P_VOLUME,    PageRef { page: Cow::Borrowed("AMP"), slot: 0 }),
+                (P_PAN,       PageRef { page: Cow::Borrowed("AMP"), slot: 1 }),
+                (P_ATTACK,    PageRef { page: Cow::Borrowed("AMP"), slot: 2 }),
+                (P_RELEASE,   PageRef { page: Cow::Borrowed("AMP"), slot: 3 }),
+            ]),
+            macros: Cow::Borrowed(&[]),
+            affordances: Cow::Borrowed(&[]),
+            envelopes: Cow::Borrowed(&[]),
+            routing: Cow::Borrowed(&[]),
+            diagram: None,
+            view_overrides: Cow::Borrowed(&[]),
+        }
+    }
+}
+
 impl Node for Sampler {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
 
@@ -454,6 +482,7 @@ impl Node for Sampler {
     fn capability_document(&self) -> CapabilityDocument {
         let mut doc = sampler_capability_document();
         doc.ports = self.ports.to_vec();
+        doc.view = Some(self.to_rule(0, &[]));
         doc
     }
 

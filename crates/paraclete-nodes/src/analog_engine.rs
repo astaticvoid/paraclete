@@ -1,9 +1,12 @@
 use std::collections::HashMap;
 
+use std::borrow::Cow;
+
 use paraclete_node_api::{
-    CapabilityDocument, DebugEventKind, Event, Node, ParamDescriptor, ParamUnit, ParameterBank,
-    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
-    UmpMessage, midi::ChannelVoice2, CMD_TRIGGER,
+    AffordanceHint, CapabilityDocument, DebugEventKind, EnvelopeGroup, Event, Node, PageRef,
+    ParamDescriptor, ParamUnit, ParameterBank, PortDescriptor, PortDirection, PortType,
+    ProcessInput, ProcessOutput, Rule, StateBusValue, UmpMessage, ViewPlugin,
+    midi::ChannelVoice2, CMD_TRIGGER,
 };
 
 use crate::engine_dsp::{AdState, note_to_hz, soft_clip, svf_lp_sample, xorshift};
@@ -134,6 +137,7 @@ impl AnalogEngine {
             ports: vec![],
             params,
             extensions: vec!["paraclete.instrument".into()],
+    view: None,
         }
     }
 
@@ -257,10 +261,69 @@ impl AnalogEngine {
     }
 }
 
+impl ViewPlugin for AnalogEngine {
+    fn to_rule(&self, _node_id: u64, _sub_nodes: &[(u64, &dyn ViewPlugin)]) -> Rule {
+        let display_name = match self.machine {
+            AnalogMachine::Kick  => "Kick",
+            AnalogMachine::Snare => "Snare",
+            AnalogMachine::HiHat => "HiHat",
+        };
+
+        let (decay_id, tune_id, tone_id) = (ap("decay"), ap("tune"), ap("tone"));
+
+        let mut page_refs = vec![
+            (decay_id, PageRef { page: Cow::Borrowed("AMP"), slot: 0 }),
+            (tune_id,  PageRef { page: Cow::Borrowed("SRC"), slot: 0 }),
+            (tone_id,  PageRef { page: Cow::Borrowed("SRC"), slot: 1 }),
+        ];
+
+        let affordances = vec![
+            (decay_id, AffordanceHint::EnvelopeCurve { group_idx: 0 }),
+            (tone_id,  AffordanceHint::FilterShape),
+        ];
+
+        match self.machine {
+            AnalogMachine::Kick => {
+                page_refs.push((ap("punch"), PageRef { page: Cow::Borrowed("SRC"), slot: 2 }));
+                page_refs.push((ap("drive"), PageRef { page: Cow::Borrowed("SRC"), slot: 3 }));
+            }
+            AnalogMachine::Snare => {
+                page_refs.push((ap("snap"),  PageRef { page: Cow::Borrowed("SRC"), slot: 2 }));
+                page_refs.push((ap("noise"), PageRef { page: Cow::Borrowed("SRC"), slot: 3 }));
+            }
+            AnalogMachine::HiHat => {
+                page_refs.push((ap("open"), PageRef { page: Cow::Borrowed("SRC"), slot: 2 }));
+            }
+        }
+
+        let env = EnvelopeGroup {
+            env_type: Cow::Borrowed("AD"),
+            label: Cow::Borrowed("Amp Envelope"),
+            param_ids: [ap("decay"), 0, 0, 0],
+        };
+
+        Rule {
+            name: Cow::Borrowed(display_name),
+            page_groups: Cow::Owned(vec![Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
+            param_pages: Cow::Owned(page_refs),
+            macros: Cow::Borrowed(&[]),
+            affordances: Cow::Owned(affordances),
+            envelopes: Cow::Owned(vec![env]),
+            routing: Cow::Borrowed(&[]),
+            diagram: None,
+            view_overrides: Cow::Borrowed(&[]),
+        }
+    }
+}
+
 impl Node for AnalogEngine {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
     fn set_node_id(&mut self, id: u32) { self.node_id = id; }
-    fn capability_document(&self) -> CapabilityDocument { Self::build_doc(self.machine) }
+    fn capability_document(&self) -> CapabilityDocument {
+        let mut doc = Self::build_doc(self.machine);
+        doc.view = Some(self.to_rule(0, &[]));
+        doc
+    }
 
     fn set_initial_params(&mut self, params: &HashMap<String, f64>) {
         self.pending_initial_params = params.clone();

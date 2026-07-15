@@ -48,6 +48,7 @@ impl LadderFilterNode {
                 ParamDescriptor { id: lad("drive"),     name: "drive".into(),     min: 0.0,  max: 1.0,    default: 0.0,    stepped: false, unit: ParamUnit::Generic, display: None },
             ],
             extensions: vec!["paraclete.effect".into()],
+    view: None,
         }
     }
 }

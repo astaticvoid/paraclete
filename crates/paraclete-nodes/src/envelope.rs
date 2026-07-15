@@ -56,6 +56,7 @@ impl EnvelopeNode {
                 ParamDescriptor { id: ep("release"),  name: "release".into(),  min: 0.001, max: 8.0, default: 0.5,   stepped: false, unit: ParamUnit::Seconds, display: None },
             ],
             extensions: vec![],
+    view: None,
         }
     }
 }

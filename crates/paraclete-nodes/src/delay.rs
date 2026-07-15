@@ -86,6 +86,7 @@ impl DelayNode {
                 ParamDescriptor { id: PARAM_FILTER_HZ,  name: "filter_hz".into(),     min: 200.0, max: 8000.0, default: 4000.0, stepped: false, unit: ParamUnit::Hz,      display: None },
             ],
             extensions: vec!["paraclete.effect".into()],
+    view: None,
         }
     }
 }

@@ -7,24 +7,33 @@
 use std::collections::HashSet;
 
 use paraclete_node_api::{
-    AudioBuffer, Event, EventOutputBuffer, ExtendedEventSlab, Node,
-    ProcessInput, ProcessOutput, TransportEvent, TransportFlags,
-    TransportInfo, UmpMessage, TICKS_PER_BEAT,
-    midi::ChannelVoice2,
+    midi::ChannelVoice2, AudioBuffer, Event, EventOutputBuffer, ExtendedEventSlab, Node,
+    ProcessInput, ProcessOutput, TransportEvent, TransportFlags, TransportInfo, UmpMessage,
+    TICKS_PER_BEAT,
 };
 use paraclete_nodes::{Sequencer, TRACKS};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn mk_transport(tick: u32, playing: bool, global_start: bool) -> paraclete_node_api::TimedEvent {
-    paraclete_node_api::TimedEvent::new(0, Event::Transport(TransportEvent {
-        domain_id: 0,
-        bar: 1, beat: 0, tick,
-        ticks_per_beat: TICKS_PER_BEAT,
-        bpm: 140.0,
-        time_sig_num: 4, time_sig_den: 4,
-        flags: TransportFlags { playing, global_start, ..TransportFlags::default() },
-    }))
+    paraclete_node_api::TimedEvent::new(
+        0,
+        Event::Transport(TransportEvent {
+            domain_id: 0,
+            bar: 1,
+            beat: 0,
+            tick,
+            ticks_per_beat: TICKS_PER_BEAT,
+            bpm: 140.0,
+            time_sig_num: 4,
+            time_sig_den: 4,
+            flags: TransportFlags {
+                playing,
+                global_start,
+                ..TransportFlags::default()
+            },
+        }),
+    )
 }
 
 fn run_seq(seq: &mut Sequencer, events: &[paraclete_node_api::TimedEvent]) -> Vec<Event> {
@@ -37,26 +46,31 @@ fn run_seq(seq: &mut Sequencer, events: &[paraclete_node_api::TimedEvent]) -> Ve
     let audio_ref: &mut AudioBuffer = unsafe { &mut *audio_ptr };
     let mut outs = [audio_ref];
     let input = ProcessInput {
-        audio_inputs: &[], signal_inputs: &[], events,
-        transport: &transport, sample_rate: 44100.0, block_size: block,
-        extended_events: &slab, commands: &[],
+        audio_inputs: &[],
+        signal_inputs: &[],
+        events,
+        transport: &transport,
+        sample_rate: 44100.0,
+        block_size: block,
+        extended_events: &slab,
+        commands: &[],
     };
-    let mut output = ProcessOutput::new(
-        &mut outs, &mut [],
-        &mut events_out,
-    );
+    let mut output = ProcessOutput::new(&mut outs, &mut [], &mut events_out);
     seq.process(&input, &mut output);
     events_out.as_slice().iter().map(|e| e.event).collect()
 }
 
 fn note_on_notes(events: &[Event]) -> Vec<u8> {
-    events.iter().filter_map(|e| {
-        if let Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(msg))) = e {
-            Some(u8::from(msg.note_number()))
-        } else {
-            None
-        }
-    }).collect()
+    events
+        .iter()
+        .filter_map(|e| {
+            if let Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(msg))) = e {
+                Some(u8::from(msg.note_number()))
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 /// Load a sequencer with step N → note N so fired steps are identified by note value.
@@ -97,13 +111,16 @@ fn eight_track_pattern_fires_all_sounds_at_correct_steps() {
         let mut seq = Sequencer::with_name(preset.name);
         seq.set_node_id(1);
 
-        let got      = fired_steps(&mut seq, preset.steps);
+        let got = fired_steps(&mut seq, preset.steps);
         let expected: HashSet<usize> = preset.steps.iter().copied().collect();
 
         assert_eq!(
-            got, expected,
+            got,
+            expected,
             "Track '{}': steps fired = {:?}, expected = {:?}",
-            preset.name, sorted(&got), sorted(&expected),
+            preset.name,
+            sorted(&got),
+            sorted(&expected),
         );
     }
 }
@@ -121,8 +138,11 @@ fn sorted(set: &HashSet<usize>) -> Vec<usize> {
 fn all_eight_tracks_have_active_steps() {
     assert_eq!(TRACKS.len(), 8);
     for preset in TRACKS {
-        assert!(!preset.steps.is_empty(),
-            "track '{}' has no active steps", preset.name);
+        assert!(
+            !preset.steps.is_empty(),
+            "track '{}' has no active steps",
+            preset.name
+        );
     }
 }
 
@@ -130,22 +150,25 @@ fn all_eight_tracks_have_active_steps() {
 #[test]
 fn pattern_step_counts_match_design() {
     let expected: &[(&str, usize)] = &[
-        ("Kick",   4),  // 4-on-the-floor
-        ("Snare",  2),  // backbeat 2/4
-        ("Hat CH", 8),  // eighth notes
-        ("Hat OH", 4),  // off-beat eighths
+        ("Kick", 4),   // 4-on-the-floor
+        ("Snare", 2),  // backbeat 2/4
+        ("Hat CH", 8), // eighth notes
+        ("Hat OH", 4), // off-beat eighths
         ("Perc A", 2),
         ("Perc B", 2),
-        ("FX",     2),
-        ("Bass",   4),  // mirrors kick
+        ("FX", 2),
+        ("Bass", 4), // mirrors kick
     ];
     assert_eq!(TRACKS.len(), expected.len());
     for (preset, &(name, count)) in TRACKS.iter().zip(expected) {
         assert_eq!(preset.name, name, "unexpected track order");
         assert_eq!(
-            preset.steps.len(), count,
+            preset.steps.len(),
+            count,
             "track '{}' has {} active steps, expected {}",
-            preset.name, preset.steps.len(), count,
+            preset.name,
+            preset.steps.len(),
+            count,
         );
     }
 }
@@ -155,12 +178,20 @@ fn pattern_step_counts_match_design() {
 fn pattern_step_indices_are_valid() {
     for preset in TRACKS {
         for &step in preset.steps {
-            assert!(step < 16,
-                "track '{}' has out-of-range step {}", preset.name, step);
+            assert!(
+                step < 16,
+                "track '{}' has out-of-range step {}",
+                preset.name,
+                step
+            );
         }
         let unique: HashSet<usize> = preset.steps.iter().copied().collect();
-        assert_eq!(unique.len(), preset.steps.len(),
-            "track '{}' has duplicate step indices", preset.name);
+        assert_eq!(
+            unique.len(),
+            preset.steps.len(),
+            "track '{}' has duplicate step indices",
+            preset.name
+        );
     }
 }
 
@@ -171,8 +202,10 @@ fn kick_and_bass_share_downbeat_positions() {
     let bass = TRACKS.iter().find(|t| t.name == "Bass").unwrap();
     let kick_set: HashSet<usize> = kick.steps.iter().copied().collect();
     let bass_set: HashSet<usize> = bass.steps.iter().copied().collect();
-    assert_eq!(kick_set, bass_set,
-        "Kick and Bass should share step positions");
+    assert_eq!(
+        kick_set, bass_set,
+        "Kick and Bass should share step positions"
+    );
 }
 
 /// No two adjacent tracks share the exact same step pattern (ensures variety).
@@ -181,8 +214,10 @@ fn adjacent_tracks_have_distinct_patterns() {
     for pair in TRACKS.windows(2) {
         let a: HashSet<usize> = pair[0].steps.iter().copied().collect();
         let b: HashSet<usize> = pair[1].steps.iter().copied().collect();
-        assert_ne!(a, b,
+        assert_ne!(
+            a, b,
             "tracks '{}' and '{}' have identical patterns",
-            pair[0].name, pair[1].name);
+            pair[0].name, pair[1].name
+        );
     }
 }

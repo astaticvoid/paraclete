@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! MixNode — N stereo audio inputs → 1 stereo output.
 
+use std::borrow::Cow;
 use paraclete_node_api::{
     CapabilityDocument, Node, ParameterBank, ParamDescriptor, ParamUnit, PortDescriptor,
     PortDirection, PortType, ProcessInput, ProcessOutput,
+    Rule, ViewPlugin, PageRef,
 };
 
 pub struct MixNode {
@@ -79,6 +81,7 @@ impl Node for MixNode {
             ports: self.ports.clone(),
             params,
             extensions: vec![],
+    view: None,
         }
     }
 
@@ -129,6 +132,29 @@ impl Node for MixNode {
         }
     }
 }
+
+impl ViewPlugin for MixNode {
+    fn to_rule(&self, _node_id: u64, _sub_nodes: &[(u64, &dyn ViewPlugin)]) -> Rule {
+        let mut pages = Vec::with_capacity(self.num_inputs as usize + 1);
+        for i in 0..self.num_inputs {
+            pages.push((i as u32, PageRef { page: Cow::Borrowed("FX"), slot: i as u8 }));
+        }
+        let master_id = self.num_inputs as u32;
+        pages.push((master_id, PageRef { page: Cow::Borrowed("FX"), slot: master_id as u8 }));
+        Rule {
+            name: Cow::Borrowed("Mix"),
+            page_groups: Cow::Owned(vec![Cow::Borrowed("FX")]),
+            param_pages: Cow::Owned(pages),
+            macros: Cow::Borrowed(&[]),
+            affordances: Cow::Borrowed(&[]),
+            envelopes: Cow::Borrowed(&[]),
+            routing: Cow::Borrowed(&[]),
+            diagram: None,
+            view_overrides: Cow::Borrowed(&[]),
+        }
+    }
+}
+
 
 #[cfg(test)]
 mod tests {

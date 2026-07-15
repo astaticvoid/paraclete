@@ -1,9 +1,11 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use paraclete_node_api::{
-    CapabilityDocument, DebugEventKind, Event, Node, ParamDescriptor, ParamUnit, ParameterBank,
-    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
-    UmpMessage, midi::ChannelVoice2, CMD_TRIGGER,
+    AffordanceHint, CapabilityDocument, DebugEventKind, EnvelopeGroup, Event, Node, PageRef,
+    ParamDescriptor, ParamUnit, ParameterBank, PortDescriptor, PortDirection, PortType,
+    ProcessInput, ProcessOutput, Rule, StateBusValue, UmpMessage, ViewPlugin,
+    midi::ChannelVoice2, CMD_TRIGGER,
 };
 
 use crate::engine_dsp::{AdState, note_to_hz, soft_clip};
@@ -127,6 +129,7 @@ impl FmEngine {
         CapabilityDocument {
             name: name.into(), vendor: "Paraclete".into(), version: (0, 6, 0),
             ports: vec![], params, extensions: vec!["paraclete.instrument".into()],
+    view: None,
         }
     }
 
@@ -270,10 +273,49 @@ impl FmEngine {
     }
 }
 
+impl ViewPlugin for FmEngine {
+    fn to_rule(&self, _node_id: u64, _sub_nodes: &[(u64, &dyn ViewPlugin)]) -> Rule {
+        let display_name = match self.machine {
+            FmMachine::Kick => "FM Kick",
+            FmMachine::Bell => "FM Bell",
+            FmMachine::Bass => "FM Bass",
+        };
+        let decay_id = fp("decay");
+        Rule {
+            name: Cow::Borrowed(display_name),
+            page_groups: Cow::Owned(vec![Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
+            param_pages: Cow::Owned(vec![
+                (fp("ratio"),    PageRef { page: Cow::Borrowed("SRC"), slot: 0 }),
+                (fp("index"),    PageRef { page: Cow::Borrowed("SRC"), slot: 1 }),
+                (fp("feedback"), PageRef { page: Cow::Borrowed("SRC"), slot: 2 }),
+                (fp("drive"),    PageRef { page: Cow::Borrowed("SRC"), slot: 3 }),
+                (fp("attack"),   PageRef { page: Cow::Borrowed("SRC"), slot: 4 }),
+                (decay_id,       PageRef { page: Cow::Borrowed("AMP"), slot: 0 }),
+            ]),
+            macros: Cow::Borrowed(&[]),
+            affordances: Cow::Owned(vec![
+                (decay_id, AffordanceHint::EnvelopeCurve { group_idx: 0 }),
+            ]),
+            envelopes: Cow::Owned(vec![EnvelopeGroup {
+                env_type: Cow::Borrowed("AD"),
+                label: Cow::Borrowed("Amp Envelope"),
+                param_ids: [decay_id, 0, 0, 0],
+            }]),
+            routing: Cow::Borrowed(&[]),
+            diagram: None,
+            view_overrides: Cow::Borrowed(&[]),
+        }
+    }
+}
+
 impl Node for FmEngine {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
     fn set_node_id(&mut self, id: u32) { self.node_id = id; }
-    fn capability_document(&self) -> CapabilityDocument { Self::build_doc(self.machine) }
+    fn capability_document(&self) -> CapabilityDocument {
+        let mut doc = Self::build_doc(self.machine);
+        doc.view = Some(self.to_rule(0, &[]));
+        doc
+    }
 
     fn set_initial_params(&mut self, params: &HashMap<String, f64>) {
         self.pending_initial_params = params.clone();

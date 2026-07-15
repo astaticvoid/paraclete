@@ -163,6 +163,7 @@ impl Node for InternalClock {
                 },
             ],
             extensions: vec!["paraclete.tempo_source".into()],
+    view: None,
         }
     }
 

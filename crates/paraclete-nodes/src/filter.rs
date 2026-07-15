@@ -6,11 +6,13 @@
 //!   resonance   (id=1) — 0.1–4.0, default 0.7
 //!   filter_type (id=2) — 0=LP, 1=HP, 2=BP, 3=Notch, default 0
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use paraclete_node_api::{
-    CapabilityDocument, Node, ParameterBank, ParamDescriptor, ParamUnit,
-    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
+    AffordanceHint, CapabilityDocument, Node, PageRef, ParameterBank, ParamDescriptor, ParamUnit,
+    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, Rule, StateBusValue,
+    ViewPlugin,
 };
 
 const PARAM_CUTOFF:      u32 = 0;
@@ -80,6 +82,7 @@ impl FilterNode {
                 ParamDescriptor { id: PARAM_FILTER_TYPE, name: "filter_type".into(), min: 0.0,   max: 3.0,     default: 0.0,    stepped: true,  unit: ParamUnit::Generic, display: None },
             ],
             extensions: vec!["paraclete.effect".into()],
+    view: None,
         }
     }
 
@@ -115,11 +118,38 @@ impl Default for FilterNode {
     fn default() -> Self { Self::new() }
 }
 
+impl ViewPlugin for FilterNode {
+    fn to_rule(&self, _node_id: u64, _sub_nodes: &[(u64, &dyn ViewPlugin)]) -> Rule {
+        Rule {
+            name: Cow::Borrowed("Filter"),
+            page_groups: Cow::Owned(vec![Cow::Borrowed("FLTR")]),
+            param_pages: Cow::Owned(vec![
+                (PARAM_CUTOFF,      PageRef { page: Cow::Borrowed("FLTR"), slot: 0 }),
+                (PARAM_RESONANCE,   PageRef { page: Cow::Borrowed("FLTR"), slot: 1 }),
+                (PARAM_FILTER_TYPE, PageRef { page: Cow::Borrowed("FLTR"), slot: 2 }),
+            ]),
+            macros: Cow::Borrowed(&[]),
+            affordances: Cow::Owned(vec![
+                (PARAM_CUTOFF,    AffordanceHint::FilterShape),
+                (PARAM_RESONANCE, AffordanceHint::FilterShape),
+            ]),
+            envelopes: Cow::Borrowed(&[]),
+            routing: Cow::Borrowed(&[]),
+            diagram: None,
+            view_overrides: Cow::Borrowed(&[]),
+        }
+    }
+}
+
 impl Node for FilterNode {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
     fn set_node_id(&mut self, id: u32) { self.node_id = id; }
 
-    fn capability_document(&self) -> CapabilityDocument { Self::default_doc() }
+    fn capability_document(&self) -> CapabilityDocument {
+        let mut doc = Self::default_doc();
+        doc.view = Some(self.to_rule(0, &[]));
+        doc
+    }
 
     fn set_initial_params(&mut self, params: &HashMap<String, f64>) {
         self.pending_initial_params = params.clone();

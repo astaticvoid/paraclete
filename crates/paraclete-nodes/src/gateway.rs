@@ -68,6 +68,7 @@ impl Node for ScriptingGatewayNode {
             ports: self.ports.to_vec(),
             params: vec![],
             extensions: vec!["paraclete.gateway".into()],
+    view: None,
         }
     }
 

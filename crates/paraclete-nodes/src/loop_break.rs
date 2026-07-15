@@ -103,6 +103,7 @@ impl Node for LoopBreakNode {
             ports: self.ports.to_vec(),
             params: vec![],
             extensions: vec![],
+    view: None,
         }
     }
 

@@ -974,6 +974,7 @@ impl Node for Sequencer {
                 },
             ],
             extensions: vec!["paraclete.sequencer".into()],
+    view: None,
         }
     }
 

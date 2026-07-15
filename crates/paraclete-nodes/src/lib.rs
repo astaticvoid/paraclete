@@ -96,6 +96,7 @@ impl Node for SilentNode {
         CapabilityDocument {
             name: "SilentNode".into(), vendor: "Paraclete".into(), version: (0, 1, 0),
             ports: self.ports.to_vec(), params: vec![], extensions: vec![],
+    view: None,
         }
     }
     fn negotiate(&mut self, _their_doc: &CapabilityDocument) -> ConnectionAgreement {

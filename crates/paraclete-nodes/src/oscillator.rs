@@ -71,6 +71,7 @@ impl OscillatorNode {
                 ParamDescriptor { id: osc_param("level"),    name: "level".into(),    min: 0.0, max: 2.0, default: 1.0, stepped: false, unit: ParamUnit::Generic, display: None },
             ],
             extensions: vec![],
+    view: None,
         }
     }
 }

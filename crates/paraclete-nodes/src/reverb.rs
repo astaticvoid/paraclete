@@ -12,11 +12,13 @@
 //!   width        — 0.0–1.0,   default 1.0
 //!   pre_delay_ms — 0.0–100.0, default 0.0
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 use paraclete_node_api::{
     CapabilityDocument, Node, ParameterBank, ParamDescriptor, ParamUnit,
     PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
+    Rule, ViewPlugin, PageRef,
 };
 
 const PARAM_ROOM_SIZE: u32 = 0;
@@ -149,6 +151,7 @@ impl ReverbNode {
                 ParamDescriptor { id: PARAM_PRE_DELAY, name: "pre_delay_ms".into(), min: 0.0, max: 100.0, default: 0.0, stepped: false, unit: ParamUnit::Generic, display: None },
             ],
             extensions: vec!["paraclete.effect".into()],
+    view: None,
         }
     }
 }
@@ -157,10 +160,38 @@ impl Default for ReverbNode {
     fn default() -> Self { Self::new() }
 }
 
+impl ViewPlugin for ReverbNode {
+    fn to_rule(&self, _node_id: u64, _sub_nodes: &[(u64, &dyn ViewPlugin)]) -> Rule {
+        Rule {
+            name: Cow::Borrowed("Reverb"),
+            page_groups: Cow::Owned(vec![Cow::Borrowed("FX")]),
+            param_pages: Cow::Owned(vec![
+                (PARAM_WET,       PageRef { page: Cow::Borrowed("FX"), slot: 0 }),
+                (PARAM_DRY,       PageRef { page: Cow::Borrowed("FX"), slot: 1 }),
+                (PARAM_ROOM_SIZE, PageRef { page: Cow::Borrowed("FX"), slot: 2 }),
+                (PARAM_DAMPING,   PageRef { page: Cow::Borrowed("FX"), slot: 3 }),
+                (PARAM_WIDTH,     PageRef { page: Cow::Borrowed("FX"), slot: 4 }),
+                (PARAM_PRE_DELAY, PageRef { page: Cow::Borrowed("FX"), slot: 5 }),
+            ]),
+            macros: Cow::Borrowed(&[]),
+            affordances: Cow::Borrowed(&[]),
+            envelopes: Cow::Borrowed(&[]),
+            routing: Cow::Borrowed(&[]),
+            diagram: None,
+            view_overrides: Cow::Borrowed(&[]),
+        }
+    }
+}
+
+
 impl Node for ReverbNode {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
     fn set_node_id(&mut self, id: u32) { self.node_id = id; }
-    fn capability_document(&self) -> CapabilityDocument { Self::default_doc() }
+    fn capability_document(&self) -> CapabilityDocument {
+        let mut doc = Self::default_doc();
+        doc.view = Some(self.to_rule(0, &[]));
+        doc
+    }
 
     fn set_initial_params(&mut self, params: &HashMap<String, f64>) {
         self.pending_initial_params = params.clone();
