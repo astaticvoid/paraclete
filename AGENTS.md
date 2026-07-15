@@ -94,7 +94,8 @@ Esc / Ctrl-C      quit
 # shell exits. Use setsid to detach into a new session:
 
 # Build and start in background (fully detached):
-setsid cargo run --release -- --no-tui --theoria-dir=web/packages/app/dist \
+# Use --no-emulator for headless mode (no TTY/emulator required):
+setsid cargo run --release -- --no-tui --no-emulator --theoria-dir=web/packages/app/dist \
   >> /tmp/paraclete.log 2>&1 &
 
 # Server prints the tablet URL to stderr on startup, e.g.:
@@ -105,6 +106,22 @@ timeout 2 bash -c 'echo >/dev/tcp/127.0.0.1/7274' && echo "up" || echo "down"
 
 # Or keep the process alive while freeing the terminal:
 # (emulator will print TUI grid to stdout but app won't crash)
+```
+
+### Shutting down and verifying audio health
+
+```bash
+# Kill paraclete
+pkill -9 paraclete
+
+# After shutdown, verify pipewire sink is still real hardware.
+# If ONLY auto_null shows, pipewire is stranded — restart it.
+# (Known issue: paraclete can leave pipewire on a null sink after heavy use.)
+count=$(pactl list short sinks 2>/dev/null | grep -c alsa_output)
+if [ "$count" -eq 0 ]; then
+    echo "WARNING: no real audio sink — restarting pipewire"
+    systemctl --user restart pipewire pipewire-pulse
+fi
 ```
 
 ## Architecture: five-layer model
