@@ -3,37 +3,35 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use paraclete_clap_host::PluginLibrary;
+use paraclete_node_api::Node;
 use paraclete_nodes::{
     AnalogEngine, AudioOutputNode, DistortionNode, FilterNode, FmEngine, InternalClock, MixNode,
     ReverbNode, Sampler, Sequencer,
 };
-use paraclete_node_api::Node;
 use paraclete_runtime::NodeConfigurator;
 
 use crate::instrument::{InstrumentDefinition, InstrumentError, NodeDef};
 
 #[derive(Debug)]
 pub struct InstrumentIds {
-    pub clock:           u32,
+    pub clock: u32,
     pub clock_domain_id: u32,
-    pub mix:             u32,
-    pub output:          u32,
-    pub sequencers:      Vec<u32>,
-    pub generators:      Vec<u32>,
-    pub samplers:        Vec<u32>,
-    pub distortions:     Vec<u32>,
-    pub filters:         Vec<u32>,
-    pub effects:         Vec<u32>,
-    pub all:             Vec<(String, u32)>,
+    pub mix: u32,
+    pub output: u32,
+    pub sequencers: Vec<u32>,
+    pub generators: Vec<u32>,
+    pub samplers: Vec<u32>,
+    pub distortions: Vec<u32>,
+    pub filters: Vec<u32>,
+    pub effects: Vec<u32>,
+    pub all: Vec<(String, u32)>,
 }
 
 /// Parse an instrument definition from a YAML string.
 ///
 /// This is primarily a test/internal helper; prefer `load_instrument_definition`
 /// for production use.
-pub fn parse_instrument_definition(
-    text: &str,
-) -> Result<InstrumentDefinition, InstrumentError> {
+pub fn parse_instrument_definition(text: &str) -> Result<InstrumentDefinition, InstrumentError> {
     let def: InstrumentDefinition = serde_yml::from_str(text)?;
     if def.format_version != 1 {
         return Err(InstrumentError::UnknownVersion(def.format_version));
@@ -49,25 +47,25 @@ pub fn load_instrument_definition(
 }
 
 pub fn build_from_instrument(
-    def:       &InstrumentDefinition,
-    conf:      &mut NodeConfigurator,
+    def: &InstrumentDefinition,
+    conf: &mut NodeConfigurator,
     libraries: &HashMap<String, Arc<PluginLibrary>>,
 ) -> Result<InstrumentIds, InstrumentError> {
-    let sr    = conf.sample_rate();
+    let sr = conf.sample_rate();
     let block = conf.block_size();
     let mut seen_ids: HashSet<u32> = HashSet::new();
     let mut ids = InstrumentIds {
-        clock:           0,
+        clock: 0,
         clock_domain_id: 0,
-        mix:             0,
-        output:          0,
-        sequencers:      Vec::new(),
-        generators:      Vec::new(),
-        samplers:        Vec::new(),
-        distortions:     Vec::new(),
-        filters:         Vec::new(),
-        effects:         Vec::new(),
-        all:             Vec::new(),
+        mix: 0,
+        output: 0,
+        sequencers: Vec::new(),
+        generators: Vec::new(),
+        samplers: Vec::new(),
+        distortions: Vec::new(),
+        filters: Vec::new(),
+        effects: Vec::new(),
+        all: Vec::new(),
     };
 
     // Map from node_id → (port_name_lowercase → port_id) for name resolution.
@@ -82,9 +80,11 @@ pub fn build_from_instrument(
             node.set_initial_params(&node_def.initial_params);
         }
 
-        let node_port_map: HashMap<String, u32> = node.ports().iter().map(|p| {
-            (p.name.as_str().to_ascii_lowercase(), p.id)
-        }).collect();
+        let node_port_map: HashMap<String, u32> = node
+            .ports()
+            .iter()
+            .map(|p| (p.name.as_str().to_ascii_lowercase(), p.id))
+            .collect();
         port_names.insert(node_def.id, node_port_map);
 
         classify_node(node_def, &mut ids);
@@ -100,23 +100,18 @@ pub fn build_from_instrument(
     }
 
     for edge in &def.edges {
-        let from_node_id = yaml_to_u32(&edge.from.0).ok_or_else(|| {
-            InstrumentError::UnknownPort { node: 0, port: format!("{:?}", edge.from.0) }
-        })?;
-        let to_node_id = yaml_to_u32(&edge.to.0).ok_or_else(|| {
-            InstrumentError::UnknownPort { node: 0, port: format!("{:?}", edge.to.0) }
+        let from_node_id =
+            yaml_to_u32(&edge.from.0).ok_or_else(|| InstrumentError::UnknownPort {
+                node: 0,
+                port: format!("{:?}", edge.from.0),
+            })?;
+        let to_node_id = yaml_to_u32(&edge.to.0).ok_or_else(|| InstrumentError::UnknownPort {
+            node: 0,
+            port: format!("{:?}", edge.to.0),
         })?;
 
-        let from_port = resolve_port(
-            from_node_id,
-            &edge.from.1,
-            port_names.get(&from_node_id),
-        )?;
-        let to_port = resolve_port(
-            to_node_id,
-            &edge.to.1,
-            port_names.get(&to_node_id),
-        )?;
+        let from_port = resolve_port(from_node_id, &edge.from.1, port_names.get(&from_node_id))?;
+        let to_port = resolve_port(to_node_id, &edge.to.1, port_names.get(&to_node_id))?;
 
         conf.connect(from_node_id, from_port, to_node_id, to_port)
             .map_err(|e| InstrumentError::ConnectionError(e.to_string()))?;
@@ -126,11 +121,11 @@ pub fn build_from_instrument(
 }
 
 fn construct_node(
-    node_def:   &NodeDef,
-    bpm:        f64,
+    node_def: &NodeDef,
+    bpm: f64,
     sample_rate: f32,
-    block_size:  usize,
-    libraries:  &HashMap<String, Arc<PluginLibrary>>,
+    block_size: usize,
+    libraries: &HashMap<String, Arc<PluginLibrary>>,
 ) -> Result<Box<dyn Node>, InstrumentError> {
     let tag = node_def.type_tag.as_str();
     let node: Box<dyn Node> = match tag {
@@ -138,58 +133,70 @@ fn construct_node(
         "sequencer" => {
             let seq = match &node_def.display_name {
                 Some(name) => Sequencer::with_name(name),
-                None       => Sequencer::new(),
+                None => Sequencer::new(),
             };
             match node_def.default_note {
                 Some(note) => Box::new(seq.with_default_note(note)),
-                None       => Box::new(seq),
+                None => Box::new(seq),
             }
         }
-        "sampler"             => Box::new(Sampler::new()),
-        "analog_engine:kick"  => Box::new(AnalogEngine::kick()),
+        "sampler" => Box::new(Sampler::new()),
+        "analog_engine:kick" => Box::new(AnalogEngine::kick()),
         "analog_engine:snare" => Box::new(AnalogEngine::snare()),
         "analog_engine:hihat" => Box::new(AnalogEngine::hihat()),
-        "fm_engine:kick"      => Box::new(FmEngine::kick()),
-        "fm_engine:bell"      => Box::new(FmEngine::bell()),
-        "fm_engine:bass"      => Box::new(FmEngine::bass()),
-        "distortion"   => Box::new(DistortionNode::new()),
-        "filter"       => Box::new(FilterNode::new()),
+        "fm_engine:kick" => Box::new(FmEngine::kick()),
+        "fm_engine:bell" => Box::new(FmEngine::bell()),
+        "fm_engine:bass" => Box::new(FmEngine::bass()),
+        "distortion" => Box::new(DistortionNode::new()),
+        "filter" => Box::new(FilterNode::new()),
         "mix" => {
-            let n = node_def.channel_count.ok_or(InstrumentError::MissingField {
-                node: node_def.id,
-                field: "channel_count",
-            })?;
+            let n = node_def
+                .channel_count
+                .ok_or(InstrumentError::MissingField {
+                    node: node_def.id,
+                    field: "channel_count",
+                })?;
             Box::new(MixNode::new(n))
         }
         "audio_output" => Box::new(AudioOutputNode::new()),
-        "reverb"       => Box::new(ReverbNode::new()),
+        "reverb" => Box::new(ReverbNode::new()),
         "clap_plugin" => {
-            let plugin_id = node_def.plugin_id.as_deref()
-                .ok_or(InstrumentError::MissingField { node: node_def.id, field: "plugin_id" })?;
-            let lib = libraries.get(plugin_id)
+            let plugin_id = node_def
+                .plugin_id
+                .as_deref()
+                .ok_or(InstrumentError::MissingField {
+                    node: node_def.id,
+                    field: "plugin_id",
+                })?;
+            let lib = libraries
+                .get(plugin_id)
                 .ok_or_else(|| InstrumentError::PluginNotFound {
                     plugin_id: plugin_id.to_string(),
                 })?;
             lib.instantiate(plugin_id, sample_rate, block_size)
                 .map_err(|e| InstrumentError::ConnectionError(e.to_string()))?
         }
-        _ => return Err(InstrumentError::UnknownNodeType {
-            type_tag: tag.to_string(),
-        }),
+        _ => {
+            return Err(InstrumentError::UnknownNodeType {
+                type_tag: tag.to_string(),
+            })
+        }
     };
     Ok(node)
 }
 
 fn classify_node(node_def: &NodeDef, ids: &mut InstrumentIds) {
-    let label = node_def.display_name.clone()
+    let label = node_def
+        .display_name
+        .clone()
         .unwrap_or_else(|| node_def.type_tag.clone());
     ids.all.push((label, node_def.id));
 
     match node_def.type_tag.as_str() {
-        "internal_clock" => ids.clock  = node_def.id,
-        "mix"            => ids.mix    = node_def.id,
-        "audio_output"   => ids.output = node_def.id,
-        "sequencer"      => ids.sequencers.push(node_def.id),
+        "internal_clock" => ids.clock = node_def.id,
+        "mix" => ids.mix = node_def.id,
+        "audio_output" => ids.output = node_def.id,
+        "sequencer" => ids.sequencers.push(node_def.id),
         "sampler"
         | "analog_engine:kick"
         | "analog_engine:snare"
@@ -198,16 +205,14 @@ fn classify_node(node_def: &NodeDef, ids: &mut InstrumentIds) {
         | "fm_engine:bell"
         | "fm_engine:bass"
         | "clap_plugin" => ids.generators.push(node_def.id),
-        "distortion"
-        | "filter"
-        | "reverb" => ids.effects.push(node_def.id),
+        "distortion" | "filter" | "reverb" => ids.effects.push(node_def.id),
         _ => {}
     }
     // Typed sub-lists (used for profile script constant injection).
     match node_def.type_tag.as_str() {
-        "sampler"     => ids.samplers.push(node_def.id),
-        "distortion"  => ids.distortions.push(node_def.id),
-        "filter"      => ids.filters.push(node_def.id),
+        "sampler" => ids.samplers.push(node_def.id),
+        "distortion" => ids.distortions.push(node_def.id),
+        "filter" => ids.filters.push(node_def.id),
         _ => {}
     }
 }
@@ -219,10 +224,12 @@ fn resolve_port(
 ) -> Result<u32, InstrumentError> {
     match value {
         serde_yml::Value::Number(n) => {
-            n.as_u64().map(|v| v as u32).ok_or_else(|| InstrumentError::UnknownPort {
-                node: node_id,
-                port: format!("{n:?}"),
-            })
+            n.as_u64()
+                .map(|v| v as u32)
+                .ok_or_else(|| InstrumentError::UnknownPort {
+                    node: node_id,
+                    port: format!("{n:?}"),
+                })
         }
         serde_yml::Value::String(s) => {
             let lower = s.to_ascii_lowercase();
@@ -240,7 +247,10 @@ fn resolve_port(
                     }
                 }
             }
-            Err(InstrumentError::UnknownPort { node: node_id, port: s.clone() })
+            Err(InstrumentError::UnknownPort {
+                node: node_id,
+                port: s.clone(),
+            })
         }
         other => Err(InstrumentError::UnknownPort {
             node: node_id,

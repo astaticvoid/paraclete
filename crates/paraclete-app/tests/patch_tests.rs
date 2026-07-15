@@ -1,14 +1,12 @@
 // Tests for NodeRegistry, apply_patch, and project v2 format (P9 Commit 4).
 
-use paraclete_app::{
-    apply_patch, build_registry, PatchError, TopologyChange,
-};
-use paraclete_app::project::{save_project_v2, load_project_v2};
+use paraclete_app::project::{load_project_v2, save_project_v2};
+use paraclete_app::{apply_patch, build_registry, PatchError, TopologyChange};
 use paraclete_hal::{AudioEngine, LaunchpadEmulator};
 use paraclete_nodes::{DistortionNode, FilterNode};
 use paraclete_runtime::NodeConfigurator;
 
-const SR: f32     = 44100.0;
+const SR: f32 = 44100.0;
 const BLOCK: usize = 256;
 
 // ── NodeRegistry tests ─────────────────────────────────────────────────────
@@ -65,12 +63,12 @@ fn registry_known_type_tags_contains_inner_graph() {
 #[test]
 fn apply_patch_add_node_returns_id() {
     let mut conf = NodeConfigurator::new(SR, BLOCK);
-    let engine   = AudioEngine::new_paused();
+    let engine = AudioEngine::new_paused();
     let registry = build_registry();
 
     let result = apply_patch(
         vec![TopologyChange::AddNode {
-            type_tag:       "distortion".to_string(),
+            type_tag: "distortion".to_string(),
             initial_params: Default::default(),
         }],
         &engine,
@@ -87,12 +85,12 @@ fn apply_patch_add_node_returns_id() {
 #[test]
 fn apply_patch_unknown_type_tag_returns_error() {
     let mut conf = NodeConfigurator::new(SR, BLOCK);
-    let engine   = AudioEngine::new_paused();
+    let engine = AudioEngine::new_paused();
     let registry = build_registry();
 
     let result = apply_patch(
         vec![TopologyChange::AddNode {
-            type_tag:       "nonexistent_xyz".to_string(),
+            type_tag: "nonexistent_xyz".to_string(),
             initial_params: Default::default(),
         }],
         &engine,
@@ -113,7 +111,7 @@ fn apply_patch_unknown_type_tag_returns_error() {
 #[test]
 fn apply_patch_remove_device_reports_refusal_reason() {
     let mut conf = NodeConfigurator::new(SR, BLOCK);
-    let engine   = AudioEngine::new_paused();
+    let engine = AudioEngine::new_paused();
     let registry = build_registry();
     conf.add_surface(55, Box::new(LaunchpadEmulator::new()));
 
@@ -132,14 +130,17 @@ fn apply_patch_remove_device_reports_refusal_reason() {
         other => panic!("expected ConfigError with device reason, got: {other:?}"),
     }
     // The device must survive the refused removal.
-    assert!(conf.contains_node(55), "device must remain registered after refusal");
+    assert!(
+        conf.contains_node(55),
+        "device must remain registered after refusal"
+    );
 }
 
 /// A RemoveNode on a genuinely absent id is still the typed NodeNotFound.
 #[test]
 fn apply_patch_remove_unknown_id_is_node_not_found() {
     let mut conf = NodeConfigurator::new(SR, BLOCK);
-    let engine   = AudioEngine::new_paused();
+    let engine = AudioEngine::new_paused();
     let registry = build_registry();
 
     let result = apply_patch(
@@ -158,7 +159,7 @@ fn apply_patch_remove_unknown_id_is_node_not_found() {
 #[test]
 fn apply_patch_add_edge_cycle_without_loop_break_returns_error() {
     let mut conf = NodeConfigurator::new(SR, BLOCK);
-    let engine   = AudioEngine::new_paused();
+    let engine = AudioEngine::new_paused();
     let registry = build_registry();
 
     // Add two nodes with matching ports via the registry.
@@ -175,9 +176,9 @@ fn apply_patch_add_edge_cycle_without_loop_break_returns_error() {
     // Try to close a cycle: filter audio_out (port 1) → distortion audio_in (port 0).
     let result = apply_patch(
         vec![TopologyChange::AddEdge {
-            src:      filt_id,
+            src: filt_id,
             src_port: 1,
-            dst:      dist_id,
+            dst: dist_id,
             dst_port: 0,
         }],
         &engine,
@@ -198,17 +199,17 @@ fn apply_patch_add_edge_cycle_without_loop_break_returns_error() {
 #[test]
 fn apply_patch_failed_change_still_installs_executor() {
     let mut conf = NodeConfigurator::new(SR, BLOCK);
-    let engine   = AudioEngine::new_paused();
+    let engine = AudioEngine::new_paused();
     let registry = build_registry();
 
     let result = apply_patch(
         vec![
             TopologyChange::AddNode {
-                type_tag:       "distortion".to_string(),
+                type_tag: "distortion".to_string(),
                 initial_params: Default::default(),
             },
             TopologyChange::AddNode {
-                type_tag:       "nonexistent_xyz".to_string(),
+                type_tag: "nonexistent_xyz".to_string(),
                 initial_params: Default::default(),
             },
         ],
@@ -246,7 +247,9 @@ fn configurator_remove_node_severs_edges() {
     // Verify no edges reference a_id.
     let edges: Vec<_> = conf.all_edges().collect();
     assert!(
-        edges.iter().all(|e| e.src_node != a_id && e.dst_node != a_id),
+        edges
+            .iter()
+            .all(|e| e.src_node != a_id && e.dst_node != a_id),
         "edges referencing removed node still present: {:?}",
         edges
     );
@@ -258,37 +261,59 @@ fn configurator_remove_node_severs_edges() {
 fn project_v2_save_load_roundtrip() {
     use paraclete_nodes::{AudioOutputNode, InternalClock, Sequencer};
 
-    let dir  = std::env::temp_dir();
+    let dir = std::env::temp_dir();
     let path = dir.join("paraclete_v2_roundtrip_test.ron");
 
     // Build a 3-node graph.
     let mut conf = NodeConfigurator::new(SR, BLOCK);
     let clock_id = conf.add_node_tagged(Box::new(InternalClock::new()), "internal_clock");
-    let seq_id   = conf.add_node_tagged(Box::new(Sequencer::new()),     "sequencer");
-    let out_id   = conf.add_node_tagged(Box::new(AudioOutputNode::new()), "audio_output");
+    let seq_id = conf.add_node_tagged(Box::new(Sequencer::new()), "sequencer");
+    let out_id = conf.add_node_tagged(Box::new(AudioOutputNode::new()), "audio_output");
 
     // Save v2.
     let save_result = save_project_v2(&conf, &path);
-    assert!(save_result.is_ok(), "save_project_v2 failed: {:?}", save_result);
+    assert!(
+        save_result.is_ok(),
+        "save_project_v2 failed: {:?}",
+        save_result
+    );
 
     // Load into fresh conf.
-    let registry  = build_registry();
+    let registry = build_registry();
     let mut conf2 = NodeConfigurator::new(SR, BLOCK);
     let load_result = load_project_v2(&path, &mut conf2, &registry);
-    assert!(load_result.is_ok(), "load_project_v2 failed: {:?}", load_result);
+    assert!(
+        load_result.is_ok(),
+        "load_project_v2 failed: {:?}",
+        load_result
+    );
 
     let warnings = load_result.unwrap();
     // Only expect warnings about nodes with empty type_tag (none here).
-    let bad_warnings: Vec<_> = warnings.iter()
+    let bad_warnings: Vec<_> = warnings
+        .iter()
         .filter(|w| !w.contains("upgrade") && !w.contains("edge"))
         .collect();
-    assert!(bad_warnings.is_empty(), "unexpected warnings: {:?}", bad_warnings);
+    assert!(
+        bad_warnings.is_empty(),
+        "unexpected warnings: {:?}",
+        bad_warnings
+    );
 
     // Check that nodes were loaded with the same IDs.
     let ids: Vec<u32> = conf2.all_nodes().map(|(id, _)| id).collect();
-    assert!(ids.contains(&clock_id), "clock_id {clock_id} missing from loaded conf");
-    assert!(ids.contains(&seq_id),   "seq_id {seq_id} missing from loaded conf");
-    assert!(ids.contains(&out_id),   "out_id {out_id} missing from loaded conf");
+    assert!(
+        ids.contains(&clock_id),
+        "clock_id {clock_id} missing from loaded conf"
+    );
+    assert!(
+        ids.contains(&seq_id),
+        "seq_id {seq_id} missing from loaded conf"
+    );
+    assert!(
+        ids.contains(&out_id),
+        "out_id {out_id} missing from loaded conf"
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -312,13 +337,13 @@ fn project_v1_load_emits_warning() {
     ),
 )"#;
 
-    let dir  = std::env::temp_dir();
+    let dir = std::env::temp_dir();
     let path = dir.join("paraclete_v1_warning_test.ron");
     std::fs::write(&path, v1_ron).unwrap();
 
-    let registry  = build_registry();
-    let mut conf  = NodeConfigurator::new(SR, BLOCK);
-    let result    = load_project_v2(&path, &mut conf, &registry);
+    let registry = build_registry();
+    let mut conf = NodeConfigurator::new(SR, BLOCK);
+    let result = load_project_v2(&path, &mut conf, &registry);
 
     assert!(result.is_ok(), "v1 load should succeed: {:?}", result);
     let warnings = result.unwrap();
@@ -365,8 +390,7 @@ fn loadtest_topology_churn_under_live_audio() {
     use paraclete_nodes::Sequencer;
 
     // 1. Build the default instrument graph (analog + FM voices; no samples).
-    let instrument =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instrument.yaml");
+    let instrument = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instrument.yaml");
     let def = load_instrument_definition(&instrument).expect("load instrument.yaml");
     // NOTE: audio.rs starts the cpal stream with BufferSize::Default — the
     // device's native buffer size, NOT the executor's block_size — so this
@@ -456,7 +480,10 @@ fn loadtest_topology_churn_under_live_audio() {
     assert!(buffers > 0, "audio callback never processed a buffer");
     assert!(swaps > 0, "no topology swaps applied");
     // Tripwire: zero self-inflicted dropouts even under heavy churn.
-    assert_eq!(lock_miss, 0, "audio callback missed the executor lock {lock_miss}x");
+    assert_eq!(
+        lock_miss, 0,
+        "audio callback missed the executor lock {lock_miss}x"
+    );
     assert_eq!(no_exec, 0, "audio callback found no executor {no_exec}x");
     assert_eq!(overflows, 0, "state bus overflowed {overflows}x");
 }

@@ -24,16 +24,16 @@ edges: []
 fn app_wiring_load_instrument_and_build_no_panic() {
     let def = parse_instrument_definition(MINIMAL_YAML).expect("should parse");
     let mut conf = NodeConfigurator::new(SR, BLOCK);
-    let ids = build_from_instrument(&def, &mut conf, &Default::default())
-        .expect("build should succeed");
+    let ids =
+        build_from_instrument(&def, &mut conf, &Default::default()).expect("build should succeed");
     assert_ne!(ids.clock, 0, "clock id must be set");
     assert_eq!(ids.clock, 1);
 }
 
 #[test]
 fn app_wiring_macro_publish_context_populates_state_bus() {
-    use paraclete_node_api::StateBusValue;
     use paraclete_node_api::capability::ParamDescriptor;
+    use paraclete_node_api::StateBusValue;
 
     let def = parse_instrument_definition(MINIMAL_YAML).expect("parse");
     let mut conf = NodeConfigurator::new(SR, BLOCK);
@@ -45,9 +45,7 @@ fn app_wiring_macro_publish_context_populates_state_bus() {
 
     // Simulate macro pre-population: encoder 0 → node 42, param "decay".
     let node_id: u32 = 42;
-    let script = format!(
-        r#"publish_context("encoder_0", {node_id}, "decay");"#,
-    );
+    let script = format!(r#"publish_context("encoder_0", {node_id}, "decay");"#,);
     scripting.eval_str(&script).expect("eval should succeed");
 
     // publish_context writes /context/encoder_0/node and /context/encoder_0/param.
@@ -69,8 +67,8 @@ fn app_wiring_macro_publish_context_populates_state_bus() {
 
 #[test]
 fn app_wiring_no_tui_flag_skips_terminal_init() {
-    assert!(!tui_enabled(true),  "--no-tui should disable TUI");
-    assert!( tui_enabled(false), "no --no-tui flag should enable TUI");
+    assert!(!tui_enabled(true), "--no-tui should disable TUI");
+    assert!(tui_enabled(false), "no --no-tui flag should enable TUI");
 }
 
 #[test]
@@ -81,8 +79,8 @@ fn app_wiring_project_save_load_roundtrip() {
 
     let tmp = std::env::temp_dir().join("paraclete_p8_roundtrip_test.ron");
     let meta = ProjectMetadata {
-        name:    "roundtrip".to_string(),
-        bpm:     120.0,
+        name: "roundtrip".to_string(),
+        bpm: 120.0,
         created: String::new(),
     };
     save_project(&tmp, &conf, meta, ProfileBinding { active: vec![] })

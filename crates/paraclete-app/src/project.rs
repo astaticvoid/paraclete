@@ -4,27 +4,27 @@
 //! Version 1: node state only (no type_tag, no edge topology).
 //! Version 2: adds `type_tag` per node; edges are authoritative on load.
 
-use serde::{Deserialize, Serialize};
 use paraclete_runtime::NodeConfigurator;
+use serde::{Deserialize, Serialize};
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 /// Top-level project file.
 #[derive(Serialize, Deserialize)]
 pub struct Project {
-    pub version:  u32,
+    pub version: u32,
     pub metadata: ProjectMetadata,
-    pub graph:    GraphSnapshot,
+    pub graph: GraphSnapshot,
     pub profiles: ProfileBinding,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct ProjectMetadata {
     /// Human-readable project name (filename stem by default).
-    pub name:    String,
+    pub name: String,
     /// BPM at save time. Informational only; the InternalClock node's
     /// serialised state is authoritative on load.
-    pub bpm:     f32,
+    pub bpm: f32,
     /// ISO 8601 timestamp (UTC) recording when the file was created.
     pub created: String,
 }
@@ -39,15 +39,15 @@ pub struct GraphSnapshot {
 #[derive(Serialize, Deserialize)]
 pub struct NodeSnapshot {
     /// Stable NodeId — must match the runtime graph's node ID on load.
-    pub id:        u32,
+    pub id: u32,
     /// Construction key registered in `NodeRegistry`. Empty for v1 files and
     /// for nodes registered via `add_node()` (no tag stored).
     #[serde(default)]
-    pub type_tag:  String,
+    pub type_tag: String,
     /// Human-readable label for diagnostics. Not used for dispatch.
     pub type_name: String,
     /// Raw output of `Node::serialize()`. Empty if the node has no state.
-    pub state:     Vec<u8>,
+    pub state: Vec<u8>,
 }
 
 /// One edge record. Stored for validation (v1) or topology restoration (v2).
@@ -75,19 +75,23 @@ pub enum ProjectError {
 impl std::fmt::Display for ProjectError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ProjectError::Io(e)              => write!(f, "I/O error: {e}"),
-            ProjectError::Parse(e)           => write!(f, "Parse error: {e}"),
-            ProjectError::UnknownVersion(v)  => write!(f, "Unknown project version: {v}"),
+            ProjectError::Io(e) => write!(f, "I/O error: {e}"),
+            ProjectError::Parse(e) => write!(f, "Parse error: {e}"),
+            ProjectError::UnknownVersion(v) => write!(f, "Unknown project version: {v}"),
         }
     }
 }
 
 impl From<std::io::Error> for ProjectError {
-    fn from(e: std::io::Error) -> Self { ProjectError::Io(e) }
+    fn from(e: std::io::Error) -> Self {
+        ProjectError::Io(e)
+    }
 }
 
 impl From<ron::error::SpannedError> for ProjectError {
-    fn from(e: ron::error::SpannedError) -> Self { ProjectError::Parse(e) }
+    fn from(e: ron::error::SpannedError) -> Self {
+        ProjectError::Parse(e)
+    }
 }
 
 // ── save / load ───────────────────────────────────────────────────────────────
@@ -98,21 +102,23 @@ impl From<ron::error::SpannedError> for ProjectError {
 /// (after that call, nodes have been moved to the executor and `all_nodes()`
 /// returns nothing).
 pub fn save_project(
-    path:     &std::path::Path,
-    conf:     &NodeConfigurator,
+    path: &std::path::Path,
+    conf: &NodeConfigurator,
     metadata: ProjectMetadata,
     profiles: ProfileBinding,
 ) -> Result<(), ProjectError> {
-    let nodes: Vec<NodeSnapshot> = conf.all_nodes()
+    let nodes: Vec<NodeSnapshot> = conf
+        .all_nodes()
         .map(|(id, node)| NodeSnapshot {
             id,
-            type_tag:  conf.type_tag_for(id).unwrap_or("").to_string(),
+            type_tag: conf.type_tag_for(id).unwrap_or("").to_string(),
             type_name: node.type_name().to_string(),
-            state:     node.serialize(),
+            state: node.serialize(),
         })
         .collect();
 
-    let edges: Vec<EdgeRecord> = conf.all_edges()
+    let edges: Vec<EdgeRecord> = conf
+        .all_edges()
         .map(|e| EdgeRecord {
             src_node: e.src_node,
             src_port: e.src_port,
@@ -129,9 +135,7 @@ pub fn save_project(
     };
 
     let ron_str = ron::ser::to_string_pretty(&project, ron::ser::PrettyConfig::default())
-        .map_err(|e| ProjectError::Io(
-            std::io::Error::other(e.to_string())
-        ))?;
+        .map_err(|e| ProjectError::Io(std::io::Error::other(e.to_string())))?;
     std::fs::write(path, ron_str)?;
     Ok(())
 }
@@ -190,16 +194,18 @@ pub fn save_project_v2(
     conf: &NodeConfigurator,
     path: &std::path::Path,
 ) -> Result<(), ProjectError> {
-    let nodes: Vec<NodeSnapshot> = conf.all_nodes()
+    let nodes: Vec<NodeSnapshot> = conf
+        .all_nodes()
         .map(|(id, node)| NodeSnapshot {
             id,
-            type_tag:  conf.type_tag_for(id).unwrap_or("").to_string(),
+            type_tag: conf.type_tag_for(id).unwrap_or("").to_string(),
             type_name: node.type_name().to_string(),
-            state:     node.serialize(),
+            state: node.serialize(),
         })
         .collect();
 
-    let edges: Vec<EdgeRecord> = conf.all_edges()
+    let edges: Vec<EdgeRecord> = conf
+        .all_edges()
         .map(|e| EdgeRecord {
             src_node: e.src_node,
             src_port: e.src_port,
@@ -211,8 +217,8 @@ pub fn save_project_v2(
     let project = Project {
         version: 2,
         metadata: ProjectMetadata {
-            name:    String::new(),
-            bpm:     0.0,
+            name: String::new(),
+            bpm: 0.0,
             created: String::new(),
         },
         graph: GraphSnapshot { nodes, edges },
@@ -220,9 +226,7 @@ pub fn save_project_v2(
     };
 
     let ron_str = ron::ser::to_string_pretty(&project, ron::ser::PrettyConfig::default())
-        .map_err(|e| ProjectError::Io(
-            std::io::Error::other(e.to_string())
-        ))?;
+        .map_err(|e| ProjectError::Io(std::io::Error::other(e.to_string())))?;
     std::fs::write(path, ron_str)?;
     Ok(())
 }
@@ -236,8 +240,8 @@ pub fn save_project_v2(
 ///
 /// Returns `Ok(warnings)` — a non-empty list is informational, not an error.
 pub fn load_project_v2(
-    path:     &std::path::Path,
-    conf:     &mut NodeConfigurator,
+    path: &std::path::Path,
+    conf: &mut NodeConfigurator,
     registry: &crate::registry::NodeRegistry,
 ) -> Result<Vec<String>, ProjectError> {
     let ron_str = std::fs::read_to_string(path)?;
@@ -291,10 +295,9 @@ pub fn load_project_v2(
             }
             // Restore edges.
             for edge in &project.graph.edges {
-                if let Err(e) = conf.connect(
-                    edge.src_node, edge.src_port,
-                    edge.dst_node, edge.dst_port,
-                ) {
+                if let Err(e) =
+                    conf.connect(edge.src_node, edge.src_port, edge.dst_node, edge.dst_port)
+                {
                     warnings.push(format!(
                         "Failed to restore edge {}:{} → {}:{}: {e}",
                         edge.src_node, edge.src_port, edge.dst_node, edge.dst_port

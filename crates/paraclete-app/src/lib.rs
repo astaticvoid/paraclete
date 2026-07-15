@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-pub mod project;
-pub mod instrument;
 pub mod builder;
-pub mod registry;
+pub mod instrument;
 pub mod patch;
+pub mod project;
+pub mod registry;
 
-pub use registry::{NodeRegistry, build_registry};
-pub use patch::{TopologyChange, PatchError, apply_patch};
+pub use patch::{apply_patch, PatchError, TopologyChange};
+pub use registry::{build_registry, NodeRegistry};
 
 /// Returns true when the TUI should be started (i.e. `--no-tui` was not passed).
-pub fn tui_enabled(no_tui: bool) -> bool { !no_tui }
+pub fn tui_enabled(no_tui: bool) -> bool {
+    !no_tui
+}

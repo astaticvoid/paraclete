@@ -5,13 +5,13 @@ use paraclete_node_api::Node;
 use paraclete_nodes::{InternalClock, Sequencer};
 use paraclete_runtime::NodeConfigurator;
 
-const SR: f32     = 44100.0;
+const SR: f32 = 44100.0;
 const BLOCK: usize = 512;
 
 fn make_metadata() -> ProjectMetadata {
     ProjectMetadata {
-        name:    "test".to_string(),
-        bpm:     120.0,
+        name: "test".to_string(),
+        bpm: 120.0,
         created: "2026-01-01T00:00:00Z".to_string(),
     }
 }
@@ -26,8 +26,7 @@ fn project_save_creates_valid_ron_file() {
     let mut conf = NodeConfigurator::new(SR, BLOCK);
     conf.add_node(1, Box::new(InternalClock::new()));
 
-    save_project(&tmp, &conf, make_metadata(), empty_profiles())
-        .expect("save should succeed");
+    save_project(&tmp, &conf, make_metadata(), empty_profiles()).expect("save should succeed");
 
     assert!(tmp.exists(), "ron file should have been created");
 
@@ -51,8 +50,7 @@ fn project_save_then_load_restores_state() {
     seq.set_step(3, 72, 32768, true);
     conf.add_node(2, Box::new(seq));
 
-    save_project(&tmp, &conf, make_metadata(), empty_profiles())
-        .expect("save should succeed");
+    save_project(&tmp, &conf, make_metadata(), empty_profiles()).expect("save should succeed");
 
     // Fresh configurator — load into it.
     let mut conf2 = NodeConfigurator::new(SR, BLOCK);
@@ -72,8 +70,10 @@ fn project_save_then_load_restores_state() {
     reference.set_step(3, 72, 32768, true);
     let reference_bytes = reference.serialize();
 
-    assert_eq!(restored_bytes, reference_bytes,
-        "loaded sequencer state should match byte-for-byte with the saved pattern");
+    assert_eq!(
+        restored_bytes, reference_bytes,
+        "loaded sequencer state should match byte-for-byte with the saved pattern"
+    );
 
     let _ = std::fs::remove_file(&tmp);
 }
@@ -89,17 +89,17 @@ fn project_load_unknown_node_id_skips_with_warning() {
 
     // Manually edit the RON to inject an unknown node id=999.
     let content = std::fs::read_to_string(&tmp).unwrap();
-    let injected = content.replace(
-        "id: 1,",
-        "id: 999,",
-    );
+    let injected = content.replace("id: 1,", "id: 999,");
     std::fs::write(&tmp, &injected).unwrap();
 
     // Load into a configurator that has no node 999 — should warn, not panic.
     let mut conf2 = NodeConfigurator::new(SR, BLOCK);
     conf2.add_node(1, Box::new(InternalClock::new()));
     let warnings = load_project(&tmp, &mut conf2).expect("should be Ok even with unknown id");
-    assert!(!warnings.is_empty(), "should have a warning for unknown id 999");
+    assert!(
+        !warnings.is_empty(),
+        "should have a warning for unknown id 999"
+    );
 
     let _ = std::fs::remove_file(&tmp);
 }

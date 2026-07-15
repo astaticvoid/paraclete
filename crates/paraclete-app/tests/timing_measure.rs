@@ -7,11 +7,11 @@
 
 use std::sync::{Arc, Mutex};
 
+use paraclete_node_api::{midi::ChannelVoice2, UmpMessage};
 use paraclete_node_api::{
     CapabilityDocument, Event, Node, PortDescriptor, PortDirection, PortType, ProcessInput,
     ProcessOutput,
 };
-use paraclete_node_api::{midi::ChannelVoice2, UmpMessage};
 use paraclete_nodes::{InternalClock, Sequencer};
 use paraclete_runtime::NodeConfigurator;
 
@@ -76,7 +76,8 @@ fn run_harness() -> Vec<f64> {
         }),
     );
 
-    conf.connect(1, InternalClock::PORT_CLOCK_OUT, 10, 0).expect("clock -> seq");
+    conf.connect(1, InternalClock::PORT_CLOCK_OUT, 10, 0)
+        .expect("clock -> seq");
     conf.connect(10, 2, 99, 0).expect("seq -> probe");
 
     let mut exec = conf.build_executor();
@@ -118,7 +119,10 @@ fn step_period_matches_nominal_16th_note() {
     println!("onsets measured          : {}", intervals.len());
     for (i, iv) in intervals.iter().enumerate() {
         if (iv - nominal).abs() / nominal > 0.01 {
-            println!("outlier: interval[{i}] = {iv:.0} samples ({:+.2}%)", (iv - nominal) / nominal * 100.0);
+            println!(
+                "outlier: interval[{i}] = {iv:.0} samples ({:+.2}%)",
+                (iv - nominal) / nominal * 100.0
+            );
         }
     }
 

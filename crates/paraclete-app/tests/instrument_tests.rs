@@ -73,11 +73,12 @@ edges: []
 "#;
     let def = parse_instrument_definition(yaml).expect("should parse");
     let mut conf = NodeConfigurator::new(SR, BLOCK);
-    build_from_instrument(&def, &mut conf, &Default::default()).expect("should build without error");
+    build_from_instrument(&def, &mut conf, &Default::default())
+        .expect("should build without error");
 
     // Verify the initial param is applied by testing set_initial_params + activate directly.
-    use paraclete_nodes::DistortionNode;
     use paraclete_node_api::Node;
+    use paraclete_nodes::DistortionNode;
     let mut node = DistortionNode::new();
     let mut params = std::collections::HashMap::new();
     params.insert("drive".to_string(), 0.75f64);
@@ -86,7 +87,10 @@ edges: []
     // Verify the drive param is applied: get() uses the sequential ID 0.
     let cap = node.capability_document();
     let drive_param = cap.params.iter().find(|p| p.name.as_str() == "drive");
-    assert!(drive_param.is_some(), "DistortionNode must declare a 'drive' param");
+    assert!(
+        drive_param.is_some(),
+        "DistortionNode must declare a 'drive' param"
+    );
     // The bank should reflect the initial value after activate().
     // Direct bank access is not exposed publicly, so we confirm no panic occurred
     // and the param ID is discoverable via the capability document.
