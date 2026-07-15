@@ -21,5 +21,8 @@ fn clap_validator_sequencer_passes() {
         .status()
         .expect("clap-validator not found — install with: cargo install clap-validator");
 
-    assert!(status.success(), "clap-validator reported failures for {binary}");
+    assert!(
+        status.success(),
+        "clap-validator reported failures for {binary}"
+    );
 }

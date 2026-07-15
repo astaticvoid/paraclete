@@ -5,20 +5,28 @@ use paraclete_nodes::Sequencer;
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn playing_transport() -> TransportInfo {
-    TransportInfo { playing: true, bpm: 120.0, ..TransportInfo::default() }
+    TransportInfo {
+        playing: true,
+        bpm: 120.0,
+        ..TransportInfo::default()
+    }
 }
 
 fn global_start_event() -> TimedEvent {
     let te = TransportEvent {
-        domain_id:      0,
-        bar:            1,
-        beat:           0,
-        tick:           0,
+        domain_id: 0,
+        bar: 1,
+        beat: 0,
+        tick: 0,
         ticks_per_beat: paraclete_node_api::TICKS_PER_BEAT,
-        bpm:            120.0,
-        time_sig_num:   4,
-        time_sig_den:   4,
-        flags: TransportFlags { global_start: true, playing: true, ..TransportFlags::default() },
+        bpm: 120.0,
+        time_sig_num: 4,
+        time_sig_den: 4,
+        flags: TransportFlags {
+            global_start: true,
+            playing: true,
+            ..TransportFlags::default()
+        },
     };
     TimedEvent::new(0, paraclete_node_api::Event::Transport(te))
 }
@@ -45,7 +53,7 @@ fn single_node_plugin_process_passes_transport_to_node() {
     plugin.activate(44100.0, 512);
 
     let transport = playing_transport();
-    let events    = [global_start_event()];
+    let events = [global_start_event()];
     let commands: [NodeCommand; 0] = [];
 
     // Must not panic.
@@ -65,9 +73,9 @@ fn single_node_plugin_state_roundtrip() {
     // Enable step 3 via CMD_TOGGLE_STEP
     let cmd = NodeCommand {
         target_id: 0,
-        type_id:   Sequencer::CMD_TOGGLE_STEP,
-        arg0:      3,
-        arg1:      0.0,
+        type_id: Sequencer::CMD_TOGGLE_STEP,
+        arg0: 3,
+        arg1: 0.0,
     };
     let transport = TransportInfo::default();
     plugin1.process_block(&transport, &[], &[cmd]);

@@ -30,13 +30,14 @@ pub enum HostError {
 impl std::fmt::Display for HostError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Load(s)                              => write!(f, "load error: {s}"),
-            Self::InvalidPlugin(s)                     => write!(f, "invalid plugin: {s}"),
-            Self::PluginNotFound { plugin_id }         => write!(f, "plugin not found: {plugin_id}"),
-            Self::Activate(s)                          => write!(f, "activate error: {s}"),
-            Self::MissingExtension(ext)                => write!(f, "missing extension: {ext}"),
-            Self::ParamIdCollision { param_a, param_b } =>
-                write!(f, "param id collision: '{param_a}' and '{param_b}'"),
+            Self::Load(s) => write!(f, "load error: {s}"),
+            Self::InvalidPlugin(s) => write!(f, "invalid plugin: {s}"),
+            Self::PluginNotFound { plugin_id } => write!(f, "plugin not found: {plugin_id}"),
+            Self::Activate(s) => write!(f, "activate error: {s}"),
+            Self::MissingExtension(ext) => write!(f, "missing extension: {ext}"),
+            Self::ParamIdCollision { param_a, param_b } => {
+                write!(f, "param id collision: '{param_a}' and '{param_b}'")
+            }
         }
     }
 }

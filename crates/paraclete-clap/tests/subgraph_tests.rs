@@ -3,17 +3,20 @@ use paraclete_clap::SubgraphPlugin;
 /// Node ID of the Sequencer in every SubgraphPlugin (matches subgraph::SEQ_ID).
 const SEQ_ID: u32 = 2;
 use paraclete_node_api::{
-    Event, NodeCommand, TimedEvent, TransportInfo, UmpMessage,
-    midi::{ChannelVoice2, Channeled, Grouped, NoteOn, u4, u7},
     capability::ParamDescriptor,
-    CMD_SET_PARAM,
+    midi::{u4, u7, ChannelVoice2, Channeled, Grouped, NoteOn},
+    Event, NodeCommand, TimedEvent, TransportInfo, UmpMessage, CMD_SET_PARAM,
 };
 use paraclete_nodes::{AnalogEngine, FmEngine, Sequencer};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn playing_transport() -> TransportInfo {
-    TransportInfo { playing: true, bpm: 120.0, ..TransportInfo::default() }
+    TransportInfo {
+        playing: true,
+        bpm: 120.0,
+        ..TransportInfo::default()
+    }
 }
 
 fn stopped_transport() -> TransportInfo {
@@ -83,9 +86,9 @@ fn subgraph_plugin_state_roundtrip() {
 
     plugin1.send_command(NodeCommand {
         target_id: SEQ_ID,
-        type_id:   Sequencer::CMD_TOGGLE_STEP,
-        arg0:      1,
-        arg1:      0.0,
+        type_id: Sequencer::CMD_TOGGLE_STEP,
+        arg0: 1,
+        arg1: 0.0,
     });
     // Run one block so the command is processed (injected into pending_cmds).
     plugin1.process_block(&stopped_transport(), None, &[], &[]);
@@ -94,7 +97,10 @@ fn subgraph_plugin_state_roundtrip() {
 
     // The toggled step must be captured in the blob (not just a constant).
     let default_bytes = kick_plugin().state_save();
-    assert_ne!(saved, default_bytes, "toggled step must change the serialised bytes");
+    assert_ne!(
+        saved, default_bytes,
+        "toggled step must change the serialised bytes"
+    );
 
     // ── Restore into plugin2 ─────────────────────────────────────────────────
     let mut plugin2 = kick_plugin();
@@ -103,7 +109,10 @@ fn subgraph_plugin_state_roundtrip() {
 
     let restored = plugin2.state_save();
 
-    assert_eq!(saved, restored, "state_load must restore the exact serialised bytes");
+    assert_eq!(
+        saved, restored,
+        "state_load must restore the exact serialised bytes"
+    );
 }
 
 /// Spec: subgraph_plugin_seq_command_reaches_sequencer
@@ -119,9 +128,9 @@ fn subgraph_plugin_seq_command_reaches_sequencer() {
 
     plugin.send_command(NodeCommand {
         target_id: SEQ_ID,
-        type_id:   Sequencer::CMD_TOGGLE_STEP,
-        arg0:      4,
-        arg1:      0.0,
+        type_id: Sequencer::CMD_TOGGLE_STEP,
+        arg0: 4,
+        arg1: 0.0,
     });
     plugin.process_block(&stopped_transport(), None, &[], &[]);
 
@@ -145,9 +154,9 @@ fn subgraph_plugin_gen_command_reaches_generator() {
     let decay_id = ParamDescriptor::id_for_name("decay");
     let cmd = NodeCommand {
         target_id: 0, // target_id overridden by process_block to gen_id
-        type_id:   CMD_SET_PARAM,
-        arg0:      decay_id as i64,
-        arg1:      0.3,
+        type_id: CMD_SET_PARAM,
+        arg0: decay_id as i64,
+        arg1: 0.3,
     };
 
     // Must not panic.
@@ -163,7 +172,7 @@ fn subgraph_plugin_fm_engine_variant_no_panic() {
     let mut plugin = SubgraphPlugin::new(Box::new(FmEngine::bass()), 3, 44100.0, 512);
     plugin.activate(44100.0, 512);
 
-    let note_on  = make_note_on(48, 32768);
+    let note_on = make_note_on(48, 32768);
     let transport = playing_transport();
 
     // Must not panic.

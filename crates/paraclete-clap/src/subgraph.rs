@@ -11,8 +11,8 @@
 //! added per machine bank binary.
 
 use paraclete_node_api::{
-    Node, NodeCommand, PortDirection, PortType, TimedEvent,
-    TransportEvent, TransportFlags, TransportInfo, TICKS_PER_BEAT,
+    Node, NodeCommand, PortDirection, PortType, TimedEvent, TransportEvent, TransportFlags,
+    TransportInfo, TICKS_PER_BEAT,
 };
 use paraclete_nodes::{InternalClock, Sequencer};
 use paraclete_runtime::{NodeConfigurator, NodeExecutor};
@@ -31,28 +31,23 @@ pub(crate) const SEQ_ID: u32 = 2;
 /// Exposes a safe Rust API. The CLAP FFI layer (per binary) delegates to these
 /// methods after translating raw C pointers to Paraclete types.
 pub struct SubgraphPlugin {
-    executor:     NodeExecutor,
-    gen_id:       u32,
-    bridge:       ClapParamBridge,
-    sample_rate:  f32,
-    block_size:   usize,
+    executor: NodeExecutor,
+    gen_id: u32,
+    bridge: ClapParamBridge,
+    sample_rate: f32,
+    block_size: usize,
     prev_playing: bool,
     /// Pre-allocated interleaved stereo output buffer (block_size × 2 f32s).
-    audio_out:    Vec<f32>,
+    audio_out: Vec<f32>,
 }
 
 impl SubgraphPlugin {
     /// Create a SubgraphPlugin wrapping the given generator node.
     ///
     /// `gen_id` must not be 1 or 2 (reserved for InternalClock and Sequencer).
-    pub fn new(
-        generator:   Box<dyn Node>,
-        gen_id:      u32,
-        sample_rate: f32,
-        block_size:  usize,
-    ) -> Self {
+    pub fn new(generator: Box<dyn Node>, gen_id: u32, sample_rate: f32, block_size: usize) -> Self {
         let cap_doc = generator.capability_document();
-        let bridge  = ClapParamBridge::from_capability_document(&cap_doc);
+        let bridge = ClapParamBridge::from_capability_document(&cap_doc);
         let executor = build_machine_subgraph(generator, gen_id, sample_rate, block_size);
         Self {
             executor,
@@ -71,7 +66,7 @@ impl SubgraphPlugin {
     /// values; this updates bookkeeping for subsequent `process_block()` calls.
     pub fn activate(&mut self, sample_rate: f32, block_size: usize) {
         self.sample_rate = sample_rate;
-        self.block_size  = block_size;
+        self.block_size = block_size;
         if self.audio_out.len() != block_size * 2 {
             self.audio_out.resize(block_size * 2, 0.0);
         }
@@ -94,10 +89,10 @@ impl SubgraphPlugin {
     /// Returns the interleaved stereo output for this block.
     pub fn process_block(
         &mut self,
-        transport:        &TransportInfo,
-        transport_event:  Option<&TransportEvent>,
-        external_events:  &[TimedEvent],
-        commands:         &[NodeCommand],
+        transport: &TransportInfo,
+        transport_event: Option<&TransportEvent>,
+        external_events: &[TimedEvent],
+        commands: &[NodeCommand],
     ) -> &[f32] {
         let event = match transport_event {
             Some(ev) => {
@@ -117,7 +112,10 @@ impl SubgraphPlugin {
             self.executor.inject_event_for_node(self.gen_id, ev);
         }
         for &cmd in commands {
-            self.executor.inject_node_command(NodeCommand { target_id: self.gen_id, ..cmd });
+            self.executor.inject_node_command(NodeCommand {
+                target_id: self.gen_id,
+                ..cmd
+            });
         }
 
         self.audio_out.fill(0.0);
@@ -158,43 +156,60 @@ impl SubgraphPlugin {
         if 4 + seq_len > data.len() {
             return;
         }
-        self.executor.deserialize_node(SEQ_ID, &data[4..4 + seq_len]);
-        self.executor.deserialize_node(self.gen_id, &data[4 + seq_len..]);
+        self.executor
+            .deserialize_node(SEQ_ID, &data[4..4 + seq_len]);
+        self.executor
+            .deserialize_node(self.gen_id, &data[4 + seq_len..]);
     }
 
-    pub fn bridge(&self) -> &ClapParamBridge { &self.bridge }
-    pub fn seq_id(&self) -> u32 { SEQ_ID }
-    pub fn gen_id(&self) -> u32 { self.gen_id }
-    pub fn sample_rate(&self) -> f32 { self.sample_rate }
-    pub fn block_size(&self) -> usize { self.block_size }
-    pub fn prev_playing(&self) -> bool { self.prev_playing }
+    pub fn bridge(&self) -> &ClapParamBridge {
+        &self.bridge
+    }
+    pub fn seq_id(&self) -> u32 {
+        SEQ_ID
+    }
+    pub fn gen_id(&self) -> u32 {
+        self.gen_id
+    }
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
+    pub fn block_size(&self) -> usize {
+        self.block_size
+    }
+    pub fn prev_playing(&self) -> bool {
+        self.prev_playing
+    }
 }
 
 /// Build an executor containing InternalClock(1) → Sequencer(2) → generator(gen_id).
 fn build_machine_subgraph(
-    generator:   Box<dyn Node>,
-    gen_id:      u32,
+    generator: Box<dyn Node>,
+    gen_id: u32,
     sample_rate: f32,
-    block_size:  usize,
+    block_size: usize,
 ) -> NodeExecutor {
     // Discover the generator's event input port before moving it into the graph.
-    let gen_event_in = generator.ports().iter()
+    let gen_event_in = generator
+        .ports()
+        .iter()
         .find(|p| p.direction == PortDirection::Input && p.port_type == PortType::Event)
         .map(|p| p.id)
         .expect("generator must declare an Event Input port for Sequencer→generator routing");
 
     let mut conf = NodeConfigurator::new(sample_rate, block_size);
     conf.add_node(CLOCK_ID, Box::new(InternalClock::new()));
-    conf.add_node(SEQ_ID,   Box::new(Sequencer::new()));
-    conf.add_node(gen_id,   generator);
+    conf.add_node(SEQ_ID, Box::new(Sequencer::new()));
+    conf.add_node(gen_id, generator);
     conf.connect(
-        CLOCK_ID, InternalClock::PORT_CLOCK_OUT,
-        SEQ_ID,   Sequencer::PORT_CLOCK_IN,
-    ).expect("InternalClock → Sequencer clock connection must succeed");
-    conf.connect(
-        SEQ_ID,  Sequencer::PORT_EVENTS_OUT,
-        gen_id,  gen_event_in,
-    ).expect("Sequencer → generator event connection must succeed");
+        CLOCK_ID,
+        InternalClock::PORT_CLOCK_OUT,
+        SEQ_ID,
+        Sequencer::PORT_CLOCK_IN,
+    )
+    .expect("InternalClock → Sequencer clock connection must succeed");
+    conf.connect(SEQ_ID, Sequencer::PORT_EVENTS_OUT, gen_id, gen_event_in)
+        .expect("Sequencer → generator event connection must succeed");
     conf.build_executor()
 }
 
@@ -204,35 +219,35 @@ fn build_machine_subgraph(
 /// `None` on stable state. This prevents the Sequencer from resetting its step
 /// counter on every audio buffer.
 fn transport_transition_event(
-    transport:    &TransportInfo,
+    transport: &TransportInfo,
     prev_playing: bool,
 ) -> Option<TransportEvent> {
     if !prev_playing && transport.playing {
         Some(TransportEvent {
-            domain_id:      0,
-            bar:            1,
-            beat:           0,
-            tick:           0,
+            domain_id: 0,
+            bar: 1,
+            beat: 0,
+            tick: 0,
             ticks_per_beat: TICKS_PER_BEAT,
-            bpm:            transport.bpm,
-            time_sig_num:   4,
-            time_sig_den:   4,
+            bpm: transport.bpm,
+            time_sig_num: 4,
+            time_sig_den: 4,
             flags: TransportFlags {
                 global_start: true,
-                playing:      true,
+                playing: true,
                 ..TransportFlags::default()
             },
         })
     } else if prev_playing && !transport.playing {
         Some(TransportEvent {
-            domain_id:      0,
-            bar:            1,
-            beat:           0,
-            tick:           0,
+            domain_id: 0,
+            bar: 1,
+            beat: 0,
+            tick: 0,
             ticks_per_beat: TICKS_PER_BEAT,
-            bpm:            transport.bpm,
-            time_sig_num:   4,
-            time_sig_den:   4,
+            bpm: transport.bpm,
+            time_sig_num: 4,
+            time_sig_den: 4,
             flags: TransportFlags {
                 global_stop: true,
                 ..TransportFlags::default()

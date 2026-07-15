@@ -8,35 +8,35 @@
 //! (clap_plugin_entry, extern "C" callbacks) live in src/bin/sequencer.rs and
 //! are added when clap-sys is introduced in Commit 6.
 
-use paraclete_node_api::{
-    EventOutputBuffer, ExtendedEventSlab, Node, NodeCommand,
-    ProcessOutput, TimedEvent, TransportInfo,
-};
 use crate::bridge::ClapParamBridge;
 use crate::process_input::make_process_input;
+use paraclete_node_api::{
+    EventOutputBuffer, ExtendedEventSlab, Node, NodeCommand, ProcessOutput, TimedEvent,
+    TransportInfo,
+};
 
 /// Wraps one portable Paraclete node as a CLAP instrument or MIDI effect.
 ///
 /// Exposes a safe Rust API. The CLAP FFI layer (added in Commit 6) delegates
 /// to these methods after translating raw C pointers to Paraclete types.
 pub struct SingleNodePlugin {
-    node:        Box<dyn Node>,
+    node: Box<dyn Node>,
     /// CLAP ↔ Paraclete parameter translation table. Built at `activate()`.
-    bridge:      ClapParamBridge,
+    bridge: ClapParamBridge,
     sample_rate: f32,
-    block_size:  usize,
+    block_size: usize,
     /// Pre-allocated output event buffer (Sequencer MIDI output).
-    events_out:  EventOutputBuffer,
+    events_out: EventOutputBuffer,
 }
 
 impl SingleNodePlugin {
     pub fn new(node: Box<dyn Node>) -> Self {
         Self {
             node,
-            bridge:      ClapParamBridge::empty(),
+            bridge: ClapParamBridge::empty(),
             sample_rate: 44100.0,
-            block_size:  512,
-            events_out:  EventOutputBuffer::new(256),
+            block_size: 512,
+            events_out: EventOutputBuffer::new(256),
         }
     }
 
@@ -45,7 +45,7 @@ impl SingleNodePlugin {
     /// capability document.
     pub fn activate(&mut self, sample_rate: f32, block_size: usize) {
         self.sample_rate = sample_rate;
-        self.block_size  = block_size;
+        self.block_size = block_size;
         self.node.activate(sample_rate, block_size);
         self.bridge = ClapParamBridge::from_capability_document(&self.node.capability_document());
     }
@@ -61,22 +61,22 @@ impl SingleNodePlugin {
     pub fn process_block(
         &mut self,
         transport: &TransportInfo,
-        events:    &[TimedEvent],
-        commands:  &[NodeCommand],
+        events: &[TimedEvent],
+        commands: &[NodeCommand],
     ) -> Vec<TimedEvent> {
         let slab = ExtendedEventSlab::empty();
         let input = make_process_input(
-            transport, events, commands, &slab,
-            self.sample_rate, self.block_size,
+            transport,
+            events,
+            commands,
+            &slab,
+            self.sample_rate,
+            self.block_size,
         );
 
         self.events_out.clear();
         // Sequencer is a MIDI effect — no audio outputs.
-        let mut output = ProcessOutput::new(
-            &mut [],
-            &mut [],
-            &mut self.events_out,
-        );
+        let mut output = ProcessOutput::new(&mut [], &mut [], &mut self.events_out);
 
         self.node.process(&input, &mut output);
         self.events_out.as_slice().to_vec()

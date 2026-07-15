@@ -4,9 +4,7 @@
 //! The CLAP FFI layer (Commits 5/6) translates C pointers into Paraclete types
 //! and calls these helpers. Tests call them directly with Paraclete-native data.
 
-use paraclete_node_api::{
-    ExtendedEventSlab, NodeCommand, ProcessInput, TimedEvent, TransportInfo,
-};
+use paraclete_node_api::{ExtendedEventSlab, NodeCommand, ProcessInput, TimedEvent, TransportInfo};
 
 /// Build a `ProcessInput` for a MIDI-effect node (no audio inputs).
 ///
@@ -14,15 +12,15 @@ use paraclete_node_api::{
 /// only events and commands, not audio.
 pub(crate) fn make_process_input<'a>(
     transport: &'a TransportInfo,
-    events:    &'a [TimedEvent],
-    commands:  &'a [NodeCommand],
-    slab:      &'a ExtendedEventSlab,
+    events: &'a [TimedEvent],
+    commands: &'a [NodeCommand],
+    slab: &'a ExtendedEventSlab,
     sample_rate: f32,
-    block_size:  usize,
+    block_size: usize,
 ) -> ProcessInput<'a> {
     ProcessInput {
-        audio_inputs:    &[],
-        signal_inputs:   &[],
+        audio_inputs: &[],
+        signal_inputs: &[],
         events,
         transport,
         sample_rate,

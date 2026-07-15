@@ -16,12 +16,12 @@ pub struct ClapParamBridge {
 
 #[derive(Clone)]
 pub struct ClapParamEntry {
-    pub clap_id:      u32,
+    pub clap_id: u32,
     pub paraclete_id: u32,
-    pub name:         String,
-    pub min:          f64,
-    pub max:          f64,
-    pub default_val:  f64,
+    pub name: String,
+    pub min: f64,
+    pub max: f64,
+    pub default_val: f64,
 }
 
 impl ClapParamBridge {
@@ -33,24 +33,29 @@ impl ClapParamBridge {
     /// Build from a node's capability document.
     /// CLAP IDs are assigned sequentially (0, 1, 2, …) in parameter declaration order.
     pub fn from_capability_document(doc: &CapabilityDocument) -> Self {
-        let entries = doc.params
+        let entries = doc
+            .params
             .iter()
             .enumerate()
             .map(|(clap_id, param)| ClapParamEntry {
-                clap_id:      clap_id as u32,
+                clap_id: clap_id as u32,
                 paraclete_id: param.id,
-                name:         param.name.to_string(),
-                min:          param.min,
-                max:          param.max,
-                default_val:  param.default,
+                name: param.name.to_string(),
+                min: param.min,
+                max: param.max,
+                default_val: param.default,
             })
             .collect();
         ClapParamBridge { entries }
     }
 
-    pub fn len(&self) -> usize { self.entries.len() }
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
 
-    pub fn is_empty(&self) -> bool { self.entries.is_empty() }
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 
     /// Look up the Paraclete param_id for a CLAP param ID.
     /// Returns None if clap_id is out of range.
@@ -67,16 +72,16 @@ impl ClapParamBridge {
     /// `target_id` must be set to the target node's ID by the caller.
     pub fn make_set_param_command(
         &self,
-        clap_id:   u32,
-        value:     f64,
+        clap_id: u32,
+        value: f64,
         target_id: u32,
     ) -> Option<NodeCommand> {
         let paraclete_id = self.paraclete_id_for(clap_id)?;
         Some(NodeCommand {
             target_id,
             type_id: CMD_SET_PARAM,
-            arg0:    paraclete_id as i64,
-            arg1:    value,
+            arg0: paraclete_id as i64,
+            arg1: value,
         })
     }
 }

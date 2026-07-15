@@ -7,7 +7,9 @@ use std::path::PathBuf;
 pub fn scan_clap_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
     for dir in clap_search_dirs() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("clap") {

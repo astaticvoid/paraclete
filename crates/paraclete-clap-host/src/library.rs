@@ -19,7 +19,7 @@ use crate::HostError;
 /// Wraps `libloading::Library` and calls `clap_entry.deinit` on drop.
 pub(crate) struct LibraryHandle {
     #[allow(dead_code)] // kept alive to prevent library unload
-    pub(crate) lib:    libloading::Library,
+    pub(crate) lib: libloading::Library,
     pub(crate) deinit: Option<unsafe extern "C" fn()>,
 }
 
@@ -31,7 +31,9 @@ impl Drop for LibraryHandle {
         if let Some(deinit) = self.deinit {
             // SAFETY: deinit must be called before unloading per CLAP spec.
             // The library is still loaded (we own it in this struct).
-            unsafe { deinit(); }
+            unsafe {
+                deinit();
+            }
         }
     }
 }
@@ -40,11 +42,11 @@ impl Drop for LibraryHandle {
 #[derive(Debug, Clone)]
 pub struct PluginDescriptor {
     /// CLAP plugin ID string (e.g. `"audio.paraclete.machine.kick"`).
-    pub id:          String,
-    pub name:        String,
-    pub vendor:      String,
-    pub version:     String,
-    pub features:    Vec<String>,
+    pub id: String,
+    pub name: String,
+    pub vendor: String,
+    pub version: String,
+    pub features: Vec<String>,
     /// Path to the `.clap` file or library this descriptor was loaded from.
     pub source_path: PathBuf,
 }
@@ -52,8 +54,8 @@ pub struct PluginDescriptor {
 /// A loaded `.clap` shared library. Holds the library open until all
 /// `PluginNode` instances derived from it are dropped.
 pub struct PluginLibrary {
-    pub(crate) lib:         Arc<LibraryHandle>,
-    pub(crate) factory:     *const clap_plugin_factory,
+    pub(crate) lib: Arc<LibraryHandle>,
+    pub(crate) factory: *const clap_plugin_factory,
     pub(crate) descriptors: Vec<PluginDescriptor>,
 }
 
@@ -73,14 +75,11 @@ impl PluginLibrary {
         // Find the CLAP entry point symbol.
         let entry_sym: libloading::Symbol<*const clap_plugin_entry> =
             unsafe { lib.get(b"clap_entry\0") }
-                .map_err(|_| HostError::InvalidPlugin(
-                    "symbol 'clap_entry' not found".into(),
-                ))?;
+                .map_err(|_| HostError::InvalidPlugin("symbol 'clap_entry' not found".into()))?;
         let entry: &clap_plugin_entry = unsafe { &**entry_sym };
 
         // Initialise — must be called before any other use per CLAP spec.
-        let path_cstr = CString::new(lib_path.to_string_lossy().as_bytes())
-            .unwrap_or_default();
+        let path_cstr = CString::new(lib_path.to_string_lossy().as_bytes()).unwrap_or_default();
         if let Some(init_fn) = entry.init {
             if !unsafe { init_fn(path_cstr.as_ptr()) } {
                 return Err(HostError::InvalidPlugin("entry.init returned false".into()));
@@ -92,7 +91,7 @@ impl PluginLibrary {
         // Get the plugin factory.
         let factory_ptr = match entry.get_factory {
             Some(f) => unsafe { f(CLAP_PLUGIN_FACTORY_ID.as_ptr()) },
-            None    => std::ptr::null(),
+            None => std::ptr::null(),
         };
         if factory_ptr.is_null() {
             return Err(HostError::InvalidPlugin("get_factory returned null".into()));
@@ -107,13 +106,15 @@ impl PluginLibrary {
 
         for i in 0..count {
             let desc_ptr = unsafe { ((*factory).get_plugin_descriptor.unwrap())(factory, i) };
-            if desc_ptr.is_null() { continue; }
+            if desc_ptr.is_null() {
+                continue;
+            }
             let desc = unsafe { &*desc_ptr };
 
-            let id     = read_cstr(desc.id);
-            let name   = read_cstr(desc.name);
+            let id = read_cstr(desc.id);
+            let name = read_cstr(desc.name);
             let vendor = read_cstr(desc.vendor);
-            let ver    = read_cstr(desc.version);
+            let ver = read_cstr(desc.version);
 
             descriptors.push(PluginDescriptor {
                 id,
@@ -125,7 +126,11 @@ impl PluginLibrary {
             });
         }
 
-        Ok(PluginLibrary { lib, factory, descriptors })
+        Ok(PluginLibrary {
+            lib,
+            factory,
+            descriptors,
+        })
     }
 
     /// All plugins declared in this library.
@@ -139,11 +144,13 @@ impl PluginLibrary {
     /// `NodeConfigurator`. The node is not yet activated.
     pub fn instantiate(
         &self,
-        plugin_id:   &str,
+        plugin_id: &str,
         sample_rate: f32,
-        block_size:  usize,
+        block_size: usize,
     ) -> Result<Box<dyn Node>, HostError> {
-        let desc = self.descriptors.iter()
+        let desc = self
+            .descriptors
+            .iter()
             .find(|d| d.id == plugin_id)
             .ok_or_else(|| HostError::PluginNotFound {
                 plugin_id: plugin_id.to_string(),
@@ -151,11 +158,7 @@ impl PluginLibrary {
 
         let id_cstr = CString::new(plugin_id).unwrap_or_default();
         let plugin: *const clap_plugin = unsafe {
-            ((*self.factory).create_plugin.unwrap())(
-                self.factory,
-                &HOST,
-                id_cstr.as_ptr(),
-            )
+            ((*self.factory).create_plugin.unwrap())(self.factory, &HOST, id_cstr.as_ptr())
         };
         if plugin.is_null() {
             return Err(HostError::Activate("create_plugin returned null".into()));
@@ -165,7 +168,9 @@ impl PluginLibrary {
         if let Some(init_fn) = unsafe { (*plugin).init } {
             if !unsafe { init_fn(plugin) } {
                 unsafe {
-                    if let Some(destroy) = (*plugin).destroy { destroy(plugin); }
+                    if let Some(destroy) = (*plugin).destroy {
+                        destroy(plugin);
+                    }
                 }
                 return Err(HostError::Activate("plugin.init returned false".into()));
             }
@@ -207,8 +212,12 @@ impl PluginLibrary {
 }
 
 fn read_cstr(ptr: *const std::ffi::c_char) -> String {
-    if ptr.is_null() { return String::new(); }
-    unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned()
+    if ptr.is_null() {
+        return String::new();
+    }
+    unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Resolve the actual shared library path.
@@ -217,7 +226,8 @@ fn read_cstr(ptr: *const std::ffi::c_char) -> String {
 fn resolve_lib_path(path: &Path) -> Result<PathBuf, HostError> {
     if path.is_dir() {
         // macOS bundle convention
-        let stem = path.file_stem()
+        let stem = path
+            .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("plugin");
         let binary = path.join("Contents").join("MacOS").join(stem);
