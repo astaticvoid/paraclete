@@ -37,11 +37,46 @@ the doc MUST be updated before the session ends. Skip none.
 3. If nothing changed that touches docs: state so explicitly (that's valid).
 4. Commit doc changes together with or immediately after the code changes.
 
-## Step 3: Commit quality
+## Step 3: Runtime health checks
 
-- `git status` — no unintended files staged
-- `git diff --staged` — review actual changes
-- Commit message matches repo style (present-tense, no trailing period)
+After killing paraclete (or if it was run this session):
+
+### 3a. Verify the process is actually dead
+
+```bash
+pgrep paraclete || echo "clean"
+```
+
+### 3b. Verify audio sink is healthy (Linux only)
+
+```bash
+# If ONLY auto_null shows, pipewire is stranded — restart it.
+count=$(pactl list short sinks 2>/dev/null | grep -c alsa_output)
+if [ "$count" -eq 0 ]; then
+    echo "WARNING: no real audio sink — restarting pipewire"
+    systemctl --user restart pipewire pipewire-pulse
+fi
+```
+
+### 3c. Verify HTTP/WSS ports are released
+
+```bash
+timeout 1 bash -c 'echo >/dev/tcp/127.0.0.1/7274' 2>/dev/null && echo "port 7274 still in use" || true
+```
+
+## Step 4: Working tree integrity
+
+- [ ] `git status` — no unintended files staged
+- [ ] `git status --short` — no untracked files that should be committed or `.gitignore`d
+- [ ] If dirty: report what and why (explicit, never silent)
+- [ ] Unpushed commits: `git log origin/main..HEAD --oneline` — report them
+- [ ] `design/todo-scratch.md` — updated with any carryover items for next session
+
+## Step 5: Commit quality
+
+- [ ] `git diff --staged` — review actual changes
+- [ ] Commit message matches repo style (present-tense, no trailing period)
+- [ ] Subagent code review ran before commit (for non-trivial changes)
 
 ## Non-obvious gotchas
 
