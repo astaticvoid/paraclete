@@ -1,12 +1,15 @@
 /// Integration tests for the runtime — NodeConfigurator, NodeExecutor, ADR-005 cycle
 /// rejection, and P1 event routing.
-use std::sync::{Arc, Mutex, atomic::{AtomicU32, Ordering}};
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Arc, Mutex,
+};
 
 use paraclete_node_api::{
-    CapabilityDocument, ConnectionAgreement, ConnectionRecord, Event, Surface,
-    SurfaceEvent, SurfaceOutput, SurfaceOutputHandle, StateBusValue, Node,
-    ParamLockEvent, PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput,
-    SurfaceDescriptor, TimedEvent, TransportEvent, TransportFlags, TransportInfo,
+    CapabilityDocument, ConnectionAgreement, ConnectionRecord, Event, Node, ParamLockEvent,
+    PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue, Surface,
+    SurfaceDescriptor, SurfaceEvent, SurfaceOutput, SurfaceOutputHandle, TimedEvent,
+    TransportEvent, TransportFlags, TransportInfo,
 };
 use paraclete_runtime::{ConfigMessage, ConnectError, NodeConfigurator};
 
@@ -19,12 +22,17 @@ struct CountingNode {
 
 impl CountingNode {
     fn new(call_count: Arc<AtomicU32>) -> Self {
-        Self { ports: vec![], call_count }
+        Self {
+            ports: vec![],
+            call_count,
+        }
     }
 }
 
 impl Node for CountingNode {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, _input: &ProcessInput, _output: &mut ProcessOutput) {
         self.call_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -50,7 +58,9 @@ impl ConstantOutputNode {
 }
 
 impl Node for ConstantOutputNode {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
         if let Some(buf) = output.audio_outputs.first_mut() {
             for ch in 0..buf.channels() {
@@ -69,20 +79,32 @@ struct BidirectionalNode {
 
 impl BidirectionalNode {
     const PORT_OUT: u32 = 0;
-    const PORT_IN:  u32 = 1;
+    const PORT_IN: u32 = 1;
 
     fn new() -> Self {
         Self {
             ports: [
-                PortDescriptor { id: Self::PORT_OUT, name: "out".into(), direction: PortDirection::Output, port_type: PortType::Event },
-                PortDescriptor { id: Self::PORT_IN,  name: "in".into(),  direction: PortDirection::Input,  port_type: PortType::Event },
+                PortDescriptor {
+                    id: Self::PORT_OUT,
+                    name: "out".into(),
+                    direction: PortDirection::Output,
+                    port_type: PortType::Event,
+                },
+                PortDescriptor {
+                    id: Self::PORT_IN,
+                    name: "in".into(),
+                    direction: PortDirection::Input,
+                    port_type: PortType::Event,
+                },
             ],
         }
     }
 }
 
 impl Node for BidirectionalNode {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, _: &ProcessInput, _: &mut ProcessOutput) {}
 }
 
@@ -103,16 +125,37 @@ fn configurator_connect_rejects_two_node_cycle() {
     conf.add_node(2, Box::new(BidirectionalNode::new()));
 
     // 1's output → 2's input: valid
-    assert!(conf.connect(1, BidirectionalNode::PORT_OUT, 2, BidirectionalNode::PORT_IN).is_ok());
+    assert!(conf
+        .connect(
+            1,
+            BidirectionalNode::PORT_OUT,
+            2,
+            BidirectionalNode::PORT_IN
+        )
+        .is_ok());
     // 2's output → 1's input: forms a cycle, must be rejected
-    assert!(conf.connect(2, BidirectionalNode::PORT_OUT, 1, BidirectionalNode::PORT_IN).is_err());
+    assert!(conf
+        .connect(
+            2,
+            BidirectionalNode::PORT_OUT,
+            1,
+            BidirectionalNode::PORT_IN
+        )
+        .is_err());
 }
 
 #[test]
 fn configurator_connect_rejects_self_loop() {
     let mut conf = NodeConfigurator::new(44100.0, 512);
     conf.add_node(1, Box::new(BidirectionalNode::new()));
-    assert!(conf.connect(1, BidirectionalNode::PORT_OUT, 1, BidirectionalNode::PORT_IN).is_err());
+    assert!(conf
+        .connect(
+            1,
+            BidirectionalNode::PORT_OUT,
+            1,
+            BidirectionalNode::PORT_IN
+        )
+        .is_err());
 }
 
 #[test]
@@ -122,8 +165,22 @@ fn configurator_connect_accepts_valid_dag() {
     conf.add_node(2, Box::new(BidirectionalNode::new()));
     conf.add_node(3, Box::new(BidirectionalNode::new()));
 
-    assert!(conf.connect(1, BidirectionalNode::PORT_OUT, 2, BidirectionalNode::PORT_IN).is_ok());
-    assert!(conf.connect(2, BidirectionalNode::PORT_OUT, 3, BidirectionalNode::PORT_IN).is_ok());
+    assert!(conf
+        .connect(
+            1,
+            BidirectionalNode::PORT_OUT,
+            2,
+            BidirectionalNode::PORT_IN
+        )
+        .is_ok());
+    assert!(conf
+        .connect(
+            2,
+            BidirectionalNode::PORT_OUT,
+            3,
+            BidirectionalNode::PORT_IN
+        )
+        .is_ok());
 }
 
 // ── NodeExecutor ──────────────────────────────────────────────────────────────
@@ -235,7 +292,9 @@ impl EventCapturingNode {
 }
 
 impl Node for EventCapturingNode {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, input: &ProcessInput, _output: &mut ProcessOutput) {
         let mut guard = self.received.lock().unwrap();
         for timed in input.events {
@@ -264,10 +323,14 @@ impl EventEmittingNode {
 }
 
 impl Node for EventEmittingNode {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
         if let Some(event) = self.event {
-            output.events_out.push(TimedEvent::new(0, Event::Surface(event)));
+            output
+                .events_out
+                .push(TimedEvent::new(0, Event::Surface(event)));
         }
     }
 }
@@ -282,19 +345,27 @@ impl TestSurface {
     fn new(update_count: Arc<AtomicU32>) -> Self {
         Self {
             ports: vec![],
-            surface: SurfaceDescriptor { name: "Test".into(), vendor: "Test".into(), controls: vec![] },
+            surface: SurfaceDescriptor {
+                name: "Test".into(),
+                vendor: "Test".into(),
+                controls: vec![],
+            },
             update_count,
         }
     }
 }
 
 impl Node for TestSurface {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, _: &ProcessInput, _: &mut ProcessOutput) {}
 }
 
 impl Surface for TestSurface {
-    fn descriptor(&self) -> &SurfaceDescriptor { &self.surface }
+    fn descriptor(&self) -> &SurfaceDescriptor {
+        &self.surface
+    }
     fn update_output(&mut self, _: &SurfaceOutput) {
         self.update_count.fetch_add(1, Ordering::Relaxed);
     }
@@ -303,11 +374,21 @@ impl Surface for TestSurface {
 #[test]
 fn event_routing_delivers_events_from_upstream_to_downstream_node() {
     let received = Arc::new(Mutex::new(vec![]));
-    let hw_event = SurfaceEvent::PadPressed { id: 7, velocity: 100, pressure: 0 };
+    let hw_event = SurfaceEvent::PadPressed {
+        id: 7,
+        velocity: 100,
+        pressure: 0,
+    };
 
     let mut conf = NodeConfigurator::new(44100.0, 64);
     conf.add_node(1, Box::new(EventEmittingNode::new(hw_event)));
-    conf.add_node(2, Box::new(EventCapturingNode::new(received.clone(), PortDirection::Input)));
+    conf.add_node(
+        2,
+        Box::new(EventCapturingNode::new(
+            received.clone(),
+            PortDirection::Input,
+        )),
+    );
     conf.connect(1, 0, 2, 0).unwrap();
     let mut exec = conf.build_executor();
 
@@ -316,14 +397,23 @@ fn event_routing_delivers_events_from_upstream_to_downstream_node() {
 
     let events = received.lock().unwrap();
     assert_eq!(events.len(), 1);
-    assert!(matches!(events[0], Event::Surface(SurfaceEvent::PadPressed { id: 7, .. })));
+    assert!(matches!(
+        events[0],
+        Event::Surface(SurfaceEvent::PadPressed { id: 7, .. })
+    ));
 }
 
 #[test]
 fn disconnected_nodes_receive_empty_event_slice() {
     let received = Arc::new(Mutex::new(vec![]));
     let mut conf = NodeConfigurator::new(44100.0, 64);
-    conf.add_node(1, Box::new(EventCapturingNode::new(received.clone(), PortDirection::Input)));
+    conf.add_node(
+        1,
+        Box::new(EventCapturingNode::new(
+            received.clone(),
+            PortDirection::Input,
+        )),
+    );
     let mut exec = conf.build_executor();
 
     let mut out = vec![0.0f32; 64 * 2];
@@ -353,20 +443,30 @@ impl DeviceWithHandle {
     fn new(deliver_count: Arc<AtomicU32>) -> Self {
         Self {
             ports: vec![],
-            surface: SurfaceDescriptor { name: "Test".into(), vendor: "Test".into(), controls: vec![] },
+            surface: SurfaceDescriptor {
+                name: "Test".into(),
+                vendor: "Test".into(),
+                controls: vec![],
+            },
             deliver_count,
         }
     }
 }
 impl Node for DeviceWithHandle {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, _: &ProcessInput, _: &mut ProcessOutput) {}
 }
 impl Surface for DeviceWithHandle {
-    fn descriptor(&self) -> &SurfaceDescriptor { &self.surface }
+    fn descriptor(&self) -> &SurfaceDescriptor {
+        &self.surface
+    }
     fn update_output(&mut self, _: &SurfaceOutput) {}
     fn take_output_handle(&mut self) -> Option<Box<dyn SurfaceOutputHandle>> {
-        Some(Box::new(DeliverCountHandle { count: Arc::clone(&self.deliver_count) }))
+        Some(Box::new(DeliverCountHandle {
+            count: Arc::clone(&self.deliver_count),
+        }))
     }
 }
 
@@ -376,21 +476,31 @@ impl Surface for DeviceWithHandle {
 fn led_routing_deliver_script_output_reaches_handle() {
     let deliver_count = Arc::new(AtomicU32::new(0));
     let mut conf = NodeConfigurator::new(44100.0, 64);
-    conf.add_surface(42, Box::new(DeviceWithHandle::new(Arc::clone(&deliver_count))));
+    conf.add_surface(
+        42,
+        Box::new(DeviceWithHandle::new(Arc::clone(&deliver_count))),
+    );
     let _exec = conf.build_executor();
 
     let mut pending = std::collections::HashMap::new();
     pending.insert(42u32, SurfaceOutput::empty());
     conf.deliver_script_output(pending);
 
-    assert_eq!(deliver_count.load(Ordering::Relaxed), 1, "deliver() should be called once");
+    assert_eq!(
+        deliver_count.load(Ordering::Relaxed),
+        1,
+        "deliver() should be called once"
+    );
 }
 
 #[test]
 fn led_routing_unknown_device_id_is_silently_dropped() {
     let deliver_count = Arc::new(AtomicU32::new(0));
     let mut conf = NodeConfigurator::new(44100.0, 64);
-    conf.add_surface(42, Box::new(DeviceWithHandle::new(Arc::clone(&deliver_count))));
+    conf.add_surface(
+        42,
+        Box::new(DeviceWithHandle::new(Arc::clone(&deliver_count))),
+    );
     let _exec = conf.build_executor();
 
     // device_id 99 has no registered handle — should not panic
@@ -398,7 +508,11 @@ fn led_routing_unknown_device_id_is_silently_dropped() {
     pending.insert(99u32, SurfaceOutput::empty());
     conf.deliver_script_output(pending);
 
-    assert_eq!(deliver_count.load(Ordering::Relaxed), 0, "unknown device_id must be silently dropped");
+    assert_eq!(
+        deliver_count.load(Ordering::Relaxed),
+        0,
+        "unknown device_id must be silently dropped"
+    );
 }
 
 /// BUG-030 — remove_node on a surface device must refuse WITHOUT destroying
@@ -419,7 +533,8 @@ fn remove_node_on_surface_is_nondestructive() {
     let mut out = vec![0.0f32; 64 * 2];
     exec.process(&mut out, 2);
     assert_eq!(
-        update_count.load(Ordering::Relaxed), 1,
+        update_count.load(Ordering::Relaxed),
+        1,
         "device must survive the refused remove_node"
     );
 }
@@ -468,12 +583,17 @@ struct PublishingNode {
 
 impl PublishingNode {
     fn new(key: &str) -> Self {
-        Self { ports: vec![], key: key.to_string() }
+        Self {
+            ports: vec![],
+            key: key.to_string(),
+        }
     }
 }
 
 impl Node for PublishingNode {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, _: &ProcessInput, _: &mut ProcessOutput) {}
     fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         buf.push((self.key.clone(), StateBusValue::Int(42)));
@@ -551,10 +671,14 @@ impl NegotiatingInstrument {
 }
 
 impl Node for NegotiatingInstrument {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, _: &ProcessInput, _: &mut ProcessOutput) {}
 
-    fn is_negotiable(&self) -> bool { true }
+    fn is_negotiable(&self) -> bool {
+        true
+    }
 
     fn negotiate(&mut self, _their_doc: &CapabilityDocument) -> ConnectionAgreement {
         self.negotiate_called.fetch_add(1, Ordering::Relaxed);
@@ -568,26 +692,43 @@ impl Node for NegotiatingInstrument {
 
 #[test]
 fn connect_invokes_negotiate_and_set_connection_record_on_both_sides() {
-    let src_negotiate  = Arc::new(AtomicU32::new(0));
-    let dst_negotiate  = Arc::new(AtomicU32::new(0));
-    let src_record_rx  = Arc::new(AtomicU32::new(0));
-    let dst_record_rx  = Arc::new(AtomicU32::new(0));
+    let src_negotiate = Arc::new(AtomicU32::new(0));
+    let dst_negotiate = Arc::new(AtomicU32::new(0));
+    let src_record_rx = Arc::new(AtomicU32::new(0));
+    let dst_record_rx = Arc::new(AtomicU32::new(0));
 
     let mut conf = NodeConfigurator::new(44100.0, 64);
 
     // src: Event Output
-    conf.add_node(1, Box::new(EventEmittingNode::new(
-        SurfaceEvent::PadPressed { id: 0, velocity: 0, pressure: 0 },
-    )));
-    conf.add_node(2, Box::new(NegotiatingInstrument::new(
-        dst_negotiate.clone(), dst_record_rx.clone(),
-    )));
+    conf.add_node(
+        1,
+        Box::new(EventEmittingNode::new(SurfaceEvent::PadPressed {
+            id: 0,
+            velocity: 0,
+            pressure: 0,
+        })),
+    );
+    conf.add_node(
+        2,
+        Box::new(NegotiatingInstrument::new(
+            dst_negotiate.clone(),
+            dst_record_rx.clone(),
+        )),
+    );
     conf.connect(1, 0, 2, 0).unwrap();
 
     // negotiate() is called on both sides; set_connection_record() is called on both sides.
     // The NegotiatingInstrument on dst side (node 2) should have been called.
-    assert_eq!(dst_negotiate.load(Ordering::Relaxed), 1, "dst negotiate() not called");
-    assert_eq!(dst_record_rx.load(Ordering::Relaxed), 1, "dst set_connection_record() not called");
+    assert_eq!(
+        dst_negotiate.load(Ordering::Relaxed),
+        1,
+        "dst negotiate() not called"
+    );
+    assert_eq!(
+        dst_record_rx.load(Ordering::Relaxed),
+        1,
+        "dst set_connection_record() not called"
+    );
     // src side uses the default negotiate() which we cannot count here (CountingNode doesn't
     // override it), so we only assert on the NegotiatingInstrument side.
     let _ = (src_negotiate, src_record_rx); // unused but declared for symmetry
@@ -615,15 +756,17 @@ impl OrderCapturingNode {
 }
 
 impl Node for OrderCapturingNode {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, input: &ProcessInput, _output: &mut ProcessOutput) {
         let mut order = self.received_order.lock().unwrap();
         for timed in input.events {
             let label = match timed.event {
                 Event::ParamLock(_) => "param_lock",
-                Event::Midi2(_)     => "midi2",
-                Event::Surface(_)  => "hardware",
-                _                   => "other",
+                Event::Midi2(_) => "midi2",
+                Event::Surface(_) => "hardware",
+                _ => "other",
             };
             order.push(label.to_string());
         }
@@ -648,18 +791,30 @@ impl MultiEventEmitter {
 }
 
 impl Node for MultiEventEmitter {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
-        use paraclete_node_api::{UmpMessage, midi::{ChannelVoice2, NoteOn}};
+        use paraclete_node_api::{
+            midi::{ChannelVoice2, NoteOn},
+            UmpMessage,
+        };
         let note_on = NoteOn::<[u32; 4]>::new();
         let ump = UmpMessage::from(ChannelVoice2::from(note_on));
 
         // Emit in reverse priority order: Midi2 first, then ParamLock.
         // The executor must reorder so ParamLock arrives before Midi2.
-        output.events_out.push(TimedEvent::new(0, Event::Midi2(ump)));
-        output.events_out.push(TimedEvent::new(0, Event::ParamLock(
-            ParamLockEvent { node_id: 99, param_id: 0, value: 1.0 }
-        )));
+        output
+            .events_out
+            .push(TimedEvent::new(0, Event::Midi2(ump)));
+        output.events_out.push(TimedEvent::new(
+            0,
+            Event::ParamLock(ParamLockEvent {
+                node_id: 99,
+                param_id: 0,
+                value: 1.0,
+            }),
+        ));
     }
 }
 
@@ -678,7 +833,10 @@ fn executor_delivers_param_lock_before_midi2_at_same_sample_offset() {
 
     let received = order.lock().unwrap();
     assert_eq!(received.len(), 2, "expected 2 events");
-    assert_eq!(received[0], "param_lock", "ParamLock must arrive before Midi2");
+    assert_eq!(
+        received[0], "param_lock",
+        "ParamLock must arrive before Midi2"
+    );
     assert_eq!(received[1], "midi2");
 }
 
@@ -693,8 +851,10 @@ impl NoteOrderRecorder {
     fn new() -> Self {
         Self {
             ports: vec![PortDescriptor {
-                id: 0, name: "events_in".into(),
-                direction: PortDirection::Input, port_type: PortType::Event,
+                id: 0,
+                name: "events_in".into(),
+                direction: PortDirection::Input,
+                port_type: PortType::Event,
             }],
             order: Arc::new(Mutex::new(vec![])),
         }
@@ -702,16 +862,20 @@ impl NoteOrderRecorder {
 }
 
 impl Node for NoteOrderRecorder {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, input: &ProcessInput, _output: &mut ProcessOutput) {
-        use paraclete_node_api::{UmpMessage, midi::ChannelVoice2};
+        use paraclete_node_api::{midi::ChannelVoice2, UmpMessage};
         for timed in input.events {
             if let Event::Midi2(ref ump) = timed.event {
-                if let UmpMessage::ChannelVoice2(cv2) = *ump { match cv2 {
-                    ChannelVoice2::NoteOn(_)  => self.order.lock().unwrap().push("on".into()),
-                    ChannelVoice2::NoteOff(_) => self.order.lock().unwrap().push("off".into()),
-                    _ => {},
-                } }
+                if let UmpMessage::ChannelVoice2(cv2) = *ump {
+                    match cv2 {
+                        ChannelVoice2::NoteOn(_) => self.order.lock().unwrap().push("on".into()),
+                        ChannelVoice2::NoteOff(_) => self.order.lock().unwrap().push("off".into()),
+                        _ => {}
+                    }
+                }
             }
         }
     }
@@ -719,7 +883,10 @@ impl Node for NoteOrderRecorder {
 
 #[test]
 fn stable_sort_preserves_noteoff_before_noteon_at_same_offset() {
-    use paraclete_node_api::{UmpMessage, midi::{ChannelVoice2, Channeled, Grouped, NoteOff, NoteOn, u4, u7}};
+    use paraclete_node_api::{
+        midi::{u4, u7, ChannelVoice2, Channeled, Grouped, NoteOff, NoteOn},
+        UmpMessage,
+    };
 
     let recorder = NoteOrderRecorder::new();
     let order = recorder.order.clone();
@@ -727,15 +894,19 @@ fn stable_sort_preserves_noteoff_before_noteon_at_same_offset() {
     let mut conf = NodeConfigurator::new(44100.0, 512);
 
     let emitter_ports = vec![PortDescriptor {
-        id: 0, name: "events_out".into(),
-        direction: PortDirection::Output, port_type: PortType::Event,
+        id: 0,
+        name: "events_out".into(),
+        direction: PortDirection::Output,
+        port_type: PortType::Event,
     }];
     struct EventEmitter {
         ports: Vec<PortDescriptor>,
         events: Vec<TimedEvent>,
     }
     impl Node for EventEmitter {
-        fn ports(&self) -> &[PortDescriptor] { &self.ports }
+        fn ports(&self) -> &[PortDescriptor] {
+            &self.ports
+        }
         fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
             for e in &self.events {
                 output.events_out.push(*e);
@@ -757,8 +928,14 @@ fn stable_sort_preserves_noteoff_before_noteon_at_same_offset() {
     let emitter = EventEmitter {
         ports: emitter_ports,
         events: vec![
-            TimedEvent::new(0, Event::Midi2(UmpMessage::from(ChannelVoice2::from(note_off)))),
-            TimedEvent::new(0, Event::Midi2(UmpMessage::from(ChannelVoice2::from(note_on)))),
+            TimedEvent::new(
+                0,
+                Event::Midi2(UmpMessage::from(ChannelVoice2::from(note_off))),
+            ),
+            TimedEvent::new(
+                0,
+                Event::Midi2(UmpMessage::from(ChannelVoice2::from(note_on))),
+            ),
         ],
     };
 
@@ -790,15 +967,19 @@ impl DeferredEventEmitter {
     fn new(event: TimedEvent) -> Self {
         Self {
             ports: vec![PortDescriptor {
-                id: 0, name: "events_out".into(),
-                direction: PortDirection::Output, port_type: PortType::Event,
+                id: 0,
+                name: "events_out".into(),
+                direction: PortDirection::Output,
+                port_type: PortType::Event,
             }],
             event: Some(event),
         }
     }
 }
 impl Node for DeferredEventEmitter {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
         if let Some(e) = self.event.take() {
             output.events_out.push(e);
@@ -808,7 +989,10 @@ impl Node for DeferredEventEmitter {
 
 #[test]
 fn executor_defers_cross_block_offset_event_to_next_block() {
-    use paraclete_node_api::{UmpMessage, midi::{ChannelVoice2, Channeled, Grouped, NoteOn, u4, u7}};
+    use paraclete_node_api::{
+        midi::{u4, u7, ChannelVoice2, Channeled, Grouped, NoteOn},
+        UmpMessage,
+    };
 
     let recorder = NoteOrderRecorder::new();
     let received = recorder.order.clone();
@@ -820,9 +1004,10 @@ fn executor_defers_cross_block_offset_event_to_next_block() {
     note_on.set_velocity(32768);
 
     let block_size = 512usize;
-    let emitter = DeferredEventEmitter::new(
-        TimedEvent::new(block_size as u32 + 10, Event::Midi2(UmpMessage::from(ChannelVoice2::from(note_on))))
-    );
+    let emitter = DeferredEventEmitter::new(TimedEvent::new(
+        block_size as u32 + 10,
+        Event::Midi2(UmpMessage::from(ChannelVoice2::from(note_on))),
+    ));
 
     let mut conf = NodeConfigurator::new(44100.0, block_size);
     conf.add_node(1, Box::new(emitter));
@@ -833,18 +1018,28 @@ fn executor_defers_cross_block_offset_event_to_next_block() {
 
     let mut out = vec![0.0f32; block_size * 2];
     exec.process(&mut out, 2);
-    assert!(received.lock().unwrap().is_empty(),
-        "block 1: event with offset >= block_size must be deferred, not delivered");
+    assert!(
+        received.lock().unwrap().is_empty(),
+        "block 1: event with offset >= block_size must be deferred, not delivered"
+    );
 
     exec.process(&mut out, 2);
     let r = received.lock().unwrap();
-    assert_eq!(r.len(), 1, "block 2: deferred event must be delivered, got {:?}", *r);
+    assert_eq!(
+        r.len(),
+        1,
+        "block 2: deferred event must be delivered, got {:?}",
+        *r
+    );
     assert_eq!(r[0], "on");
 }
 
 #[test]
 fn executor_delivers_inblock_event_immediately() {
-    use paraclete_node_api::{UmpMessage, midi::{ChannelVoice2, Channeled, Grouped, NoteOn, u4, u7}};
+    use paraclete_node_api::{
+        midi::{u4, u7, ChannelVoice2, Channeled, Grouped, NoteOn},
+        UmpMessage,
+    };
 
     let recorder = NoteOrderRecorder::new();
     let received = recorder.order.clone();
@@ -856,9 +1051,10 @@ fn executor_delivers_inblock_event_immediately() {
     note_on.set_velocity(32768);
 
     let block_size = 512usize;
-    let emitter = DeferredEventEmitter::new(
-        TimedEvent::new(100, Event::Midi2(UmpMessage::from(ChannelVoice2::from(note_on))))
-    );
+    let emitter = DeferredEventEmitter::new(TimedEvent::new(
+        100,
+        Event::Midi2(UmpMessage::from(ChannelVoice2::from(note_on))),
+    ));
 
     let mut conf = NodeConfigurator::new(44100.0, block_size);
     conf.add_node(1, Box::new(emitter));
@@ -869,8 +1065,11 @@ fn executor_delivers_inblock_event_immediately() {
     let mut out = vec![0.0f32; block_size * 2];
     exec.process(&mut out, 2);
 
-    assert_eq!(received.lock().unwrap().len(), 1,
-        "block 1: in-block event (offset=100) must be delivered immediately");
+    assert_eq!(
+        received.lock().unwrap().len(),
+        1,
+        "block 1: in-block event (offset=100) must be delivered immediately"
+    );
 }
 
 // ── audio_inputs wiring (P4.5 Fix 4) ─────────────────────────────────────────
@@ -884,17 +1083,26 @@ struct AudioSourceNode {
 impl AudioSourceNode {
     fn new(value: f32) -> Self {
         Self {
-            ports: [PortDescriptor { id: 0, name: "audio_out".into(), direction: PortDirection::Output, port_type: PortType::Audio }],
+            ports: [PortDescriptor {
+                id: 0,
+                name: "audio_out".into(),
+                direction: PortDirection::Output,
+                port_type: PortType::Audio,
+            }],
             value,
         }
     }
 }
 
 impl Node for AudioSourceNode {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
         if let Some(buf) = output.audio_outputs.first_mut() {
-            for ch in 0..buf.channels() { buf.channel_mut(ch).fill(self.value); }
+            for ch in 0..buf.channels() {
+                buf.channel_mut(ch).fill(self.value);
+            }
         }
     }
 }
@@ -908,14 +1116,21 @@ struct AudioSinkNode {
 impl AudioSinkNode {
     fn new(received: Arc<Mutex<Option<f32>>>) -> Self {
         Self {
-            ports: [PortDescriptor { id: 0, name: "audio_in".into(), direction: PortDirection::Input, port_type: PortType::Audio }],
+            ports: [PortDescriptor {
+                id: 0,
+                name: "audio_in".into(),
+                direction: PortDirection::Input,
+                port_type: PortType::Audio,
+            }],
             received,
         }
     }
 }
 
 impl Node for AudioSinkNode {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, input: &ProcessInput, _output: &mut ProcessOutput) {
         if let Some(buf) = input.audio_inputs.first() {
             if buf.channels() > 0 && !buf.channel(0).is_empty() {
@@ -936,14 +1151,21 @@ struct ModOutputNode {
 impl ModOutputNode {
     fn new(value: f32) -> Self {
         Self {
-            ports: [PortDescriptor { id: 0, name: "mod_out".into(), direction: PortDirection::Output, port_type: PortType::Modulation }],
+            ports: [PortDescriptor {
+                id: 0,
+                name: "mod_out".into(),
+                direction: PortDirection::Output,
+                port_type: PortType::Modulation,
+            }],
             value,
         }
     }
 }
 
 impl Node for ModOutputNode {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
         let out = output.mod_output_mut(0);
         out.fill(self.value);
@@ -959,14 +1181,21 @@ struct ModInputNode {
 impl ModInputNode {
     fn new(received: Arc<Mutex<Option<f32>>>) -> Self {
         Self {
-            ports: [PortDescriptor { id: 0, name: "mod_in".into(), direction: PortDirection::Input, port_type: PortType::Modulation }],
+            ports: [PortDescriptor {
+                id: 0,
+                name: "mod_in".into(),
+                direction: PortDirection::Input,
+                port_type: PortType::Modulation,
+            }],
             received,
         }
     }
 }
 
 impl Node for ModInputNode {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, input: &ProcessInput, _output: &mut ProcessOutput) {
         let mod_in = input.modulation(0);
         if !mod_in.is_empty() {
@@ -1001,8 +1230,14 @@ fn signal_routing_mod_output_reaches_mod_input() {
     let mut out = vec![0.0f32; 64 * 2];
     exec.process(&mut out, 2);
     let val = *received.lock().unwrap();
-    assert!(val.is_some(), "mod input should receive data from connected upstream");
-    assert!((val.unwrap() - 0.5).abs() < 1e-6, "mod input value should match upstream output");
+    assert!(
+        val.is_some(),
+        "mod input should receive data from connected upstream"
+    );
+    assert!(
+        (val.unwrap() - 0.5).abs() < 1e-6,
+        "mod input value should match upstream output"
+    );
 }
 
 /// P6.5 Commit 3: unconnected signal input reads all-zeros (silence).
@@ -1037,8 +1272,14 @@ fn audio_inputs_populated_from_upstream_audio_output() {
     exec.process(&mut out, 2);
 
     let val = *received.lock().unwrap();
-    assert!(val.is_some(), "audio_inputs should be non-empty when an audio edge exists");
-    assert!((val.unwrap() - 0.75).abs() < 1e-6, "audio_inputs should carry upstream output value");
+    assert!(
+        val.is_some(),
+        "audio_inputs should be non-empty when an audio edge exists"
+    );
+    assert!(
+        (val.unwrap() - 0.75).abs() < 1e-6,
+        "audio_inputs should carry upstream output value"
+    );
 }
 
 #[test]
@@ -1053,7 +1294,10 @@ fn audio_inputs_empty_when_no_audio_edge() {
     let mut out = vec![0.0f32; 64 * 2];
     exec.process(&mut out, 2);
 
-    assert!(received.lock().unwrap().is_none(), "audio_inputs should be empty with no audio edge");
+    assert!(
+        received.lock().unwrap().is_none(),
+        "audio_inputs should be empty with no audio edge"
+    );
 }
 
 #[test]
@@ -1084,15 +1328,33 @@ fn transport_override_event_delivered_to_nodes() {
     let received = Arc::new(Mutex::new(vec![]));
 
     let mut conf = NodeConfigurator::new(44100.0, 64);
-    conf.add_node(1, Box::new(EventCapturingNode::new(received.clone(), PortDirection::Input)));
+    conf.add_node(
+        1,
+        Box::new(EventCapturingNode::new(
+            received.clone(),
+            PortDirection::Input,
+        )),
+    );
     let mut exec = conf.build_executor();
 
-    let info = TransportInfo { playing: true, bpm: 130.0, ..TransportInfo::default() };
+    let info = TransportInfo {
+        playing: true,
+        bpm: 130.0,
+        ..TransportInfo::default()
+    };
     let event = TransportEvent {
-        domain_id: 0, bar: 1, beat: 0, tick: 0,
+        domain_id: 0,
+        bar: 1,
+        beat: 0,
+        tick: 0,
         ticks_per_beat: paraclete_node_api::TICKS_PER_BEAT,
-        bpm: 130.0, time_sig_num: 4, time_sig_den: 4,
-        flags: TransportFlags { global_start: true, ..TransportFlags::default() },
+        bpm: 130.0,
+        time_sig_num: 4,
+        time_sig_den: 4,
+        flags: TransportFlags {
+            global_start: true,
+            ..TransportFlags::default()
+        },
     };
     exec.set_transport_override(info, Some(event));
 
@@ -1100,10 +1362,13 @@ fn transport_override_event_delivered_to_nodes() {
     exec.process(&mut out, 2);
 
     let guard = received.lock().unwrap();
-    let found = guard.iter().any(|e| {
-        matches!(e, Event::Transport(te) if te.flags.global_start)
-    });
-    assert!(found, "set_transport_override event must reach nodes (not be cleared by incoming.clear())");
+    let found = guard
+        .iter()
+        .any(|e| matches!(e, Event::Transport(te) if te.flags.global_start));
+    assert!(
+        found,
+        "set_transport_override event must reach nodes (not be cleared by incoming.clear())"
+    );
 }
 
 // ── cap_doc_cache tests (P9 Commit 2) ────────────────────────────────────────
@@ -1127,15 +1392,23 @@ fn cap_doc_cache_hit_no_additional_leak() {
     use paraclete_nodes::FilterNode;
     let mut conf = NodeConfigurator::new(44100.0, 256);
     conf.add_node(7, Box::new(FilterNode::new()));
-    let doc1 = conf.get_node_cap_doc(7).expect("first call should return Some");
-    let doc2 = conf.get_node_cap_doc(7).expect("second call should return Some");
-    let doc3 = conf.get_node_cap_doc(7).expect("third call should return Some");
+    let doc1 = conf
+        .get_node_cap_doc(7)
+        .expect("first call should return Some");
+    let doc2 = conf
+        .get_node_cap_doc(7)
+        .expect("second call should return Some");
+    let doc3 = conf
+        .get_node_cap_doc(7)
+        .expect("third call should return Some");
     assert_eq!(
-        doc1.params.len(), doc2.params.len(),
+        doc1.params.len(),
+        doc2.params.len(),
         "param count must be identical across calls"
     );
     assert_eq!(
-        doc2.params.len(), doc3.params.len(),
+        doc2.params.len(),
+        doc3.params.len(),
         "param count must be identical across calls"
     );
 }
@@ -1150,7 +1423,7 @@ struct CvPassthroughNode {
 }
 
 impl CvPassthroughNode {
-    const PORT_CV_IN:  u32 = 0;
+    const PORT_CV_IN: u32 = 0;
     const PORT_CV_OUT: u32 = 1;
 
     fn new(received: Arc<Mutex<Vec<f32>>>) -> Self {
@@ -1175,7 +1448,9 @@ impl CvPassthroughNode {
 }
 
 impl Node for CvPassthroughNode {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
         let cv_in = input.cv_signal(Self::PORT_CV_IN);
         if !cv_in.is_empty() {
@@ -1190,17 +1465,35 @@ impl Node for CvPassthroughNode {
 #[test]
 fn connect_cycle_no_loop_break_returns_error() {
     let mut conf = NodeConfigurator::new(44100.0, 64);
-    conf.add_node(1, Box::new(CvPassthroughNode::new(Arc::new(Mutex::new(vec![])))));
-    conf.add_node(2, Box::new(CvPassthroughNode::new(Arc::new(Mutex::new(vec![])))));
+    conf.add_node(
+        1,
+        Box::new(CvPassthroughNode::new(Arc::new(Mutex::new(vec![])))),
+    );
+    conf.add_node(
+        2,
+        Box::new(CvPassthroughNode::new(Arc::new(Mutex::new(vec![])))),
+    );
 
     // Connect 1 → 2 (valid)
-    conf.connect(1, CvPassthroughNode::PORT_CV_OUT, 2, CvPassthroughNode::PORT_CV_IN).unwrap();
+    conf.connect(
+        1,
+        CvPassthroughNode::PORT_CV_OUT,
+        2,
+        CvPassthroughNode::PORT_CV_IN,
+    )
+    .unwrap();
 
     // Connect 2 → 1 (closes a cycle with no LoopBreakNode)
-    let result = conf.connect(2, CvPassthroughNode::PORT_CV_OUT, 1, CvPassthroughNode::PORT_CV_IN);
+    let result = conf.connect(
+        2,
+        CvPassthroughNode::PORT_CV_OUT,
+        1,
+        CvPassthroughNode::PORT_CV_IN,
+    );
     assert!(
         matches!(result, Err(ConnectError::MissingLoopBreak { .. })),
-        "expected MissingLoopBreak, got: {:?}", result
+        "expected MissingLoopBreak, got: {:?}",
+        result
     );
 }
 
@@ -1211,17 +1504,22 @@ fn connect_cycle_one_loop_break_accepted() {
 
     let mut conf = NodeConfigurator::new(44100.0, 64);
     // Node A: Cv output (port 0) and Cv input (port 1)
-    conf.add_node(1, Box::new(CvPassthroughNode::new(Arc::new(Mutex::new(vec![])))));
+    conf.add_node(
+        1,
+        Box::new(CvPassthroughNode::new(Arc::new(Mutex::new(vec![])))),
+    );
     // LoopBreakNode L: cv_in (0), cv_out (1)
     conf.add_node(2, Box::new(LoopBreakNode::new()));
 
     // Forward edge: A.cv_out → L.cv_in
-    conf.connect(1, CvPassthroughNode::PORT_CV_OUT, 2, 0).unwrap();
+    conf.connect(1, CvPassthroughNode::PORT_CV_OUT, 2, 0)
+        .unwrap();
     // Back edge: L.cv_out → A.cv_in (closes cycle with 1 LoopBreakNode)
     let result = conf.connect(2, 1, 1, CvPassthroughNode::PORT_CV_IN);
     assert!(
         result.is_ok(),
-        "cycle with exactly one LoopBreakNode must be accepted, got: {:?}", result
+        "cycle with exactly one LoopBreakNode must be accepted, got: {:?}",
+        result
     );
 }
 
@@ -1232,19 +1530,27 @@ fn connect_cycle_two_loop_breaks_rejected() {
 
     let mut conf = NodeConfigurator::new(44100.0, 64);
     // A: Cv in (1) and Cv out (0)
-    conf.add_node(1, Box::new(CvPassthroughNode::new(Arc::new(Mutex::new(vec![])))));
+    conf.add_node(
+        1,
+        Box::new(CvPassthroughNode::new(Arc::new(Mutex::new(vec![])))),
+    );
     // L1 and L2: two LoopBreakNodes
     conf.add_node(2, Box::new(LoopBreakNode::new()));
     conf.add_node(3, Box::new(LoopBreakNode::new()));
 
     // Build chain: A(out) → L1(in), L1(out) → L2(in)
-    conf.connect(1, CvPassthroughNode::PORT_CV_OUT, 2, 0).unwrap();
+    conf.connect(1, CvPassthroughNode::PORT_CV_OUT, 2, 0)
+        .unwrap();
     conf.connect(2, 1, 3, 0).unwrap();
     // Close cycle: L2(out) → A(in) — cycle contains 2 LoopBreakNodes
     let result = conf.connect(3, 1, 1, CvPassthroughNode::PORT_CV_IN);
     assert!(
-        matches!(result, Err(ConnectError::TooManyLoopBreaks { count: 2, .. })),
-        "expected TooManyLoopBreaks(2), got: {:?}", result
+        matches!(
+            result,
+            Err(ConnectError::TooManyLoopBreaks { count: 2, .. })
+        ),
+        "expected TooManyLoopBreaks(2), got: {:?}",
+        result
     );
 }
 
@@ -1393,14 +1699,19 @@ fn loop_break_executor_pre_phase_injects_prev() {
     let mut conf = NodeConfigurator::new(44100.0, 4);
 
     // Node A: fixed cv_out of 1.0, records cv_in values
-    conf.add_node(1, Box::new(CvPassthroughAndEmit::new(received.clone(), 1.0)));
+    conf.add_node(
+        1,
+        Box::new(CvPassthroughAndEmit::new(received.clone(), 1.0)),
+    );
     // LoopBreakNode
     conf.add_node(2, Box::new(LoopBreakNode::new()));
 
     // Forward edge: A.cv_out(1) → L.cv_in(0)
-    conf.connect(1, CvPassthroughAndEmit::PORT_CV_OUT, 2, 0).unwrap();
+    conf.connect(1, CvPassthroughAndEmit::PORT_CV_OUT, 2, 0)
+        .unwrap();
     // Back edge: L.cv_out(1) → A.cv_in(0)
-    conf.connect(2, 1, 1, CvPassthroughAndEmit::PORT_CV_IN).unwrap();
+    conf.connect(2, 1, 1, CvPassthroughAndEmit::PORT_CV_IN)
+        .unwrap();
 
     let mut exec = conf.build_executor();
     let mut out = vec![0.0f32; 4 * 2];
@@ -1415,9 +1726,21 @@ fn loop_break_executor_pre_phase_injects_prev() {
     let vals = received.lock().unwrap();
     // Cycle 1: cv_in[0] = 0.0 (LB.prev starts zeroed)
     // Cycle 2: cv_in[0] = 1.0 (LB.prev = what A output in cycle 1)
-    assert!(vals.len() >= 2, "expected at least 2 recorded values, got {}", vals.len());
-    assert_eq!(vals[0], 0.0, "cycle 1: A should receive 0.0 (LB.prev is zeroed), got {}", vals[0]);
-    assert_eq!(vals[1], 1.0, "cycle 2: A should receive 1.0 (LB.prev = cycle 1 output), got {}", vals[1]);
+    assert!(
+        vals.len() >= 2,
+        "expected at least 2 recorded values, got {}",
+        vals.len()
+    );
+    assert_eq!(
+        vals[0], 0.0,
+        "cycle 1: A should receive 0.0 (LB.prev is zeroed), got {}",
+        vals[0]
+    );
+    assert_eq!(
+        vals[1], 1.0,
+        "cycle 2: A should receive 1.0 (LB.prev = cycle 1 output), got {}",
+        vals[1]
+    );
 }
 
 /// A node with Cv input (records values) and Cv output (fixed value).
@@ -1428,7 +1751,7 @@ struct CvPassthroughAndEmit {
 }
 
 impl CvPassthroughAndEmit {
-    const PORT_CV_IN:  u32 = 0;
+    const PORT_CV_IN: u32 = 0;
     const PORT_CV_OUT: u32 = 1;
 
     fn new(received: Arc<Mutex<Vec<f32>>>, emit_value: f32) -> Self {
@@ -1454,7 +1777,9 @@ impl CvPassthroughAndEmit {
 }
 
 impl Node for CvPassthroughAndEmit {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
         // Record the first sample of cv_in
         let cv_in = input.cv_signal(Self::PORT_CV_IN);
@@ -1509,7 +1834,10 @@ fn runtime_counters_set_counters_injects_shared_reference() {
 
     let fresh = Arc::new(paraclete_runtime::RuntimeCounters::default());
     exec.set_counters(fresh.clone());
-    assert!(std::ptr::eq(Arc::as_ptr(&fresh), Arc::as_ptr(exec.counters())));
+    assert!(std::ptr::eq(
+        Arc::as_ptr(&fresh),
+        Arc::as_ptr(exec.counters())
+    ));
 
     let mut out = vec![0.0f32; 512 * 2];
     exec.process(&mut out, 2);

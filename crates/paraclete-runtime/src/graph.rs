@@ -47,9 +47,7 @@ pub(crate) type RuntimeGraph = StableDiGraph<NodeMeta, EdgeMeta>;
 /// Returns `Err(Vec<NodeIndex>)` containing the nodes involved in at least one
 /// cycle if the graph contains a cycle that does not pass through a loop-break
 /// node.
-pub(crate) fn execution_order(
-    graph: &RuntimeGraph,
-) -> Result<Vec<NodeIndex>, Vec<NodeIndex>> {
+pub(crate) fn execution_order(graph: &RuntimeGraph) -> Result<Vec<NodeIndex>, Vec<NodeIndex>> {
     // petgraph's Topo visitor performs a topological sort for DAGs.
     // It silently skips nodes involved in cycles — we detect cycles separately.
     if petgraph::algo::is_cyclic_directed(graph) {
@@ -82,11 +80,15 @@ mod tests {
     }
 
     fn connect(graph: &mut RuntimeGraph, src: NodeIndex, dst: NodeIndex) {
-        graph.add_edge(src, dst, EdgeMeta {
-            src_port: 0,
-            dst_port: 0,
-            src_port_type: paraclete_node_api::PortType::Audio,
-        });
+        graph.add_edge(
+            src,
+            dst,
+            EdgeMeta {
+                src_port: 0,
+                dst_port: 0,
+                src_port_type: paraclete_node_api::PortType::Audio,
+            },
+        );
     }
 
     // ── execution_order ───────────────────────────────────────────────────────

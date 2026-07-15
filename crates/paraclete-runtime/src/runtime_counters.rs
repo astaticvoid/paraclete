@@ -18,10 +18,22 @@ impl RuntimeCounters {
         use std::sync::atomic::Ordering;
 
         let load = |a: &AtomicU64| a.load(Ordering::Relaxed) as f64;
-        buf.push(("/engine/buffers_processed".to_string(), StateBusValue::Float(load(&self.buffers_processed))));
-        buf.push(("/engine/dropout_lock_miss".to_string(), StateBusValue::Float(load(&self.dropout_lock_miss))));
-        buf.push(("/engine/dropout_no_executor".to_string(), StateBusValue::Float(load(&self.dropout_no_executor))));
-        buf.push(("/engine/state_bus_overflows".to_string(), StateBusValue::Float(load(&self.state_bus_overflows))));
+        buf.push((
+            "/engine/buffers_processed".to_string(),
+            StateBusValue::Float(load(&self.buffers_processed)),
+        ));
+        buf.push((
+            "/engine/dropout_lock_miss".to_string(),
+            StateBusValue::Float(load(&self.dropout_lock_miss)),
+        ));
+        buf.push((
+            "/engine/dropout_no_executor".to_string(),
+            StateBusValue::Float(load(&self.dropout_no_executor)),
+        ));
+        buf.push((
+            "/engine/state_bus_overflows".to_string(),
+            StateBusValue::Float(load(&self.state_bus_overflows)),
+        ));
         let cpu = f64::from_bits(self.cpu_ewma_us.load(Ordering::Relaxed));
         buf.push(("/engine/cpu_us".to_string(), StateBusValue::Float(cpu)));
     }

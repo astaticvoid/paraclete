@@ -7,18 +7,17 @@ use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 
 use paraclete_node_api::{
-    CapabilityDocument, ConnectionAgreement, ConnectionRecord, DebugEvent,
-    Surface, SurfaceOutputHandle, NodeCommand,
-    StateBusHandle, StateBusSubscription, StateBusValue,
-    Node, PortDescriptor, PortDirection, PortType, SignalPortKind,
+    CapabilityDocument, ConnectionAgreement, ConnectionRecord, DebugEvent, Node, NodeCommand,
+    PortDescriptor, PortDirection, PortType, SignalPortKind, StateBusHandle, StateBusSubscription,
+    StateBusValue, Surface, SurfaceOutputHandle,
 };
 
 use crate::executor::NodeExecutor;
-use crate::runtime_counters::RuntimeCounters;
 use crate::graph::{EdgeMeta, NodeId, NodeMeta, RuntimeGraph};
-use crate::state_bus::StateBusUpdate;
 use crate::message::ConfigMessage;
 use crate::ring_buffer;
+use crate::runtime_counters::RuntimeCounters;
+use crate::state_bus::StateBusUpdate;
 
 const RING_CAPACITY: usize = 256;
 const STATE_BUS_RING_CAPACITY: usize = 256;
@@ -148,7 +147,6 @@ impl NodeOrDevice {
             NodeOrDevice::Device(d) => &mut **d as &mut dyn Node,
         }
     }
-
 }
 
 /// Runs on the main thread. Owns the graph topology and manages node lifecycle.
@@ -213,7 +211,8 @@ impl NodeConfigurator {
         let (sender, receiver) = ring_buffer::channel(RING_CAPACITY);
         let (producer, consumer) = rtrb::RingBuffer::<StateBusUpdate>::new(STATE_BUS_RING_CAPACITY);
         let (cmd_prod, cmd_cons) = rtrb::RingBuffer::<NodeCommand>::new(NODE_CMD_RING_CAPACITY);
-        let (debug_prod, debug_cons) = rtrb::RingBuffer::<DebugEvent>::new(DEBUG_EVENT_RING_CAPACITY);
+        let (debug_prod, debug_cons) =
+            rtrb::RingBuffer::<DebugEvent>::new(DEBUG_EVENT_RING_CAPACITY);
         Self {
             graph: RuntimeGraph::new(),
             id_to_index: HashMap::new(),
@@ -269,11 +268,7 @@ impl NodeConfigurator {
     /// Auto-assigns a new unique user ID (≥ 1000, incrementing). Returns the
     /// assigned ID. Use this for all programmatically-created nodes that may need
     /// to be reconstructed from a project file.
-    pub fn add_node_tagged(
-        &mut self,
-        node: Box<dyn Node>,
-        type_tag: impl Into<String>,
-    ) -> u32 {
+    pub fn add_node_tagged(&mut self, node: Box<dyn Node>, type_tag: impl Into<String>) -> u32 {
         let user_id = self.next_auto_id;
         self.next_auto_id += 1;
         self.register(user_id, NodeOrDevice::Node(node));
@@ -293,11 +288,7 @@ impl NodeConfigurator {
         self.type_tag_map.insert(node_id, type_tag.into());
     }
 
-    pub fn add_tempo_source(
-        &mut self,
-        user_id: u32,
-        node: Box<dyn Node>,
-    ) -> (NodeId, u32) {
+    pub fn add_tempo_source(&mut self, user_id: u32, node: Box<dyn Node>) -> (NodeId, u32) {
         let domain_id = self.next_domain_id;
         self.next_domain_id += 1;
         self.tempo_source_domains.push((user_id, domain_id));
@@ -307,11 +298,7 @@ impl NodeConfigurator {
 
     /// Register a hardware device. Calls `take_output_handle()` immediately;
     /// if `Some`, the handle is stored and ticked each main-loop iteration.
-    pub fn add_surface(
-        &mut self,
-        user_id: u32,
-        mut device: Box<dyn Surface>,
-    ) -> NodeId {
+    pub fn add_surface(&mut self, user_id: u32, mut device: Box<dyn Surface>) -> NodeId {
         if let Some(handle) = device.take_output_handle() {
             self.output_handles.push((user_id, handle));
         }
@@ -325,27 +312,36 @@ impl NodeConfigurator {
     pub fn remove_node(&mut self, user_id: u32) -> Result<Box<dyn Node>, String> {
         // Refuse devices BEFORE mutating anything — the old order removed the
         // slot first and then errored, silently destroying the device (BUG-030).
-        let idx = *self.id_to_index.get(&user_id)
+        let idx = *self
+            .id_to_index
+            .get(&user_id)
             .ok_or_else(|| format!("no node with id {user_id}"))?;
         if matches!(self.nodes.get(&idx), Some(NodeOrDevice::Device(_))) {
-            return Err(format!("node {user_id} is a surface device; devices cannot be removed via remove_node"));
+            return Err(format!(
+                "node {user_id} is a surface device; devices cannot be removed via remove_node"
+            ));
         }
         // Validate the slot is resident BEFORE mutating `id_to_index` — a drained
         // slot (node currently owned by a live executor) must not leave the id
         // map half-edited (same partial-mutation class as BUG-030). Unreachable
         // via apply_patch, which `restore_nodes` first, but latent otherwise.
         if !self.nodes.contains_key(&idx) {
-            return Err(format!("node {user_id} is not resident (moved to a live executor)"));
+            return Err(format!(
+                "node {user_id} is not resident (moved to a live executor)"
+            ));
         }
         self.id_to_index.remove(&user_id);
-        let mut slot = self.nodes.remove(&idx)
+        let mut slot = self
+            .nodes
+            .remove(&idx)
             .expect("slot presence checked above");
         slot.deactivate();
         self.graph.remove_node(idx);
         self.cap_doc_cache.remove(&user_id);
         self.type_tag_map.remove(&user_id);
         // Also remove any back_edges referencing this node.
-        self.back_edges.retain(|be| be.lb_id != user_id && be.dst_id != user_id);
+        self.back_edges
+            .retain(|be| be.lb_id != user_id && be.dst_id != user_id);
         match slot {
             NodeOrDevice::Node(n) => Ok(n),
             NodeOrDevice::Device(_) => unreachable!("device slots are rejected above"),
@@ -363,9 +359,13 @@ impl NodeConfigurator {
     /// Yields `(user_id, &dyn Node)`. Only valid before `build_executor()` — after
     /// that call, nodes have been moved to the executor and this returns nothing.
     pub fn all_nodes(&self) -> impl Iterator<Item = (u32, &dyn Node)> + '_ {
-        let mut pairs: Vec<(u32, &dyn Node)> = self.id_to_index.iter()
+        let mut pairs: Vec<(u32, &dyn Node)> = self
+            .id_to_index
+            .iter()
             .filter_map(|(&user_id, idx)| {
-                self.nodes.get(idx).map(|slot| (user_id, slot.as_node_ref()))
+                self.nodes
+                    .get(idx)
+                    .map(|slot| (user_id, slot.as_node_ref()))
             })
             .collect();
         pairs.sort_by_key(|(id, _)| *id);
@@ -397,8 +397,12 @@ impl NodeConfigurator {
         self.cap_doc_cache.get(&node_id).cloned()
     }
 
-    pub fn sample_rate(&self) -> f32   { self.sample_rate }
-    pub fn block_size(&self)  -> usize { self.block_size  }
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
+    pub fn block_size(&self) -> usize {
+        self.block_size
+    }
 
     pub fn connect(
         &mut self,
@@ -407,14 +411,22 @@ impl NodeConfigurator {
         dst_id: u32,
         dst_port: u32,
     ) -> Result<(), ConnectError> {
-        let src = *self.id_to_index.get(&src_id)
+        let src = *self
+            .id_to_index
+            .get(&src_id)
             .ok_or_else(|| ConnectError::InvalidConnection(format!("no node with id {src_id}")))?;
-        let dst = *self.id_to_index.get(&dst_id)
+        let dst = *self
+            .id_to_index
+            .get(&dst_id)
             .ok_or_else(|| ConnectError::InvalidConnection(format!("no node with id {dst_id}")))?;
 
         let src_port_desc = self.nodes[&src]
-            .ports().iter().find(|p| p.id == src_port)
-            .ok_or_else(|| ConnectError::InvalidConnection(format!("node {src_id} has no port {src_port}")))?;
+            .ports()
+            .iter()
+            .find(|p| p.id == src_port)
+            .ok_or_else(|| {
+                ConnectError::InvalidConnection(format!("node {src_id} has no port {src_port}"))
+            })?;
         let src_port_type = src_port_desc.port_type;
         if src_port_desc.direction != PortDirection::Output {
             return Err(ConnectError::InvalidConnection(format!(
@@ -423,8 +435,12 @@ impl NodeConfigurator {
         }
 
         let dst_port_desc = self.nodes[&dst]
-            .ports().iter().find(|p| p.id == dst_port)
-            .ok_or_else(|| ConnectError::InvalidConnection(format!("node {dst_id} has no port {dst_port}")))?;
+            .ports()
+            .iter()
+            .find(|p| p.id == dst_port)
+            .ok_or_else(|| {
+                ConnectError::InvalidConnection(format!("node {dst_id} has no port {dst_port}"))
+            })?;
         if dst_port_desc.direction != PortDirection::Input {
             return Err(ConnectError::InvalidConnection(format!(
                 "port {dst_port} on node {dst_id} is an Output — destination port must be Input"
@@ -438,7 +454,15 @@ impl NodeConfigurator {
             )));
         }
 
-        self.graph.add_edge(src, dst, EdgeMeta { src_port, dst_port, src_port_type });
+        self.graph.add_edge(
+            src,
+            dst,
+            EdgeMeta {
+                src_port,
+                dst_port,
+                src_port_type,
+            },
+        );
 
         if petgraph::algo::is_cyclic_directed(&self.graph) {
             // Find SCCs — any SCC with >1 node (or a self-loop) is a cycle.
@@ -450,12 +474,14 @@ impl NodeConfigurator {
                 .collect();
 
             // Map graph indices to user IDs.
-            let cycle_user_ids: Vec<u32> = cycle_nodes.iter()
+            let cycle_user_ids: Vec<u32> = cycle_nodes
+                .iter()
                 .map(|ni| self.graph[*ni].user_id)
                 .collect();
 
             // Count LoopBreakNodes in the cycle.
-            let lb_count = cycle_nodes.iter()
+            let lb_count = cycle_nodes
+                .iter()
                 .filter(|ni| {
                     if let Some(slot) = self.nodes.get(ni) {
                         slot.as_node_ref().is_loop_break()
@@ -470,13 +496,19 @@ impl NodeConfigurator {
                     if let Some(edge) = self.graph.find_edge(src, dst) {
                         self.graph.remove_edge(edge);
                     }
-                    return Err(ConnectError::MissingLoopBreak { cycle: cycle_user_ids });
+                    return Err(ConnectError::MissingLoopBreak {
+                        cycle: cycle_user_ids,
+                    });
                 }
                 1 => {
                     // Find the LoopBreakNode's graph index.
-                    let lb_ni = *cycle_nodes.iter()
-                        .find(|ni| self.nodes.get(ni)
-                            .is_some_and(|s| s.as_node_ref().is_loop_break()))
+                    let lb_ni = *cycle_nodes
+                        .iter()
+                        .find(|ni| {
+                            self.nodes
+                                .get(ni)
+                                .is_some_and(|s| s.as_node_ref().is_loop_break())
+                        })
                         .unwrap();
                     let lb_user_id = self.graph[lb_ni].user_id;
 
@@ -484,7 +516,8 @@ impl NodeConfigurator {
                     // so we capture the edge even if src is LB (src→dst may be LB's out edge).
                     let cycle_set: std::collections::HashSet<NodeIndex> =
                         cycle_nodes.iter().copied().collect();
-                    let lb_out_info: Vec<(NodeIndex, u32, u32)> = self.graph
+                    let lb_out_info: Vec<(NodeIndex, u32, u32)> = self
+                        .graph
                         .edges_directed(lb_ni, petgraph::Direction::Outgoing)
                         .filter(|e| cycle_set.contains(&e.target()))
                         .map(|e| (e.target(), e.weight().src_port, e.weight().dst_port))
@@ -501,9 +534,9 @@ impl NodeConfigurator {
                     for (out_dst_ni, lb_out_port, dst_in_port) in &lb_out_info {
                         let out_dst_user_id = self.graph[*out_dst_ni].user_id;
                         self.back_edges.push(LoopBackEdge {
-                            lb_id:       lb_user_id,
+                            lb_id: lb_user_id,
                             lb_out_port: *lb_out_port,
-                            dst_id:      out_dst_user_id,
+                            dst_id: out_dst_user_id,
                             dst_in_port: *dst_in_port,
                         });
                         if lb_ni == src && *out_dst_ni == dst {
@@ -516,7 +549,15 @@ impl NodeConfigurator {
                     // If the cycle-closing edge (src→dst) was NOT LB's outgoing edge,
                     // it is a valid forward edge (e.g., A→LB). Re-add it to the sort graph.
                     if !src_dst_was_lb_out {
-                        self.graph.add_edge(src, dst, EdgeMeta { src_port, dst_port, src_port_type });
+                        self.graph.add_edge(
+                            src,
+                            dst,
+                            EdgeMeta {
+                                src_port,
+                                dst_port,
+                                src_port_type,
+                            },
+                        );
                     }
                     // Fall through to connection negotiation below.
                 }
@@ -524,7 +565,10 @@ impl NodeConfigurator {
                     if let Some(edge) = self.graph.find_edge(src, dst) {
                         self.graph.remove_edge(edge);
                     }
-                    return Err(ConnectError::TooManyLoopBreaks { cycle: cycle_user_ids, count });
+                    return Err(ConnectError::TooManyLoopBreaks {
+                        cycle: cycle_user_ids,
+                        count,
+                    });
                 }
             }
         }
@@ -539,7 +583,9 @@ impl NodeConfigurator {
             sample_rate: self.sample_rate,
             block_size: self.block_size,
             channels: 2,
-            space_ids: src_agreement.space_ids.into_iter()
+            space_ids: src_agreement
+                .space_ids
+                .into_iter()
                 .chain(dst_agreement.space_ids)
                 .collect(),
             initial_transport: None,
@@ -549,16 +595,22 @@ impl NodeConfigurator {
         let src_user_id = self.graph[src].user_id;
         let dst_user_id = self.graph[dst].user_id;
 
-        self.nodes.get_mut(&src).unwrap().set_connection_record(ConnectionRecord {
-            agreement: reconciled.clone(),
-            partner_id: dst_user_id,
-            local_port_id: src_port,
-        });
-        self.nodes.get_mut(&dst).unwrap().set_connection_record(ConnectionRecord {
-            agreement: reconciled,
-            partner_id: src_user_id,
-            local_port_id: dst_port,
-        });
+        self.nodes
+            .get_mut(&src)
+            .unwrap()
+            .set_connection_record(ConnectionRecord {
+                agreement: reconciled.clone(),
+                partner_id: dst_user_id,
+                local_port_id: src_port,
+            });
+        self.nodes
+            .get_mut(&dst)
+            .unwrap()
+            .set_connection_record(ConnectionRecord {
+                agreement: reconciled,
+                partner_id: src_user_id,
+                local_port_id: dst_port,
+            });
 
         Ok(())
     }
@@ -625,7 +677,11 @@ impl NodeConfigurator {
         output: std::collections::HashMap<u32, paraclete_node_api::SurfaceOutput>,
     ) {
         for (device_id, hw_out) in output {
-            if let Some((_, handle)) = self.output_handles.iter_mut().find(|(id, _)| *id == device_id) {
+            if let Some((_, handle)) = self
+                .output_handles
+                .iter_mut()
+                .find(|(id, _)| *id == device_id)
+            {
                 handle.deliver(hw_out);
             } else if self.warned_missing_handles.insert(device_id) {
                 eprintln!("[deliver] no output handle for device {device_id} ({} led updates dropped; further drops for this device are silent); registered: {:?}",
@@ -647,17 +703,23 @@ impl NodeConfigurator {
     fn port_type_to_signal_kind(pt: PortType) -> SignalPortKind {
         match pt {
             PortType::Modulation => SignalPortKind::Modulation,
-            PortType::Logic      => SignalPortKind::Logic,
-            PortType::Cv         => SignalPortKind::Cv,
-            PortType::Pitch      => SignalPortKind::Pitch,
-            PortType::Phase      => SignalPortKind::Phase,
+            PortType::Logic => SignalPortKind::Logic,
+            PortType::Cv => SignalPortKind::Cv,
+            PortType::Pitch => SignalPortKind::Pitch,
+            PortType::Phase => SignalPortKind::Phase,
             _ => unreachable!(),
         }
     }
 
     fn is_signal_port_type(pt: PortType) -> bool {
-        matches!(pt, PortType::Modulation | PortType::Logic
-                     | PortType::Cv | PortType::Pitch | PortType::Phase)
+        matches!(
+            pt,
+            PortType::Modulation
+                | PortType::Logic
+                | PortType::Cv
+                | PortType::Pitch
+                | PortType::Phase
+        )
     }
 
     /// Remove a specific edge from the graph. Returns `Ok(())` if the edge was
@@ -669,11 +731,17 @@ impl NodeConfigurator {
         dst: u32,
         dst_port: u32,
     ) -> Result<(), String> {
-        let src_ni = *self.id_to_index.get(&src)
+        let src_ni = *self
+            .id_to_index
+            .get(&src)
             .ok_or_else(|| format!("no node with id {src}"))?;
-        let dst_ni = *self.id_to_index.get(&dst)
+        let dst_ni = *self
+            .id_to_index
+            .get(&dst)
             .ok_or_else(|| format!("no node with id {dst}"))?;
-        let edge = self.graph.edge_references()
+        let edge = self
+            .graph
+            .edge_references()
             .find(|e| {
                 e.source() == src_ni
                     && e.target() == dst_ni
@@ -707,19 +775,22 @@ impl NodeConfigurator {
     pub fn rebuild_executor(&mut self) -> NodeExecutor {
         // Create fresh channels for the new executor. The old channels (consumed by
         // the previous executor) are dropped when that executor is dropped.
-        let (new_sender, new_receiver)     = ring_buffer::channel(RING_CAPACITY);
-        let (new_sb_prod, new_sb_cons)     = rtrb::RingBuffer::<StateBusUpdate>::new(STATE_BUS_RING_CAPACITY);
-        let (new_cmd_prod, new_cmd_cons)   = rtrb::RingBuffer::<NodeCommand>::new(NODE_CMD_RING_CAPACITY);
-        let (new_debug_prod, new_debug_cons) = rtrb::RingBuffer::<DebugEvent>::new(DEBUG_EVENT_RING_CAPACITY);
+        let (new_sender, new_receiver) = ring_buffer::channel(RING_CAPACITY);
+        let (new_sb_prod, new_sb_cons) =
+            rtrb::RingBuffer::<StateBusUpdate>::new(STATE_BUS_RING_CAPACITY);
+        let (new_cmd_prod, new_cmd_cons) =
+            rtrb::RingBuffer::<NodeCommand>::new(NODE_CMD_RING_CAPACITY);
+        let (new_debug_prod, new_debug_cons) =
+            rtrb::RingBuffer::<DebugEvent>::new(DEBUG_EVENT_RING_CAPACITY);
 
         // Replace configurator-side handles so `send()` and `send_command()` stay live.
-        self.sender                    = new_sender;
-        self.node_cmd_producer         = new_cmd_prod;
-        self.state_bus_consumer        = new_sb_cons;
-        self.debug_event_consumer      = new_debug_cons;
+        self.sender = new_sender;
+        self.node_cmd_producer = new_cmd_prod;
+        self.state_bus_consumer = new_sb_cons;
+        self.debug_event_consumer = new_debug_cons;
 
         // Install executor-side ends as pending so `build_executor()` can take them.
-        self.pending_receiver          = Some(new_receiver);
+        self.pending_receiver = Some(new_receiver);
         self.state_bus_producer_pending = Some(new_sb_prod);
         self.node_cmd_consumer_pending = Some(new_cmd_cons);
         self.debug_event_producer_pending = Some(new_debug_prod);
@@ -740,20 +811,31 @@ impl NodeConfigurator {
 
     /// Build a `NodeExecutor` from the current graph state. Can only be called once.
     pub fn build_executor(&mut self) -> NodeExecutor {
-        let receiver = self.pending_receiver.take()
+        let receiver = self
+            .pending_receiver
+            .take()
             .expect("build_executor called twice");
-        let state_bus_producer = self.state_bus_producer_pending.take()
+        let state_bus_producer = self
+            .state_bus_producer_pending
+            .take()
             .expect("build_executor called twice");
-        let cmd_consumer = self.node_cmd_consumer_pending.take()
+        let cmd_consumer = self
+            .node_cmd_consumer_pending
+            .take()
             .expect("build_executor called twice");
-        let debug_event_producer = self.debug_event_producer_pending.take()
+        let debug_event_producer = self
+            .debug_event_producer_pending
+            .take()
             .expect("build_executor called twice");
 
         let order = crate::graph::execution_order(&self.graph)
             .expect("graph has a cycle — connect() should have rejected it");
 
         let idx_to_slot: HashMap<NodeIndex, usize> = order
-            .iter().enumerate().map(|(pos, &ni)| (ni, pos)).collect();
+            .iter()
+            .enumerate()
+            .map(|(pos, &ni)| (ni, pos))
+            .collect();
 
         let n = order.len();
         let mut event_routes: Vec<Vec<usize>> = vec![vec![]; n];
@@ -776,7 +858,7 @@ impl NodeConfigurator {
                     }
                     pt if Self::is_signal_port_type(pt) => {
                         if let Some(&dst_pos) = idx_to_slot.get(&edge.target()) {
-                            let kind     = Self::port_type_to_signal_kind(pt);
+                            let kind = Self::port_type_to_signal_kind(pt);
                             let src_port = edge.weight().src_port;
                             let dst_port = edge.weight().dst_port;
                             signal_input_routes[dst_pos].push((dst_port, kind, slot_pos, src_port));
@@ -793,8 +875,12 @@ impl NodeConfigurator {
         // (pre-populated by the pre-execution phase) via signal_in_scratch.
         for be in &self.back_edges {
             if let (Some(&lb_slot), Some(&dst_slot)) = (
-                self.id_to_index.get(&be.lb_id).and_then(|ni| idx_to_slot.get(ni)),
-                self.id_to_index.get(&be.dst_id).and_then(|ni| idx_to_slot.get(ni)),
+                self.id_to_index
+                    .get(&be.lb_id)
+                    .and_then(|ni| idx_to_slot.get(ni)),
+                self.id_to_index
+                    .get(&be.dst_id)
+                    .and_then(|ni| idx_to_slot.get(ni)),
             ) {
                 signal_input_routes[dst_slot].push((
                     be.dst_in_port,
@@ -819,7 +905,7 @@ impl NodeConfigurator {
         for (slot_pos, (_, node_or_device)) in ordered.iter().enumerate() {
             for port in node_or_device.ports() {
                 if port.direction == PortDirection::Output
-                   && Self::is_signal_port_type(port.port_type)
+                    && Self::is_signal_port_type(port.port_type)
                 {
                     let kind = Self::port_type_to_signal_kind(port.port_type);
                     signal_output_bufs[slot_pos].push((port.id, kind, vec![0.0f32; block_size]));

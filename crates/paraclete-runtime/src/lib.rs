@@ -7,10 +7,10 @@
 pub mod configurator;
 pub mod executor;
 pub mod graph;
-pub mod state_bus;
 pub mod message;
 pub(crate) mod ring_buffer;
 pub mod runtime_counters;
+pub mod state_bus;
 
 pub use configurator::{ConnectError, NodeConfigurator, NodeOrDevice};
 pub use executor::NodeExecutor;

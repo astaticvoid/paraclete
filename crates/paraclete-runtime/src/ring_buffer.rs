@@ -52,7 +52,12 @@ pub fn channel<T: Send>(capacity: usize) -> (Sender<T>, Receiver<T>) {
         tail: AtomicUsize::new(0),
     });
 
-    (Sender { inner: inner.clone() }, Receiver { inner })
+    (
+        Sender {
+            inner: inner.clone(),
+        },
+        Receiver { inner },
+    )
 }
 
 impl<T: Send> Sender<T> {

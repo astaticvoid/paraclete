@@ -13,5 +13,9 @@ pub enum ConfigMessage {
     SetBpm(f64),
 
     /// Update a parameter on a node.
-    SetParam { node_id: u32, param_id: u32, value: f64 },
+    SetParam {
+        node_id: u32,
+        param_id: u32,
+        value: f64,
+    },
 }
