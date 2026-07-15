@@ -117,6 +117,7 @@ pkill -9 paraclete
 # After shutdown, verify pipewire sink is still real hardware.
 # If ONLY auto_null shows, pipewire is stranded — restart it.
 # (Known issue: paraclete can leave pipewire on a null sink after heavy use.)
+# Linux only:
 count=$(pactl list short sinks 2>/dev/null | grep -c alsa_output)
 if [ "$count" -eq 0 ]; then
     echo "WARNING: no real audio sink — restarting pipewire"
