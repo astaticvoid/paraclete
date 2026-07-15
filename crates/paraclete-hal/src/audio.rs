@@ -70,9 +70,11 @@ impl AudioBackend {
 
         let err_fn = |err| log::error!("audio stream error: {err}");
 
-        // Pre-allocate a work buffer for the partial-chunk fallback path.
-        // Allocated on the main thread before the stream starts.
+        // Pre-allocate a work buffer and output ring for the callback.
+        // Allocated on the main thread before the stream starts; never
+        // allocates on the audio path.
         let work_buf: Vec<f32> = vec![0.0; block_samples];
+        let mut ring = OutputRing::new(block_samples, RING_BLOCKS);
 
         let stream = match supported.sample_format() {
             SampleFormat::F32 => {
@@ -83,6 +85,7 @@ impl AudioBackend {
                         audio_callback_f32(
                             data,
                             &mut work_buf,
+                            &mut ring,
                             &mut executor,
                             channels,
                             block_samples,
@@ -104,6 +107,7 @@ impl AudioBackend {
                         audio_callback_f32(
                             &mut f32_buf,
                             &mut work_buf,
+                            &mut ring,
                             &mut executor,
                             channels,
                             block_samples,
@@ -128,6 +132,7 @@ impl AudioBackend {
                         audio_callback_f32(
                             &mut f32_buf,
                             &mut work_buf,
+                            &mut ring,
                             &mut executor,
                             channels,
                             block_samples,
@@ -147,6 +152,7 @@ impl AudioBackend {
         stream.play().map_err(|e| AudioError::Play(e.to_string()))?;
 
         log::info!("audio stream started");
+        enable_ftz_daz();
 
         Ok(Self { _stream: stream })
     }
@@ -200,6 +206,7 @@ impl AudioBackend {
         let err_fn = |err| log::error!("audio stream error: {err}");
         let ct = counters.clone();
         let work_buf: Vec<f32> = vec![0.0; block_samples];
+        let mut ring = OutputRing::new(block_samples, RING_BLOCKS);
 
         let stream = match supported.sample_format() {
             SampleFormat::F32 => {
@@ -222,6 +229,7 @@ impl AudioBackend {
                                 audio_callback_f32(
                                     data,
                                     &mut work_buf,
+                                    &mut ring,
                                     exec,
                                     channels,
                                     block_samples,
@@ -265,6 +273,7 @@ impl AudioBackend {
                                 audio_callback_f32(
                                     &mut f32_buf,
                                     &mut work_buf,
+                                    &mut ring,
                                     exec,
                                     channels,
                                     block_samples,
@@ -311,6 +320,7 @@ impl AudioBackend {
                                 audio_callback_f32(
                                     &mut f32_buf,
                                     &mut work_buf,
+                                    &mut ring,
                                     exec,
                                     channels,
                                     block_samples,
@@ -339,40 +349,133 @@ impl AudioBackend {
 
         stream.play().map_err(|e| AudioError::Play(e.to_string()))?;
         log::info!("audio engine stream started");
+        enable_ftz_daz();
 
         Ok(Self { _stream: stream })
     }
 }
 
+/// Output ring buffer bridging the executor's fixed-block rendering with the
+/// device's variable-size callback buffers.
+///
+/// The executor always renders `block_samples` at a time.  The ring accumulates
+/// these rendered blocks and the callback drains exactly `data.len()` samples
+/// each cycle.  No audio is discarded; timing error is bounded to the ring depth.
+///
+/// Pre-allocated on the main thread; never allocates on the audio path.
+struct OutputRing {
+    buf: Vec<f32>,
+    /// Next position the executor will write into.
+    write_pos: usize,
+    /// Next position the callback will read from.
+    read_pos: usize,
+    /// Total ring capacity in samples.
+    cap: usize,
+    /// How many samples have been written (modulo cap for position).
+    total_written: u64,
+    /// How many samples have been read (modulo cap for position).
+    total_read: u64,
+}
+
+impl OutputRing {
+    fn new(block_samples: usize, num_blocks: usize) -> Self {
+        let cap = block_samples * num_blocks;
+        Self {
+            buf: vec![0.0; cap],
+            write_pos: 0,
+            read_pos: 0,
+            cap,
+            total_written: 0,
+            total_read: 0,
+        }
+    }
+
+    /// How many samples are available to drain.
+    fn available(&self) -> usize {
+        (self.total_written - self.total_read) as usize
+    }
+
+    /// Write a full block of rendered samples into the ring.
+    fn write_block(&mut self, block: &[f32]) {
+        debug_assert_eq!(block.len(), self.cap / 4); // block is 1/N of ring
+        let len = block.len();
+        let end = self.write_pos + len;
+        if end <= self.cap {
+            self.buf[self.write_pos..end].copy_from_slice(block);
+        } else {
+            let first = self.cap - self.write_pos;
+            self.buf[self.write_pos..].copy_from_slice(&block[..first]);
+            self.buf[..len - first].copy_from_slice(&block[first..]);
+        }
+        self.write_pos = end % self.cap;
+        self.total_written += len as u64;
+    }
+
+    /// Drain up to `out.len()` samples into `out`.  Returns the number of
+    /// samples actually copied (may be less than `out.len()` on underrun).
+    fn drain(&mut self, out: &mut [f32]) -> usize {
+        let avail = self.available();
+        let n = out.len().min(avail);
+        if n == 0 {
+            return 0;
+        }
+        let end = self.read_pos + n;
+        if end <= self.cap {
+            out[..n].copy_from_slice(&self.buf[self.read_pos..end]);
+        } else {
+            let first = self.cap - self.read_pos;
+            out[..first].copy_from_slice(&self.buf[self.read_pos..]);
+            out[first..n].copy_from_slice(&self.buf[..n - first]);
+        }
+        self.read_pos = end % self.cap;
+        self.total_read += n as u64;
+        n
+    }
+}
+
 /// Process the f32 output buffer through the executor.
 ///
-/// When `data.len() == block_samples` the executor is called directly (fast
-/// path, zero overhead).  Otherwise the buffer is processed in full-block
-/// chunks: the executor is called once per chunk; any partial final chunk is
-/// filled from the first `chunk.len()` frames of a full-block render.
+/// The executor renders fixed-size blocks into an output ring.  The callback
+/// drains the ring to satisfy the device buffer.  If the ring underruns
+/// (ring is empty but device wants more data), the remainder is filled with
+/// silence — a self-correcting transient; the next callback picks up where
+/// the ring left off.
 #[inline]
 fn audio_callback_f32(
     data: &mut [f32],
     work_buf: &mut [f32],
+    ring: &mut OutputRing,
     executor: &mut NodeExecutor,
     channels: usize,
     block_samples: usize,
 ) {
-    if data.len() == block_samples {
-        executor.process(data, channels);
-        return;
-    }
+    // Process full blocks: render into ring, drain to output.
+    let mut out_pos = 0usize;
+    while out_pos < data.len() {
+        let remaining = data.len() - out_pos;
 
-    for chunk in data.chunks_mut(block_samples) {
-        if chunk.len() == block_samples {
-            executor.process(chunk, channels);
-        } else {
+        // If ring doesn't have enough, render another block into it.
+        if ring.available() < block_samples {
             work_buf.fill(0.0);
             executor.process(work_buf, channels);
-            chunk.copy_from_slice(&work_buf[..chunk.len()]);
+            ring.write_block(work_buf);
+        }
+
+        // Drain what we can (up to remaining).
+        let chunk = remaining.min(block_samples);
+        let got = ring.drain(&mut data[out_pos..out_pos + chunk]);
+        out_pos += got;
+
+        // Underrun guard: if we got less than requested (ring empty),
+        // the executor isn't rendering. Pad with silence and break.
+        if got < chunk {
+            data[out_pos..].fill(0.0);
+            break;
         }
     }
 }
+
+const RING_BLOCKS: usize = 4;
 
 /// Audio engine with dynamic topology support (ADR-029).
 ///
@@ -482,3 +585,32 @@ impl std::fmt::Display for AudioError {
 }
 
 impl std::error::Error for AudioError {}
+
+/// Enable flush-to-zero and denormals-are-zero on the calling thread.
+///
+/// On x86/x86-64, subnormal (denormal) floats in DSP loops trigger microcode
+/// assist handling that can stall the audio thread. This sets the SSE MXCSR
+/// FTZ and DAZ flags once.  Arm NEON does not require explicit denormal
+/// handling (it flushes to zero by default in hardware).
+fn enable_ftz_daz() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        static DONE: AtomicBool = AtomicBool::new(false);
+        if !DONE.swap(true, Ordering::Relaxed) {
+            unsafe {
+                // MXCSR register: bit 15 = FTZ, bit 6 = DAZ.
+                let mut mxcsr: u32 = 0;
+                const FLAGS: u32 = (1 << 15) | (1 << 6);
+                std::arch::asm!(
+                    "stmxcsr [{0}]",
+                    "or dword ptr [{0}], {1}",
+                    "ldmxcsr [{0}]",
+                    in(reg) &mut mxcsr,
+                    const FLAGS,
+                );
+            }
+            log::info!("FTZ/DAZ enabled on audio thread");
+        }
+    }
+}

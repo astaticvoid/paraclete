@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-html, body, #root {
+html, body {
   margin: 0;
   padding: 0;
-  height: 100%;
   background: #0b0b0e;
   color: #ddd;
   font-family: system-ui, sans-serif;
@@ -19,10 +18,11 @@ body {
 /* ── W2 four-zone editor layout ──────────────────────────────────────────── */
 
 .editor-layout {
+  position: fixed;
+  inset: 0;
   display: flex;
   flex-direction: row;
-  height: 100dvh;
-  width: 100vw;
+  width: 100%;
 }
 
 .engine-name {
@@ -136,6 +136,7 @@ body {
   gap: 8px;
   flex: 0 0 auto;
   padding: 6px 8px;
+  padding-bottom: max(6px, env(safe-area-inset-bottom));
   background: #121217;
   border-top: 1px solid #26262e;
 }
@@ -405,7 +406,7 @@ body {
 .rtt-readout {
   position: fixed;
   right: 8px;
-  bottom: 6px;
+  bottom: calc(6px + env(safe-area-inset-bottom));
   color: #667;
   font: 400 12px ui-monospace, monospace;
   pointer-events: none;
