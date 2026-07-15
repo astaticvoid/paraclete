@@ -37,7 +37,7 @@ but cannot resolve them without this index.
 | ADR-029 | `ADR-029-dynamic-topology.md` | Dynamic graph topology — patchable modular graph |
 | ADR-030 | `ADR-030-pattern-engine.md` | Pattern engine — multi-pattern, multi-page, per-track length/speed |
 | ADR-031 | `ADR-031-antiphon-interface-server.md` | Antiphon interface server and protocol |
-| ADR-032 | (not yet authored) | Theoria view-plugin API — scheduled for W2 |
+| ADR-032 | `ADR-032-theoria-view-plugin-api.md` | Theoria view-plugin API — cap-doc view extensions (accepted, 2026-07-13) |
 | ADR-033 | `ADR-033-headless-test-driver.md` | Headless test driver |
 | ADR-034 | `ADR-034-runtime-observability.md` | Runtime observability — live dropout/xrun/drop counters |
 | ADR-035 | `ADR-035-debug-baselines-and-structured-log.md` | Audio regression baselines + structured per-node debug log (🟡 proposed) |

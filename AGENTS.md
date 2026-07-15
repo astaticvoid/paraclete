@@ -229,6 +229,13 @@ Every commit: `cargo test --workspace` green, `cargo clippy --workspace` clean
 on touched crates. Design/doc changes in separate commits from code. Phase
 reports and `bugs.md` are append-only.
 
+**After each implementation commit** (or logical batch of commits), the agent
+must pause and offer a **subagent code review** before proceeding to the next
+commit or closing the session. The subagent reads the diff (or the affected
+files), checks conformance to ADRs, layer boundaries, audio-thread rules,
+naming conventions, and test coverage, and returns findings. Do not skip this
+step — it is the quality gate between implementation pushes.
+
 After every implementation session, the agent must explicitly propose which
 design documents need updating, then update **all** that apply before the
 session is done — not just the obvious one. This is a mandatory check, not a

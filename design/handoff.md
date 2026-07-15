@@ -53,8 +53,8 @@ inline. See `[[feedback-model-routing-subagents]]`.
 (These once read "frontier-model session"; with Fable off the table the top
 available tier is Opus, so these gate on the *user*, not on a bigger model.
 They are judgment calls to make *with* the user in session, not solo.)
-- ADR-032 (Theoria view-plugin API freeze at W2) — this is the extension-layer
-  contract; do not improvise it
+- ~~ADR-032 (Theoria view-plugin API freeze at W2) — this is the extension-layer
+  contract; do not improvise it~~ **accepted 2026-07-13. W2 implementation can proceed.**
 - Protocol v1 freeze (W4); any protocol change beyond the v0 spec
 - Re-ordering P10 C2–C5 after paired session #1 (user decision, informed by
   `design/sessions/s1.md`)
@@ -114,12 +114,7 @@ They are judgment calls to make *with* the user in session, not solo.)
       BUG-014 (emulator ButtonPressed) fixed same session. §5.3 Launchpad
       surface parked per s2; the P10 play-test gates on a paired session
       (TUI + command injection, or Theoria post-W2).
-    - **(c) W2 re-scoped: reference-design spike** — **paired only** (user +
-      Digitakt II hardware + Syntakt/Hydrasynth manuals). Produces the
-      Theoria native-surface spec (fixed input rail + contextual window,
-      param/env/LFO pages, source→FX channel view) AND the P12+
-      machine-family param philosophy. ADR-032 comes after this spec.
-      Do not build W-track features ahead of it.
+     - **(c) W2 re-scoped: reference-design spike** — **paired session held 2026-07-13.** Decisions §6.0–6.7 + OQ-13/OQ-14 ratified. W2 spec drafted (`design/phases/w2-interfaces.md`), ADR-032 proposed (`design/adr/ADR-032-theoria-view-plugin-api.md`). **Next: user ratifies the spec + ADR freeze, then W2 implementation begins.**
      - **(d) Headless test driver** — **ADR-033 batch mode shipped 2026-07-11**
        (`e265666`). Loads instrument YAML + test scenario YAML, builds graph,
        runs audio capture, executes timed commands, checks assertions, writes
