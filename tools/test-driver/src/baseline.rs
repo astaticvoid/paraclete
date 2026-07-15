@@ -88,7 +88,10 @@ pub fn compare(baseline: &Baseline, current: &Fingerprint, block_size: usize) ->
 
     // A regression that introduces NaN/Inf is always a failure, tolerance or not.
     if current.non_finite > 0 {
-        drift.push(format!("non-finite samples: {} (must be 0)", current.non_finite));
+        drift.push(format!(
+            "non-finite samples: {} (must be 0)",
+            current.non_finite
+        ));
     }
 
     let count_tol = t.sample_count_blocks.saturating_mul(block_size);
@@ -122,7 +125,11 @@ pub fn compare(baseline: &Baseline, current: &Fingerprint, block_size: usize) ->
             let at_ms = i as f64 * b.envelope_window_ms;
             drift.push(format!(
                 "envelope window {} (~{:.0}ms): {:.4} vs baseline {:.4} (>{:.1}%)",
-                i, at_ms, cur, base, t.envelope_rel * 100.0
+                i,
+                at_ms,
+                cur,
+                base,
+                t.envelope_rel * 100.0
             ));
             reported += 1;
             if reported >= 6 {
@@ -159,7 +166,13 @@ fn rel_exceeds(cur: f32, base: f32, rel: f64) -> bool {
 
 fn rel_drift(name: &str, cur: f32, base: f32, rel: f64) -> Option<String> {
     if rel_exceeds(cur, base, rel) {
-        Some(format!("{} {:.4} vs baseline {:.4} (>{:.1}%)", name, cur, base, rel * 100.0))
+        Some(format!(
+            "{} {:.4} vs baseline {:.4} (>{:.1}%)",
+            name,
+            cur,
+            base,
+            rel * 100.0
+        ))
     } else {
         None
     }
@@ -193,7 +206,11 @@ mod tests {
         let drift = compare(&base, &cur, 64);
         assert!(drift.iter().any(|d| d.starts_with("peak")), "{:?}", drift);
         assert!(drift.iter().any(|d| d.starts_with("rms")), "{:?}", drift);
-        assert!(drift.iter().any(|d| d.contains("envelope window")), "{:?}", drift);
+        assert!(
+            drift.iter().any(|d| d.contains("envelope window")),
+            "{:?}",
+            drift
+        );
     }
 
     #[test]
@@ -204,7 +221,11 @@ mod tests {
         bad[100] = f32::NAN;
         let cur = compute_fingerprint(&bad, 1000.0);
         let drift = compare(&base, &cur, 64);
-        assert!(drift.iter().any(|d| d.contains("non-finite")), "{:?}", drift);
+        assert!(
+            drift.iter().any(|d| d.contains("non-finite")),
+            "{:?}",
+            drift
+        );
     }
 
     #[test]
@@ -222,7 +243,9 @@ mod tests {
         let near = compute_fingerprint(&vec![0.3f32; 540], 1000.0); // +40, < 1 block (64)
         assert!(compare(&base, &near, 64).is_empty());
         let far = compute_fingerprint(&vec![0.3f32; 700], 1000.0); // +200, > 1 block
-        assert!(compare(&base, &far, 64).iter().any(|d| d.starts_with("sample_count")));
+        assert!(compare(&base, &far, 64)
+            .iter()
+            .any(|d| d.starts_with("sample_count")));
     }
 
     #[test]

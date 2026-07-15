@@ -1,7 +1,7 @@
 mod analysis;
 mod baseline;
-mod scenario;
 mod resolve;
+mod scenario;
 mod wav;
 
 use std::cell::UnsafeCell;
@@ -12,11 +12,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use paraclete_app::builder::{build_from_instrument, load_instrument_definition};
-use paraclete_node_api::{NodeCommand, StateBusValue, CMD_BUMP_PARAM, CMD_SET_PARAM, CMD_TRIGGER};
 use paraclete_node_api::capability::ParamDescriptor;
 use paraclete_node_api::state_bus::StateBusHandle;
-use paraclete_runtime::NodeConfigurator;
+use paraclete_node_api::{NodeCommand, StateBusValue, CMD_BUMP_PARAM, CMD_SET_PARAM, CMD_TRIGGER};
 use paraclete_nodes::sequencer::Sequencer;
+use paraclete_runtime::NodeConfigurator;
 
 use resolve::NameResolver;
 use scenario::{Assertion, Probe, ResolvedActionKind, TestScenario};
@@ -37,11 +37,17 @@ const CMD_CHAIN_CLEAR: u32 = Sequencer::CMD_CHAIN_CLEAR;
 
 fn auto_play_command() -> &'static str {
     #[cfg(target_os = "macos")]
-    { return "afplay"; }
+    {
+        return "afplay";
+    }
     #[cfg(target_os = "linux")]
-    { "pw-play" }
+    {
+        "pw-play"
+    }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    { return "afplay"; }
+    {
+        return "afplay";
+    }
 }
 
 const CAPTURE_RING_CAPACITY: usize = 512;
@@ -115,63 +121,148 @@ fn resolve_target(resolver: &NameResolver, target: &str) -> Result<u32, String> 
 
 fn dispatch_action(conf: &mut NodeConfigurator, action: &ResolvedActionKind) -> Result<(), String> {
     let cmd = match action {
-        ResolvedActionKind::SetParam { target_id, param_name, value } => {
+        ResolvedActionKind::SetParam {
+            target_id,
+            param_name,
+            value,
+        } => {
             let param_id = param_id_for_name(param_name);
-            NodeCommand { target_id: *target_id, type_id: CMD_SET_PARAM, arg0: param_id as i64, arg1: *value }
+            NodeCommand {
+                target_id: *target_id,
+                type_id: CMD_SET_PARAM,
+                arg0: param_id as i64,
+                arg1: *value,
+            }
         }
-        ResolvedActionKind::BumpParam { target_id, param_name, delta } => {
+        ResolvedActionKind::BumpParam {
+            target_id,
+            param_name,
+            delta,
+        } => {
             let param_id = param_id_for_name(param_name);
-            NodeCommand { target_id: *target_id, type_id: CMD_BUMP_PARAM, arg0: param_id as i64, arg1: *delta }
+            NodeCommand {
+                target_id: *target_id,
+                type_id: CMD_BUMP_PARAM,
+                arg0: param_id as i64,
+                arg1: *delta,
+            }
         }
-        ResolvedActionKind::Trigger { target_id, note, velocity } => {
-            NodeCommand { target_id: *target_id, type_id: CMD_TRIGGER, arg0: *note, arg1: *velocity }
+        ResolvedActionKind::Trigger {
+            target_id,
+            note,
+            velocity,
+        } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_TRIGGER,
+            arg0: *note,
+            arg1: *velocity,
+        },
+        ResolvedActionKind::ToggleStep { target_id, step } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_TOGGLE_STEP,
+            arg0: *step,
+            arg1: 0.0,
+        },
+        ResolvedActionKind::SetStep {
+            target_id,
+            step,
+            note,
+        } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_SET_STEP,
+            arg0: *step,
+            arg1: *note as f64,
+        },
+        ResolvedActionKind::Clear { target_id } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_CLEAR,
+            arg0: 0,
+            arg1: 0.0,
+        },
+        ResolvedActionKind::SetPattern { target_id, pattern } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_SET_PATTERN,
+            arg0: *pattern,
+            arg1: 0.0,
+        },
+        ResolvedActionKind::SetLength { target_id, steps } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_SET_LENGTH,
+            arg0: *steps,
+            arg1: -1.0,
+        },
+        ResolvedActionKind::SetSpeed { target_id, speed } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_SET_SPEED,
+            arg0: 0,
+            arg1: *speed,
+        },
+        ResolvedActionKind::SetPageLoop {
+            target_id,
+            start_page,
+            end_page,
+        } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_SET_PAGE_LOOP,
+            arg0: *start_page,
+            arg1: *end_page as f64,
+        },
+        ResolvedActionKind::SetStepTiming {
+            target_id,
+            step,
+            micro_offset,
+        } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_SET_STEP_TIMING,
+            arg0: *step,
+            arg1: *micro_offset as f64,
+        },
+        ResolvedActionKind::SetFillA { target_id, active } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_SET_FILL_A,
+            arg0: if *active { 1 } else { 0 },
+            arg1: 0.0,
+        },
+        ResolvedActionKind::SetFillB { target_id, active } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_SET_FILL_B,
+            arg0: if *active { 1 } else { 0 },
+            arg1: 0.0,
+        },
+        ResolvedActionKind::SetStepCondition {
+            target_id,
+            step,
+            probability,
+            repeat_n,
+            repeat_m,
+            fill,
+        } => {
+            let packed: u64 = (*probability as u64)
+                | ((*repeat_n as u64) << 8)
+                | ((*repeat_m as u64) << 16)
+                | ((*fill as u64) << 24);
+            NodeCommand {
+                target_id: *target_id,
+                type_id: CMD_SET_STEP_CONDITION,
+                arg0: *step,
+                arg1: packed as f64,
+            }
         }
-        ResolvedActionKind::ToggleStep { target_id, step } => {
-            NodeCommand { target_id: *target_id, type_id: CMD_TOGGLE_STEP, arg0: *step, arg1: 0.0 }
-        }
-        ResolvedActionKind::SetStep { target_id, step, note } => {
-            NodeCommand { target_id: *target_id, type_id: CMD_SET_STEP, arg0: *step, arg1: *note as f64 }
-        }
-        ResolvedActionKind::Clear { target_id } => {
-            NodeCommand { target_id: *target_id, type_id: CMD_CLEAR, arg0: 0, arg1: 0.0 }
-        }
-        ResolvedActionKind::SetPattern { target_id, pattern } => {
-            NodeCommand { target_id: *target_id, type_id: CMD_SET_PATTERN, arg0: *pattern, arg1: 0.0 }
-        }
-        ResolvedActionKind::SetLength { target_id, steps } => {
-            NodeCommand { target_id: *target_id, type_id: CMD_SET_LENGTH, arg0: *steps, arg1: -1.0 }
-        }
-        ResolvedActionKind::SetSpeed { target_id, speed } => {
-            NodeCommand { target_id: *target_id, type_id: CMD_SET_SPEED, arg0: 0, arg1: *speed }
-        }
-        ResolvedActionKind::SetPageLoop { target_id, start_page, end_page } => {
-            NodeCommand { target_id: *target_id, type_id: CMD_SET_PAGE_LOOP, arg0: *start_page, arg1: *end_page as f64 }
-        }
-        ResolvedActionKind::SetStepTiming { target_id, step, micro_offset } => {
-            NodeCommand { target_id: *target_id, type_id: CMD_SET_STEP_TIMING, arg0: *step, arg1: *micro_offset as f64 }
-        }
-        ResolvedActionKind::SetFillA { target_id, active } => {
-            NodeCommand { target_id: *target_id, type_id: CMD_SET_FILL_A, arg0: if *active { 1 } else { 0 }, arg1: 0.0 }
-        }
-        ResolvedActionKind::SetFillB { target_id, active } => {
-            NodeCommand { target_id: *target_id, type_id: CMD_SET_FILL_B, arg0: if *active { 1 } else { 0 }, arg1: 0.0 }
-        }
-        ResolvedActionKind::SetStepCondition { target_id, step, probability, repeat_n, repeat_m, fill } => {
-            let packed: u64 =
-                (*probability as u64) |
-                ((*repeat_n as u64) << 8) |
-                ((*repeat_m as u64) << 16) |
-                ((*fill as u64) << 24);
-            NodeCommand { target_id: *target_id, type_id: CMD_SET_STEP_CONDITION, arg0: *step, arg1: packed as f64 }
-        }
-        ResolvedActionKind::ChainPush { target_id, pattern } => {
-            NodeCommand { target_id: *target_id, type_id: CMD_CHAIN_PUSH, arg0: *pattern, arg1: 0.0 }
-        }
-        ResolvedActionKind::ChainClear { target_id } => {
-            NodeCommand { target_id: *target_id, type_id: CMD_CHAIN_CLEAR, arg0: 0, arg1: 0.0 }
-        }
+        ResolvedActionKind::ChainPush { target_id, pattern } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_CHAIN_PUSH,
+            arg0: *pattern,
+            arg1: 0.0,
+        },
+        ResolvedActionKind::ChainClear { target_id } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_CHAIN_CLEAR,
+            arg0: 0,
+            arg1: 0.0,
+        },
     };
-    conf.send_command(cmd).map_err(|_| "command ring buffer full".into())
+    conf.send_command(cmd)
+        .map_err(|_| "command ring buffer full".into())
 }
 
 fn param_id_for_name(name: &str) -> u32 {
@@ -219,8 +310,14 @@ fn build_context(
     });
 
     Ok(TestContext {
-        conf, executor, bus_handle, capture, running,
-        resolver, sample_rate, block_size,
+        conf,
+        executor,
+        bus_handle,
+        capture,
+        running,
+        resolver,
+        sample_rate,
+        block_size,
         mutation_seq: 0,
         last_read_seq: 0,
     })
@@ -244,10 +341,14 @@ fn run_batch(scenario: TestScenario) -> Result<(), String> {
 
     let mut ctx = build_context(&def, sample_rate, block_size)?;
 
-    let mut timeline: Vec<(f64, ResolvedActionKind)> = scenario.timeline.iter().map(|entry| {
-        let kind = resolve_action(&ctx.resolver, &entry.action)?;
-        Ok((entry.at, kind))
-    }).collect::<Result<Vec<_>, String>>()?;
+    let mut timeline: Vec<(f64, ResolvedActionKind)> = scenario
+        .timeline
+        .iter()
+        .map(|entry| {
+            let kind = resolve_action(&ctx.resolver, &entry.action)?;
+            Ok((entry.at, kind))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     timeline.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
 
     let start = Instant::now();
@@ -293,8 +394,8 @@ fn run_batch(scenario: TestScenario) -> Result<(), String> {
                     let val = ctx.conf.state_bus_read(path);
                     if let Some(eq) = a.eq {
                         match val {
-                            Some(StateBusValue::Float(v)) if (v - eq).abs() < 1e-6 => {},
-                            Some(StateBusValue::Int(v)) if (v as f64 - eq).abs() < 1e-6 => {},
+                            Some(StateBusValue::Float(v)) if (v - eq).abs() < 1e-6 => {}
+                            Some(StateBusValue::Int(v)) if (v as f64 - eq).abs() < 1e-6 => {}
                             _ => failures.push(format!(
                                 "assertion at {}s: {} expected {}, got {:?}",
                                 a.at, path, eq, val
@@ -303,8 +404,10 @@ fn run_batch(scenario: TestScenario) -> Result<(), String> {
                     }
                     if let Some(between) = &a.between {
                         match val {
-                            Some(StateBusValue::Float(v)) if v >= between[0] && v <= between[1] => {},
-                            Some(StateBusValue::Int(v)) if (v as f64) >= between[0] && (v as f64) <= between[1] => {},
+                            Some(StateBusValue::Float(v)) if v >= between[0] && v <= between[1] => {
+                            }
+                            Some(StateBusValue::Int(v))
+                                if (v as f64) >= between[0] && (v as f64) <= between[1] => {}
                             _ => failures.push(format!(
                                 "assertion at {}s: {} expected between {:?}, got {:?}",
                                 a.at, path, between, val
@@ -361,27 +464,37 @@ fn run_batch(scenario: TestScenario) -> Result<(), String> {
 
     wav::write_wav(&scenario.output, &all_samples, sample_rate as u32)
         .map_err(|e| format!("failed to write WAV: {}", e))?;
-    eprintln!("[test-driver] wrote {} ({} samples, {:.1}s)",
-        scenario.output, all_samples.len(),
-        all_samples.len() as f64 / sample_rate as f64);
+    eprintln!(
+        "[test-driver] wrote {} ({} samples, {:.1}s)",
+        scenario.output,
+        all_samples.len(),
+        all_samples.len() as f64 / sample_rate as f64
+    );
 
     let debug_events = ctx.conf.debug_events();
     if !debug_events.is_empty() {
         eprintln!("[test-driver] debug events ({}):", debug_events.len());
         for ev in &debug_events {
-            eprintln!("  node={} kind={} sample={} arg0={} arg1={}",
-                ev.node_id, ev.kind.as_str(), ev.sample_offset, ev.arg0, ev.arg1);
+            eprintln!(
+                "  node={} kind={} sample={} arg0={} arg1={}",
+                ev.node_id,
+                ev.kind.as_str(),
+                ev.sample_offset,
+                ev.arg0,
+                ev.arg1
+            );
         }
     }
 
     if scenario.play {
         let output = scenario.output.clone();
         let player = auto_play_command();
-        let status = std::process::Command::new(player)
-            .arg(&output)
-            .status();
+        let status = std::process::Command::new(player).arg(&output).status();
         if let Err(e) = status {
-            eprintln!("[test-driver] {} failed: {} (output at {})", player, e, output);
+            eprintln!(
+                "[test-driver] {} failed: {} (output at {})",
+                player, e, output
+            );
         }
     }
 
@@ -419,13 +532,19 @@ fn parse_interactive_args(args: &[String]) -> Result<InteractiveConfig, String> 
             }
             "--sample-rate" => {
                 i += 1;
-                cfg.sample_rate = args.get(i).ok_or("--sample-rate needs a value")?
-                    .parse().map_err(|_| "--sample-rate must be a number".to_string())?;
+                cfg.sample_rate = args
+                    .get(i)
+                    .ok_or("--sample-rate needs a value")?
+                    .parse()
+                    .map_err(|_| "--sample-rate must be a number".to_string())?;
             }
             "--block-size" => {
                 i += 1;
-                cfg.block_size = args.get(i).ok_or("--block-size needs a value")?
-                    .parse().map_err(|_| "--block-size must be an integer".to_string())?;
+                cfg.block_size = args
+                    .get(i)
+                    .ok_or("--block-size needs a value")?
+                    .parse()
+                    .map_err(|_| "--block-size must be an integer".to_string())?;
             }
             other => return Err(format!("unknown interactive flag: {}", other)),
         }
@@ -523,15 +642,21 @@ fn jstr<'a>(v: &'a serde_json::Value, k: &str) -> Option<&'a str> {
 }
 
 fn need_f64(v: &serde_json::Value, k: &str, cmd: &str) -> Result<f64, String> {
-    v.get(k).and_then(|x| x.as_f64()).ok_or_else(|| format!("{} needs numeric '{}'", cmd, k))
+    v.get(k)
+        .and_then(|x| x.as_f64())
+        .ok_or_else(|| format!("{} needs numeric '{}'", cmd, k))
 }
 
 fn need_i64(v: &serde_json::Value, k: &str, cmd: &str) -> Result<i64, String> {
-    v.get(k).and_then(|x| x.as_i64()).ok_or_else(|| format!("{} needs integer '{}'", cmd, k))
+    v.get(k)
+        .and_then(|x| x.as_i64())
+        .ok_or_else(|| format!("{} needs integer '{}'", cmd, k))
 }
 
 fn resolve_json_target(resolver: &NameResolver, v: &serde_json::Value) -> Result<u32, String> {
-    let t = v.get("target").ok_or_else(|| "missing 'target'".to_string())?;
+    let t = v
+        .get("target")
+        .ok_or_else(|| "missing 'target'".to_string())?;
     if let Some(n) = t.as_i64() {
         resolver.resolve_required(&n.to_string())
     } else if let Some(s) = t.as_str() {
@@ -553,12 +678,16 @@ fn json_to_action(
     let action = match cmd {
         "set_param" => A::SetParam {
             target_id: resolve_json_target(resolver, v)?,
-            param_name: jstr(v, "param").ok_or("set_param needs 'param'")?.to_string(),
+            param_name: jstr(v, "param")
+                .ok_or("set_param needs 'param'")?
+                .to_string(),
             value: need_f64(v, "value", cmd)?,
         },
         "bump_param" => A::BumpParam {
             target_id: resolve_json_target(resolver, v)?,
-            param_name: jstr(v, "param").ok_or("bump_param needs 'param'")?.to_string(),
+            param_name: jstr(v, "param")
+                .ok_or("bump_param needs 'param'")?
+                .to_string(),
             delta: need_f64(v, "delta", cmd)?,
         },
         "trigger" => A::Trigger {
@@ -575,7 +704,9 @@ fn json_to_action(
             step: need_i64(v, "step", cmd)?,
             note: need_i64(v, "note", cmd)?,
         },
-        "clear" => A::Clear { target_id: resolve_json_target(resolver, v)? },
+        "clear" => A::Clear {
+            target_id: resolve_json_target(resolver, v)?,
+        },
         "set_pattern" => A::SetPattern {
             target_id: resolve_json_target(resolver, v)?,
             pattern: need_i64(v, "pattern", cmd)?,
@@ -600,11 +731,17 @@ fn json_to_action(
         },
         "set_fill_a" => A::SetFillA {
             target_id: resolve_json_target(resolver, v)?,
-            active: v.get("active").and_then(|x| x.as_bool()).ok_or("set_fill_a needs bool 'active'")?,
+            active: v
+                .get("active")
+                .and_then(|x| x.as_bool())
+                .ok_or("set_fill_a needs bool 'active'")?,
         },
         "set_fill_b" => A::SetFillB {
             target_id: resolve_json_target(resolver, v)?,
-            active: v.get("active").and_then(|x| x.as_bool()).ok_or("set_fill_b needs bool 'active'")?,
+            active: v
+                .get("active")
+                .and_then(|x| x.as_bool())
+                .ok_or("set_fill_b needs bool 'active'")?,
         },
         "set_step_condition" => A::SetStepCondition {
             target_id: resolve_json_target(resolver, v)?,
@@ -618,7 +755,9 @@ fn json_to_action(
             target_id: resolve_json_target(resolver, v)?,
             pattern: need_i64(v, "pattern", cmd)?,
         },
-        "chain_clear" => A::ChainClear { target_id: resolve_json_target(resolver, v)? },
+        "chain_clear" => A::ChainClear {
+            target_id: resolve_json_target(resolver, v)?,
+        },
         _ => return Ok(None),
     };
     Ok(Some(action))
@@ -646,13 +785,14 @@ fn handle_json_command(ctx: &mut TestContext, line: &str, all_samples: &[f32]) -
                 None => (err_json("read needs a 'path'"), false),
                 Some(path) => match ctx.conf.state_bus_read(path) {
                     Some(val) => (
-                        serde_json::json!({ "path": path, "value": value_to_json(&val) }).to_string(),
+                        serde_json::json!({ "path": path, "value": value_to_json(&val) })
+                            .to_string(),
                         false,
                     ),
                     None => (err_json(&format!("no value at path {}", path)), false),
                 },
             }
-        },
+        }
 
         "dump" => {
             sync_for_read(ctx);
@@ -669,8 +809,13 @@ fn handle_json_command(ctx: &mut TestContext, line: &str, all_samples: &[f32]) -
             let window_ms = v.get("window_ms").and_then(|w| w.as_f64()).unwrap_or(500.0);
             let window_samples = (window_ms / 1000.0 * ctx.sample_rate as f64) as usize;
             let start = all_samples.len().saturating_sub(window_samples);
-            let peak = all_samples[start..].iter().fold(0.0f32, |m, s| m.max(s.abs()));
-            (serde_json::json!({ "peak": peak, "window_ms": window_ms }).to_string(), false)
+            let peak = all_samples[start..]
+                .iter()
+                .fold(0.0f32, |m, s| m.max(s.abs()));
+            (
+                serde_json::json!({ "peak": peak, "window_ms": window_ms }).to_string(),
+                false,
+            )
         }
 
         "render" => {
@@ -687,16 +832,22 @@ fn handle_json_command(ctx: &mut TestContext, line: &str, all_samples: &[f32]) -
         "log" => {
             sync_for_read(ctx);
             let events = ctx.conf.debug_events();
-            let json_events: Vec<serde_json::Value> = events.iter().map(|ev| {
-                serde_json::json!({
-                    "t": ev.sample_offset,
-                    "node": ev.node_id,
-                    "kind": ev.kind.as_str(),
-                    "arg0": ev.arg0,
-                    "arg1": ev.arg1,
+            let json_events: Vec<serde_json::Value> = events
+                .iter()
+                .map(|ev| {
+                    serde_json::json!({
+                        "t": ev.sample_offset,
+                        "node": ev.node_id,
+                        "kind": ev.kind.as_str(),
+                        "arg0": ev.arg0,
+                        "arg1": ev.arg1,
+                    })
                 })
-            }).collect();
-            (serde_json::json!({ "events": json_events }).to_string(), false)
+                .collect();
+            (
+                serde_json::json!({ "events": json_events }).to_string(),
+                false,
+            )
         }
 
         other => match json_to_action(&ctx.resolver, other, &v) {
@@ -727,14 +878,17 @@ fn check_artifact_assertions(
             continue;
         }
         let from = ((a.from.unwrap_or(0.0) * sample_rate as f64) as usize).min(all_samples.len());
-        let until = a.until
+        let until = a
+            .until
             .map(|u| ((u * sample_rate as f64) as usize).min(all_samples.len()))
             .unwrap_or(all_samples.len());
         if from >= until {
             failures.push(format!(
                 "artifact assertion window [{}s, {}s) is empty (capture is {:.3}s)",
                 a.from.unwrap_or(0.0),
-                a.until.map(|u| u.to_string()).unwrap_or_else(|| "end".into()),
+                a.until
+                    .map(|u| u.to_string())
+                    .unwrap_or_else(|| "end".into()),
                 all_samples.len() as f64 / sample_rate as f64
             ));
             continue;
@@ -748,7 +902,9 @@ fn check_artifact_assertions(
         if nf_count > 0 {
             failures.push(format!(
                 "{} non-finite sample(s), first at sample {} ({:.4}s)",
-                nf_count, from + nf_idx, time_of(nf_idx)
+                nf_count,
+                from + nf_idx,
+                time_of(nf_idx)
             ));
             continue;
         }
@@ -758,7 +914,10 @@ fn check_artifact_assertions(
             if jump as f64 >= limit {
                 failures.push(format!(
                     "discontinuity {:.4} at sample {} ({:.4}s) >= {:.4}",
-                    jump, from + idx, time_of(idx), limit
+                    jump,
+                    from + idx,
+                    time_of(idx),
+                    limit
                 ));
             }
         }
@@ -767,7 +926,10 @@ fn check_artifact_assertions(
             if offset.abs() as f64 >= limit {
                 failures.push(format!(
                     "dc offset {:.5} over [{:.3}s, {:.3}s) >= {:.5}",
-                    offset, time_of(0), until as f64 / sample_rate as f64, limit
+                    offset,
+                    time_of(0),
+                    until as f64 / sample_rate as f64,
+                    limit
                 ));
             }
         }
@@ -777,62 +939,117 @@ fn check_artifact_assertions(
             if run_ms >= limit_ms {
                 failures.push(format!(
                     "held-sample run of {:.2}ms ({} samples) starting at {:.4}s >= {:.2}ms",
-                    run_ms, run, time_of(idx), limit_ms
+                    run_ms,
+                    run,
+                    time_of(idx),
+                    limit_ms
                 ));
             }
         }
     }
 }
 
-fn resolve_action(resolver: &NameResolver, action: &scenario::TimelineAction) -> Result<ResolvedActionKind, String> {
+fn resolve_action(
+    resolver: &NameResolver,
+    action: &scenario::TimelineAction,
+) -> Result<ResolvedActionKind, String> {
     use scenario::TimelineAction;
     Ok(match action {
-        TimelineAction::SetParam { target, param, value } => ResolvedActionKind::SetParam {
-            target_id: resolve_target(resolver, target)?, param_name: param.clone(), value: *value,
+        TimelineAction::SetParam {
+            target,
+            param,
+            value,
+        } => ResolvedActionKind::SetParam {
+            target_id: resolve_target(resolver, target)?,
+            param_name: param.clone(),
+            value: *value,
         },
-        TimelineAction::BumpParam { target, param, delta } => ResolvedActionKind::BumpParam {
-            target_id: resolve_target(resolver, target)?, param_name: param.clone(), delta: *delta,
+        TimelineAction::BumpParam {
+            target,
+            param,
+            delta,
+        } => ResolvedActionKind::BumpParam {
+            target_id: resolve_target(resolver, target)?,
+            param_name: param.clone(),
+            delta: *delta,
         },
-        TimelineAction::Trigger { target, note, velocity } => ResolvedActionKind::Trigger {
-            target_id: resolve_target(resolver, target)?, note: *note, velocity: *velocity,
+        TimelineAction::Trigger {
+            target,
+            note,
+            velocity,
+        } => ResolvedActionKind::Trigger {
+            target_id: resolve_target(resolver, target)?,
+            note: *note,
+            velocity: *velocity,
         },
         TimelineAction::ToggleStep { target, step } => ResolvedActionKind::ToggleStep {
-            target_id: resolve_target(resolver, target)?, step: *step,
+            target_id: resolve_target(resolver, target)?,
+            step: *step,
         },
         TimelineAction::SetStep { target, step, note } => ResolvedActionKind::SetStep {
-            target_id: resolve_target(resolver, target)?, step: *step, note: *note,
+            target_id: resolve_target(resolver, target)?,
+            step: *step,
+            note: *note,
         },
         TimelineAction::Clear { target } => ResolvedActionKind::Clear {
             target_id: resolve_target(resolver, target)?,
         },
         TimelineAction::SetPattern { target, pattern } => ResolvedActionKind::SetPattern {
-            target_id: resolve_target(resolver, target)?, pattern: *pattern,
+            target_id: resolve_target(resolver, target)?,
+            pattern: *pattern,
         },
         TimelineAction::SetLength { target, steps } => ResolvedActionKind::SetLength {
-            target_id: resolve_target(resolver, target)?, steps: *steps,
+            target_id: resolve_target(resolver, target)?,
+            steps: *steps,
         },
         TimelineAction::SetSpeed { target, speed } => ResolvedActionKind::SetSpeed {
-            target_id: resolve_target(resolver, target)?, speed: *speed,
+            target_id: resolve_target(resolver, target)?,
+            speed: *speed,
         },
-        TimelineAction::SetPageLoop { target, start_page, end_page } => ResolvedActionKind::SetPageLoop {
-            target_id: resolve_target(resolver, target)?, start_page: *start_page, end_page: *end_page,
+        TimelineAction::SetPageLoop {
+            target,
+            start_page,
+            end_page,
+        } => ResolvedActionKind::SetPageLoop {
+            target_id: resolve_target(resolver, target)?,
+            start_page: *start_page,
+            end_page: *end_page,
         },
-        TimelineAction::SetStepTiming { target, step, micro_offset } => ResolvedActionKind::SetStepTiming {
-            target_id: resolve_target(resolver, target)?, step: *step, micro_offset: *micro_offset,
+        TimelineAction::SetStepTiming {
+            target,
+            step,
+            micro_offset,
+        } => ResolvedActionKind::SetStepTiming {
+            target_id: resolve_target(resolver, target)?,
+            step: *step,
+            micro_offset: *micro_offset,
         },
         TimelineAction::SetFillA { target, active } => ResolvedActionKind::SetFillA {
-            target_id: resolve_target(resolver, target)?, active: *active,
+            target_id: resolve_target(resolver, target)?,
+            active: *active,
         },
         TimelineAction::SetFillB { target, active } => ResolvedActionKind::SetFillB {
-            target_id: resolve_target(resolver, target)?, active: *active,
+            target_id: resolve_target(resolver, target)?,
+            active: *active,
         },
-        TimelineAction::SetStepCondition { target, step, probability, repeat_n, repeat_m, fill } =>
-            ResolvedActionKind::SetStepCondition {
-                target_id: resolve_target(resolver, target)?, step: *step,
-                probability: *probability, repeat_n: *repeat_n, repeat_m: *repeat_m, fill: *fill,
-            },
+        TimelineAction::SetStepCondition {
+            target,
+            step,
+            probability,
+            repeat_n,
+            repeat_m,
+            fill,
+        } => ResolvedActionKind::SetStepCondition {
+            target_id: resolve_target(resolver, target)?,
+            step: *step,
+            probability: *probability,
+            repeat_n: *repeat_n,
+            repeat_m: *repeat_m,
+            fill: *fill,
+        },
         TimelineAction::ChainPush { target, pattern } => ResolvedActionKind::ChainPush {
-            target_id: resolve_target(resolver, target)?, pattern: *pattern,
+            target_id: resolve_target(resolver, target)?,
+            pattern: *pattern,
         },
         TimelineAction::ChainClear { target } => ResolvedActionKind::ChainClear {
             target_id: resolve_target(resolver, target)?,
@@ -959,12 +1176,23 @@ fn run_baseline(scenario: TestScenario, mode: BaselineMode) -> Result<(), String
         BaselineMode::Off => {}
         BaselineMode::Update(path) => {
             if fp.non_finite > 0 {
-                eprintln!("[test-driver] NOT updating baseline — {} non-finite sample(s) in render", fp.non_finite);
+                eprintln!(
+                    "[test-driver] NOT updating baseline — {} non-finite sample(s) in render",
+                    fp.non_finite
+                );
             } else {
                 // Preserve hand-tuned tolerances across an update; refresh only
                 // the fingerprint.
-                let tolerances = baseline::load(path).map(|b| b.tolerances).unwrap_or_default();
-                baseline::save(path, &baseline::Baseline { fingerprint: fp, tolerances })?;
+                let tolerances = baseline::load(path)
+                    .map(|b| b.tolerances)
+                    .unwrap_or_default();
+                baseline::save(
+                    path,
+                    &baseline::Baseline {
+                        fingerprint: fp,
+                        tolerances,
+                    },
+                )?;
                 eprintln!("[test-driver] wrote baseline {}", path);
             }
         }
@@ -998,14 +1226,17 @@ fn parse_quick_args(args: &[String]) -> Result<TestScenario, String> {
         match args.get(*i).map(|s| s.as_str()) {
             // A flag-like token means the value is missing — without this,
             // `--output --no-play` silently sets output to "--no-play".
-            Some(v) if v.starts_with("--") => Err(format!("{} needs a value, got flag '{}'", flag, v)),
+            Some(v) if v.starts_with("--") => {
+                Err(format!("{} needs a value, got flag '{}'", flag, v))
+            }
             Some(v) => Ok(v),
             None => Err(format!("{} needs a value", flag)),
         }
     }
     fn number(args: &[String], i: &mut usize, flag: &str) -> Result<f64, String> {
         let v = value(args, i, flag)?;
-        v.parse().map_err(|_| format!("{} needs a number, got '{}'", flag, v))
+        v.parse()
+            .map_err(|_| format!("{} needs a number, got '{}'", flag, v))
     }
 
     let mut triggers: Vec<String> = Vec::new();
@@ -1032,11 +1263,15 @@ fn parse_quick_args(args: &[String]) -> Result<TestScenario, String> {
     if triggers.len() != ats.len() {
         return Err(format!(
             "{} --trigger value(s) but {} --at value(s) — counts must match",
-            triggers.len(), ats.len()
+            triggers.len(),
+            ats.len()
         ));
     }
     if triggers.is_empty() {
-        return Err(format!("quick mode needs at least one --trigger/--at pair\n{}", QUICK_USAGE));
+        return Err(format!(
+            "quick mode needs at least one --trigger/--at pair\n{}",
+            QUICK_USAGE
+        ));
     }
 
     if ats.iter().any(|a| !a.is_finite() || *a < 0.0) {
@@ -1047,15 +1282,24 @@ fn parse_quick_args(args: &[String]) -> Result<TestScenario, String> {
     // run_batch feeds this to Duration::from_secs_f64, which panics on
     // negative/NaN — reject here for a clean CLI error instead.
     if !duration_secs.is_finite() || duration_secs <= 0.0 {
-        return Err(format!("duration must be positive and finite, got {}", duration_secs));
+        return Err(format!(
+            "duration must be positive and finite, got {}",
+            duration_secs
+        ));
     }
 
-    let timeline = triggers.into_iter().zip(ats).map(|(target, at)| {
-        scenario::TimelineEntry {
+    let timeline = triggers
+        .into_iter()
+        .zip(ats)
+        .map(|(target, at)| scenario::TimelineEntry {
             at,
-            action: scenario::TimelineAction::Trigger { target, note: -1, velocity: 0.79 },
-        }
-    }).collect();
+            action: scenario::TimelineAction::Trigger {
+                target,
+                note: -1,
+                velocity: 0.79,
+            },
+        })
+        .collect();
 
     Ok(TestScenario {
         format_version: 1,
@@ -1096,7 +1340,8 @@ mod quick_mode_tests {
 
     #[test]
     fn triggers_and_ats_pair_positionally() {
-        let s = parse_quick_args(&args("--trigger kick --at 1.0 --trigger snare --at 1.5")).unwrap();
+        let s =
+            parse_quick_args(&args("--trigger kick --at 1.0 --trigger snare --at 1.5")).unwrap();
         assert_eq!(s.timeline.len(), 2);
         assert_eq!(s.timeline[1].at, 1.5);
         // duration defaults to last trigger + 2s
@@ -1127,14 +1372,18 @@ mod quick_mode_tests {
 
     #[test]
     fn no_play_and_output_are_respected() {
-        let s = parse_quick_args(&args("--trigger kick --at 0.5 --no-play --output /tmp/q.wav")).unwrap();
+        let s = parse_quick_args(&args(
+            "--trigger kick --at 0.5 --no-play --output /tmp/q.wav",
+        ))
+        .unwrap();
         assert!(!s.play);
         assert_eq!(s.output, "/tmp/q.wav");
     }
 
     #[test]
     fn flag_like_value_is_an_error_not_a_silent_swallow() {
-        let err = parse_quick_args(&args("--trigger kick --at 0.5 --output --no-play")).unwrap_err();
+        let err =
+            parse_quick_args(&args("--trigger kick --at 0.5 --output --no-play")).unwrap_err();
         assert!(err.contains("--output needs a value"), "got: {}", err);
     }
 
@@ -1176,16 +1425,28 @@ mod interactive_tests {
     #[test]
     fn unknown_command_is_none_not_error() {
         let r = NameResolver::empty();
-        assert!(matches!(json_to_action(&r, "frobnicate", &json!({})), Ok(None)));
+        assert!(matches!(
+            json_to_action(&r, "frobnicate", &json!({})),
+            Ok(None)
+        ));
     }
 
     #[test]
     fn set_param_parses_with_numeric_target() {
         let r = NameResolver::empty();
-        let action = json_to_action(&r, "set_param",
-            &json!({ "target": 20, "param": "decay", "value": 0.3 })).unwrap().unwrap();
+        let action = json_to_action(
+            &r,
+            "set_param",
+            &json!({ "target": 20, "param": "decay", "value": 0.3 }),
+        )
+        .unwrap()
+        .unwrap();
         match action {
-            ResolvedActionKind::SetParam { target_id, param_name, value } => {
+            ResolvedActionKind::SetParam {
+                target_id,
+                param_name,
+                value,
+            } => {
                 assert_eq!(target_id, 20);
                 assert_eq!(param_name, "decay");
                 assert_eq!(value, 0.3);
@@ -1203,7 +1464,9 @@ mod interactive_tests {
     #[test]
     fn trigger_defaults_note_and_velocity() {
         let r = NameResolver::empty();
-        let action = json_to_action(&r, "trigger", &json!({ "target": 20 })).unwrap().unwrap();
+        let action = json_to_action(&r, "trigger", &json!({ "target": 20 }))
+            .unwrap()
+            .unwrap();
         match action {
             // ADR-033: note < 0 = engine default (not 0, which would retune — BUG-028)
             ResolvedActionKind::Trigger { note, velocity, .. } => {
@@ -1251,16 +1514,14 @@ fn main() {
         (s, BaselineMode::Off)
     } else {
         let yaml_path = &args[1];
-        let yaml = std::fs::read_to_string(yaml_path)
-            .unwrap_or_else(|e| {
-                eprintln!("[test-driver] cannot read {}: {}", yaml_path, e);
-                std::process::exit(2);
-            });
-        let s = scenario::parse_scenario(&yaml)
-            .unwrap_or_else(|e| {
-                eprintln!("[test-driver] {}", e);
-                std::process::exit(2);
-            });
+        let yaml = std::fs::read_to_string(yaml_path).unwrap_or_else(|e| {
+            eprintln!("[test-driver] cannot read {}: {}", yaml_path, e);
+            std::process::exit(2);
+        });
+        let s = scenario::parse_scenario(&yaml).unwrap_or_else(|e| {
+            eprintln!("[test-driver] {}", e);
+            std::process::exit(2);
+        });
         let mode = parse_baseline_flag(&args[2..], yaml_path).unwrap_or_else(|e| {
             eprintln!("[test-driver] {}", e);
             std::process::exit(2);

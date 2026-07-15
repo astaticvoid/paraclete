@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use paraclete_app::instrument::InstrumentDefinition;
+use std::collections::HashMap;
 
 pub struct NameResolver {
     names: HashMap<String, u32>,
@@ -44,6 +44,8 @@ impl NameResolver {
     /// directly); name lookups all miss.
     #[cfg(test)]
     pub fn empty() -> Self {
-        Self { names: HashMap::new() }
+        Self {
+            names: HashMap::new(),
+        }
     }
 }

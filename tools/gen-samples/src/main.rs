@@ -11,10 +11,10 @@ use std::path::Path;
 
 const SR: u32 = 44_100;
 const SPEC: hound::WavSpec = hound::WavSpec {
-    channels:        1,
-    sample_rate:     SR,
+    channels: 1,
+    sample_rate: SR,
     bits_per_sample: 16,
-    sample_format:   hound::SampleFormat::Int,
+    sample_format: hound::SampleFormat::Int,
 };
 
 // ── XorShift32 PRNG ──────────────────────────────────────────────────────────
@@ -43,7 +43,10 @@ fn write_wav(path: &str, samples: &[f64]) {
         writer.write_sample(to_i16(s)).unwrap();
     }
     writer.finalize().unwrap();
-    println!("  wrote {path}  ({} ms)", samples.len() * 1000 / SR as usize);
+    println!(
+        "  wrote {path}  ({} ms)",
+        samples.len() * 1000 / SR as usize
+    );
 }
 
 // ── Synthesis recipes ─────────────────────────────────────────────────────────
@@ -55,9 +58,9 @@ fn kick() -> Vec<f64> {
     let mut phase = 0.0f64;
     for i in 0..n {
         let t = i as f64 / SR as f64;
-        let sweep = (t * 18.0).exp();   // pitch falls fast at first
-        let freq  = 40.0 + 80.0 / sweep;
-        let amp   = (-7.0 * t).exp();
+        let sweep = (t * 18.0).exp(); // pitch falls fast at first
+        let freq = 40.0 + 80.0 / sweep;
+        let amp = (-7.0 * t).exp();
         phase = (phase + TAU * freq / SR as f64) % TAU;
         buf.push(amp * phase.sin() * 0.95);
     }
@@ -71,8 +74,8 @@ fn snare() -> Vec<f64> {
     let mut rng: u32 = 0x5EED_BEEF;
     let mut phase = 0.0f64;
     for i in 0..n {
-        let t    = i as f64 / SR as f64;
-        let amp  = (-11.0 * t).exp();
+        let t = i as f64 / SR as f64;
+        let amp = (-11.0 * t).exp();
         let noise = xorshift(&mut rng);
         phase = (phase + TAU * 200.0 / SR as f64) % TAU;
         let body = phase.sin();
@@ -88,10 +91,10 @@ fn hat_closed() -> Vec<f64> {
     let mut rng: u32 = 0xDEAD_1234;
     let mut hp = 0.0f64; // one-pole high-pass state
     for i in 0..n {
-        let t    = i as f64 / SR as f64;
-        let amp  = (-55.0 * t).exp();
-        let raw  = xorshift(&mut rng);
-        hp = 0.9 * hp + raw - { raw};  // simple high-pass
+        let t = i as f64 / SR as f64;
+        let amp = (-55.0 * t).exp();
+        let raw = xorshift(&mut rng);
+        hp = 0.9 * hp + raw - { raw }; // simple high-pass
         let noise = xorshift(&mut rng); // re-draw for true noise floor
         buf.push(amp * noise * 0.5);
     }
@@ -104,8 +107,8 @@ fn hat_open() -> Vec<f64> {
     let mut buf = Vec::with_capacity(n);
     let mut rng: u32 = 0xC0FF_EE42;
     for i in 0..n {
-        let t    = i as f64 / SR as f64;
-        let amp  = (-8.0 * t).exp();
+        let t = i as f64 / SR as f64;
+        let amp = (-8.0 * t).exp();
         let noise = xorshift(&mut rng);
         buf.push(amp * noise * 0.45);
     }
@@ -119,8 +122,8 @@ fn perc_a() -> Vec<f64> {
     let mut phase = 0.0f64;
     let mut rng: u32 = 0xABCD_1111;
     for i in 0..n {
-        let t    = i as f64 / SR as f64;
-        let amp  = (-25.0 * t).exp();
+        let t = i as f64 / SR as f64;
+        let amp = (-25.0 * t).exp();
         let click_amp = (-120.0 * t).exp(); // transient click at onset
         phase = (phase + TAU * 900.0 / SR as f64) % TAU;
         let click = xorshift(&mut rng) * click_amp;
@@ -136,10 +139,10 @@ fn perc_b() -> Vec<f64> {
     let mut phase = 0.0f64;
     let mut rng: u32 = 0x1234_5678;
     for i in 0..n {
-        let t    = i as f64 / SR as f64;
-        let amp  = (-14.0 * t).exp();
+        let t = i as f64 / SR as f64;
+        let amp = (-14.0 * t).exp();
         let click_amp = (-80.0 * t).exp();
-        let freq  = 320.0 + 80.0 / (1.0 + t * 40.0); // slight pitch drop
+        let freq = 320.0 + 80.0 / (1.0 + t * 40.0); // slight pitch drop
         phase = (phase + TAU * freq / SR as f64) % TAU;
         let click = xorshift(&mut rng) * click_amp;
         buf.push(amp * phase.sin() * 0.7 + click * 0.3);
@@ -155,10 +158,10 @@ fn fx() -> Vec<f64> {
     let mut ph2 = 0.0f64;
     let mut rng: u32 = 0xF00D_CAFE;
     for i in 0..n {
-        let t    = i as f64 / SR as f64;
-        let amp  = (-6.0 * t).exp();
-        let f1   = 800.0 * (-8.0 * t).exp() + 100.0;
-        let f2   = f1 * 1.41; // tritone detuning for metallic flavour
+        let t = i as f64 / SR as f64;
+        let amp = (-6.0 * t).exp();
+        let f1 = 800.0 * (-8.0 * t).exp() + 100.0;
+        let f2 = f1 * 1.41; // tritone detuning for metallic flavour
         ph1 = (ph1 + TAU * f1 / SR as f64) % TAU;
         ph2 = (ph2 + TAU * f2 / SR as f64) % TAU;
         let noise_layer = xorshift(&mut rng) * (-20.0 * t).exp() * 0.2;
@@ -174,7 +177,7 @@ fn bass() -> Vec<f64> {
     let mut buf = Vec::with_capacity(n);
     let mut phase = 0.0f64;
     for i in 0..n {
-        let t   = i as f64 / SR as f64;
+        let t = i as f64 / SR as f64;
         // Small attack ramp + flat sustain + tail release
         let env = if t < 0.008 {
             t / 0.008
