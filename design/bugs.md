@@ -6,7 +6,8 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ## Status (2026-07-14)
 
-**Actively open:** BUG-027 (engine exonerated by measurement — pending user headphone A/B, see addendum), INFRA-004 (no headless mode — emulator requires TTY).
+**Actively open:** BUG-027 (engine exonerated by measurement — pending user headphone A/B, see addendum), INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-006 (idle ALSA underruns — no realtime priority).
+**Partially resolved:** BUG-012 (ring buffer + FTZ shipped; BufferSize::Fixed retry + realtime priority remain — see INFRA-006).
 **Partially resolved:** BUG-012 (sample rate detection shipped; output ring buffer not yet implemented — causes distortion on Linux ALSA with non-multiple block sizes).
 **Fixed, pending hardware verification:** (none).
 **Trigger-based (fix when named trigger fires):** BUG-003, BUG-006.
@@ -998,3 +999,45 @@ is `setsid` (new session) but the emulator still spews grid output.
 Antiphon server with no TUI and no emulator — stdin/stdout are unused. The
 emulator's `--no-tui` flag already controls the ratatui layer; this is a separate
 concern (the HAL-layer hardware node itself).
+**RESOLVED** (`c3c56db`): `--no-emulator` flag added. When set and no physical
+Launchpad is found, the app skips the emulator and the scripting gateway.
+LP_DEVICE_ID is `None` (0 in Rhai).
+
+---
+
+### INFRA-005 — Device presence assumed; no dynamic surface registry
+
+**Severity:** Medium — profiles and routing hardcode device IDs that may not exist
+**Phase found:** W2 paired session #3 (2026-07-14), headless mode testing
+**Description:** The app assumes Launchpad, Digitakt, Keystep, and Theoria
+surfaces are always present at fixed hardcoded IDs (101–106). The Rhai profile
+sends LED updates to `LP_DEVICE_ID` unconditionally. When a surface is absent
+(headless mode, no Theoria, no physical LP), `deliver_script_output` drops
+updates with `"no output handle for device N"` — noisy but benign. The real
+risk: any future profile that gates behavior on a surface's presence has no
+reliable way to check.
+**Location:** `paraclete-app/src/main.rs` — `try_open_*` functions, hardcoded
+IDs, `build_constants` (LP/DT/KS/THEORIA_DEVICE_ID injected into every profile).
+**Fix direction:** Surface nodes should register themselves in a dynamic
+registry. Profiles use discovery (e.g. "is a Launchpad present?") rather than
+hardcoded IDs. The Antiphon `hello`/`topology` messages already provide the
+server-side half; the Rhai side needs `device_present(id)` or a surface-count
+constant.
+
+---
+
+### INFRA-006 — Idle ALSA underruns (no realtime priority on audio thread)
+
+**Severity:** Low for idle, Medium under load — audio thread may be descheduled
+**Phase found:** W2 paired session #3 (2026-07-14)
+**Description:** ~4,400 ALSA underruns logged during idle operation (empty graph,
+no notes playing). Each underrun means the audio buffer drained before the
+callback refilled it — the ring bridge fills silence so no artifact, but it
+indicates the audio thread is being descheduled by the Linux CFS scheduler.
+Under load (multiple voices, reverb), this could produce audible dropouts.
+**Location:** cpal audio callback thread — no `SCHED_FIFO` / `sched_setscheduler`
+or `setpriority` call exists.
+**Fix direction:** Call `libc::sched_setscheduler(0, libc::SCHED_FIFO, ...)` or
+use `thread::set_priority` (via a small unsafe block) at stream start. Requires
+`CAP_SYS_NICE` or a systemd `.service` limit bump. Also consider `cpal`'s
+`StreamConfig` timeout hint or `BufferSize::Fixed` retry (see BUG-012).
