@@ -50,13 +50,15 @@ fn make_cap_doc_with_cutoff() -> CapabilityDocument {
             display: None,
         }],
         extensions: vec![],
+        view: None,
     }
 }
 
 #[test]
 fn tui_state_updates_bpm_from_state_bus() {
     let bus = make_bus();
-    bus.borrow_mut().write("/transport/bpm", StateBusValue::Float(140.0));
+    bus.borrow_mut()
+        .write("/transport/bpm", StateBusValue::Float(140.0));
 
     let config = make_config(1, vec![]);
     let mut app = TuiApp::new(bus, config, HashMap::new());
@@ -69,7 +71,8 @@ fn tui_state_updates_bpm_from_state_bus() {
 #[test]
 fn tui_state_playing_flag_reflects_state_bus() {
     let bus = make_bus();
-    bus.borrow_mut().write("/transport/playing", StateBusValue::Bool(true));
+    bus.borrow_mut()
+        .write("/transport/playing", StateBusValue::Bool(true));
 
     let config = make_config(1, vec![]);
     let mut app = TuiApp::new(bus.clone(), config, HashMap::new());
@@ -77,7 +80,8 @@ fn tui_state_playing_flag_reflects_state_bus() {
     app.tick_with_time(&mut terminal, 1000).unwrap();
     assert!(app.state.playing);
 
-    bus.borrow_mut().write("/transport/playing", StateBusValue::Bool(false));
+    bus.borrow_mut()
+        .write("/transport/playing", StateBusValue::Bool(false));
     app.tick_with_time(&mut terminal, 1001).unwrap();
     assert!(!app.state.playing);
 }
@@ -87,10 +91,11 @@ fn tui_encoder_slot_resolves_param_label_from_cap_doc() {
     let bus = make_bus();
     {
         let mut b = bus.borrow_mut();
-        b.write("/context/encoder_0/node",  StateBusValue::Float(42.0));
-        b.write("/context/encoder_0/param", StateBusValue::Float(
-            ParamDescriptor::id_for_name("cutoff") as f64
-        ));
+        b.write("/context/encoder_0/node", StateBusValue::Float(42.0));
+        b.write(
+            "/context/encoder_0/param",
+            StateBusValue::Float(ParamDescriptor::id_for_name("cutoff") as f64),
+        );
         b.write("/node/42/param/cutoff", StateBusValue::Float(1200.0));
     }
 
@@ -119,10 +124,11 @@ fn tui_recently_changed_clears_after_500ms() {
     let bus = make_bus();
     {
         let mut b = bus.borrow_mut();
-        b.write("/context/encoder_0/node",  StateBusValue::Float(42.0));
-        b.write("/context/encoder_0/param", StateBusValue::Float(
-            ParamDescriptor::id_for_name("cutoff") as f64
-        ));
+        b.write("/context/encoder_0/node", StateBusValue::Float(42.0));
+        b.write(
+            "/context/encoder_0/param",
+            StateBusValue::Float(ParamDescriptor::id_for_name("cutoff") as f64),
+        );
         b.write("/node/42/param/cutoff", StateBusValue::Float(1200.0));
     }
 
@@ -159,13 +165,13 @@ fn tui_reads_pattern_engine_paths_and_windows_steps() {
     let bus = make_bus();
     {
         let mut b = bus.borrow_mut();
-        b.write("/node/10/state/current_step",   StateBusValue::Int(20));
+        b.write("/node/10/state/current_step", StateBusValue::Int(20));
         b.write("/node/10/state/pattern_length", StateBusValue::Int(32));
         b.write("/node/10/state/active_pattern", StateBusValue::Int(2));
-        b.write("/node/10/state/cued_pattern",   StateBusValue::Int(5));
-        b.write("/node/10/state/current_page",   StateBusValue::Int(2));
-        b.write("/node/10/state/page_count",     StateBusValue::Int(4));
-        b.write("/node/10/state/speed_mult",     StateBusValue::Float(2.0));
+        b.write("/node/10/state/cued_pattern", StateBusValue::Int(5));
+        b.write("/node/10/state/current_page", StateBusValue::Int(2));
+        b.write("/node/10/state/page_count", StateBusValue::Int(4));
+        b.write("/node/10/state/speed_mult", StateBusValue::Float(2.0));
         // Steps 16 and 20 active in a 32-step pattern.
         let mut bits = vec!['0'; 32];
         bits[16] = '1';
@@ -192,5 +198,8 @@ fn tui_reads_pattern_engine_paths_and_windows_steps() {
     let mut expected = [false; 16];
     expected[0] = true;
     expected[4] = true;
-    assert_eq!(app.state.steps, expected, "steps sliced to the playhead's window");
+    assert_eq!(
+        app.state.steps, expected,
+        "steps sliced to the playhead's window"
+    );
 }

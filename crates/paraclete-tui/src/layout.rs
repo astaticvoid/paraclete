@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
+    Frame,
 };
 
 use crate::state::TuiState;
@@ -34,7 +34,11 @@ pub fn render(frame: &mut Frame, state: &TuiState) {
 }
 
 fn render_transport(frame: &mut Frame, area: Rect, state: &TuiState) {
-    let play_sym = if state.playing { "\u{25B6} PLAYING" } else { "\u{25A0} STOPPED" };
+    let play_sym = if state.playing {
+        "\u{25B6} PLAYING"
+    } else {
+        "\u{25A0} STOPPED"
+    };
     let text = format!(
         " \u{266A} {:.1} BPM   {}   Step: {} / {}   Track {}",
         state.bpm,
@@ -43,8 +47,7 @@ fn render_transport(frame: &mut Frame, area: Rect, state: &TuiState) {
         state.pattern_length,
         state.active_track + 1,
     );
-    let para = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL));
+    let para = Paragraph::new(text).block(Block::default().borders(Borders::ALL));
     frame.render_widget(para, area);
 }
 
@@ -83,7 +86,9 @@ fn render_encoder_slot(
     idx: usize,
 ) {
     let border_style = if slot.recently_changed {
-        Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
     };
@@ -107,13 +112,19 @@ fn render_encoder_slot(
     let value_str = format_value(slot);
 
     let lines = vec![
-        Line::from(Span::styled(label, Style::default().add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            label,
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
         Line::from(Span::raw(format!("[{}]", bar))),
         Line::from(Span::raw(value_str)),
     ];
 
-    let para = Paragraph::new(lines)
-        .block(Block::default().borders(Borders::ALL).border_style(border_style));
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style),
+    );
     frame.render_widget(para, area);
 }
 
@@ -129,7 +140,9 @@ fn render_steps(frame: &mut Frame, area: Rect, state: &TuiState) {
     for (i, &active) in state.steps.iter().enumerate() {
         let sym = if active { "\u{25A0}" } else { "\u{00B7}" };
         let style = if marker == Some(i) && state.playing {
-            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
         };
@@ -142,11 +155,16 @@ fn render_steps(frame: &mut Frame, area: Rect, state: &TuiState) {
     let cued_differs =
         state.cued_pattern >= 0 && state.cued_pattern as usize != state.active_pattern;
     let p_style = if cued_differs {
-        Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK)
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD | Modifier::SLOW_BLINK)
     } else {
         Style::default().fg(Color::Cyan)
     };
-    cells.push(Span::styled(format!("  P{}", state.active_pattern + 1), p_style));
+    cells.push(Span::styled(
+        format!("  P{}", state.active_pattern + 1),
+        p_style,
+    ));
     if cued_differs {
         cells.push(Span::styled(
             format!("\u{2192}P{}", state.cued_pattern + 1),
@@ -160,9 +178,15 @@ fn render_steps(frame: &mut Frame, area: Rect, state: &TuiState) {
     let first_page = (state.window_base / 8) + 1;
     let last_page = (first_page + 1).min(page_count);
     if page_count > 2 {
-        cells.push(Span::raw(format!("  pg {first_page}-{last_page}/{page_count}")));
+        cells.push(Span::raw(format!(
+            "  pg {first_page}-{last_page}/{page_count}"
+        )));
     } else {
-        cells.push(Span::raw(format!("  pg {}/{}", state.current_page + 1, page_count)));
+        cells.push(Span::raw(format!(
+            "  pg {}/{}",
+            state.current_page + 1,
+            page_count
+        )));
     }
     if state.speed_mult != 1.0 {
         cells.push(Span::styled(
@@ -172,8 +196,8 @@ fn render_steps(frame: &mut Frame, area: Rect, state: &TuiState) {
     }
 
     let line = Line::from(cells);
-    let para = Paragraph::new(vec![line])
-        .block(Block::default().borders(Borders::ALL).title("Steps"));
+    let para =
+        Paragraph::new(vec![line]).block(Block::default().borders(Borders::ALL).title("Steps"));
     frame.render_widget(para, area);
 }
 

@@ -12,16 +12,16 @@ use crate::state::{EncoderSlot, TuiState};
 use crate::{TuiConfig, TuiError};
 
 pub struct TuiApp {
-    pub state:   TuiState,
-    bus:         Rc<RefCell<StateBusHandle>>,
-    config:      TuiConfig,
-    cap_docs:    HashMap<u32, CapabilityDocument>,
+    pub state: TuiState,
+    bus: Rc<RefCell<StateBusHandle>>,
+    config: TuiConfig,
+    cap_docs: HashMap<u32, CapabilityDocument>,
 }
 
 impl TuiApp {
     pub fn new(
-        bus:      Rc<RefCell<StateBusHandle>>,
-        config:   TuiConfig,
+        bus: Rc<RefCell<StateBusHandle>>,
+        config: TuiConfig,
         cap_docs: HashMap<u32, CapabilityDocument>,
     ) -> Self {
         let encoder_count = config.encoder_count as usize;
@@ -29,7 +29,12 @@ impl TuiApp {
             encoders: (0..encoder_count).map(|_| EncoderSlot::default()).collect(),
             ..Default::default()
         };
-        Self { state, bus, config, cap_docs }
+        Self {
+            state,
+            bus,
+            config,
+            cap_docs,
+        }
     }
 
     pub fn tick(
@@ -64,7 +69,8 @@ impl TuiApp {
             }
         }
 
-        let active_track = if let Some(StateBusValue::Float(v)) = bus.read("/script/selected_track") {
+        let active_track = if let Some(StateBusValue::Float(v)) = bus.read("/script/selected_track")
+        {
             (*v as usize).min(self.config.seq_ids.len().saturating_sub(1))
         } else {
             0
@@ -147,7 +153,7 @@ impl TuiApp {
         }
 
         for i in 0..self.config.encoder_count as usize {
-            let node_path  = format!("/context/encoder_{}/node",  i);
+            let node_path = format!("/context/encoder_{}/node", i);
             let param_path = format!("/context/encoder_{}/param", i);
 
             let node_id = match bus.read(&node_path) {
@@ -176,24 +182,24 @@ impl TuiApp {
             };
 
             if let Some(slot) = self.state.encoders.get_mut(i) {
-                let changed = slot.node_id  != node_id
-                           || slot.param_id != param_id
-                           || (slot.value - value).abs() > f64::EPSILON;
+                let changed = slot.node_id != node_id
+                    || slot.param_id != param_id
+                    || (slot.value - value).abs() > f64::EPSILON;
 
-                slot.node_id  = node_id;
+                slot.node_id = node_id;
                 slot.param_id = param_id;
-                slot.label    = label;
-                slot.min      = min;
-                slot.max      = max;
+                slot.label = label;
+                slot.min = min;
+                slot.max = max;
 
                 if changed {
-                    slot.value            = value;
+                    slot.value = value;
                     slot.recently_changed = true;
-                    slot.changed_at_ms    = now_ms;
-                    self.state.dirty      = true;
+                    slot.changed_at_ms = now_ms;
+                    self.state.dirty = true;
                 } else if slot.recently_changed && now_ms.saturating_sub(slot.changed_at_ms) > 500 {
                     slot.recently_changed = false;
-                    self.state.dirty      = true;
+                    self.state.dirty = true;
                 }
             }
         }
@@ -201,7 +207,8 @@ impl TuiApp {
         drop(bus);
 
         if self.state.dirty {
-            terminal.draw(|f| layout::render(f, &self.state))
+            terminal
+                .draw(|f| layout::render(f, &self.state))
                 .map_err(|e| TuiError::Draw(e.to_string()))?;
             self.state.dirty = false;
         }

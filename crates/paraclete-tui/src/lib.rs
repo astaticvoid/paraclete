@@ -9,15 +9,20 @@ pub use app::TuiApp;
 pub use state::{EncoderSlot, TuiState};
 
 pub struct TuiConfig {
-    pub clock_id:      u32,
-    pub seq_ids:       Vec<u32>,
+    pub clock_id: u32,
+    pub seq_ids: Vec<u32>,
     pub encoder_count: u8,
-    pub fps:           u8,
+    pub fps: u8,
 }
 
 impl Default for TuiConfig {
     fn default() -> Self {
-        Self { clock_id: 0, seq_ids: vec![], encoder_count: 8, fps: 30 }
+        Self {
+            clock_id: 0,
+            seq_ids: vec![],
+            encoder_count: 8,
+            fps: 30,
+        }
     }
 }
 
@@ -30,7 +35,7 @@ pub enum TuiError {
 impl std::fmt::Display for TuiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            TuiError::Io(e)   => write!(f, "TUI I/O error: {}", e),
+            TuiError::Io(e) => write!(f, "TUI I/O error: {}", e),
             TuiError::Draw(s) => write!(f, "TUI draw error: {}", s),
         }
     }
