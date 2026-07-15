@@ -47,7 +47,10 @@ fn resolve_rel_path(url: &str) -> Option<&str> {
     let path = url.split('?').next().unwrap_or("");
     let path = path.trim_start_matches('/');
     let rel = if path.is_empty() { "index.html" } else { path };
-    if rel.split('/').any(|seg| seg == ".." || seg.is_empty() || seg.contains('\\')) {
+    if rel
+        .split('/')
+        .any(|seg| seg == ".." || seg.is_empty() || seg.contains('\\'))
+    {
         return None;
     }
     Some(rel)
@@ -99,16 +102,18 @@ fn respond_embedded(
 pub fn spawn_http(source: StaticSource, port: u16) -> std::io::Result<()> {
     let server = tiny_http::Server::http(("0.0.0.0", port))
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::AddrInUse, e.to_string()))?;
-    std::thread::Builder::new().name("antiphon-http".into()).spawn(move || {
-        for request in server.incoming_requests() {
-            let response = match &source {
-                StaticSource::Disk(root) => respond_disk(root, request.url()),
-                #[cfg(feature = "embed-ui")]
-                StaticSource::Embedded(dir) => respond_embedded(dir, request.url()),
-            };
-            let _ = request.respond(response);
-        }
-    })?;
+    std::thread::Builder::new()
+        .name("antiphon-http".into())
+        .spawn(move || {
+            for request in server.incoming_requests() {
+                let response = match &source {
+                    StaticSource::Disk(root) => respond_disk(root, request.url()),
+                    #[cfg(feature = "embed-ui")]
+                    StaticSource::Embedded(dir) => respond_embedded(dir, request.url()),
+                };
+                let _ = request.respond(response);
+            }
+        })?;
     Ok(())
 }
 
@@ -124,8 +129,14 @@ mod tests {
         fs::write(dir.join("theoria.js"), "//").unwrap();
 
         assert_eq!(resolve_static_path(&dir, "/"), Some(dir.join("index.html")));
-        assert_eq!(resolve_static_path(&dir, "/?t=abcd"), Some(dir.join("index.html")));
-        assert_eq!(resolve_static_path(&dir, "/theoria.js"), Some(dir.join("theoria.js")));
+        assert_eq!(
+            resolve_static_path(&dir, "/?t=abcd"),
+            Some(dir.join("index.html"))
+        );
+        assert_eq!(
+            resolve_static_path(&dir, "/theoria.js"),
+            Some(dir.join("theoria.js"))
+        );
         assert_eq!(resolve_static_path(&dir, "/../Cargo.toml"), None);
         assert_eq!(resolve_static_path(&dir, "/a/../../secret"), None);
         assert_eq!(resolve_static_path(&dir, "/missing.js"), None);

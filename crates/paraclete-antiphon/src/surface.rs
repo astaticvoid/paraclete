@@ -11,10 +11,9 @@
 //!   the main thread, which forwards batches to kerygma for fan-out.
 
 use paraclete_node_api::{
-    CapabilityDocument, Control, EncoderBehaviour, EncoderDescriptor, Event, Node,
-    PadDescriptor, PortDescriptor, PortDirection, PortName, PortType, ProcessInput,
-    ProcessOutput, Surface, SurfaceDescriptor, SurfaceEvent, SurfaceOutput,
-    SurfaceOutputHandle, TimedEvent,
+    CapabilityDocument, Control, EncoderBehaviour, EncoderDescriptor, Event, Node, PadDescriptor,
+    PortDescriptor, PortDirection, PortName, PortType, ProcessInput, ProcessOutput, Surface,
+    SurfaceDescriptor, SurfaceEvent, SurfaceOutput, SurfaceOutputHandle, TimedEvent,
 };
 
 use crate::kerygma::{Kerygma, MAX_CLIENTS};
@@ -47,24 +46,31 @@ pub const DRAIN_BUDGET_PER_CYCLE: usize = 250;
 /// semantic plane) and for out-of-range ids.
 pub fn client_msg_to_surface_event(msg: &ClientMsg) -> Option<SurfaceEvent> {
     match msg {
-        ClientMsg::PadDown { id, vel } if *id < 64 => {
-            Some(SurfaceEvent::PadPressed { id: *id, velocity: *vel, pressure: 0 })
-        }
-        ClientMsg::PadDown { id, .. } if *id < 80 => {
-            Some(SurfaceEvent::ButtonPressed { id: *id })
-        }
+        ClientMsg::PadDown { id, vel } if *id < 64 => Some(SurfaceEvent::PadPressed {
+            id: *id,
+            velocity: *vel,
+            pressure: 0,
+        }),
+        ClientMsg::PadDown { id, .. } if *id < 80 => Some(SurfaceEvent::ButtonPressed { id: *id }),
         ClientMsg::PadUp { id } if *id < 64 => Some(SurfaceEvent::PadReleased { id: *id }),
         ClientMsg::PadUp { id } if *id < 80 => Some(SurfaceEvent::ButtonReleased { id: *id }),
         ClientMsg::Enc { id, delta }
             if (ENCODER_ID_BASE..ENCODER_ID_BASE + ENCODER_COUNT).contains(id) =>
         {
             let delta = (*delta).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-            Some(SurfaceEvent::EncoderChanged { id: *id, value: 0, delta })
+            Some(SurfaceEvent::EncoderChanged {
+                id: *id,
+                value: 0,
+                delta,
+            })
         }
         ClientMsg::EncPush { id, pressed }
             if (ENCODER_ID_BASE..ENCODER_ID_BASE + ENCODER_COUNT).contains(id) =>
         {
-            Some(SurfaceEvent::EncoderPush { id: *id, pressed: *pressed })
+            Some(SurfaceEvent::EncoderPush {
+                id: *id,
+                pressed: *pressed,
+            })
         }
         _ => None,
     }
@@ -124,7 +130,11 @@ fn build_descriptor() -> SurfaceDescriptor {
             behaviour: EncoderBehaviour::Relative,
         }));
     }
-    SurfaceDescriptor { name: "Theoria Surface".into(), vendor: "Paraclete".into(), controls }
+    SurfaceDescriptor {
+        name: "Theoria Surface".into(),
+        vendor: "Paraclete".into(),
+        controls,
+    }
 }
 
 // ── Output handle ─────────────────────────────────────────────────────────────
@@ -214,6 +224,7 @@ impl Node for TheoriaSurfaceNode {
             ports: self.ports.to_vec(),
             params: vec![],
             extensions: vec!["paraclete.hardware".into()],
+            view: None,
         }
     }
 
@@ -227,7 +238,9 @@ impl Node for TheoriaSurfaceNode {
             while budget > 0 {
                 match slot.pop() {
                     Ok(ev) => {
-                        output.events_out.push(TimedEvent::new(0, Event::Surface(ev)));
+                        output
+                            .events_out
+                            .push(TimedEvent::new(0, Event::Surface(ev)));
                         budget -= 1;
                     }
                     Err(_) => break,
@@ -283,11 +296,7 @@ mod tests {
         };
         let mut audio_refs: Vec<&mut AudioBuffer> = vec![];
         let mut ev_out = EventOutputBuffer::new(capacity);
-        let mut output = ProcessOutput::new(
-            &mut audio_refs,
-            &mut [],
-            &mut ev_out,
-        );
+        let mut output = ProcessOutput::new(&mut audio_refs, &mut [], &mut ev_out);
         node.process(&input, &mut output);
         ev_out.as_slice().to_vec()
     }
@@ -302,7 +311,11 @@ mod tests {
         // Grid pads → pad events.
         assert!(matches!(
             client_msg_to_surface_event(&ClientMsg::PadDown { id: 13, vel: 65535 }),
-            Some(SurfaceEvent::PadPressed { id: 13, velocity: 65535, pressure: 0 })
+            Some(SurfaceEvent::PadPressed {
+                id: 13,
+                velocity: 65535,
+                pressure: 0
+            })
         ));
         assert!(matches!(
             client_msg_to_surface_event(&ClientMsg::PadUp { id: 13 }),
@@ -321,11 +334,21 @@ mod tests {
         // Encoders (mapping exists at W0; the server gates delivery until W1).
         assert!(matches!(
             client_msg_to_surface_event(&ClientMsg::Enc { id: 90, delta: -3 }),
-            Some(SurfaceEvent::EncoderChanged { id: 90, delta: -3, .. })
+            Some(SurfaceEvent::EncoderChanged {
+                id: 90,
+                delta: -3,
+                ..
+            })
         ));
         assert!(matches!(
-            client_msg_to_surface_event(&ClientMsg::EncPush { id: 97, pressed: true }),
-            Some(SurfaceEvent::EncoderPush { id: 97, pressed: true })
+            client_msg_to_surface_event(&ClientMsg::EncPush {
+                id: 97,
+                pressed: true
+            }),
+            Some(SurfaceEvent::EncoderPush {
+                id: 97,
+                pressed: true
+            })
         ));
         // Out-of-range ids and non-surface messages map to nothing.
         assert!(client_msg_to_surface_event(&ClientMsg::PadDown { id: 80, vel: 1 }).is_none());
@@ -350,7 +373,11 @@ mod tests {
             })
             .collect();
         assert_eq!(pad_ids.len(), 80, "64 grid + 8 scene + 8 control pads");
-        assert_eq!(pad_ids, (0..80).collect::<Vec<u32>>(), "pad ids exact and ordered");
+        assert_eq!(
+            pad_ids,
+            (0..80).collect::<Vec<u32>>(),
+            "pad ids exact and ordered"
+        );
 
         let encoders: Vec<&EncoderDescriptor> = desc
             .controls
@@ -372,14 +399,22 @@ mod tests {
     fn node_process_drains_all_slots() {
         let (mut node, mut producers) = new_node();
         producers[0]
-            .push(SurfaceEvent::PadPressed { id: 1, velocity: 65535, pressure: 0 })
+            .push(SurfaceEvent::PadPressed {
+                id: 1,
+                velocity: 65535,
+                pressure: 0,
+            })
             .unwrap();
         producers[3]
             .push(SurfaceEvent::PadReleased { id: 9 })
             .unwrap();
 
         let events = run_process(&mut node, 16);
-        assert_eq!(events.len(), 2, "events from both slots emerge in one process()");
+        assert_eq!(
+            events.len(),
+            2,
+            "events from both slots emerge in one process()"
+        );
         assert!(matches!(
             events[0].event,
             Event::Surface(SurfaceEvent::PadPressed { id: 1, .. })
@@ -407,15 +442,23 @@ mod tests {
         // and the remainder emerges on the next cycle.
         let (mut node, mut producers) = new_node();
         for _ in 0..INBOUND_RING_CAPACITY {
-            producers[0].push(SurfaceEvent::PadReleased { id: 1 }).unwrap();
+            producers[0]
+                .push(SurfaceEvent::PadReleased { id: 1 })
+                .unwrap();
         }
         for _ in 0..INBOUND_RING_CAPACITY {
-            producers[1].push(SurfaceEvent::PadReleased { id: 2 }).unwrap();
+            producers[1]
+                .push(SurfaceEvent::PadReleased { id: 2 })
+                .unwrap();
         }
 
         // 256-capacity buffer, same as the executor allocates per node.
         let first = run_process(&mut node, 256);
-        assert_eq!(first.len(), DRAIN_BUDGET_PER_CYCLE, "drain stops at the budget");
+        assert_eq!(
+            first.len(),
+            DRAIN_BUDGET_PER_CYCLE,
+            "drain stops at the budget"
+        );
 
         let second = run_process(&mut node, 256);
         let third = run_process(&mut node, 256);
@@ -441,7 +484,10 @@ mod tests {
 
         // Audio-thread side pushes a SurfaceOutput; tick() forwards it.
         node.update_output(&SurfaceOutput {
-            led_updates: vec![LedUpdate { control_id: 5, color: RgbColor::BLUE }],
+            led_updates: vec![LedUpdate {
+                control_id: 5,
+                color: RgbColor::BLUE,
+            }],
             display_updates: vec![],
         });
         handle.tick();
@@ -450,24 +496,42 @@ mod tests {
         let ServerMsg::Led { updates } = serde_json::from_str(&frame).unwrap() else {
             panic!("expected led frame, got {frame}")
         };
-        assert_eq!(updates, vec![LedMsg { id: 5, rgb: [0, 0, 255] }]);
+        assert_eq!(
+            updates,
+            vec![LedMsg {
+                id: 5,
+                rgb: [0, 0, 255]
+            }]
+        );
 
         // deliver() (script LED path) takes the same route.
         handle.deliver(SurfaceOutput {
-            led_updates: vec![LedUpdate { control_id: 6, color: RgbColor::RED }],
+            led_updates: vec![LedUpdate {
+                control_id: 6,
+                color: RgbColor::RED,
+            }],
             display_updates: vec![],
         });
         let frame = rx.try_recv().expect("delivered batch reaches the client");
         let ServerMsg::Led { updates } = serde_json::from_str(&frame).unwrap() else {
             panic!("expected led frame")
         };
-        assert_eq!(updates, vec![LedMsg { id: 6, rgb: [255, 0, 0] }]);
+        assert_eq!(
+            updates,
+            vec![LedMsg {
+                id: 6,
+                rgb: [255, 0, 0]
+            }]
+        );
     }
 
     #[test]
     fn take_output_handle_is_single_shot() {
         let (mut node, _producers) = new_node();
         assert!(node.take_output_handle().is_some());
-        assert!(node.take_output_handle().is_none(), "second take yields None");
+        assert!(
+            node.take_output_handle().is_none(),
+            "second take yields None"
+        );
     }
 }

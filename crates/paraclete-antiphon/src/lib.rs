@@ -15,6 +15,7 @@ pub mod kerygma;
 pub mod protocol;
 pub mod server;
 pub mod surface;
+pub mod view;
 
 use std::collections::HashMap;
 use std::net::UdpSocket;
@@ -140,7 +141,13 @@ impl AntiphonHandle {
             let coerced = match value {
                 StateBusValue::Float(f) => *f,
                 StateBusValue::Int(i) => *i as f64,
-                StateBusValue::Bool(b) => if *b { 1.0 } else { 0.0 },
+                StateBusValue::Bool(b) => {
+                    if *b {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
                 StateBusValue::Text(_) => continue,
             };
 
@@ -183,7 +190,9 @@ impl AntiphonHandle {
             .drain()
             .map(|(path, v)| StateUpdate { path, v })
             .collect();
-        let Ok(frame) = serde_json::to_string(&ServerMsg::State { updates }) else { return };
+        let Ok(frame) = serde_json::to_string(&ServerMsg::State { updates }) else {
+            return;
+        };
         if let Ok(table) = self.clients.lock() {
             table.send_to_all(&frame);
         }
@@ -194,7 +203,9 @@ impl AntiphonHandle {
     /// client would show nothing until each value next changed (the state
     /// twin of kerygma's LED shadow replay).
     fn service_state_replays(&mut self, bus: &StateBusHandle) {
-        let Ok(mut table) = self.clients.lock() else { return };
+        let Ok(mut table) = self.clients.lock() else {
+            return;
+        };
         if !table.any_state_replay_pending() {
             return;
         }
@@ -204,7 +215,10 @@ impl AntiphonHandle {
             let updates: Vec<StateUpdate> = self
                 .state_shadow
                 .iter()
-                .map(|(path, v)| StateUpdate { path: path.clone(), v: *v })
+                .map(|(path, v)| StateUpdate {
+                    path: path.clone(),
+                    v: *v,
+                })
                 .collect();
             serde_json::to_string(&ServerMsg::State { updates }).ok()
         };
@@ -223,7 +237,9 @@ impl AntiphonHandle {
     /// changed since the last pump. Reads directly from the bus rather than
     /// the shadow so the snapshot is always complete, not just the diff.
     fn flush_context_snapshot(&self, bus: &StateBusHandle) {
-        let Some(frame) = build_context_frame(bus) else { return };
+        let Some(frame) = build_context_frame(bus) else {
+            return;
+        };
         if let Ok(table) = self.clients.lock() {
             table.send_to_all(&frame);
         }
@@ -234,7 +250,9 @@ impl AntiphonHandle {
     /// exists yet at W1 (dynamic topology is exercised in tests only); this
     /// is the hook for when `apply_patch` is wired to a trigger.
     pub fn publish_topology(&self, nodes: Vec<NodeSummary>) {
-        let Ok(frame) = serde_json::to_string(&ServerMsg::Topology { nodes }) else { return };
+        let Ok(frame) = serde_json::to_string(&ServerMsg::Topology { nodes }) else {
+            return;
+        };
         if let Ok(table) = self.clients.lock() {
             table.send_to_all(&frame);
         }
@@ -247,7 +265,9 @@ impl AntiphonHandle {
 fn build_context_frame(bus: &StateBusHandle) -> Option<String> {
     let mut halves: HashMap<&str, (Option<i64>, Option<&str>)> = HashMap::new();
     for (path, value) in bus.iter() {
-        let Some(rest) = path.strip_prefix("/context/") else { continue };
+        let Some(rest) = path.strip_prefix("/context/") else {
+            continue;
+        };
         if let Some(key) = rest.strip_suffix("/node") {
             if let StateBusValue::Int(i) = value {
                 halves.entry(key).or_default().0 = Some(*i);
@@ -270,7 +290,11 @@ fn build_context_frame(bus: &StateBusHandle) -> Option<String> {
             // one profile-encoder-key-per-slot convention; it may need a
             // defined map once the web encoder row binds ids 90-97.
             let enc = trailing_int(key)?;
-            Some(ContextSlot { enc, node: node as u32, param: param.to_string() })
+            Some(ContextSlot {
+                enc,
+                node: node as u32,
+                param: param.to_string(),
+            })
         })
         .collect();
     slots.sort_by_key(|s| s.enc);
@@ -301,10 +325,10 @@ impl AntiphonServer {
         config: AntiphonConfig,
         nodes: Vec<NodeSummary>,
         transport: TransportSummary,
+        view_registry: crate::view::ViewRegistry,
     ) -> std::io::Result<(TheoriaSurfaceNode, AntiphonHandle)> {
         let clients = Arc::new(Mutex::new(ClientTable::new()));
-        let (node, producers) =
-            TheoriaSurfaceNode::new(Kerygma::new(Arc::clone(&clients)));
+        let (node, producers) = TheoriaSurfaceNode::new(Kerygma::new(Arc::clone(&clients)));
         debug_assert_eq!(producers.len(), MAX_CLIENTS);
         let pool: server::ProducerPool =
             Arc::new(Mutex::new(producers.into_iter().map(Some).collect()));
@@ -314,6 +338,7 @@ impl AntiphonServer {
             device_id: config.device_id,
             nodes,
             transport,
+            view_registry,
         });
         let (cmd_tx, cmd_rx) = mpsc::channel::<NodeCommand>();
         server::spawn_listener(config.port + 1, session, Arc::clone(&clients), pool, cmd_tx)?;
@@ -380,14 +405,23 @@ mod tests {
         let (mut node, handle) = AntiphonServer::spawn(
             config,
             vec![],
-            TransportSummary { playing: false, bpm: 120.0 },
+            TransportSummary {
+                playing: false,
+                bpm: 120.0,
+            },
+            crate::view::ViewRegistry {
+                rules: HashMap::new(),
+                chains: Vec::new(),
+            },
         )
         .expect("spawn");
         let mut out_handle =
             paraclete_node_api::Surface::take_output_handle(&mut node).expect("handle");
 
         let stream = TcpStream::connect(("127.0.0.1", port + 1)).expect("connect");
-        stream.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
         let (mut ws, _) =
             tungstenite::client("ws://127.0.0.1:47275/", stream).expect("ws handshake");
 
@@ -398,9 +432,14 @@ mod tests {
         })
         .unwrap();
         ws.send(Message::Text(hello)).unwrap();
-        let Message::Text(frame) = ws.read().unwrap() else { panic!("expected text") };
-        let ServerMsg::Welcome { protocol, device_id, .. } =
-            serde_json::from_str(&frame).unwrap()
+        let Message::Text(frame) = ws.read().unwrap() else {
+            panic!("expected text")
+        };
+        let ServerMsg::Welcome {
+            protocol,
+            device_id,
+            ..
+        } = serde_json::from_str(&frame).unwrap()
         else {
             panic!("expected welcome, got {frame}")
         };
@@ -410,15 +449,20 @@ mod tests {
 
         // Full-surface replay arrives once the main-thread handle ticks.
         out_handle.tick();
-        let Message::Text(frame) = ws.read().unwrap() else { panic!("expected text") };
+        let Message::Text(frame) = ws.read().unwrap() else {
+            panic!("expected text")
+        };
         assert!(matches!(
             serde_json::from_str::<ServerMsg>(&frame).unwrap(),
             ServerMsg::Led { .. }
         ));
 
         // ping → pong
-        ws.send(Message::Text(r#"{"t":"ping","ts":7.5}"#.into())).unwrap();
-        let Message::Text(frame) = ws.read().unwrap() else { panic!("expected text") };
+        ws.send(Message::Text(r#"{"t":"ping","ts":7.5}"#.into()))
+            .unwrap();
+        let Message::Text(frame) = ws.read().unwrap() else {
+            panic!("expected text")
+        };
         assert_eq!(
             serde_json::from_str::<ServerMsg>(&frame).unwrap(),
             ServerMsg::Pong { ts: 7.5 }
@@ -476,11 +520,18 @@ mod pump_tests {
         let (mut h, rx) = test_handle();
         let mut bus = StateBusHandle::new();
         for i in 0..5 {
-            bus.write(&format!("/node/{i}/param/cutoff"), StateBusValue::Float(i as f64));
+            bus.write(
+                &format!("/node/{i}/param/cutoff"),
+                StateBusValue::Float(i as f64),
+            );
         }
         // First pump flushes all 5 (shadow empty → everything changed).
         h.pump(&bus, 0);
-        assert_eq!(state_updates(&drain(&rx)).len(), 5, "first pump mirrors all paths");
+        assert_eq!(
+            state_updates(&drain(&rx)).len(),
+            5,
+            "first pump mirrors all paths"
+        );
 
         // Change exactly 2 of them; past the flush window → one batch of 2.
         bus.write("/node/1/param/cutoff", StateBusValue::Float(99.0));
@@ -503,7 +554,10 @@ mod pump_tests {
         h.pump(&bus, 10);
         bus.write("/transport/bpm", StateBusValue::Float(122.0));
         h.pump(&bus, 20);
-        assert!(drain(&rx).is_empty(), "no flush within the coalescing window");
+        assert!(
+            drain(&rx).is_empty(),
+            "no flush within the coalescing window"
+        );
 
         // Past the window → exactly one frame carrying only the latest value.
         h.pump(&bus, 40);
@@ -518,11 +572,18 @@ mod pump_tests {
         let mut bus = StateBusHandle::new();
         let n = STATE_MIRROR_BATCH_CAP * 2 + 5; // forces >= 3 batches
         for i in 0..n {
-            bus.write(&format!("/node/{i}/param/x"), StateBusValue::Float(i as f64));
+            bus.write(
+                &format!("/node/{i}/param/x"),
+                StateBusValue::Float(i as f64),
+            );
         }
         h.pump(&bus, 0);
         let ups = state_updates(&drain(&rx));
-        assert_eq!(ups.len(), n, "every path sent across multiple batches, none dropped");
+        assert_eq!(
+            ups.len(),
+            n,
+            "every path sent across multiple batches, none dropped"
+        );
     }
 
     #[test]
@@ -533,10 +594,15 @@ mod pump_tests {
         bus.write("/node/1/state/current_step", StateBusValue::Int(3));
         h.pump(&bus, 0);
         let ups = state_updates(&drain(&rx));
-        assert!(ups.iter().all(|u| u.path != "/node/1/state/steps"),
-            "Text path must never appear in the mirror: {ups:?}");
-        assert!(ups.iter().any(|u| u.path == "/node/1/state/current_step" && u.v == 3.0),
-            "numeric state path is mirrored");
+        assert!(
+            ups.iter().all(|u| u.path != "/node/1/state/steps"),
+            "Text path must never appear in the mirror: {ups:?}"
+        );
+        assert!(
+            ups.iter()
+                .any(|u| u.path == "/node/1/state/current_step" && u.v == 3.0),
+            "numeric state path is mirrored"
+        );
     }
 
     #[test]
@@ -549,7 +615,10 @@ mod pump_tests {
         bus.write("/transport/bpm", StateBusValue::Float(140.0));
         bus.write("/script/lp/mode_n", StateBusValue::Int(0));
         bus.write("/context/encoder_0/node", StateBusValue::Int(20));
-        bus.write("/context/encoder_0/param", StateBusValue::Text("cutoff".into()));
+        bus.write(
+            "/context/encoder_0/param",
+            StateBusValue::Text("cutoff".into()),
+        );
         h.pump(&bus, 0); // first client sees the initial flush
         let _ = drain(&rx);
         h.pump(&bus, 40); // steady state: nothing changed, nothing sent
@@ -557,21 +626,37 @@ mod pump_tests {
 
         // Second client connects; values are all unchanged since its join.
         let (tx2, rx2) = mpsc::channel();
-        h.clients.lock().unwrap().allocate(tx2).expect("second slot");
+        h.clients
+            .lock()
+            .unwrap()
+            .allocate(tx2)
+            .expect("second slot");
         h.pump(&bus, 80);
         let msgs = drain(&rx2);
         let ups = state_updates(&msgs);
-        assert!(ups.iter().any(|u| u.path == "/transport/bpm" && u.v == 140.0),
-            "replay carries transport state: {ups:?}");
-        assert!(ups.iter().any(|u| u.path == "/script/lp/mode_n" && u.v == 0.0),
-            "replay carries profile mode: {ups:?}");
-        assert!(msgs.iter().any(|m| matches!(m, ServerMsg::Context { slots } if slots.len() == 1)),
-            "replay carries the context snapshot: {msgs:?}");
+        assert!(
+            ups.iter()
+                .any(|u| u.path == "/transport/bpm" && u.v == 140.0),
+            "replay carries transport state: {ups:?}"
+        );
+        assert!(
+            ups.iter()
+                .any(|u| u.path == "/script/lp/mode_n" && u.v == 0.0),
+            "replay carries profile mode: {ups:?}"
+        );
+        assert!(
+            msgs.iter()
+                .any(|m| matches!(m, ServerMsg::Context { slots } if slots.len() == 1)),
+            "replay carries the context snapshot: {msgs:?}"
+        );
 
         // Replay happens exactly once; the first client got nothing extra.
         h.pump(&bus, 120);
         assert!(drain(&rx2).is_empty(), "no second replay");
-        assert!(drain(&rx).is_empty(), "existing client unaffected by replay");
+        assert!(
+            drain(&rx).is_empty(),
+            "existing client unaffected by replay"
+        );
     }
 
     #[test]
@@ -586,14 +671,25 @@ mod pump_tests {
         bus.write("/script/lp/mode", StateBusValue::Text("sequence".into()));
         h.pump(&bus, 0);
         let ups = state_updates(&drain(&rx));
-        assert!(ups.iter().any(|u| u.path == "/script/lp/selected" && u.v == 2.0),
-            "Int script path mirrored: {ups:?}");
-        assert!(ups.iter().any(|u| u.path == "/script/lp/mode_n" && u.v == 1.0),
-            "numeric mode twin mirrored: {ups:?}");
-        assert!(ups.iter().any(|u| u.path == "/script/lp/shift" && u.v == 0.0),
-            "Bool script path mirrored as 0/1: {ups:?}");
-        assert!(ups.iter().all(|u| u.path != "/script/lp/mode"),
-            "Text script path must never appear in the mirror: {ups:?}");
+        assert!(
+            ups.iter()
+                .any(|u| u.path == "/script/lp/selected" && u.v == 2.0),
+            "Int script path mirrored: {ups:?}"
+        );
+        assert!(
+            ups.iter()
+                .any(|u| u.path == "/script/lp/mode_n" && u.v == 1.0),
+            "numeric mode twin mirrored: {ups:?}"
+        );
+        assert!(
+            ups.iter()
+                .any(|u| u.path == "/script/lp/shift" && u.v == 0.0),
+            "Bool script path mirrored as 0/1: {ups:?}"
+        );
+        assert!(
+            ups.iter().all(|u| u.path != "/script/lp/mode"),
+            "Text script path must never appear in the mirror: {ups:?}"
+        );
     }
 
     #[test]
@@ -601,18 +697,41 @@ mod pump_tests {
         let (mut h, rx) = test_handle();
         let mut bus = StateBusHandle::new();
         bus.write("/context/encoder_0/node", StateBusValue::Int(20));
-        bus.write("/context/encoder_0/param", StateBusValue::Text("cutoff".into()));
+        bus.write(
+            "/context/encoder_0/param",
+            StateBusValue::Text("cutoff".into()),
+        );
         bus.write("/context/encoder_3/node", StateBusValue::Int(21));
-        bus.write("/context/encoder_3/param", StateBusValue::Text("decay".into()));
+        bus.write(
+            "/context/encoder_3/param",
+            StateBusValue::Text("decay".into()),
+        );
         h.pump(&bus, 0);
         let msgs = drain(&rx);
-        let ctx = msgs.iter().find_map(|m| match m {
-            ServerMsg::Context { slots } => Some(slots.clone()),
-            _ => None,
-        }).expect("a context frame");
+        let ctx = msgs
+            .iter()
+            .find_map(|m| match m {
+                ServerMsg::Context { slots } => Some(slots.clone()),
+                _ => None,
+            })
+            .expect("a context frame");
         assert_eq!(ctx.len(), 2, "two resolved slots, got {ctx:?}");
-        assert_eq!(ctx[0], protocol::ContextSlot { enc: 0, node: 20, param: "cutoff".into() });
-        assert_eq!(ctx[1], protocol::ContextSlot { enc: 3, node: 21, param: "decay".into() });
+        assert_eq!(
+            ctx[0],
+            protocol::ContextSlot {
+                enc: 0,
+                node: 20,
+                param: "cutoff".into()
+            }
+        );
+        assert_eq!(
+            ctx[1],
+            protocol::ContextSlot {
+                enc: 3,
+                node: 21,
+                param: "decay".into()
+            }
+        );
     }
 
     #[test]
@@ -628,15 +747,21 @@ mod pump_tests {
 
         // Context appears during a non-due pump (within the window).
         bus.write("/context/encoder_1/node", StateBusValue::Int(22));
-        bus.write("/context/encoder_1/param", StateBusValue::Text("tune".into()));
+        bus.write(
+            "/context/encoder_1/param",
+            StateBusValue::Text("tune".into()),
+        );
         h.pump(&bus, 10);
         assert!(drain(&rx).is_empty(), "not due yet — nothing flushed");
 
         // Next due pump must still emit the context that changed earlier.
         h.pump(&bus, 40);
         let msgs = drain(&rx);
-        assert!(msgs.iter().any(|m| matches!(m, ServerMsg::Context { slots } if !slots.is_empty())),
-            "context change from the non-due pump must still be flushed");
+        assert!(
+            msgs.iter()
+                .any(|m| matches!(m, ServerMsg::Context { slots } if !slots.is_empty())),
+            "context change from the non-due pump must still be flushed"
+        );
     }
 }
 

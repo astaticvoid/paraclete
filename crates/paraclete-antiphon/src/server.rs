@@ -12,6 +12,7 @@
 //! Handshake and frame-routing decisions are pure functions so the protocol
 //! behaviour is unit-testable without sockets.
 
+use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;
@@ -24,6 +25,7 @@ use tungstenite::{Message, WebSocket};
 use crate::kerygma::{ClientTable, MAX_CLIENTS};
 use crate::protocol::{ClientMsg, NodeSummary, ServerMsg, TransportSummary, PROTOCOL_VERSION};
 use crate::surface::client_msg_to_surface_event;
+use crate::view::ViewRegistry;
 
 /// The first frame must be a valid `hello` within this window.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(3);
@@ -43,6 +45,8 @@ pub struct SessionInfo {
     pub device_id: u32,
     pub nodes: Vec<NodeSummary>,
     pub transport: TransportSummary,
+    /// [W2] per-track chain config + node rules for composite view assembly.
+    pub view_registry: ViewRegistry,
 }
 
 /// Producer ends of the surface node's inbound rings, indexed by client slot.
@@ -68,11 +72,17 @@ pub fn evaluate_hello(frame: &str, expected_token: &str) -> HandshakeDecision {
             if expected_token.is_empty() || token == expected_token {
                 HandshakeDecision::Accept { client }
             } else {
-                HandshakeDecision::Reject { reason: "bad token" }
+                HandshakeDecision::Reject {
+                    reason: "bad token",
+                }
             }
         }
-        Ok(_) => HandshakeDecision::Reject { reason: "hello must be first frame" },
-        Err(_) => HandshakeDecision::Reject { reason: "malformed hello" },
+        Ok(_) => HandshakeDecision::Reject {
+            reason: "hello must be first frame",
+        },
+        Err(_) => HandshakeDecision::Reject {
+            reason: "malformed hello",
+        },
     }
 }
 
@@ -88,6 +98,9 @@ pub enum FrameAction {
     /// Log and drop (reserved messages, out-of-range ids, unresolvable
     /// semantic-plane references).
     Drop(&'static str),
+    /// [W2] Reply with a `view_meta` message. The I/O thread serialises and
+    /// sends it directly to the client that requested it.
+    ViewMeta(ServerMsg),
 }
 
 /// Resolve a semantic-plane message against the cap-doc snapshot in
@@ -129,12 +142,19 @@ fn resolve_semantic(msg: ClientMsg, session: &SessionInfo) -> FrameAction {
         }
         ClientMsg::NodeCmd { node, cmd, a0, a1 } => {
             if cmd < 16 {
-                return FrameAction::Drop("node_cmd: universal range (<16) must use typed messages");
+                return FrameAction::Drop(
+                    "node_cmd: universal range (<16) must use typed messages",
+                );
             }
             if !session.nodes.iter().any(|n| n.id == node) {
                 return FrameAction::Drop("node_cmd: unknown node");
             }
-            FrameAction::Command(NodeCommand { target_id: node, type_id: cmd, arg0: a0, arg1: a1 })
+            FrameAction::Command(NodeCommand {
+                target_id: node,
+                type_id: cmd,
+                arg0: a0,
+                arg1: a1,
+            })
         }
         _ => unreachable!("resolve_semantic called with a non-semantic-plane message"),
     }
@@ -145,14 +165,16 @@ pub fn route_frame(msg: ClientMsg, session: &SessionInfo) -> FrameAction {
     match msg {
         ClientMsg::Ping { ts } => FrameAction::Pong(ts),
         ClientMsg::Hello { .. } => FrameAction::Drop("duplicate hello"),
-        // Reserved [W1+]: poly-aftertouch pressure. Parse-and-drop at W0.
         ClientMsg::PadPres { .. } => FrameAction::Drop("pad_pres is W1+"),
+        ClientMsg::GetViewMeta { track_id, nonce } => {
+            match session.view_registry.assemble(track_id, nonce, &session.nodes) {
+                Some(msg) => FrameAction::ViewMeta(msg),
+                None => FrameAction::Drop("get_view_meta: unknown track"),
+            }
+        }
         ref m @ (ClientMsg::SetParam { .. }
         | ClientMsg::BumpParam { .. }
         | ClientMsg::NodeCmd { .. }) => resolve_semantic(m.clone(), session),
-        // Surface plane. Enc/EncPush were gated "W1" at W0; the gate is open
-        // now (found closed 2026-07-10 — W1 C3 never lifted it) so encoder
-        // gestures reach profiles like any other surface event.
         ref m @ (ClientMsg::PadDown { .. }
         | ClientMsg::PadUp { .. }
         | ClientMsg::Enc { .. }
@@ -200,7 +222,12 @@ fn send_msg(ws: &mut WebSocket<TcpStream>, msg: &ServerMsg) -> bool {
 }
 
 fn send_bye(ws: &mut WebSocket<TcpStream>, reason: &str) {
-    send_msg(ws, &ServerMsg::Bye { reason: reason.to_owned() });
+    send_msg(
+        ws,
+        &ServerMsg::Bye {
+            reason: reason.to_owned(),
+        },
+    );
     let _ = ws.close(None);
     // Give the close frame a chance to flush before the socket drops.
     let _ = ws.flush();
@@ -268,7 +295,11 @@ fn client_session(
 
     // Slot allocation (also flags the slot for kerygma's full-surface replay).
     let (outbound_tx, outbound_rx) = mpsc::channel::<String>();
-    let slot = match clients.lock().ok().and_then(|mut t| t.allocate(outbound_tx)) {
+    let slot = match clients
+        .lock()
+        .ok()
+        .and_then(|mut t| t.allocate(outbound_tx))
+    {
         Some(idx) => idx,
         None => {
             eprintln!("[antiphon] refused client (all {MAX_CLIENTS} slots busy)");
@@ -336,8 +367,12 @@ fn client_session(
                         }
                     }
                     FrameAction::Command(cmd) => {
-                        // Main loop gone (shutting down) — nothing to do.
                         let _ = cmd_tx.send(cmd);
+                    }
+                    FrameAction::ViewMeta(msg) => {
+                        if !send_msg(&mut ws, &msg) {
+                            return;
+                        }
                     }
                     FrameAction::Drop(why) => {
                         eprintln!("[antiphon] dropped frame from slot {slot}: {why}");
@@ -367,7 +402,14 @@ mod tests {
             token: String::new(),
             device_id: 0,
             nodes: vec![],
-            transport: TransportSummary { playing: false, bpm: 120.0 },
+            transport: TransportSummary {
+                playing: false,
+                bpm: 120.0,
+            },
+            view_registry: ViewRegistry {
+                rules: HashMap::new(),
+                chains: Vec::new(),
+            },
         }
     }
 
@@ -377,13 +419,23 @@ mod tests {
             r#"{"t":"hello","token":"wrong","client":"theoria-web/0.1"}"#,
             "right",
         );
-        assert_eq!(d, HandshakeDecision::Reject { reason: "bad token" });
+        assert_eq!(
+            d,
+            HandshakeDecision::Reject {
+                reason: "bad token"
+            }
+        );
 
         let d = evaluate_hello(
             r#"{"t":"hello","token":"right","client":"theoria-web/0.1"}"#,
             "right",
         );
-        assert_eq!(d, HandshakeDecision::Accept { client: "theoria-web/0.1".into() });
+        assert_eq!(
+            d,
+            HandshakeDecision::Accept {
+                client: "theoria-web/0.1".into()
+            }
+        );
     }
 
     #[test]
@@ -396,7 +448,11 @@ mod tests {
             r#"{"t":"hello","token":"deadbeefdeadbeefdeadbeefdeadbeef","client":"c"}"#,
         ] {
             let d = evaluate_hello(raw, "");
-            assert_eq!(d, HandshakeDecision::Accept { client: "c".into() }, "must accept: {raw}");
+            assert_eq!(
+                d,
+                HandshakeDecision::Accept { client: "c".into() },
+                "must accept: {raw}"
+            );
         }
     }
 
@@ -404,10 +460,20 @@ mod tests {
     fn hello_must_be_first_frame() {
         // A valid protocol message that is not hello is rejected.
         let d = evaluate_hello(r#"{"t":"pad_down","id":13,"vel":65535}"#, "tok");
-        assert_eq!(d, HandshakeDecision::Reject { reason: "hello must be first frame" });
+        assert_eq!(
+            d,
+            HandshakeDecision::Reject {
+                reason: "hello must be first frame"
+            }
+        );
         // Garbage is rejected without panicking.
         let d = evaluate_hello("garbage", "tok");
-        assert_eq!(d, HandshakeDecision::Reject { reason: "malformed hello" });
+        assert_eq!(
+            d,
+            HandshakeDecision::Reject {
+                reason: "malformed hello"
+            }
+        );
     }
 
     #[test]
@@ -428,7 +494,10 @@ mod tests {
             r#"{"t":"pad_pres","id":13,"v":41000}"#,
         ] {
             let msg: ClientMsg = serde_json::from_str(raw).expect("variant must parse");
-            assert!(matches!(route_frame(msg, &session), FrameAction::Drop(_)), "must drop: {raw}");
+            assert!(
+                matches!(route_frame(msg, &session), FrameAction::Drop(_)),
+                "must drop: {raw}"
+            );
         }
     }
 
@@ -439,11 +508,24 @@ mod tests {
         let session = empty_session();
         assert!(matches!(
             route_frame(ClientMsg::Enc { id: 90, delta: -3 }, &session),
-            FrameAction::Emit(SurfaceEvent::EncoderChanged { id: 90, delta: -3, .. })
+            FrameAction::Emit(SurfaceEvent::EncoderChanged {
+                id: 90,
+                delta: -3,
+                ..
+            })
         ));
         assert!(matches!(
-            route_frame(ClientMsg::EncPush { id: 97, pressed: true }, &session),
-            FrameAction::Emit(SurfaceEvent::EncoderPush { id: 97, pressed: true })
+            route_frame(
+                ClientMsg::EncPush {
+                    id: 97,
+                    pressed: true
+                },
+                &session
+            ),
+            FrameAction::Emit(SurfaceEvent::EncoderPush {
+                id: 97,
+                pressed: true
+            })
         ));
     }
 
@@ -458,6 +540,7 @@ mod tests {
                 id: 40,
                 type_tag: "filter".into(),
                 name: "Filter".into(),
+                has_view: false,
                 params: vec![crate::protocol::ParamSummary {
                     id: 7,
                     name: "cutoff".into(),
@@ -466,11 +549,19 @@ mod tests {
                     default: 4000.0,
                 }],
             }],
-            transport: TransportSummary { playing: false, bpm: 120.0 },
+            transport: TransportSummary {
+                playing: false,
+                bpm: 120.0,
+            },
+            view_registry: ViewRegistry { rules: HashMap::new(), chains: Vec::new() },
         };
         // A sane per-detent delta passes through unclamped…
         let FrameAction::Command(cmd) = route_frame(
-            ClientMsg::BumpParam { node: 40, param: "cutoff".into(), delta: 30.5 },
+            ClientMsg::BumpParam {
+                node: 40,
+                param: "cutoff".into(),
+                delta: 30.5,
+            },
             &session,
         ) else {
             panic!("expected command")
@@ -478,7 +569,11 @@ mod tests {
         assert_eq!(cmd.arg1, 30.5, "in-range delta must not be clamped");
         // …and an absurd one is bounded to half the range, not to 0.5.
         let FrameAction::Command(cmd) = route_frame(
-            ClientMsg::BumpParam { node: 40, param: "cutoff".into(), delta: -99999.0 },
+            ClientMsg::BumpParam {
+                node: 40,
+                param: "cutoff".into(),
+                delta: -99999.0,
+            },
             &session,
         ) else {
             panic!("expected command")
@@ -521,6 +616,7 @@ mod semantic_tests {
                 id: 20,
                 type_tag: "test".into(),
                 name: "test".into(),
+                has_view: false,
                 params: vec![ParamSummary {
                     id: 123,
                     name: "cutoff".into(),
@@ -529,14 +625,25 @@ mod semantic_tests {
                     default: 0.5,
                 }],
             }],
-            transport: TransportSummary { playing: false, bpm: 120.0 },
+            transport: TransportSummary {
+                playing: false,
+                bpm: 120.0,
+            },
+            view_registry: ViewRegistry {
+                rules: HashMap::new(),
+                chains: Vec::new(),
+            },
         }
     }
 
     #[test]
     fn set_param_resolves_name_to_id() {
         let session = session_with_cutoff();
-        let msg = ClientMsg::SetParam { node: 20, param: "cutoff".into(), v: 0.4 };
+        let msg = ClientMsg::SetParam {
+            node: 20,
+            param: "cutoff".into(),
+            v: 0.4,
+        };
         let FrameAction::Command(cmd) = route_frame(msg, &session) else {
             panic!("expected Command");
         };
@@ -549,13 +656,21 @@ mod semantic_tests {
     #[test]
     fn set_param_clamps_value() {
         let session = session_with_cutoff();
-        let msg = ClientMsg::SetParam { node: 20, param: "cutoff".into(), v: 5.0 };
+        let msg = ClientMsg::SetParam {
+            node: 20,
+            param: "cutoff".into(),
+            v: 5.0,
+        };
         let FrameAction::Command(cmd) = route_frame(msg, &session) else {
             panic!("expected Command");
         };
         assert_eq!(cmd.arg1, 1.0, "clamped to declared max");
 
-        let msg = ClientMsg::SetParam { node: 20, param: "cutoff".into(), v: -1.0 };
+        let msg = ClientMsg::SetParam {
+            node: 20,
+            param: "cutoff".into(),
+            v: -1.0,
+        };
         let FrameAction::Command(cmd) = route_frame(msg, &session) else {
             panic!("expected Command");
         };
@@ -565,15 +680,26 @@ mod semantic_tests {
     #[test]
     fn bump_param_clamps_delta() {
         let session = session_with_cutoff();
-        let msg = ClientMsg::BumpParam { node: 20, param: "cutoff".into(), delta: 2.0 };
+        let msg = ClientMsg::BumpParam {
+            node: 20,
+            param: "cutoff".into(),
+            delta: 2.0,
+        };
         let FrameAction::Command(cmd) = route_frame(msg, &session) else {
             panic!("expected Command");
         };
         assert_eq!(cmd.type_id, CMD_BUMP_PARAM);
         assert_eq!(cmd.arg0, 123);
-        assert_eq!(cmd.arg1, 0.5, "clamped to the per-message rate cap, not the param range");
+        assert_eq!(
+            cmd.arg1, 0.5,
+            "clamped to the per-message rate cap, not the param range"
+        );
 
-        let msg = ClientMsg::BumpParam { node: 20, param: "cutoff".into(), delta: -2.0 };
+        let msg = ClientMsg::BumpParam {
+            node: 20,
+            param: "cutoff".into(),
+            delta: -2.0,
+        };
         let FrameAction::Command(cmd) = route_frame(msg, &session) else {
             panic!("expected Command");
         };
@@ -583,23 +709,46 @@ mod semantic_tests {
     #[test]
     fn unknown_node_or_param_is_dropped() {
         let session = session_with_cutoff();
-        let msg = ClientMsg::SetParam { node: 99, param: "cutoff".into(), v: 0.5 };
+        let msg = ClientMsg::SetParam {
+            node: 99,
+            param: "cutoff".into(),
+            v: 0.5,
+        };
         assert!(matches!(route_frame(msg, &session), FrameAction::Drop(_)));
 
-        let msg = ClientMsg::SetParam { node: 20, param: "nope".into(), v: 0.5 };
+        let msg = ClientMsg::SetParam {
+            node: 20,
+            param: "nope".into(),
+            v: 0.5,
+        };
         assert!(matches!(route_frame(msg, &session), FrameAction::Drop(_)));
     }
 
     #[test]
     fn node_cmd_rejects_universal_range() {
         let session = session_with_cutoff();
-        let msg = ClientMsg::NodeCmd { node: 20, cmd: 0, a0: 3, a1: 0.0 };
+        let msg = ClientMsg::NodeCmd {
+            node: 20,
+            cmd: 0,
+            a0: 3,
+            a1: 0.0,
+        };
         assert!(matches!(route_frame(msg, &session), FrameAction::Drop(_)));
 
-        let msg = ClientMsg::NodeCmd { node: 20, cmd: 15, a0: 3, a1: 0.0 };
+        let msg = ClientMsg::NodeCmd {
+            node: 20,
+            cmd: 15,
+            a0: 3,
+            a1: 0.0,
+        };
         assert!(matches!(route_frame(msg, &session), FrameAction::Drop(_)));
 
-        let msg = ClientMsg::NodeCmd { node: 20, cmd: 16, a0: 3, a1: 7.0 };
+        let msg = ClientMsg::NodeCmd {
+            node: 20,
+            cmd: 16,
+            a0: 3,
+            a1: 7.0,
+        };
         let FrameAction::Command(cmd) = route_frame(msg, &session) else {
             panic!("expected Command pass-through");
         };
@@ -612,7 +761,12 @@ mod semantic_tests {
     #[test]
     fn node_cmd_unknown_node_dropped() {
         let session = session_with_cutoff();
-        let msg = ClientMsg::NodeCmd { node: 99, cmd: 16, a0: 0, a1: 0.0 };
+        let msg = ClientMsg::NodeCmd {
+            node: 99,
+            cmd: 16,
+            a0: 0,
+            a1: 0.0,
+        };
         assert!(matches!(route_frame(msg, &session), FrameAction::Drop(_)));
     }
 }

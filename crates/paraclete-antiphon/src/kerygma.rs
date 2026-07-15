@@ -56,8 +56,11 @@ impl ClientTable {
     /// when all `MAX_CLIENTS` slots are taken.
     pub fn allocate(&mut self, sender: mpsc::Sender<String>) -> Option<usize> {
         let idx = self.slots.iter().position(|s| s.is_none())?;
-        self.slots[idx] =
-            Some(ClientSlot { sender, needs_replay: true, needs_state_replay: true });
+        self.slots[idx] = Some(ClientSlot {
+            sender,
+            needs_replay: true,
+            needs_state_replay: true,
+        });
         Some(idx)
     }
 
@@ -118,7 +121,10 @@ pub struct Kerygma {
 
 impl Kerygma {
     pub fn new(clients: Arc<Mutex<ClientTable>>) -> Self {
-        Self { clients, shadow: [RgbColor::OFF; SHADOW_SLOTS] }
+        Self {
+            clients,
+            shadow: [RgbColor::OFF; SHADOW_SLOTS],
+        }
     }
 
     /// Update the shadow and fan a `led` batch out to all connected clients.
@@ -130,9 +136,15 @@ impl Kerygma {
         for u in updates {
             if (u.control_id as usize) < SHADOW_SLOTS {
                 self.shadow[u.control_id as usize] = u.color;
-                msgs.push(LedMsg { id: u.control_id, rgb: [u.color.r, u.color.g, u.color.b] });
+                msgs.push(LedMsg {
+                    id: u.control_id,
+                    rgb: [u.color.r, u.color.g, u.color.b],
+                });
             } else {
-                eprintln!("[antiphon] led update for unknown control id {}", u.control_id);
+                eprintln!(
+                    "[antiphon] led update for unknown control id {}",
+                    u.control_id
+                );
             }
         }
         if msgs.is_empty() {
@@ -141,7 +153,9 @@ impl Kerygma {
         let Ok(frame) = serde_json::to_string(&ServerMsg::Led { updates: msgs }) else {
             return;
         };
-        let Ok(table) = self.clients.lock() else { return };
+        let Ok(table) = self.clients.lock() else {
+            return;
+        };
         table.send_to_all(&frame);
     }
 
@@ -149,7 +163,9 @@ impl Kerygma {
     /// (i.e. connected since the last tick). Called every main-loop tick,
     /// before the regular batch broadcast.
     pub fn service_replays(&mut self) {
-        let Ok(mut table) = self.clients.lock() else { return };
+        let Ok(mut table) = self.clients.lock() else {
+            return;
+        };
         // Built lazily: zero cost on the (overwhelmingly common) no-new-client tick.
         let mut frame: Option<String> = None;
         let shadow = &self.shadow;
@@ -159,7 +175,10 @@ impl Kerygma {
                     .iter()
                     .enumerate()
                     .filter(|(id, _)| !(80..90).contains(id)) // gap between pads and encoders
-                    .map(|(id, c)| LedMsg { id: id as u32, rgb: [c.r, c.g, c.b] })
+                    .map(|(id, c)| LedMsg {
+                        id: id as u32,
+                        rgb: [c.r, c.g, c.b],
+                    })
                     .collect();
                 serde_json::to_string(&ServerMsg::Led { updates }).unwrap_or_default()
             });
@@ -214,9 +233,22 @@ mod tests {
 
         // Set 3 LEDs before anyone is connected.
         k.broadcast_led_updates(&[
-            LedUpdate { control_id: 0, color: RgbColor::RED },
-            LedUpdate { control_id: 13, color: RgbColor { r: 0, g: 64, b: 255 } },
-            LedUpdate { control_id: 64, color: RgbColor::GREEN },
+            LedUpdate {
+                control_id: 0,
+                color: RgbColor::RED,
+            },
+            LedUpdate {
+                control_id: 13,
+                color: RgbColor {
+                    r: 0,
+                    g: 64,
+                    b: 255,
+                },
+            },
+            LedUpdate {
+                control_id: 64,
+                color: RgbColor::GREEN,
+            },
         ]);
 
         // A client connects (allocation flags it for replay).
@@ -256,13 +288,22 @@ mod tests {
         let _ = rx_a.try_recv();
         let _ = rx_b.try_recv();
 
-        k.broadcast_led_updates(&[LedUpdate { control_id: 7, color: RgbColor::WHITE }]);
+        k.broadcast_led_updates(&[LedUpdate {
+            control_id: 7,
+            color: RgbColor::WHITE,
+        }]);
         for rx in [&rx_a, &rx_b] {
             let frame = rx.try_recv().expect("both clients receive the batch");
             let ServerMsg::Led { updates } = serde_json::from_str(&frame).unwrap() else {
                 panic!("expected led")
             };
-            assert_eq!(updates, vec![LedMsg { id: 7, rgb: [255, 255, 255] }]);
+            assert_eq!(
+                updates,
+                vec![LedMsg {
+                    id: 7,
+                    rgb: [255, 255, 255]
+                }]
+            );
         }
     }
 }
