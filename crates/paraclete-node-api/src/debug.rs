@@ -19,18 +19,18 @@ pub struct DebugEvent {
 #[repr(u16)]
 #[non_exhaustive]
 pub enum DebugEventKind {
-    StepFired     = 1,
-    VoiceTrigger  = 2,
-    ParamChange   = 3,
+    StepFired = 1,
+    VoiceTrigger = 2,
+    ParamChange = 3,
 }
 
 impl DebugEventKind {
     /// Return the canonical snake_case name for JSON/log output.
     pub fn as_str(&self) -> &'static str {
         match self {
-            Self::StepFired    => "step_fired",
+            Self::StepFired => "step_fired",
             Self::VoiceTrigger => "voice_trigger",
-            Self::ParamChange  => "param_change",
+            Self::ParamChange => "param_change",
         }
     }
 }

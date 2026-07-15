@@ -3,9 +3,9 @@
 /// These tests double as documentation — each shows a contributor exactly what
 /// they need to implement a node at a given level of engagement (per ADR-008).
 use paraclete_node_api::{
-    CapabilityDocument, EventOutputBuffer, ExtendedEventSlab, Node, ParamDescriptor, ParamUnit, ConnectionAgreement,
-    PortDescriptor, PortDirection, PortName, PortType, ProcessInput, ProcessOutput,
-    TransportInfo,
+    CapabilityDocument, ConnectionAgreement, EventOutputBuffer, ExtendedEventSlab, Node,
+    ParamDescriptor, ParamUnit, PortDescriptor, PortDirection, PortName, PortType, ProcessInput,
+    ProcessOutput, TransportInfo,
 };
 
 // ── Level 1 node — minimum possible implementation ────────────────────────────
@@ -122,6 +122,7 @@ impl Node for Level2GainNode {
                 display: None,
             }],
             extensions: vec![],
+            view: None,
         }
     }
 
@@ -263,14 +264,10 @@ fn test_node_process_receives_sample_rate_and_block_size() {
         sample_rate: 48000.0,
         block_size: 256,
         extended_events: &slab,
-            commands: &[],
+        commands: &[],
     };
 
-    let mut output = ProcessOutput::new(
-        &mut [],
-        &mut [],
-        &mut events_out,
-    );
+    let mut output = ProcessOutput::new(&mut [], &mut [], &mut events_out);
 
     node.process(&input, &mut output);
 
@@ -285,14 +282,14 @@ fn silence_buffer_at_max_block_size_is_all_zeros() {
     let transport = TransportInfo::default();
     let slab = ExtendedEventSlab::empty();
     let input = ProcessInput {
-        audio_inputs:   &[],
-        signal_inputs:  &[],
-        events:         &[],
-        transport:      &transport,
-        sample_rate:    44100.0,
-        block_size:     65536,
+        audio_inputs: &[],
+        signal_inputs: &[],
+        events: &[],
+        transport: &transport,
+        sample_rate: 44100.0,
+        block_size: 65536,
         extended_events: &slab,
-        commands:       &[],
+        commands: &[],
     };
     let silence = input.logic(999);
     assert_eq!(silence.len(), 65536);

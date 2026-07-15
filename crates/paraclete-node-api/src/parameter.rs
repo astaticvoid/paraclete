@@ -6,11 +6,11 @@ use crate::state_bus::StateBusValue;
 
 struct ParameterSlot {
     param_id: u32,
-    name:     String,
-    current:  f64,
-    min:      f64,
-    max:      f64,
-    default:  f64,
+    name: String,
+    current: f64,
+    min: f64,
+    max: f64,
+    default: f64,
 }
 
 /// Pre-allocated parameter storage built from a node's capability document.
@@ -36,20 +36,30 @@ impl ParameterBank {
     /// Build from a capability document. Call at `activate()` time.
     /// Sets `current = default` for all declared parameters.
     pub fn from_capability_document(doc: &CapabilityDocument) -> Self {
-        let slots = doc.params.iter().map(|p| ParameterSlot {
-            param_id: p.id,
-            name:     p.name.as_str().to_string(),
-            current:  p.default,
-            min:      p.min,
-            max:      p.max,
-            default:  p.default,
-        }).collect();
-        Self { slots, path_cache: std::sync::OnceLock::new() }
+        let slots = doc
+            .params
+            .iter()
+            .map(|p| ParameterSlot {
+                param_id: p.id,
+                name: p.name.as_str().to_string(),
+                current: p.default,
+                min: p.min,
+                max: p.max,
+                default: p.default,
+            })
+            .collect();
+        Self {
+            slots,
+            path_cache: std::sync::OnceLock::new(),
+        }
     }
 
     /// Build an empty bank (no parameters declared).
     pub fn empty() -> Self {
-        Self { slots: Vec::new(), path_cache: std::sync::OnceLock::new() }
+        Self {
+            slots: Vec::new(),
+            path_cache: std::sync::OnceLock::new(),
+        }
     }
 
     /// Apply `CMD_SET_PARAM` and `CMD_BUMP_PARAM` from `input.commands`.
@@ -73,7 +83,8 @@ impl ParameterBank {
 
     /// Current value of a parameter. Returns `0.0` if the param_id is not found.
     pub fn get(&self, param_id: u32) -> f64 {
-        self.slots.iter()
+        self.slots
+            .iter()
             .find(|s| s.param_id == param_id)
             .map(|s| s.current)
             .unwrap_or(0.0)
@@ -111,11 +122,14 @@ impl ParameterBank {
 /// per entry is the accepted cost of shipping owned strings off the audio thread.
 pub fn publish_bank_state(
     node_id: u32,
-    bank:    &ParameterBank,
-    buf:     &mut Vec<(String, StateBusValue)>,
+    bank: &ParameterBank,
+    buf: &mut Vec<(String, StateBusValue)>,
 ) {
     let paths = bank.path_cache.get_or_init(|| {
-        bank.slots.iter().map(|s| format!("/node/{}/param/{}", node_id, s.name)).collect()
+        bank.slots
+            .iter()
+            .map(|s| format!("/node/{}/param/{}", node_id, s.name))
+            .collect()
     });
     for (path, slot) in paths.iter().zip(bank.slots.iter()) {
         buf.push((path.clone(), StateBusValue::Float(slot.current)));
@@ -164,21 +178,31 @@ mod tests {
                 },
             ],
             extensions: vec![],
+            view: None,
         }
     }
 
-    fn cutoff_id() -> u32 { crate::capability::ParamDescriptor::id_for_name("cutoff_hz") }
-    fn res_id()    -> u32 { crate::capability::ParamDescriptor::id_for_name("resonance") }
+    fn cutoff_id() -> u32 {
+        crate::capability::ParamDescriptor::id_for_name("cutoff_hz")
+    }
+    fn res_id() -> u32 {
+        crate::capability::ParamDescriptor::id_for_name("resonance")
+    }
 
     fn cmd(type_id: u32, param_id: u32, value: f64) -> NodeCommand {
-        NodeCommand { target_id: 0, type_id, arg0: param_id as i64, arg1: value }
+        NodeCommand {
+            target_id: 0,
+            type_id,
+            arg0: param_id as i64,
+            arg1: value,
+        }
     }
 
     #[test]
     fn parameter_bank_default_values() {
         let bank = ParameterBank::from_capability_document(&make_doc());
         assert_eq!(bank.get(cutoff_id()), 1000.0);
-        assert_eq!(bank.get(res_id()),    0.7);
+        assert_eq!(bank.get(res_id()), 0.7);
     }
 
     #[test]
@@ -202,7 +226,12 @@ mod tests {
     #[test]
     fn handle_commands_unknown_type_id_silently_ignored() {
         let mut bank = ParameterBank::from_capability_document(&make_doc());
-        bank.handle_commands(&[NodeCommand { target_id: 0, type_id: 99, arg0: cutoff_id() as i64, arg1: 500.0 }]);
+        bank.handle_commands(&[NodeCommand {
+            target_id: 0,
+            type_id: 99,
+            arg0: cutoff_id() as i64,
+            arg1: 500.0,
+        }]);
         assert_eq!(bank.get(cutoff_id()), 1000.0); // unchanged
     }
 
@@ -224,12 +253,27 @@ mod tests {
         use crate::capability::{ParamDescriptor, ParamUnit};
         use crate::port::{PortDescriptor, PortDirection, PortType};
         CapabilityDocument {
-            name: "Test".into(), vendor: "Test".into(), version: (0, 1, 0),
-            ports: vec![PortDescriptor { id: 0, name: "out".into(), direction: PortDirection::Output, port_type: PortType::Audio }],
-            params: vec![
-                ParamDescriptor { id: ParamDescriptor::id_for_name(name), name: name.into(), min: 0.0, max: 1.0, default, stepped: false, unit: ParamUnit::Generic, display: None },
-            ],
+            name: "Test".into(),
+            vendor: "Test".into(),
+            version: (0, 1, 0),
+            ports: vec![PortDescriptor {
+                id: 0,
+                name: "out".into(),
+                direction: PortDirection::Output,
+                port_type: PortType::Audio,
+            }],
+            params: vec![ParamDescriptor {
+                id: ParamDescriptor::id_for_name(name),
+                name: name.into(),
+                min: 0.0,
+                max: 1.0,
+                default,
+                stepped: false,
+                unit: ParamUnit::Generic,
+                display: None,
+            }],
             extensions: vec![],
+            view: None,
         }
     }
 
@@ -251,7 +295,11 @@ mod tests {
         let mut buf: Vec<(String, StateBusValue)> = Vec::new();
         publish_bank_state(7, &bank, &mut buf);
         let entry = buf.iter().find(|(k, _)| k == "/node/7/param/resonance");
-        assert!(entry.is_some(), "expected /node/7/param/resonance in {:?}", buf);
+        assert!(
+            entry.is_some(),
+            "expected /node/7/param/resonance in {:?}",
+            buf
+        );
     }
 
     #[test]
@@ -261,15 +309,28 @@ mod tests {
         let mut buf: Vec<(String, StateBusValue)> = Vec::new();
 
         publish_bank_state(7, &bank, &mut buf);
-        let first_ptrs: Vec<*const u8> = bank.path_cache.get().unwrap()
-            .iter().map(|s| s.as_ptr()).collect();
+        let first_ptrs: Vec<*const u8> = bank
+            .path_cache
+            .get()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_ptr())
+            .collect();
 
         buf.clear();
         publish_bank_state(7, &bank, &mut buf);
-        let second_ptrs: Vec<*const u8> = bank.path_cache.get().unwrap()
-            .iter().map(|s| s.as_ptr()).collect();
+        let second_ptrs: Vec<*const u8> = bank
+            .path_cache
+            .get()
+            .unwrap()
+            .iter()
+            .map(|s| s.as_ptr())
+            .collect();
 
-        assert_eq!(first_ptrs, second_ptrs, "path_cache backing strings must be stable across calls (no re-format!)");
+        assert_eq!(
+            first_ptrs, second_ptrs,
+            "path_cache backing strings must be stable across calls (no re-format!)"
+        );
     }
 
     #[test]
@@ -307,6 +368,9 @@ mod tests {
         let mut bank = ParameterBank::from_capability_document(&doc);
         bank.handle_commands(&[cmd(CMD_SET_PARAM, res_id, 0.9)]);
         let pairs: Vec<_> = bank.iter_values().collect();
-        assert!((pairs[0].1 - 0.9).abs() < 1e-12, "iter_values should reflect mutated value");
+        assert!(
+            (pairs[0].1 - 0.9).abs() < 1e-12,
+            "iter_values should reflect mutated value"
+        );
     }
 }

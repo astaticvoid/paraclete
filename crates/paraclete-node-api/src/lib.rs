@@ -14,34 +14,33 @@ pub mod constants;
 pub mod context;
 pub mod debug;
 pub mod event;
-pub mod surface;
 pub mod midi;
 pub mod node;
 pub mod parameter;
 pub mod port;
+pub mod rule;
 pub mod state_bus;
-pub mod tempo_source;
+pub mod surface;
 pub mod templates;
+pub mod tempo_source;
 pub mod transport;
 
 pub use constants::TICKS_PER_BEAT;
 
 pub use buffer::{
-    AsSignal, AsSignalMut, AudioBuffer, CvBuffer, LogicBuffer, ModBuffer, PhaseBuffer,
-    PitchBuffer,
+    AsSignal, AsSignalMut, AudioBuffer, CvBuffer, LogicBuffer, ModBuffer, PhaseBuffer, PitchBuffer,
 };
 
 pub use port::{PortDescriptor, PortDirection, PortName, PortType};
 
 pub use event::{
-    Event, ExtendedEventSlab, ParamLockEvent, ExtendedEventRef, TimedEvent, UmpMessage,
+    Event, ExtendedEventRef, ExtendedEventSlab, ParamLockEvent, TimedEvent, UmpMessage,
 };
 
 pub use surface::{
-    ButtonDescriptor, Control, DisplayContent, DisplayDescriptor, DisplayType,
-    EncoderBehaviour, EncoderDescriptor, FaderDescriptor, Surface, SurfaceEvent,
-    SurfaceEventMsg, SurfaceOutput, SurfaceOutputHandle, LedDescriptor, LedUpdate,
-    PadDescriptor, RgbColor, SurfaceDescriptor,
+    ButtonDescriptor, Control, DisplayContent, DisplayDescriptor, DisplayType, EncoderBehaviour,
+    EncoderDescriptor, FaderDescriptor, LedDescriptor, LedUpdate, PadDescriptor, RgbColor, Surface,
+    SurfaceDescriptor, SurfaceEvent, SurfaceEventMsg, SurfaceOutput, SurfaceOutputHandle,
 };
 
 pub use transport::{TransportEvent, TransportFlags, TransportInfo};
@@ -61,13 +60,16 @@ pub use capability::{
     CapabilityDocument, ParamDescriptor, ParamDisplay, ParamDisplayAdapter, ParamUnit,
 };
 
+pub use rule::{
+    AffordanceHint, EnvelopeGroup, MacroBinding, MacroCurve, PageRef, RoutingSemantics, Rule,
+    ViewPlugin,
+};
+
 pub use agreement::{ConnectionAgreement, ConnectionRecord, LockableParam};
 
 pub use node::{GraphNode, Negotiable, Node};
 
-pub use templates::{
-    ControllerNode, InstrumentNode, SequencerNode, SignalNode,
-};
+pub use templates::{ControllerNode, InstrumentNode, SequencerNode, SignalNode};
 
 pub use command::{NodeCommand, CMD_BUMP_PARAM, CMD_SET_PARAM, CMD_TRIGGER};
 

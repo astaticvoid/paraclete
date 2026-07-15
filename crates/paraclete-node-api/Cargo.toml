@@ -13,3 +13,8 @@ readme      = "README.md"
 
 [dependencies]
 midi2.workspace = true
+serde = { workspace = true, features = ["derive"], optional = true }
+
+[features]
+default = []
+serialize = ["serde"]

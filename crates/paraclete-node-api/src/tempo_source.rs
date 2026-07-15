@@ -5,15 +5,15 @@ use crate::node::Node;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ClockPriority {
     /// Polyrhythmic sub-sequencer, node-local.
-    SubDomain       = 0,
+    SubDomain = 0,
     /// TempoSource node — default standalone clock.
-    Internal        = 1,
+    Internal = 1,
     /// CV or MIDI clock input.
     ExternalHardware = 2,
     /// Ableton Link — future.
-    AbletonLink     = 3,
+    AbletonLink = 3,
     /// DAW host transport (P7).
-    DawHost         = 4,
+    DawHost = 4,
 }
 
 /// A node that provides a clock domain.

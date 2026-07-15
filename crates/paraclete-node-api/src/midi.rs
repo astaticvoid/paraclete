@@ -6,5 +6,5 @@
 /// The fixed buffer type `[u32; 4]` is used throughout — it covers the maximum
 /// UMP packet size (128 bits) and is `Copy`, keeping events allocation-free.
 pub use midi2::channel_voice2::{ChannelVoice2, NoteOff, NoteOn};
-pub use midi2::{Channeled, Grouped};
 pub use midi2::ux::{u4, u7};
+pub use midi2::{Channeled, Grouped};

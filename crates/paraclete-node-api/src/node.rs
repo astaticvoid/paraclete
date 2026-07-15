@@ -1,8 +1,8 @@
 use crate::agreement::{ConnectionAgreement, ConnectionRecord};
 use crate::capability::CapabilityDocument;
 use crate::context::{ProcessInput, ProcessOutput};
-use crate::state_bus::StateBusValue;
 use crate::port::PortDescriptor;
+use crate::state_bus::StateBusValue;
 
 /// Marker trait for nodes that contain an inner node graph.
 ///
@@ -124,14 +124,18 @@ pub trait Node: Send {
     /// this to sanction cycles that contain exactly one loop-break node.
     ///
     /// Default: `false`.
-    fn is_loop_break(&self) -> bool { false }
+    fn is_loop_break(&self) -> bool {
+        false
+    }
 
     /// Returns the "previous cycle" output slice stored inside the loop-break node.
     ///
     /// Called by the executor in the pre-execution phase to inject the previous
     /// cycle's signal into the downstream node's input buffer before any
     /// `process()` call. Returns an empty slice from the default implementation.
-    fn loop_break_prev(&self) -> &[f32] { &[] }
+    fn loop_break_prev(&self) -> &[f32] {
+        &[]
+    }
 
     /// Swaps the "previous" and "next" internal buffers.
     ///

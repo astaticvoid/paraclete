@@ -9,7 +9,11 @@ use crate::port::PortName;
 #[derive(Clone, Copy, Debug)]
 pub enum SurfaceEvent {
     /// Pad pressed. velocity and pressure are 16-bit (MIDI 2.0 resolution).
-    PadPressed { id: u32, velocity: u16, pressure: u16 },
+    PadPressed {
+        id: u32,
+        velocity: u16,
+        pressure: u16,
+    },
     /// Pad released.
     PadReleased { id: u32 },
     /// Continuous pressure change on a held pad.
@@ -140,7 +144,10 @@ pub struct SurfaceOutput {
 
 impl SurfaceOutput {
     pub fn empty() -> Self {
-        Self { led_updates: vec![], display_updates: vec![] }
+        Self {
+            led_updates: vec![],
+            display_updates: vec![],
+        }
     }
 }
 
@@ -172,11 +179,15 @@ pub struct RgbColor {
 }
 
 impl RgbColor {
-    pub const OFF:   RgbColor = RgbColor { r: 0,   g: 0,   b: 0   };
-    pub const WHITE: RgbColor = RgbColor { r: 255, g: 255, b: 255 };
-    pub const RED:   RgbColor = RgbColor { r: 255, g: 0,   b: 0   };
-    pub const GREEN: RgbColor = RgbColor { r: 0,   g: 255, b: 0   };
-    pub const BLUE:  RgbColor = RgbColor { r: 0,   g: 0,   b: 255 };
+    pub const OFF: RgbColor = RgbColor { r: 0, g: 0, b: 0 };
+    pub const WHITE: RgbColor = RgbColor {
+        r: 255,
+        g: 255,
+        b: 255,
+    };
+    pub const RED: RgbColor = RgbColor { r: 255, g: 0, b: 0 };
+    pub const GREEN: RgbColor = RgbColor { r: 0, g: 255, b: 0 };
+    pub const BLUE: RgbColor = RgbColor { r: 0, g: 0, b: 255 };
 }
 
 // ── SurfaceOutputHandle ──────────────────────────────────────────────────────
@@ -228,7 +239,11 @@ mod tests {
 
     #[test]
     fn surface_event_is_copy() {
-        let a = SurfaceEvent::PadPressed { id: 0, velocity: 100, pressure: 0 };
+        let a = SurfaceEvent::PadPressed {
+            id: 0,
+            velocity: 100,
+            pressure: 0,
+        };
         let b = a;
         let _ = a;
         let _ = b;
@@ -246,11 +261,18 @@ mod tests {
 
     #[test]
     fn rgb_color_constants_have_correct_values() {
-        assert_eq!(RgbColor::OFF,   RgbColor { r: 0,   g: 0,   b: 0   });
-        assert_eq!(RgbColor::WHITE, RgbColor { r: 255, g: 255, b: 255 });
-        assert_eq!(RgbColor::RED,   RgbColor { r: 255, g: 0,   b: 0   });
-        assert_eq!(RgbColor::GREEN, RgbColor { r: 0,   g: 255, b: 0   });
-        assert_eq!(RgbColor::BLUE,  RgbColor { r: 0,   g: 0,   b: 255 });
+        assert_eq!(RgbColor::OFF, RgbColor { r: 0, g: 0, b: 0 });
+        assert_eq!(
+            RgbColor::WHITE,
+            RgbColor {
+                r: 255,
+                g: 255,
+                b: 255
+            }
+        );
+        assert_eq!(RgbColor::RED, RgbColor { r: 255, g: 0, b: 0 });
+        assert_eq!(RgbColor::GREEN, RgbColor { r: 0, g: 255, b: 0 });
+        assert_eq!(RgbColor::BLUE, RgbColor { r: 0, g: 0, b: 255 });
     }
 
     #[test]
@@ -284,7 +306,10 @@ mod tests {
             vendor: String::from("Runtime").into(),
             controls: vec![],
         };
-        assert!(matches!(d.name, Cow::Owned(_)), "runtime surface name must be owned");
+        assert!(
+            matches!(d.name, Cow::Owned(_)),
+            "runtime surface name must be owned"
+        );
         assert_eq!(d.name.as_ref(), dynamic.as_str());
     }
 
@@ -293,17 +318,15 @@ mod tests {
         let surface = SurfaceDescriptor {
             name: "Test Controller".into(),
             vendor: "Test".into(),
-            controls: vec![
-                Control::Pad(PadDescriptor {
-                    id: 0,
-                    name: "pad_0".into(),
-                    row: Some(0),
-                    col: Some(0),
-                    velocity_sensitive: true,
-                    pressure_sensitive: false,
-                    rgb: true,
-                }),
-            ],
+            controls: vec![Control::Pad(PadDescriptor {
+                id: 0,
+                name: "pad_0".into(),
+                row: Some(0),
+                col: Some(0),
+                velocity_sensitive: true,
+                pressure_sensitive: false,
+                rgb: true,
+            })],
         };
         assert_eq!(surface.name, "Test Controller");
         assert_eq!(surface.controls.len(), 1);

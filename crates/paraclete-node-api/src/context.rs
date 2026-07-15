@@ -1,6 +1,4 @@
-use crate::buffer::{
-    AudioBuffer, CvBuffer, PhaseBuffer, PitchBuffer,
-};
+use crate::buffer::{AudioBuffer, CvBuffer, PhaseBuffer, PitchBuffer};
 use crate::command::NodeCommand;
 use crate::debug::{DebugEvent, DebugEventKind};
 use crate::event::{ExtendedEventSlab, TimedEvent};
@@ -38,7 +36,12 @@ unsafe impl Send for SignalInputSlot {}
 
 impl SignalInputSlot {
     pub fn new(port_id: u32, kind: SignalPortKind, data: &[f32]) -> Self {
-        Self { port_id, kind, ptr: data.as_ptr(), frames: data.len() }
+        Self {
+            port_id,
+            kind,
+            ptr: data.as_ptr(),
+            frames: data.len(),
+        }
     }
 }
 
@@ -55,7 +58,12 @@ unsafe impl Send for SignalOutputSlot {}
 
 impl SignalOutputSlot {
     pub fn new(port_id: u32, kind: SignalPortKind, data: &mut [f32]) -> Self {
-        Self { port_id, kind, ptr: data.as_mut_ptr(), frames: data.len() }
+        Self {
+            port_id,
+            kind,
+            ptr: data.as_mut_ptr(),
+            frames: data.len(),
+        }
     }
 }
 
@@ -183,7 +191,12 @@ impl<'a> ProcessOutput<'a> {
         signal_outputs: &'a mut [SignalOutputSlot],
         events_out: &'a mut EventOutputBuffer,
     ) -> Self {
-        Self { audio_outputs, signal_outputs, events_out, debug: None }
+        Self {
+            audio_outputs,
+            signal_outputs,
+            events_out,
+            debug: None,
+        }
     }
 
     fn find_output(&mut self, port_id: u32, kind: SignalPortKind) -> &mut [f32] {
@@ -244,7 +257,10 @@ pub struct EventOutputBuffer {
 
 impl EventOutputBuffer {
     pub fn new(capacity: usize) -> Self {
-        Self { events: Vec::with_capacity(capacity), capacity }
+        Self {
+            events: Vec::with_capacity(capacity),
+            capacity,
+        }
     }
 
     pub fn push(&mut self, event: TimedEvent) {
@@ -256,10 +272,18 @@ impl EventOutputBuffer {
         self.events.push(event);
     }
 
-    pub fn len(&self) -> usize { self.events.len() }
-    pub fn is_empty(&self) -> bool { self.events.is_empty() }
-    pub fn clear(&mut self) { self.events.clear(); }
-    pub fn as_slice(&self) -> &[TimedEvent] { &self.events }
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+    pub fn clear(&mut self) {
+        self.events.clear();
+    }
+    pub fn as_slice(&self) -> &[TimedEvent] {
+        &self.events
+    }
 }
 
 #[cfg(test)]
@@ -303,7 +327,12 @@ mod tests {
     fn process_input_has_commands_field() {
         let transport = TransportInfo::default();
         let slab = ExtendedEventSlab::empty();
-        let cmd = NodeCommand { target_id: 1, type_id: 0, arg0: 0, arg1: 0.5 };
+        let cmd = NodeCommand {
+            target_id: 1,
+            type_id: 0,
+            arg0: 0,
+            arg1: 0.5,
+        };
         let input = ProcessInput {
             audio_inputs: &[],
             signal_inputs: &[],
@@ -362,11 +391,7 @@ mod tests {
         let mut events_out = EventOutputBuffer::new(16);
         let out_slot = SignalOutputSlot::new(0, SignalPortKind::Modulation, &mut out_buf);
         let mut sig_outs = [out_slot];
-        let mut output = ProcessOutput::new(
-            &mut [],
-            &mut sig_outs,
-            &mut events_out,
-        );
+        let mut output = ProcessOutput::new(&mut [], &mut sig_outs, &mut events_out);
         let slice = output.mod_output_mut(0);
         assert_eq!(slice.len(), block);
     }
@@ -378,11 +403,7 @@ mod tests {
         let out_ptr: *mut AudioBuffer = &mut buf as *mut AudioBuffer;
         let out_ref: &mut AudioBuffer = unsafe { &mut *out_ptr };
         let mut outs = [out_ref];
-        let output = ProcessOutput::new(
-            &mut outs,
-            &mut [],
-            &mut events_out,
-        );
+        let output = ProcessOutput::new(&mut outs, &mut [], &mut events_out);
         output.audio_outputs[0].channel_mut(0).fill(0.5);
         assert_eq!(buf.channel(0)[0], 0.5);
     }

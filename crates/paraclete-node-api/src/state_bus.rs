@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use crate::node::Node;
+use std::collections::HashMap;
 
 /// A value published to the StateBus.
 #[derive(Clone, Debug, PartialEq)]
@@ -40,7 +40,9 @@ impl Default for StateBusHandle {
 
 impl StateBusHandle {
     pub fn new() -> Self {
-        Self { store: HashMap::new() }
+        Self {
+            store: HashMap::new(),
+        }
     }
 
     /// Read a value from the bus. Returns `None` if the path has no value yet.
@@ -61,13 +63,18 @@ impl StateBusHandle {
     ///   - `/node/{id}/state/` — written by the executor, read-only for scripts
     ///   - `/transport/` — clock domain state
     ///   - `/surface/` — surface (hardware/Theoria) state
-    pub fn write_sandboxed(&mut self, path: &str, value: StateBusValue) -> Result<(), &'static str> {
+    pub fn write_sandboxed(
+        &mut self,
+        path: &str,
+        value: StateBusValue,
+    ) -> Result<(), &'static str> {
         let allowed = path.starts_with("/script/")
             || (path.starts_with("/node/") && {
                 let after_node = &path["/node/".len()..];
-                after_node.find('/').map(|slash| {
-                    after_node[slash + 1..].starts_with("param/")
-                }).unwrap_or(false)
+                after_node
+                    .find('/')
+                    .map(|slash| after_node[slash + 1..].starts_with("param/"))
+                    .unwrap_or(false)
             });
         if !allowed {
             return Err("scripts may not write to this path — only /script/ and /node/{id}/param/ are writable");
@@ -78,7 +85,10 @@ impl StateBusHandle {
 
     /// Create a subscription for `path`.
     pub fn subscribe(&self, path: &str) -> StateBusSubscription {
-        StateBusSubscription { path: path.to_string(), last_value: None }
+        StateBusSubscription {
+            path: path.to_string(),
+            last_value: None,
+        }
     }
 
     /// Poll a subscription: returns `Some(&value)` if the value at `path`
@@ -124,7 +134,10 @@ pub struct StateBusSubscription {
 
 impl StateBusSubscription {
     pub fn new(path: impl Into<String>) -> Self {
-        Self { path: path.into(), last_value: None }
+        Self {
+            path: path.into(),
+            last_value: None,
+        }
     }
 }
 
@@ -155,16 +168,23 @@ mod tests {
     fn state_bus_handle_write_then_read_returns_value() {
         let mut handle = StateBusHandle::new();
         handle.write("/transport/bpm", StateBusValue::Float(140.0));
-        assert_eq!(handle.read("/transport/bpm"), Some(&StateBusValue::Float(140.0)));
+        assert_eq!(
+            handle.read("/transport/bpm"),
+            Some(&StateBusValue::Float(140.0))
+        );
     }
 
     #[test]
     fn state_bus_handle_apply_updates_inserts_entries() {
         let mut handle = StateBusHandle::new();
-        handle.apply_updates(vec![
-            ("/node/1/state/step".to_string(), StateBusValue::Int(3)),
-        ]);
-        assert_eq!(handle.read("/node/1/state/step"), Some(&StateBusValue::Int(3)));
+        handle.apply_updates(vec![(
+            "/node/1/state/step".to_string(),
+            StateBusValue::Int(3),
+        )]);
+        assert_eq!(
+            handle.read("/node/1/state/step"),
+            Some(&StateBusValue::Int(3))
+        );
     }
 
     #[test]
@@ -183,33 +203,48 @@ mod tests {
     #[test]
     fn state_bus_write_sandboxed_rejects_transport_path() {
         let mut handle = StateBusHandle::new();
-        assert!(handle.write_sandboxed("/transport/bpm", StateBusValue::Float(120.0)).is_err());
+        assert!(handle
+            .write_sandboxed("/transport/bpm", StateBusValue::Float(120.0))
+            .is_err());
     }
 
     #[test]
     fn state_bus_write_sandboxed_accepts_node_param_path() {
         let mut handle = StateBusHandle::new();
-        assert!(handle.write_sandboxed("/node/1/param/pitch", StateBusValue::Float(2.0)).is_ok());
+        assert!(handle
+            .write_sandboxed("/node/1/param/pitch", StateBusValue::Float(2.0))
+            .is_ok());
     }
 
     #[test]
     fn state_bus_write_sandboxed_rejects_node_state_path() {
         let mut handle = StateBusHandle::new();
-        assert!(handle.write_sandboxed("/node/1/state/steps", StateBusValue::Text("1010".into())).is_err());
+        assert!(handle
+            .write_sandboxed("/node/1/state/steps", StateBusValue::Text("1010".into()))
+            .is_err());
     }
 
     #[test]
     fn state_bus_write_sandboxed_accepts_script_path() {
         let mut handle = StateBusHandle::new();
-        assert!(handle.write_sandboxed("/script/lp/mode", StateBusValue::Text("sequence".into())).is_ok());
-        assert_eq!(handle.read("/script/lp/mode"), Some(&StateBusValue::Text("sequence".into())));
+        assert!(handle
+            .write_sandboxed("/script/lp/mode", StateBusValue::Text("sequence".into()))
+            .is_ok());
+        assert_eq!(
+            handle.read("/script/lp/mode"),
+            Some(&StateBusValue::Text("sequence".into()))
+        );
     }
 
     #[test]
     fn state_bus_write_sandboxed_rejects_transport_and_surface_paths() {
         let mut handle = StateBusHandle::new();
-        assert!(handle.write_sandboxed("/transport/bpm", StateBusValue::Float(120.0)).is_err());
-        assert!(handle.write_sandboxed("/surface/led/1", StateBusValue::Int(0)).is_err());
+        assert!(handle
+            .write_sandboxed("/transport/bpm", StateBusValue::Float(120.0))
+            .is_err());
+        assert!(handle
+            .write_sandboxed("/surface/led/1", StateBusValue::Int(0))
+            .is_err());
     }
 
     #[test]

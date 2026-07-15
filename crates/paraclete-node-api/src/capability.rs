@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 
 use crate::port::{PortDescriptor, PortName};
+use crate::rule::Rule;
 
 // ── ParamUnit ─────────────────────────────────────────────────────────────────
 
@@ -145,6 +146,10 @@ pub struct CapabilityDocument {
     /// e.g. `"paraclete.instrument"`, `"paraclete.sequencer"`,
     ///      `"com.yourcompany.custom_protocol"`.
     pub extensions: Vec<Cow<'static, str>>,
+
+    /// ADR-032 view-plugin data. `None` for nodes without surface presence.
+    /// Built from `ViewPlugin::to_rule()` at construction time.
+    pub view: Option<Rule>,
 }
 
 impl CapabilityDocument {
@@ -158,6 +163,7 @@ impl CapabilityDocument {
             ports: ports.to_vec(),
             params: vec![],
             extensions: vec![],
+            view: None,
         }
     }
 }
@@ -232,8 +238,12 @@ mod tests {
             ports: vec![],
             params: vec![],
             extensions: vec![String::from("paraclete.dynamic").into()],
+            view: None,
         };
-        assert!(matches!(doc.name, Cow::Owned(_)), "runtime name must be owned");
+        assert!(
+            matches!(doc.name, Cow::Owned(_)),
+            "runtime name must be owned"
+        );
         assert_eq!(doc.name.as_ref(), dynamic.as_str());
         assert_eq!(doc.vendor.as_ref(), "Runtime Vendor");
         assert_eq!(doc.extensions[0].as_ref(), "paraclete.dynamic");

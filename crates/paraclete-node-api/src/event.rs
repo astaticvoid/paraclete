@@ -111,7 +111,10 @@ pub struct TimedEvent {
 
 impl TimedEvent {
     pub fn new(sample_offset: u32, event: Event) -> Self {
-        Self { sample_offset, event }
+        Self {
+            sample_offset,
+            event,
+        }
     }
 }
 
@@ -149,12 +152,12 @@ mod tests {
         let event = Event::Midi2(make_note_on());
 
         let kind = match event {
-            Event::Midi2(_)      => "midi2",
-            Event::Surface(_)   => "surface",
-            Event::ParamLock(_)  => "param_lock",
-            Event::Transport(_)  => "transport",
-            Event::Tempo(_)      => "tempo",
-            Event::Extended(_)   => "extended",
+            Event::Midi2(_) => "midi2",
+            Event::Surface(_) => "surface",
+            Event::ParamLock(_) => "param_lock",
+            Event::Transport(_) => "transport",
+            Event::Tempo(_) => "tempo",
+            Event::Extended(_) => "extended",
         };
         assert_eq!(kind, "midi2");
     }
@@ -187,14 +190,24 @@ mod tests {
     #[test]
     fn extended_event_slab_empty_returns_none() {
         let slab = ExtendedEventSlab::empty();
-        let s = ExtendedEventRef { space_id: 1, event_type: 0, slab_offset: 0, size: 4 };
+        let s = ExtendedEventRef {
+            space_id: 1,
+            event_type: 0,
+            slab_offset: 0,
+            size: 4,
+        };
         assert!(slab.read_if_known(&s, 1).is_none());
     }
 
     #[test]
     fn extended_event_slab_wrong_space_id_returns_none() {
         let slab = ExtendedEventSlab::empty();
-        let s = ExtendedEventRef { space_id: 42, event_type: 0, slab_offset: 0, size: 0 };
+        let s = ExtendedEventRef {
+            space_id: 42,
+            event_type: 0,
+            slab_offset: 0,
+            size: 0,
+        };
         assert!(slab.read_if_known(&s, 99).is_none());
     }
 }

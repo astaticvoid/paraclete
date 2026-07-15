@@ -64,7 +64,10 @@ pub(crate) struct SignalBuffer {
 
 impl SignalBuffer {
     pub(crate) fn new(frames: usize) -> Self {
-        Self { data: vec![0.0; frames], frames }
+        Self {
+            data: vec![0.0; frames],
+            frames,
+        }
     }
 
     pub(crate) fn frames(&self) -> usize {
@@ -128,12 +131,18 @@ macro_rules! signal_type {
         }
 
         impl AsSignal for $name {
-            fn frames(&self) -> usize { self.0.frames() }
-            fn as_slice(&self) -> &[f32] { self.0.as_slice() }
+            fn frames(&self) -> usize {
+                self.0.frames()
+            }
+            fn as_slice(&self) -> &[f32] {
+                self.0.as_slice()
+            }
         }
 
         impl AsSignalMut for $name {
-            fn as_slice_mut(&mut self) -> &mut [f32] { self.0.as_slice_mut() }
+            fn as_slice_mut(&mut self) -> &mut [f32] {
+                self.0.as_slice_mut()
+            }
         }
     };
 }
