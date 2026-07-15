@@ -5,15 +5,15 @@
 //! as graph nodes above the HAL boundary.
 
 pub mod audio;
-pub mod emulator;
-pub mod midi;
-pub mod launchpad;
 pub mod digitakt;
+pub mod emulator;
 pub mod keystep;
+pub mod launchpad;
+pub mod midi;
 
-pub use audio::{AudioBackend, AudioEngine, AudioError};
-pub use emulator::LaunchpadEmulator;
-pub use launchpad::LaunchpadNode;
+pub use audio::{query_sample_rate, AudioBackend, AudioEngine, AudioError};
 pub use digitakt::DigitaktMidiNode;
+pub use emulator::LaunchpadEmulator;
 pub use keystep::KeystepNode;
+pub use launchpad::LaunchpadNode;
 pub use midi::{MidiDeviceError, MidiDeviceRegistry};

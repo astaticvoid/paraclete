@@ -3,11 +3,12 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-13. **Rank 2 (debug/test harness) COMPLETE.**
-> All four items shipped: null audio backend + interactive REPL (ADR-033),
-> regression baselines (ADR-035 Part A), structured per-node debug-log channel
-> (ADR-035 Part B), CPU meter `/engine/cpu_us` (ADR-034 follow-up). W2 code gate
-> is lifted — harness is ready for quality-upfront development.
+> **Last updated:** 2026-07-14. **BUG-012 shipped** — sample-rate auto-detection + ring
+> buffer chunking (see bugs.md). **W2 Commits 0–6 shipped** — `Rule` + `ViewPlugin`
+> trait (L2), 7 node impls (L3), Antiphon `view_meta` protocol + composite
+> assembly, web four-zone rail layout, param page grid rendering, chain view,
+> ViewRegistry wired with real data. All 557 tests pass, web builds clean.
+> Next: Commit 7 (paired session #3).
 > Previous: 2026-07-13. **Debug/test harness (ADR-033) promoted to
 > Rank 2.** The agent lane pivots from the (completed) universality audit to
 > building live-engine interrogation, a null audio backend, audio snapshot/diff,
@@ -44,7 +45,7 @@ Rank 2 is the active **agent** task — now the debug/test harness, which gates 
 
 | Rank | Work | Owner | Status | Notes |
 |---|---|---|---|---|
-| **1** | **W2 surface spec + ADR-032** — the universal node-view contract; the layered-surface model | **user (paired)** | groundwork done, spec pending | Reference analysis + decision menus: `design/specs/w2-reference-analysis.md`. §6.0 track-vs-module axis **resolved by the vision** (layered, not either/or). Pure design work — **does not need the harness**. Decide §6.1–6.7 + the ADR-032 contract with the user; do not improvise (`handoff.md`). W2 **implementation** is gated on Rank 2. |
+| **1** | **W2 surface spec + ADR-032** — the universal node-view contract; the layered-surface model | **user (paired)** | **✅ ratified 2026-07-13** | Spec accepted. ADR-032 accepted. W2 implementation begins. |
 | **2** | **Debug/test harness (ADR-033/ADR-035)** — structured per-node debug log, regression baselines, CPU meter | **agent** | **COMPLETE 2026-07-13** | ✅ null backend + REPL (ADR-033, `92b8795`), ✅ regression baselines (ADR-035 Part A, `b74b853`), ✅ structured per-node debug log (ADR-035 Part B, `73332d5`), ✅ CPU meter /engine/cpu_us (`aad9e52`). W2 code gate lifted. |
 | **3** | **P13 voice: OQ-13 + OQ-14** — two-tier engine model | **user** | brief drafted | `w2-reference-analysis.md` P13 appendix. OQ-13 (monolithic vs composed-from-primitives) is **coupled to §6.0** — decide together. OQ-14 = machine-as-parameter (recommended: a topology swap is an audible gap, measured via BUG-012 load test). Now developed/tested against the Rank 2 harness. |
 | **4** | **Openable engines** — Tier-1 monolithic becomes graph-openable | user (later) | north-star, parked | The deepest "elisp of machines." Needs GraphNode / `InnerGraphNode::serialize()` maturity (a stub today). P13→P14+; **not** a W2 gate. |
@@ -57,11 +58,12 @@ W2. Detail: `design/review/universality-audit.md`. **U2** (Launchpad-shaped
 surface consts → descriptor-driven) folds into ADR-032.
 
 **Fresh-agent reading order:** `instrument-vision.md` ("Performance Meets
-Limitless Composability") → this section → **ADR-033** (Rank 2) →
-`design/specs/w2-reference-analysis.md` → `handoff.md`. The user owns Ranks 1/3/4
-(paired); the agent's lane is Rank 2 (the debug/test harness) plus any other
-agent-actionable/verifiable work. **Do not author the W2 spec or freeze ADR-032
-solo.**
+Limitless Composability") → this section → **`design/phases/w2-interfaces.md`**
+(W2 spec) → `design/adr/ADR-032-theoria-view-plugin-api.md` → `handoff.md`.
+The user owns Ranks 1/3/4 (paired); the agent's lane is W2 implementation
+(once the user ratifies the spec + ADR-032 freeze). **Do not author the W2
+spec or ADR-032 further solo — they are drafted, next step is user
+ratification.**
 
 ---
 
@@ -98,7 +100,7 @@ properly with serializer v3 in P10 C1 — scheduled before session #1 regardless
 | 1 | ~~P10 C0 pre-flight~~ — **shipped** (BUG-001 re-diagnosed via measurement harness; BUG-008 fixed) | Done |
 | 2 | ~~**W0**~~ — **shipped** (Theoria grid POC: `paraclete-antiphon` crate + canvas grid) | Done |
 | 3 | ~~**P10 C1**~~ — **shipped** (`6212242`; `Pattern` struct + serializer v3 = BUG-005) | Done — data-loss class closed before sessions |
-| 3.5 | **BUG-012** — device rate/buffer negotiation + FTZ (small standalone commit) | A 48 kHz interface at session #1 would be mistuned; see audio-model review |
+| 3.5 | ~~**BUG-012**~~ — **shipped** (2026-07-14): sample-rate auto-detection, Fixed buffer request, output ring buffer fallback. Pending hardware verification on Linux ALSA. | Resolved — see bugs.md for details |
 | 4 | ~~**W1**~~ — **C0–C4 shipped** (trigger+velocity, path scheme, state mirror, semantic plane, theoria-web) | Runtime side done + web client builds; C5 = the session |
 | 5 | ~~**Paired session #1**~~ — **held 2026-07-09** (`design/sessions/s1.md`) | Pipe proven; verdict = UX not legible ("Behringer, needs Elektron"). Delta: discoverability is the keystone |
 | 6 | ~~**Theoria legibility phase**~~ — **implemented 2026-07-10** (`7e7a39a`/`e553c62`; report: `theoria-legibility-report.md`) | Minimum bar items 1–4 done + contextual encoders; judged live in Chrome. **Exit gate = paired tablet judgment (next session)**; F7 cleanup + F4/save-reload deferred |
@@ -125,8 +127,8 @@ Ordered by nearness to the critical path.
 
 | # | Gap | Owner | Next action | Priority |
 |---|---|---|---|---|
-| D1 | **W2 native surface has no spec.** "Theoria native surface" is a paragraph (fixed-input rail + contextual window; reference spike across Digitakt II / Syntakt / Digitone / Hydrasynth). It is the active next milestone. | **user** | **Reference groundwork done: `design/specs/w2-reference-analysis.md` (2026-07-12)** — all four manuals read, 8 convergent patterns, decision menus for §6.0–6.7 + ADR-032. Author the W2 surface spec + **ADR-032 (view-plugin API)** from it. Specs win; deviations stop-and-ask. | **Critical** — blocks the active milestone |
-| D2 | **P13 voice model undecided (OQ-13) + drum selection (OQ-14).** Both deferred to "the P13/P12+ spec," which is not drafted. OQ-13 (composed-from-primitives vs monolithic `AnalogVoice`) shapes the mod-matrix API and CLAP export. | **user** | Draft the P13 spec resolving OQ-13 first (it is foundational, not a detail). Keystone of the four-pillar instrument. | High (downstream keystone) |
+| D1 | **W2 native surface has no spec.** "Theoria native surface" is a paragraph (fixed-input rail + contextual window; reference spike across Digitakt II / Syntakt / Digitone / Hydrasynth). It is the active next milestone. | **user** | **Spec drafted 2026-07-13.** `design/phases/w2-interfaces.md` (7 commits) + `design/adr/ADR-032-theoria-view-plugin-api.md` (proposed). Paired session resolved §6.0–6.7 + OQ-13/OQ-14. Pending user ratification. | **Critical** — blocks the active milestone → **ratify and advance to W2 implementation** |
+| D2 | **P13 voice model undecided (OQ-13) + drum selection (OQ-14).** Both deferred to "the P13/P12+ spec," which is not drafted. OQ-13 (composed-from-primitives vs monolithic `AnalogVoice`) shapes the mod-matrix API and CLAP export. | **user** | **OQ-13 + OQ-14 resolved 2026-07-13.** OQ-13: compose from primitives → compile to monolith (reversible). OQ-14: machine-as-parameter (stepped param, ADR-019). Voice feature-set freeze, allocator expression-awareness policy, ZDF ladder C1 still open. | High (downstream keystone) — **partially resolved** |
 | D3 | **No ADR owns runtime observability.** ADR-033 covers only the offline/interactive driver. Nothing specs the live `/engine/cpu` counter path or the structured-log channel (see **INFRA-003**, bugs.md). | agent | **✅ Done (2026-07-12).** ADR-034 authored + implemented: `RuntimeCounters` with 4 atomic counters, state-bus `/engine/*` publishing, Antiphon mirror. INFRA-003 resolved; D4 unblocked. | ~~High~~ ✅ Done |
 | D4 | **Trigger-based backlog is un-actionable as written.** It claims "each item has a named trigger," but INFRA-003 shows we cannot *observe* triggers firing — so "quiet" is assumed, not measured. | agent | **✅ Done (2026-07-12).** Backlog flagged blocked-on-INFRA-003 in earlier pass; INFRA-003 now resolved with live counters. Triggers are now observable. | ~~Medium~~ ✅ Done |
 | D5 | **BUG-031 residual has no rule.** ADR-030 now documents speed×swing, but not swing large enough to overshoot the step at 1× speed. | agent | One sentence in ADR-030: clamp policy (or explicit "author's responsibility") for `swing_amount` beyond the step fraction. | Low |
@@ -164,7 +166,7 @@ Ordered by nearness to the critical path.
 | **P10 C0–C1** | Pattern engine foundation | BUG-001/008 pre-flight (C0, runs before W0); `Pattern` struct + serializer v3 = BUG-005 (C1) | **Shipped** (C0 `b0cf2c8`, C1 `6212242`) |
 | **W1** | Theoria MVP | Touch encoders (relative → `CMD_BUMP_PARAM`), context display, transport, state mirror v1 → **paired session #1** | **C0–C4 shipped** (`w1-report.md`); C5 = paired session #1 (next) |
 | **P10 C2–C5** | Pattern Engine depth | Multi-page (64-step) + page-loop; seamless switching + chaining; per-track length/speed; BUG-004 **+ BUG-013 (sub-block voice starts — micro-timing must be audible) + Sampler Hermite playback** in C3; grid/TUI surface | **Shipped 2026-07-11** (C2–C5 + BUG-004; BUG-013 landed post-C5: engines `309a9e6`, Sampler Hermite + span-split 2026-07-11; BUG-025 executor deferral and BUG-026 stable sort fixed 2026-07-11) |
-| **W2** | Theoria editor | Cap-doc-driven parameter pages for every engine; chain view; view-plugin API (ADR-032) → **paired session #2** | — |
+| **W2** | Theoria editor | Cap-doc-driven parameter pages for every engine; chain view; view-plugin API (ADR-032) → **paired session #3** | **In progress** — Commits 0–2 shipped (types + node impls + protocol); Commit 3 next (web rail) |
 | **WT** | Theoria/term | Terminal client over in-process Antiphon transport; parameter pages + grid in the terminal | After W2, parallel W3 |
 | **W3** | Sequencer deep views | 64-step pattern view, cue/chain, hold-step p-lock overlay, condition/timing editors | Hard dependency on P10 C2–C5 |
 | **P11** | Live Performance | Mute system, temp save/reload, Perform Kit, live record | — (W3 mute view follows) |

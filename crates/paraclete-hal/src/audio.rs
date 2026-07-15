@@ -10,11 +10,30 @@ pub struct AudioBackend {
     _stream: cpal::Stream,
 }
 
+/// Query the default output device's sample rate without opening a stream.
+/// Returns `None` if no output device is available or the config is inaccessible.
+pub fn query_sample_rate() -> Option<f32> {
+    let host = cpal::default_host();
+    let device = host.default_output_device()?;
+    device
+        .default_output_config()
+        .map(|c| c.sample_rate().0 as f32)
+        .ok()
+}
+
 impl AudioBackend {
     /// Open the default output device and start streaming.
     ///
     /// `executor` is moved into the audio callback and drives the graph.
     /// The returned `AudioBackend` keeps the stream alive — drop it to stop audio.
+    ///
+    /// When the device buffer size equals `block_size * channels` (the common
+    /// case), the executor is called directly with zero overhead.  When the
+    /// sizes differ the callback chunk-processes: full blocks are rendered and
+    /// a partial final chunk uses the first N frames of a full block (the
+    /// clock advances by a full block — acceptable transient for
+    /// non-power-of-two device buffers; the long-run cadence is correct on
+    /// the common path).
     pub fn start(mut executor: NodeExecutor) -> Result<Self, AudioError> {
         let host = cpal::default_host();
 
@@ -22,7 +41,10 @@ impl AudioBackend {
             .default_output_device()
             .ok_or(AudioError::NoOutputDevice)?;
 
-        log::info!("audio device: {}", device.name().unwrap_or_default());
+        log::info!(
+            "audio device: {}",
+            device.name().unwrap_or_default()
+        );
 
         let supported = device
             .default_output_config()
@@ -35,9 +57,10 @@ impl AudioBackend {
             supported.sample_format()
         );
 
-        // Request f32 samples. cpal will resample / convert if needed.
         let channels = supported.channels() as usize;
         let sample_rate = supported.sample_rate().0;
+        let block_size = executor.block_size();
+        let block_samples = block_size * channels;
 
         let config = StreamConfig {
             channels: supported.channels(),
@@ -47,16 +70,30 @@ impl AudioBackend {
 
         let err_fn = |err| log::error!("audio stream error: {err}");
 
+        // Pre-allocate a work buffer for the partial-chunk fallback path.
+        // Allocated on the main thread before the stream starts.
+        let work_buf: Vec<f32> = vec![0.0; block_samples];
+
         let stream = match supported.sample_format() {
-            SampleFormat::F32 => device.build_output_stream(
-                &config,
-                move |data: &mut [f32], _| {
-                    executor.process(data, channels);
-                },
-                err_fn,
-                None,
-            ),
+            SampleFormat::F32 => {
+                let mut work_buf = work_buf;
+                device.build_output_stream(
+                    &config,
+                    move |data: &mut [f32], _| {
+                        audio_callback_f32(
+                            data,
+                            &mut work_buf,
+                            &mut executor,
+                            channels,
+                            block_samples,
+                        );
+                    },
+                    err_fn,
+                    None,
+                )
+            }
             SampleFormat::I16 => {
+                let mut work_buf = work_buf;
                 let mut f32_buf: Vec<f32> = Vec::new();
                 device.build_output_stream(
                     &config,
@@ -64,7 +101,13 @@ impl AudioBackend {
                         if f32_buf.len() != data.len() {
                             f32_buf.resize(data.len(), 0.0);
                         }
-                        executor.process(&mut f32_buf, channels);
+                        audio_callback_f32(
+                            &mut f32_buf,
+                            &mut work_buf,
+                            &mut executor,
+                            channels,
+                            block_samples,
+                        );
                         for (dst, &src) in data.iter_mut().zip(f32_buf.iter()) {
                             *dst = (src * i16::MAX as f32) as i16;
                         }
@@ -74,6 +117,7 @@ impl AudioBackend {
                 )
             }
             SampleFormat::U16 => {
+                let mut work_buf = work_buf;
                 let mut f32_buf: Vec<f32> = Vec::new();
                 device.build_output_stream(
                     &config,
@@ -81,7 +125,13 @@ impl AudioBackend {
                         if f32_buf.len() != data.len() {
                             f32_buf.resize(data.len(), 0.0);
                         }
-                        executor.process(&mut f32_buf, channels);
+                        audio_callback_f32(
+                            &mut f32_buf,
+                            &mut work_buf,
+                            &mut executor,
+                            channels,
+                            block_samples,
+                        );
                         for (dst, &src) in data.iter_mut().zip(f32_buf.iter()) {
                             *dst = ((src + 1.0) * 0.5 * u16::MAX as f32) as u16;
                         }
@@ -115,7 +165,10 @@ impl AudioBackend {
             .default_output_device()
             .ok_or(AudioError::NoOutputDevice)?;
 
-        log::info!("audio device (engine): {}", device.name().unwrap_or_default());
+        log::info!(
+            "audio device (engine): {}",
+            device.name().unwrap_or_default()
+        );
 
         let supported = device
             .default_output_config()
@@ -131,6 +184,13 @@ impl AudioBackend {
         let channels = supported.channels() as usize;
         let sample_rate = supported.sample_rate().0;
 
+        let block_size = executor_cell
+            .lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|e| e.block_size()))
+            .unwrap_or(512);
+        let block_samples = block_size * channels;
+
         let config = StreamConfig {
             channels: supported.channels(),
             sample_rate: SampleRate(sample_rate),
@@ -139,50 +199,15 @@ impl AudioBackend {
 
         let err_fn = |err| log::error!("audio stream error: {err}");
         let ct = counters.clone();
-
-        // Macro to build the callback for a given sample type via an f32 intermediate.
-        // The closure captures the three Arcs, the counters, and converts samples after processing.
-        macro_rules! build_f32_callback {
-            ($data_type:ty, $convert:expr) => {{
-                let exec_cell = executor_cell.clone();
-                let pause_req = pause_requested.clone();
-                let is_pau    = is_paused.clone();
-                let c         = ct.clone();
-                let mut f32_buf: Vec<f32> = Vec::new();
-                move |data: &mut [$data_type], _| {
-                    if pause_req.load(Ordering::Acquire) {
-                        data.fill($convert(0.0f32));
-                        is_pau.store(true, Ordering::Release);
-                        return;
-                    }
-                    is_pau.store(false, Ordering::Release);
-                    if f32_buf.len() != data.len() {
-                        f32_buf.resize(data.len(), 0.0);
-                    }
-                    if let Ok(mut guard) = exec_cell.try_lock() {
-                        if let Some(exec) = guard.as_mut() {
-                            exec.process(&mut f32_buf, channels);
-                        } else {
-                            c.dropout_no_executor.fetch_add(1, Ordering::Relaxed);
-                            f32_buf.fill(0.0);
-                        }
-                    } else {
-                        c.dropout_lock_miss.fetch_add(1, Ordering::Relaxed);
-                        f32_buf.fill(0.0);
-                    }
-                    for (dst, &src) in data.iter_mut().zip(f32_buf.iter()) {
-                        *dst = $convert(src);
-                    }
-                }
-            }};
-        }
+        let work_buf: Vec<f32> = vec![0.0; block_samples];
 
         let stream = match supported.sample_format() {
             SampleFormat::F32 => {
                 let exec_cell = executor_cell.clone();
                 let pause_req = pause_requested.clone();
-                let is_pau    = is_paused.clone();
-                let c         = ct.clone();
+                let is_pau = is_paused.clone();
+                let c = ct.clone();
+                let mut work_buf = work_buf;
                 device.build_output_stream(
                     &config,
                     move |data: &mut [f32], _| {
@@ -194,13 +219,21 @@ impl AudioBackend {
                         is_pau.store(false, Ordering::Release);
                         if let Ok(mut guard) = exec_cell.try_lock() {
                             if let Some(exec) = guard.as_mut() {
-                                exec.process(data, channels);
+                                audio_callback_f32(
+                                    data,
+                                    &mut work_buf,
+                                    exec,
+                                    channels,
+                                    block_samples,
+                                );
                             } else {
-                                c.dropout_no_executor.fetch_add(1, Ordering::Relaxed);
+                                c.dropout_no_executor
+                                    .fetch_add(1, Ordering::Relaxed);
                                 data.fill(0.0);
                             }
                         } else {
-                            c.dropout_lock_miss.fetch_add(1, Ordering::Relaxed);
+                            c.dropout_lock_miss
+                                .fetch_add(1, Ordering::Relaxed);
                             data.fill(0.0);
                         }
                     },
@@ -209,17 +242,93 @@ impl AudioBackend {
                 )
             }
             SampleFormat::I16 => {
+                let exec_cell = executor_cell.clone();
+                let pause_req = pause_requested.clone();
+                let is_pau = is_paused.clone();
+                let c = ct.clone();
+                let mut work_buf = work_buf;
+                let mut f32_buf: Vec<f32> = Vec::new();
                 device.build_output_stream(
                     &config,
-                    build_f32_callback!(i16, |s: f32| (s * i16::MAX as f32) as i16),
+                    move |data: &mut [i16], _| {
+                        if pause_req.load(Ordering::Acquire) {
+                            data.fill(0);
+                            is_pau.store(true, Ordering::Release);
+                            return;
+                        }
+                        is_pau.store(false, Ordering::Release);
+                        if f32_buf.len() != data.len() {
+                            f32_buf.resize(data.len(), 0.0);
+                        }
+                        if let Ok(mut guard) = exec_cell.try_lock() {
+                            if let Some(exec) = guard.as_mut() {
+                                audio_callback_f32(
+                                    &mut f32_buf,
+                                    &mut work_buf,
+                                    exec,
+                                    channels,
+                                    block_samples,
+                                );
+                            } else {
+                                c.dropout_no_executor
+                                    .fetch_add(1, Ordering::Relaxed);
+                                f32_buf.fill(0.0);
+                            }
+                        } else {
+                            c.dropout_lock_miss
+                                .fetch_add(1, Ordering::Relaxed);
+                            f32_buf.fill(0.0);
+                        }
+                        for (dst, &src) in data.iter_mut().zip(f32_buf.iter()) {
+                            *dst = (src * i16::MAX as f32) as i16;
+                        }
+                    },
                     err_fn,
                     None,
                 )
             }
             SampleFormat::U16 => {
+                let exec_cell = executor_cell.clone();
+                let pause_req = pause_requested.clone();
+                let is_pau = is_paused.clone();
+                let c = ct.clone();
+                let mut work_buf = work_buf;
+                let mut f32_buf: Vec<f32> = Vec::new();
                 device.build_output_stream(
                     &config,
-                    build_f32_callback!(u16, |s: f32| ((s + 1.0) * 0.5 * u16::MAX as f32) as u16),
+                    move |data: &mut [u16], _| {
+                        if pause_req.load(Ordering::Acquire) {
+                            data.fill(0);
+                            is_pau.store(true, Ordering::Release);
+                            return;
+                        }
+                        is_pau.store(false, Ordering::Release);
+                        if f32_buf.len() != data.len() {
+                            f32_buf.resize(data.len(), 0.0);
+                        }
+                        if let Ok(mut guard) = exec_cell.try_lock() {
+                            if let Some(exec) = guard.as_mut() {
+                                audio_callback_f32(
+                                    &mut f32_buf,
+                                    &mut work_buf,
+                                    exec,
+                                    channels,
+                                    block_samples,
+                                );
+                            } else {
+                                c.dropout_no_executor
+                                    .fetch_add(1, Ordering::Relaxed);
+                                f32_buf.fill(0.0);
+                            }
+                        } else {
+                            c.dropout_lock_miss
+                                .fetch_add(1, Ordering::Relaxed);
+                            f32_buf.fill(0.0);
+                        }
+                        for (dst, &src) in data.iter_mut().zip(f32_buf.iter()) {
+                            *dst = ((src + 1.0) * 0.5 * u16::MAX as f32) as u16;
+                        }
+                    },
                     err_fn,
                     None,
                 )
@@ -235,16 +344,46 @@ impl AudioBackend {
     }
 }
 
+/// Process the f32 output buffer through the executor.
+///
+/// When `data.len() == block_samples` the executor is called directly (fast
+/// path, zero overhead).  Otherwise the buffer is processed in full-block
+/// chunks: the executor is called once per chunk; any partial final chunk is
+/// filled from the first `chunk.len()` frames of a full-block render.
+#[inline]
+fn audio_callback_f32(
+    data: &mut [f32],
+    work_buf: &mut [f32],
+    executor: &mut NodeExecutor,
+    channels: usize,
+    block_samples: usize,
+) {
+    if data.len() == block_samples {
+        executor.process(data, channels);
+        return;
+    }
+
+    for chunk in data.chunks_mut(block_samples) {
+        if chunk.len() == block_samples {
+            executor.process(chunk, channels);
+        } else {
+            work_buf.fill(0.0);
+            executor.process(work_buf, channels);
+            chunk.copy_from_slice(&work_buf[..chunk.len()]);
+        }
+    }
+}
+
 /// Audio engine with dynamic topology support (ADR-029).
 ///
 /// Wraps the audio backend with a pause/resume protocol that allows
 /// `apply_patch()` to swap the `NodeExecutor` at runtime.
 pub struct AudioEngine {
-    executor_cell:   Arc<Mutex<Option<NodeExecutor>>>,
+    executor_cell: Arc<Mutex<Option<NodeExecutor>>>,
     pause_requested: Arc<AtomicBool>,
-    is_paused:       Arc<AtomicBool>,
-    counters:        Arc<RuntimeCounters>,
-    _backend:        Option<AudioBackend>,
+    is_paused: Arc<AtomicBool>,
+    counters: Arc<RuntimeCounters>,
+    _backend: Option<AudioBackend>,
 }
 
 impl AudioEngine {
@@ -252,22 +391,22 @@ impl AudioEngine {
     /// Useful for tests and before audio is started.
     pub fn new_paused() -> Self {
         AudioEngine {
-            executor_cell:   Arc::new(Mutex::new(None)),
+            executor_cell: Arc::new(Mutex::new(None)),
             pause_requested: Arc::new(AtomicBool::new(true)),
-            is_paused:       Arc::new(AtomicBool::new(true)),
-            counters:        Arc::new(RuntimeCounters::default()),
-            _backend:        None,
+            is_paused: Arc::new(AtomicBool::new(true)),
+            counters: Arc::new(RuntimeCounters::default()),
+            _backend: None,
         }
     }
 
     /// Start audio with the given executor.
     pub fn start(mut executor: NodeExecutor) -> Result<Self, AudioError> {
-        let counters         = Arc::new(RuntimeCounters::default());
+        let counters = Arc::new(RuntimeCounters::default());
         executor.set_counters(counters.clone());
 
-        let executor_cell    = Arc::new(Mutex::new(Some(executor)));
-        let pause_requested  = Arc::new(AtomicBool::new(false));
-        let is_paused        = Arc::new(AtomicBool::new(false));
+        let executor_cell = Arc::new(Mutex::new(Some(executor)));
+        let pause_requested = Arc::new(AtomicBool::new(false));
+        let is_paused = Arc::new(AtomicBool::new(false));
 
         let backend = AudioBackend::start_with_callback(
             executor_cell.clone(),
@@ -294,10 +433,13 @@ impl AudioEngine {
     ///
     /// Timeout: 500 ms — panics if exceeded (indicates a hung audio thread).
     pub fn wait_paused(&self) {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+        let deadline =
+            std::time::Instant::now() + std::time::Duration::from_millis(500);
         while !self.is_paused.load(Ordering::Acquire) {
             if std::time::Instant::now() > deadline {
-                panic!("AudioEngine::wait_paused: audio thread did not pause within 500 ms");
+                panic!(
+                    "AudioEngine::wait_paused: audio thread did not pause within 500 ms"
+                );
             }
             std::thread::yield_now();
         }

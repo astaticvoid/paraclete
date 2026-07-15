@@ -11,45 +11,66 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use paraclete_antiphon::protocol::{NodeSummary, ParamSummary, TransportSummary};
+use paraclete_antiphon::view::{TrackChain, ViewRegistry};
 use paraclete_antiphon::{AntiphonConfig, AntiphonHandle, AntiphonServer};
 use paraclete_app::builder::{build_from_instrument, load_instrument_definition, InstrumentIds};
 use paraclete_app::instrument::InstrumentDefinition;
-use paraclete_app::project::{save_project, load_project, ProjectMetadata, ProfileBinding};
-use paraclete_clap_host::{PluginLibrary, scan_clap_paths};
-use paraclete_hal::{AudioBackend, DigitaktMidiNode, KeystepNode, LaunchpadEmulator, LaunchpadNode};
+use paraclete_app::project::{load_project, save_project, ProfileBinding, ProjectMetadata};
+use paraclete_clap_host::{scan_clap_paths, PluginLibrary};
+use paraclete_hal::{
+    query_sample_rate, AudioBackend, DigitaktMidiNode, KeystepNode, LaunchpadEmulator,
+    LaunchpadNode,
+};
 use paraclete_nodes::{ScriptEventConsumer, ScriptingGatewayNode};
 use paraclete_runtime::NodeConfigurator;
 use paraclete_scripting::ScriptingEngine;
 use paraclete_tui::{TuiApp, TuiConfig};
 
-const SAMPLE_RATE: f32  = 44100.0;
-const BLOCK_SIZE:  usize = 512;
+const BLOCK_SIZE: usize = 512;
 
-const ID_EMULATOR:  u32 = 101;
+const ID_EMULATOR: u32 = 101;
 const ID_LAUNCHPAD: u32 = 102;
-const ID_DIGITAKT:  u32 = 103;
-const ID_KEYSTEP:   u32 = 104;
-const ID_THEORIA:   u32 = 106;
-const ID_GW_LP:     u32 = 110;
-const ID_GW_DT:     u32 = 111;
-const ID_GW_KS:     u32 = 112;
+const ID_DIGITAKT: u32 = 103;
+const ID_KEYSTEP: u32 = 104;
+const ID_THEORIA: u32 = 106;
+const ID_GW_LP: u32 = 110;
+const ID_GW_DT: u32 = 111;
+const ID_GW_KS: u32 = 112;
 const ID_GW_THEORIA: u32 = 113;
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
 
-    let instrument_path: PathBuf = args.iter()
+    let instrument_path: PathBuf = args
+        .iter()
         .find(|a| a.starts_with("--instrument="))
-        .and_then(|a| a.split_once('=').map(|(_, v)| v).filter(|s| !s.is_empty()).map(PathBuf::from))
+        .and_then(|a| {
+            a.split_once('=')
+                .map(|(_, v)| v)
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+        })
         .unwrap_or_else(|| PathBuf::from("instrument.yaml"));
 
-    let load_path: Option<PathBuf> = args.iter()
+    let load_path: Option<PathBuf> = args
+        .iter()
         .find(|a| a.starts_with("--load="))
-        .and_then(|a| a.split_once('=').map(|(_, v)| v).filter(|s| !s.is_empty()).map(PathBuf::from));
+        .and_then(|a| {
+            a.split_once('=')
+                .map(|(_, v)| v)
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+        });
 
-    let save_path: Option<PathBuf> = args.iter()
+    let save_path: Option<PathBuf> = args
+        .iter()
         .find(|a| a.starts_with("--save="))
-        .and_then(|a| a.split_once('=').map(|(_, v)| v).filter(|s| !s.is_empty()).map(PathBuf::from));
+        .and_then(|a| {
+            a.split_once('=')
+                .map(|(_, v)| v)
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+        });
 
     let no_tui = args.iter().any(|a| a == "--no-tui");
     let dev_ui = args.iter().any(|a| a == "--dev-ui");
@@ -62,32 +83,55 @@ fn main() {
     // revisit the default when the protocol gains project save/overwrite.
     // `--open` is accepted as a no-op for compatibility with older notes.
     let want_token = args.iter().any(|a| a == "--token");
-    let antiphon_port: u16 = args.iter()
+    let antiphon_port: u16 = args
+        .iter()
         .find(|a| a.starts_with("--antiphon-port="))
-        .and_then(|a| a.split_once('=').map(|(_, v)| v).and_then(|s| s.parse().ok()))
+        .and_then(|a| {
+            a.split_once('=')
+                .map(|(_, v)| v)
+                .and_then(|s| s.parse().ok())
+        })
         .unwrap_or(paraclete_antiphon::DEFAULT_PORT);
     // `--theoria-dir` overrides whatever the build would otherwise serve
     // (the embedded bundle if `embed-ui` is compiled in, else the on-disk
     // build output directory) — always explicit, never a silent fallback.
-    let theoria_dir_override: Option<PathBuf> = args.iter()
+    let theoria_dir_override: Option<PathBuf> = args
+        .iter()
         .find(|a| a.starts_with("--theoria-dir="))
-        .and_then(|a| a.split_once('=').map(|(_, v)| v).filter(|s| !s.is_empty()).map(PathBuf::from));
+        .and_then(|a| {
+            a.split_once('=')
+                .map(|(_, v)| v)
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+        });
 
     // ── 1. Load instrument definition ────────────────────────────────────────
     let def = match load_instrument_definition(&instrument_path) {
         Ok(d) => d,
         Err(e) => {
-            eprintln!("[paraclete] failed to load {}: {e}", instrument_path.display());
+            eprintln!(
+                "[paraclete] failed to load {}: {e}",
+                instrument_path.display()
+            );
             std::process::exit(1);
         }
     };
     eprintln!("[paraclete] instrument: {} @ {} BPM", def.name, def.bpm);
 
+    // ── 1.5. Query device sample rate (before graph build) ─────────────────────
+    let sample_rate = query_sample_rate().unwrap_or(44100.0);
+    if sample_rate != 44100.0 {
+        eprintln!(
+            "[paraclete] device sample rate: {:.0} Hz",
+            sample_rate
+        );
+    }
+
     // ── 2. Pre-load CLAP plugins (one load per .clap file) ───────────────────
     let libraries: HashMap<String, Arc<PluginLibrary>> = load_plugin_libraries(&def);
 
     // ── 3. Build node graph ───────────────────────────────────────────────────
-    let mut conf = NodeConfigurator::new(SAMPLE_RATE, BLOCK_SIZE);
+    let mut conf = NodeConfigurator::new(sample_rate, BLOCK_SIZE);
     let ids = match build_from_instrument(&def, &mut conf, &libraries) {
         Ok(ids) => ids,
         Err(e) => {
@@ -98,8 +142,8 @@ fn main() {
 
     // ── 4. Hardware devices ───────────────────────────────────────────────────
     let launchpad_id = try_open_launchpad(&mut conf);
-    let digitakt_id  = try_open_digitakt(&mut conf);
-    let keystep_id   = try_open_keystep(&mut conf);
+    let digitakt_id = try_open_digitakt(&mut conf);
+    let keystep_id = try_open_keystep(&mut conf);
 
     let lp_dev_id = launchpad_id.unwrap_or(ID_EMULATOR);
     let (gw_lp, mut consumer_lp) = ScriptingGatewayNode::new(lp_dev_id, 512);
@@ -126,7 +170,9 @@ fn main() {
     if let Some(ref path) = load_path {
         match load_project(path, &mut conf) {
             Ok(warnings) => {
-                for w in &warnings { eprintln!("[paraclete] WARN: {w}"); }
+                for w in &warnings {
+                    eprintln!("[paraclete] WARN: {w}");
+                }
                 eprintln!("[paraclete] project loaded: {}", path.display());
             }
             Err(e) => eprintln!("[paraclete] load failed: {e}"),
@@ -136,8 +182,12 @@ fn main() {
     // ── 6. Project save (before executor — nodes still in configurator) ──────
     if let Some(ref path) = save_path {
         let meta = ProjectMetadata {
-            name: path.file_stem().and_then(|s| s.to_str()).unwrap_or("paraclete").to_string(),
-            bpm:  def.bpm as f32,
+            name: path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("paraclete")
+                .to_string(),
+            bpm: def.bpm as f32,
             created: String::new(),
         };
         let profiles = ProfileBinding { active: vec![] };
@@ -158,14 +208,26 @@ fn main() {
         let static_source = theoria_static_source(theoria_dir_override.clone());
         let config = AntiphonConfig {
             port: antiphon_port,
-            token: if want_token { load_or_create_token() } else { String::new() },
+            token: if want_token {
+                load_or_create_token()
+            } else {
+                String::new()
+            },
             static_dir: Some(static_source),
             device_id: ID_THEORIA,
         };
         // Static snapshot: InternalClock auto-starts, so playing=true is
         // truthful at W0. The live state mirror replaces this at W1.
-        let transport = TransportSummary { playing: true, bpm: def.bpm };
-        match AntiphonServer::spawn(config, summaries, transport) {
+        let transport = TransportSummary {
+            playing: true,
+            bpm: def.bpm,
+        };
+        match AntiphonServer::spawn(
+            config,
+            summaries.clone(),
+            transport,
+            build_view_registry(&conf, &summaries),
+        ) {
             Ok((node, handle)) => {
                 conf.add_surface(ID_THEORIA, Box::new(node));
                 let (gw, cons) = ScriptingGatewayNode::new(ID_THEORIA, 256);
@@ -191,13 +253,15 @@ fn main() {
     }
 
     // ── 7. Collect capability documents (before executor moves nodes out) ────
-    let cap_docs = ids.all.iter()
+    let cap_docs = ids
+        .all
+        .iter()
         .filter_map(|(_, node_id)| conf.get_node_cap_doc(*node_id).map(|doc| (*node_id, doc)))
         .collect::<HashMap<_, _>>();
 
     // ── 8. Build executor + start audio ──────────────────────────────────────
     let bus_handle = conf.state_bus_handle();
-    let executor   = conf.build_executor();
+    let executor = conf.build_executor();
 
     let _audio = match AudioBackend::start(executor) {
         Ok(b) => {
@@ -217,8 +281,10 @@ fn main() {
     let constants = build_constants(lp_dev_id, digitakt_id, keystep_id, &ids);
 
     for profile_path in &def.profiles {
-        let label = Path::new(profile_path).file_stem()
-            .and_then(|s| s.to_str()).unwrap_or(profile_path);
+        let label = Path::new(profile_path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(profile_path);
         if let Err(e) = scripting.eval_file(label, profile_path, &constants) {
             eprintln!("[paraclete] profile {profile_path} error: {e}");
         } else {
@@ -248,13 +314,19 @@ fn main() {
     // selection change; with no macros the slots follow selection from the
     // first main-loop iteration (the profile writes selected=0 at load).
     const ENCODER_SLOTS: usize = 8;
-    let track_encoder_params: Vec<(u32, Vec<String>)> = ids.generators.iter()
+    let track_encoder_params: Vec<(u32, Vec<String>)> = ids
+        .generators
+        .iter()
         .map(|gid| {
-            let names = cap_docs.get(gid)
-                .map(|doc| doc.params.iter()
-                    .take(ENCODER_SLOTS)
-                    .map(|p| p.name.as_str().to_string())
-                    .collect())
+            let names = cap_docs
+                .get(gid)
+                .map(|doc| {
+                    doc.params
+                        .iter()
+                        .take(ENCODER_SLOTS)
+                        .map(|p| p.name.as_str().to_string())
+                        .collect()
+                })
                 .unwrap_or_default();
             (*gid, names)
         })
@@ -269,14 +341,15 @@ fn main() {
     let r = std::sync::Arc::clone(&running);
     ctrlc::set_handler(move || {
         r.store(false, std::sync::atomic::Ordering::SeqCst);
-    }).ok();
+    })
+    .ok();
 
     // ── 12. TUI setup (unless --no-tui) ──────────────────────────────────────
     let tui_config = TuiConfig {
-        clock_id:      ids.clock,
-        seq_ids:       ids.sequencers.clone(),
+        clock_id: ids.clock,
+        seq_ids: ids.sequencers.clone(),
         encoder_count: 8,
-        fps:           30,
+        fps: 30,
     };
 
     type CrosstermTerminal = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>;
@@ -284,7 +357,10 @@ fn main() {
     if paraclete_app::tui_enabled(no_tui) {
         match setup_terminal() {
             Ok(terminal) => {
-                tui_opt = Some((TuiApp::new(bus_handle.clone(), tui_config, cap_docs), terminal));
+                tui_opt = Some((
+                    TuiApp::new(bus_handle.clone(), tui_config, cap_docs),
+                    terminal,
+                ));
             }
             Err(e) => eprintln!("[paraclete] TUI setup failed: {e}"),
         }
@@ -346,9 +422,15 @@ fn main() {
 
         event_buf.clear();
         consumer_lp.drain(&mut event_buf);
-        if let Some(ref mut c) = consumer_dt { c.drain(&mut event_buf); }
-        if let Some(ref mut c) = consumer_ks { c.drain(&mut event_buf); }
-        if let Some(ref mut c) = consumer_theoria { c.drain(&mut event_buf); }
+        if let Some(ref mut c) = consumer_dt {
+            c.drain(&mut event_buf);
+        }
+        if let Some(ref mut c) = consumer_ks {
+            c.drain(&mut event_buf);
+        }
+        if let Some(ref mut c) = consumer_theoria {
+            c.drain(&mut event_buf);
+        }
 
         for ev in &event_buf {
             scripting.dispatch_surface_event(ev);
@@ -397,7 +479,7 @@ fn main() {
             dev_ui_tick += 1;
             if dev_ui_tick % 1000 == 0 {
                 for seq_id in &ids.sequencers {
-                    let step  = conf.state_bus_read(&format!("/node/{seq_id}/state/current_step"));
+                    let step = conf.state_bus_read(&format!("/node/{seq_id}/state/current_step"));
                     let steps = conf.state_bus_read(&format!("/node/{seq_id}/state/steps"));
                     eprintln!("[dev-ui] seq={seq_id} step={step:?} pattern={steps:?}");
                 }
@@ -423,9 +505,15 @@ fn load_plugin_libraries(def: &InstrumentDefinition) -> HashMap<String, Arc<Plug
 
     // First: plugins with an explicit plugin_path — load directly without scanning.
     for node_def in &def.nodes {
-        if node_def.type_tag != "clap_plugin" { continue; }
-        let Some(plugin_id) = node_def.plugin_id.as_deref() else { continue };
-        if libraries.contains_key(plugin_id) { continue; }
+        if node_def.type_tag != "clap_plugin" {
+            continue;
+        }
+        let Some(plugin_id) = node_def.plugin_id.as_deref() else {
+            continue;
+        };
+        if libraries.contains_key(plugin_id) {
+            continue;
+        }
         if let Some(explicit_path) = node_def.plugin_path.as_deref() {
             match PluginLibrary::load(Path::new(explicit_path)) {
                 Ok(lib) => {
@@ -440,7 +528,9 @@ fn load_plugin_libraries(def: &InstrumentDefinition) -> HashMap<String, Arc<Plug
     // Second: plugins without an explicit path — scan OS-standard directories.
     // Each .clap file is loaded once; Arc-cloned into the map for every matching
     // plugin ID so multi-plugin bundles work correctly.
-    let unresolved: Vec<&str> = def.nodes.iter()
+    let unresolved: Vec<&str> = def
+        .nodes
+        .iter()
         .filter(|n| n.type_tag == "clap_plugin" && n.plugin_path.is_none())
         .filter_map(|n| n.plugin_id.as_deref())
         .filter(|id| !libraries.contains_key(*id))
@@ -450,7 +540,9 @@ fn load_plugin_libraries(def: &InstrumentDefinition) -> HashMap<String, Arc<Plug
         for clap_path in scan_clap_paths() {
             match PluginLibrary::load(&clap_path) {
                 Ok(lib) => {
-                    let matched: Vec<String> = lib.descriptors().iter()
+                    let matched: Vec<String> = lib
+                        .descriptors()
+                        .iter()
                         .filter(|d| unresolved.contains(&d.id.as_str()))
                         .map(|d| d.id.clone())
                         .collect();
@@ -492,9 +584,7 @@ static EMBEDDED_THEORIA_UI: include_dir::Dir<'static> =
 /// bundle if this binary was built with `embed-ui`, else the on-disk build
 /// output directory (dev default without the feature — run `npm run build`
 /// in `web/` first).
-fn theoria_static_source(
-    dir_override: Option<PathBuf>,
-) -> paraclete_antiphon::http::StaticSource {
+fn theoria_static_source(dir_override: Option<PathBuf>) -> paraclete_antiphon::http::StaticSource {
     use paraclete_antiphon::http::StaticSource;
     if let Some(dir) = dir_override {
         return StaticSource::Disk(dir);
@@ -563,11 +653,9 @@ fn load_or_create_token() -> String {
 
 /// Assemble the `welcome` node snapshot from the configurator's cap-doc cache.
 /// Antiphon never talks to the configurator directly (w0 spec §kerygma).
-fn collect_node_summaries(
-    conf: &NodeConfigurator,
-    ids: &InstrumentIds,
-) -> Vec<NodeSummary> {
-    ids.all.iter()
+fn collect_node_summaries(conf: &NodeConfigurator, ids: &InstrumentIds) -> Vec<NodeSummary> {
+    ids.all
+        .iter()
         .filter_map(|(label, node_id)| {
             let doc = conf.get_node_cap_doc(*node_id)?;
             let type_tag = conf.type_tag_for(*node_id).unwrap_or("").to_string();
@@ -584,48 +672,127 @@ fn collect_node_summaries(
                 id: *node_id,
                 type_tag,
                 name,
-                params: doc.params.iter().map(|p| ParamSummary {
-                    id: p.id,
-                    name: p.name.as_str().to_string(),
-                    min: p.min,
-                    max: p.max,
-                    default: p.default,
-                }).collect(),
+                has_view: doc.view.is_some(),
+                params: doc
+                    .params
+                    .iter()
+                    .map(|p| ParamSummary {
+                        id: p.id,
+                        name: p.name.as_str().to_string(),
+                        min: p.min,
+                        max: p.max,
+                        default: p.default,
+                    })
+                    .collect(),
             })
         })
         .collect()
 }
 
+fn build_view_registry(conf: &NodeConfigurator, summaries: &[NodeSummary]) -> ViewRegistry {
+    let mut rules: HashMap<u32, paraclete_node_api::Rule> = HashMap::new();
+
+    for s in summaries {
+        if let Some(doc) = conf.get_node_cap_doc(s.id) {
+            if let Some(rule) = doc.view {
+                rules.insert(s.id, rule);
+            }
+        }
+    }
+
+    let engine_ids: Vec<u32> = summaries
+        .iter()
+        .filter(|s| {
+            s.type_tag == "analog_engine:kick"
+                || s.type_tag == "analog_engine:snare"
+                || s.type_tag == "analog_engine:hihat"
+                || s.type_tag == "fm_engine:kick"
+                || s.type_tag == "fm_engine:bell"
+                || s.type_tag == "fm_engine:bass"
+                || s.type_tag == "sampler"
+        })
+        .map(|s| s.id)
+        .collect();
+
+    // Per-track chains: engine → shared effects
+    // Use the first filter/distortion/reverb found in the node list
+    let first_filter = summaries
+        .iter()
+        .find(|s| s.type_tag == "filter")
+        .map(|s| s.id)
+        .unwrap_or(0);
+    let first_dist = summaries
+        .iter()
+        .find(|s| s.type_tag == "distortion")
+        .map(|s| s.id)
+        .unwrap_or(0);
+    let reverb = summaries
+        .iter()
+        .find(|s| s.type_tag == "reverb")
+        .map(|s| s.id)
+        .unwrap_or(0);
+
+    let mut chains: Vec<TrackChain> = Vec::new();
+    for &engine_id in &engine_ids {
+        let mut chain_ids = Vec::new();
+        if first_dist != 0 {
+            chain_ids.push(first_dist);
+        }
+        if first_filter != 0 {
+            chain_ids.push(first_filter);
+        }
+        if reverb != 0 {
+            chain_ids.push(reverb);
+        }
+        chains.push(TrackChain {
+            engine_node_id: engine_id,
+            chain_ids,
+        });
+    }
+
+    ViewRegistry { rules, chains }
+}
+
 fn build_constants(
-    lp_dev_id:   u32,
+    lp_dev_id: u32,
     digitakt_id: Option<u32>,
-    keystep_id:  Option<u32>,
-    ids:         &InstrumentIds,
+    keystep_id: Option<u32>,
+    ids: &InstrumentIds,
 ) -> Vec<(String, rhai::Dynamic)> {
     fn id_array(ids: &[u32]) -> rhai::Dynamic {
         rhai::Dynamic::from(
-            ids.iter().map(|&id| rhai::Dynamic::from(id as i64)).collect::<Vec<_>>()
+            ids.iter()
+                .map(|&id| rhai::Dynamic::from(id as i64))
+                .collect::<Vec<_>>(),
         )
     }
     vec![
-        ("LP_DEVICE_ID".into(),   rhai::Dynamic::from(lp_dev_id as i64)),
-        ("DT_DEVICE_ID".into(),   rhai::Dynamic::from(digitakt_id.unwrap_or(0) as i64)),
-        ("KS_DEVICE_ID".into(),   rhai::Dynamic::from(keystep_id.unwrap_or(0) as i64)),
+        ("LP_DEVICE_ID".into(), rhai::Dynamic::from(lp_dev_id as i64)),
+        (
+            "DT_DEVICE_ID".into(),
+            rhai::Dynamic::from(digitakt_id.unwrap_or(0) as i64),
+        ),
+        (
+            "KS_DEVICE_ID".into(),
+            rhai::Dynamic::from(keystep_id.unwrap_or(0) as i64),
+        ),
         // Injected even with --no-antiphon so profiles referencing it still load.
-        ("THEORIA_DEVICE_ID".into(), rhai::Dynamic::from(ID_THEORIA as i64)),
-        ("CLOCK_ID".into(),       rhai::Dynamic::from(ids.clock as i64)),
-        ("TRACK_SEQ_IDS".into(),  id_array(&ids.sequencers)),
+        (
+            "THEORIA_DEVICE_ID".into(),
+            rhai::Dynamic::from(ID_THEORIA as i64),
+        ),
+        ("CLOCK_ID".into(), rhai::Dynamic::from(ids.clock as i64)),
+        ("TRACK_SEQ_IDS".into(), id_array(&ids.sequencers)),
         ("TRACK_SAMP_IDS".into(), id_array(&ids.samplers)),
-        ("TRACK_GEN_IDS".into(),  id_array(&ids.generators)),
+        ("TRACK_GEN_IDS".into(), id_array(&ids.generators)),
         ("TRACK_DIST_IDS".into(), id_array(&ids.distortions)),
         ("TRACK_FILT_IDS".into(), id_array(&ids.filters)),
     ]
 }
 
-fn setup_terminal() -> Result<
-    ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
-    std::io::Error,
-> {
+fn setup_terminal(
+) -> Result<ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>, std::io::Error>
+{
     use crossterm::execute;
     use crossterm::terminal::{enable_raw_mode, EnterAlternateScreen};
     enable_raw_mode()?;

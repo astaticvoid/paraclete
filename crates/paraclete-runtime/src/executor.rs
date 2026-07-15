@@ -3,17 +3,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use paraclete_node_api::{
-    AudioBuffer, DebugEvent, Event, EventOutputBuffer, SurfaceOutput, ExtendedEventSlab,
-    NodeCommand, ProcessInput, ProcessOutput, StateBusValue,
-    SignalInputSlot, SignalOutputSlot, SignalPortKind,
-    TransportInfo, TransportEvent, TimedEvent,
+    AudioBuffer, DebugEvent, Event, EventOutputBuffer, ExtendedEventSlab, NodeCommand,
+    ProcessInput, ProcessOutput, SignalInputSlot, SignalOutputSlot, SignalPortKind, StateBusValue,
+    SurfaceOutput, TimedEvent, TransportEvent, TransportInfo,
 };
 
 use crate::configurator::{LoopBackEdge, NodeOrDevice};
-use crate::runtime_counters::RuntimeCounters;
-use crate::state_bus::StateBusUpdate;
 use crate::message::ConfigMessage;
 use crate::ring_buffer::Receiver;
+use crate::runtime_counters::RuntimeCounters;
+use crate::state_bus::StateBusUpdate;
 
 /// Resolved loop-back edge in slot-index space. Used by the executor for the
 /// pre/post execution phases (ADR-028).
@@ -70,7 +69,7 @@ pub struct NodeExecutor {
 
     /// Scratch slices for per-slot signal I/O — no audio-thread allocation.
     signal_out_scratch: Vec<SignalOutputSlot>,
-    signal_in_scratch:  Vec<SignalInputSlot>,
+    signal_in_scratch: Vec<SignalInputSlot>,
 
     /// Pre-allocated state output buffer, one per node slot.
     /// Cleared before each `published_state()` call; capacity is retained across cycles.
@@ -186,26 +185,32 @@ impl NodeExecutor {
         counters: Arc<RuntimeCounters>,
         debug_event_producer: rtrb::Producer<DebugEvent>,
     ) -> Self {
-        let node_id_to_slot: HashMap<u32, usize> = nodes.iter().enumerate()
+        let node_id_to_slot: HashMap<u32, usize> = nodes
+            .iter()
+            .enumerate()
             .map(|(idx, (id, _))| (*id, idx))
             .collect();
 
         let n = nodes.len();
         let mut pending_cmds = HashMap::new();
-        let slots = nodes.into_iter().map(|(id, kind)| {
-            pending_cmds.insert(id, Vec::with_capacity(16));
-            NodeSlot {
-                id,
-                kind,
-                audio_out: AudioBuffer::new(2, block_size),
-                events_out: EventOutputBuffer::new(256),
-            }
-        }).collect();
+        let slots = nodes
+            .into_iter()
+            .map(|(id, kind)| {
+                pending_cmds.insert(id, Vec::with_capacity(16));
+                NodeSlot {
+                    id,
+                    kind,
+                    audio_out: AudioBuffer::new(2, block_size),
+                    events_out: EventOutputBuffer::new(256),
+                }
+            })
+            .collect();
 
         // Resolve back-edge user IDs to slot indices.
-        let back_edges: Vec<ResolvedLoopBackEdge> = raw_back_edges.into_iter()
+        let back_edges: Vec<ResolvedLoopBackEdge> = raw_back_edges
+            .into_iter()
             .filter_map(|be| {
-                let lb_slot  = *node_id_to_slot.get(&be.lb_id)?;
+                let lb_slot = *node_id_to_slot.get(&be.lb_id)?;
                 let dst_slot = *node_id_to_slot.get(&be.dst_id)?;
                 Some(ResolvedLoopBackEdge {
                     lb_slot,
@@ -216,9 +221,17 @@ impl NodeExecutor {
             })
             .collect();
 
-        let max_audio_inputs  = audio_routes.iter().map(|r| r.len()).max().unwrap_or(0);
-        let max_signal_outs   = signal_output_bufs.iter().map(|v| v.len()).max().unwrap_or(0);
-        let max_signal_ins    = signal_input_routes.iter().map(|v| v.len()).max().unwrap_or(0);
+        let max_audio_inputs = audio_routes.iter().map(|r| r.len()).max().unwrap_or(0);
+        let max_signal_outs = signal_output_bufs
+            .iter()
+            .map(|v| v.len())
+            .max()
+            .unwrap_or(0);
+        let max_signal_ins = signal_input_routes
+            .iter()
+            .map(|v| v.len())
+            .max()
+            .unwrap_or(0);
 
         Self {
             nodes: slots,
@@ -238,7 +251,7 @@ impl NodeExecutor {
             signal_output_bufs,
             signal_input_routes,
             signal_out_scratch: Vec::with_capacity(max_signal_outs.max(1)),
-            signal_in_scratch:  Vec::with_capacity(max_signal_ins.max(1)),
+            signal_in_scratch: Vec::with_capacity(max_signal_ins.max(1)),
             // Pre-seed per-slot capacity at 16 (covers nodes with up to ~8 bank params
             // plus a few state entries) and aggregate at 256 (covers ~32 nodes × 8
             // entries each without a first-cycle reallocation).
@@ -247,7 +260,7 @@ impl NodeExecutor {
             transport_override: None,
             node_id_to_slot,
             extra_events: Vec::with_capacity(64),
-            extra_cmds:   Vec::with_capacity(64),
+            extra_cmds: Vec::with_capacity(64),
             back_edges,
             counters,
             debug_event_producer,
@@ -267,6 +280,14 @@ impl NodeExecutor {
         self.debug_log_enabled.store(enabled, Ordering::Relaxed);
     }
 
+    pub fn block_size(&self) -> usize {
+        self.block_size
+    }
+
+    pub fn sample_rate(&self) -> f32 {
+        self.sample_rate
+    }
+
     pub fn counters(&self) -> &Arc<RuntimeCounters> {
         &self.counters
     }
@@ -279,11 +300,7 @@ impl NodeExecutor {
     /// event queue for every node slot.
     ///
     /// Not called in standalone mode — `InternalClock` drives transport there.
-    pub fn set_transport_override(
-        &mut self,
-        info:  TransportInfo,
-        event: Option<TransportEvent>,
-    ) {
+    pub fn set_transport_override(&mut self, info: TransportInfo, event: Option<TransportEvent>) {
         self.transport_override = Some((info, event));
     }
 
@@ -325,7 +342,7 @@ impl NodeExecutor {
     pub fn serialize_node(&self, node_id: u32) -> Vec<u8> {
         if let Some(&slot_idx) = self.node_id_to_slot.get(&node_id) {
             match &self.nodes[slot_idx].kind {
-                crate::configurator::NodeOrDevice::Node(n)   => n.serialize(),
+                crate::configurator::NodeOrDevice::Node(n) => n.serialize(),
                 crate::configurator::NodeOrDevice::Device(d) => d.serialize(),
             }
         } else {
@@ -338,7 +355,7 @@ impl NodeExecutor {
     pub fn deserialize_node(&mut self, node_id: u32, data: &[u8]) {
         if let Some(&slot_idx) = self.node_id_to_slot.get(&node_id) {
             match &mut self.nodes[slot_idx].kind {
-                crate::configurator::NodeOrDevice::Node(n)   => n.deserialize(data),
+                crate::configurator::NodeOrDevice::Node(n) => n.deserialize(data),
                 crate::configurator::NodeOrDevice::Device(d) => d.deserialize(data),
             }
         }
@@ -348,7 +365,7 @@ impl NodeExecutor {
         while let Some(msg) = self.receiver.try_recv() {
             match msg {
                 ConfigMessage::SetPlaying(v) => self.transport.playing = v,
-                ConfigMessage::SetBpm(bpm)   => self.transport.bpm = bpm,
+                ConfigMessage::SetBpm(bpm) => self.transport.bpm = bpm,
                 ConfigMessage::SetParam { .. } => {}
             }
         }
@@ -381,13 +398,15 @@ impl NodeExecutor {
     pub fn process(&mut self, out_interleaved: &mut [f32], channels: usize) {
         let t0 = std::time::Instant::now();
         use std::sync::atomic::Ordering;
-        self.counters.buffers_processed.fetch_add(1, Ordering::Relaxed);
+        self.counters
+            .buffers_processed
+            .fetch_add(1, Ordering::Relaxed);
 
         self.apply_messages();
         self.drain_commands();
 
         let sample_rate = self.sample_rate;
-        let block_size  = self.block_size;
+        let block_size = self.block_size;
 
         for incoming in &mut self.incoming {
             incoming.clear();
@@ -399,7 +418,10 @@ impl NodeExecutor {
         if let Some((info, event)) = self.transport_override.take() {
             self.transport = info;
             if let Some(te) = event {
-                let timed = paraclete_node_api::TimedEvent::new(0, paraclete_node_api::Event::Transport(te));
+                let timed = paraclete_node_api::TimedEvent::new(
+                    0,
+                    paraclete_node_api::Event::Transport(te),
+                );
                 for queue in &mut self.incoming {
                     queue.push(timed);
                 }
@@ -422,7 +444,7 @@ impl NodeExecutor {
         // This ensures the downstream node reads the correct delayed value when its
         // signal_in_scratch is built from signal_input_routes, which points to this buffer.
         for be in &self.back_edges {
-            let lb_slot  = be.lb_slot;
+            let lb_slot = be.lb_slot;
             let out_port = be.lb_out_port;
             // Obtain the prev slice from the LoopBreakNode via the trait method.
             // SAFETY: we borrow nodes[lb_slot] immutably here; it is not aliased by
@@ -466,7 +488,8 @@ impl NodeExecutor {
             // so those nodes are already processed and their audio_out buffers are stable.
             self.audio_input_scratch.clear();
             for &src_idx in &self.audio_routes[slot_idx] {
-                self.audio_input_scratch.push(&self.nodes[src_idx].audio_out as *const AudioBuffer);
+                self.audio_input_scratch
+                    .push(&self.nodes[src_idx].audio_out as *const AudioBuffer);
             }
             // SAFETY: *const AudioBuffer and &AudioBuffer have identical representation
             // for sized types (both thin pointers). The referenced buffers remain valid
@@ -481,7 +504,8 @@ impl NodeExecutor {
             // Build signal output slots for this slot (scoped to release borrows before
             // the slot mutable borrow below; raw pointer slices are extracted after).
             {
-                let (scratch, out_bufs) = (&mut self.signal_out_scratch, &mut self.signal_output_bufs);
+                let (scratch, out_bufs) =
+                    (&mut self.signal_out_scratch, &mut self.signal_output_bufs);
                 scratch.clear();
                 for (port_id, kind, buf) in out_bufs[slot_idx].iter_mut() {
                     buf.fill(0.0);
@@ -513,8 +537,8 @@ impl NodeExecutor {
             // signal_output_bufs[slot_idx], not to nodes; no aliasing.
             let sig_out_ptr = self.signal_out_scratch.as_mut_ptr();
             let sig_out_len = self.signal_out_scratch.len();
-            let sig_in_ptr  = self.signal_in_scratch.as_ptr();
-            let sig_in_len  = self.signal_in_scratch.len();
+            let sig_in_ptr = self.signal_in_scratch.as_ptr();
+            let sig_in_len = self.signal_in_scratch.len();
 
             let slot = &mut self.nodes[slot_idx];
             slot.audio_out.clear();
@@ -528,10 +552,10 @@ impl NodeExecutor {
                 let priority: u8 = match e.event {
                     Event::ParamLock(_) => 0,
                     Event::Transport(_) => 1,
-                    Event::Tempo(_)     => 1,
-                    Event::Midi2(_)     => 2,
-                    Event::Surface(_)  => 3,
-                    Event::Extended(_)  => 4,
+                    Event::Tempo(_) => 1,
+                    Event::Midi2(_) => 2,
+                    Event::Surface(_) => 3,
+                    Event::Extended(_) => 4,
                     _ => 5,
                 };
                 (e.sample_offset, priority)
@@ -539,7 +563,7 @@ impl NodeExecutor {
 
             // SAFETY: transport and slab are read-only during process().
             let transport_ref = unsafe { &*transport };
-            let slab_ref      = unsafe { &*slab };
+            let slab_ref = unsafe { &*slab };
 
             // SAFETY: audio_out_ptr scoped to this loop body.
             let audio_out_ptr: *mut AudioBuffer = &mut slot.audio_out as *mut AudioBuffer;
@@ -551,7 +575,9 @@ impl NodeExecutor {
             let events_out_ref: &mut EventOutputBuffer = unsafe { &mut *events_out_ptr };
 
             let node_id = slot.id;
-            let cmds = self.pending_cmds.get(&node_id)
+            let cmds = self
+                .pending_cmds
+                .get(&node_id)
                 .map(|v| v.as_slice())
                 .unwrap_or(&[]);
 
@@ -616,10 +642,7 @@ impl NodeExecutor {
 
             if debug_enabled {
                 for ev in self.debug_bufs[slot_idx].drain(..) {
-                    self.agg_debug_buf.push(DebugEvent {
-                        node_id,
-                        ..ev
-                    });
+                    self.agg_debug_buf.push(DebugEvent { node_id, ..ev });
                 }
             }
         }
@@ -642,7 +665,8 @@ impl NodeExecutor {
         for (slot_idx, slot) in self.nodes.iter().enumerate() {
             self.state_bufs[slot_idx].clear();
             slot.published_state(&mut self.state_bufs[slot_idx]);
-            self.agg_state_buf.extend_from_slice(&self.state_bufs[slot_idx]);
+            self.agg_state_buf
+                .extend_from_slice(&self.state_bufs[slot_idx]);
         }
         self.counters.publish_state(&mut self.agg_state_buf);
 
@@ -655,8 +679,14 @@ impl NodeExecutor {
 
         if !self.agg_state_buf.is_empty() {
             let entries = std::mem::take(&mut self.agg_state_buf);
-            if self.state_bus_producer.push(StateBusUpdate { entries }).is_err() {
-                self.counters.state_bus_overflows.fetch_add(1, Ordering::Relaxed);
+            if self
+                .state_bus_producer
+                .push(StateBusUpdate { entries })
+                .is_err()
+            {
+                self.counters
+                    .state_bus_overflows
+                    .fetch_add(1, Ordering::Relaxed);
             }
         }
 
@@ -681,7 +711,8 @@ impl NodeExecutor {
                 }
             }
         }
-        self.counters.update_cpu_time(t0.elapsed().as_micros() as f64);
+        self.counters
+            .update_cpu_time(t0.elapsed().as_micros() as f64);
     }
 
     pub fn transport(&self) -> &TransportInfo {
@@ -709,7 +740,11 @@ impl NodeExecutor {
             .into_iter()
             .enumerate()
             .map(|(idx, slot)| {
-                let user_id = if idx < slot_to_id.len() { slot_to_id[idx] } else { slot.id };
+                let user_id = if idx < slot_to_id.len() {
+                    slot_to_id[idx]
+                } else {
+                    slot.id
+                };
                 (user_id, slot.kind)
             })
             .collect()

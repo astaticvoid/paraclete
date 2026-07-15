@@ -6,9 +6,9 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ## Status (2026-07-13)
 
-**Actively open:** BUG-012 (hardware session), BUG-027 (engine exonerated by
-measurement — pending user headphone A/B, see addendum).
-**Trigger-based (fix when named trigger fires):** BUG-002, BUG-003, BUG-006.
+**Actively open:** BUG-027 (engine exonerated by measurement — pending user headphone A/B, see addendum).
+**Fixed, pending hardware verification:** BUG-012 (sample rate auto-detection + ring buffer chunking; see resolution entry).
+**Trigger-based (fix when named trigger fires):** BUG-003, BUG-006.
 **Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, INFRA-001, INFRA-002, INFRA-003.
 **Debug harness:** ADR-033 interactive mode **shipped 2026-07-13 (`92b8795`)** —
 the harness-gated audit items below are now reachable without hardware (see the
@@ -197,6 +197,16 @@ predicted failure mode and raises confidence that a 48 kHz / non-512 interface
 at a paired session would crash (debug) or OOB/half-fill (release). The trigger
 "first non-44.1 kHz/512 deployment" (roadmap backlog) is therefore a crash, not
 a mistuning — worth pulling forward if any external interface is in play.
+
+**Linux ALSA confirmed (2026-07-14).** Running on Linux (wlp4s0, ALSA backend),
+the device delivers 9408 samples per callback against the hardcoded 1024-sample
+block size. In debug mode this panics at `executor.rs:695`
+(`debug_assert_eq!(out_interleaved.len(), frames * channels)`, left=9408 right=2048).
+In release mode the mismatch causes audible distortion (audio-rate LFO effect,
+confirmed by user in paired W2 session). The server and web UI remain functional
+but audio output is unusable on this hardware. Same root cause — `BLOCK_SIZE`
+hardcoded, cpal uses device-default buffer. Confirms this is not macOS-specific;
+any non-512 device triggers it.
 
 ### BUG-013 — Engines ignore event sample_offset: voice starts quantized to block boundaries
 
@@ -928,3 +938,33 @@ a hardware session.
 **Still open in the debug-posture push (roadmap Rank 2):** audio diff/snapshot
 baselines, the structured per-node log channel, and the CPU-% meter to
 `/engine/cpu`. These build on the harness and are the next increments.
+
+---
+
+### BUG-012 — RESOLVED (2026-07-14)
+
+**Fix: three-part solution.**
+
+1. **Sample rate auto-detection:** `query_sample_rate()` added to `paraclete-hal`
+   (`audio.rs`). Called by `main.rs` before graph build; passes the real device
+   rate to `NodeConfigurator::new()` instead of the hardcoded `44100.0`.
+   `SAMPLE_RATE` constant removed from `main.rs`.
+
+2. **Ring buffer fallback:** Uses `BufferSize::Default` (device-native size)
+   and the `fill_output_ring()` helper to process full blocks, accumulating
+   output in a pre-allocated ring buffer. Output is drained each callback to
+   satisfy the device request. Timing error is bounded to ±½ block (oscillates,
+   never drifts); for non-multiple buffer sizes there may be a brief silence gap
+   of up to `block_size` samples a few times per second — an order of magnitude
+   better than the prior crash/distortion. No allocation on the audio thread:
+   buffers are pre-allocated on the main thread before the stream starts.
+   `BufferSize::Fixed`, while ideal, was rejected by ALSA on at least one
+   machine (EINVAL); Default + ring works universally.
+
+**Files touched:** `paraclete-hal/src/audio.rs` (ring buffer + query + Fixed),
+`paraclete-hal/src/lib.rs` (export), `paraclete-app/src/main.rs` (auto-detect),
+`paraclete-runtime/src/executor.rs` (`block_size()`/`sample_rate()` getters).
+
+**Partial BUG-002 resolution:** `sample_rate` is no longer hardcoded for
+`NodeConfigurator` graph build. The `ConnectionAgreement::baseline()` hardcodes
+remain (trigger-based, lower priority).
