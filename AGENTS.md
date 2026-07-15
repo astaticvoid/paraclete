@@ -28,6 +28,12 @@ cargo test -p paraclete-runtime configurator_connect_rejects_two_node_cycle
 
 # Pre-flight: generate drum samples (required before first `cargo run`)
 cargo run -p gen-samples
+
+# Shortcuts via .cargo/config.toml aliases:
+cargo b   # = build --workspace
+cargo t   # = test --workspace
+cargo c   # = check --workspace
+cargo cl  # = clippy --workspace
 ```
 
 ## Headless audio testing (ADR-033)
