@@ -7,7 +7,8 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 ## Status (2026-07-14)
 
 **Actively open:** BUG-027 (engine exonerated by measurement — pending user headphone A/B, see addendum), INFRA-004 (no headless mode — emulator requires TTY).
-**Fixed, pending hardware verification:** BUG-012 (sample rate auto-detection + ring buffer chunking; see resolution entry).
+**Partially resolved:** BUG-012 (sample rate detection shipped; output ring buffer not yet implemented — causes distortion on Linux ALSA with non-multiple block sizes).
+**Fixed, pending hardware verification:** (none).
 **Trigger-based (fix when named trigger fires):** BUG-003, BUG-006.
 **Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, INFRA-001, INFRA-002, INFRA-003.
 **Debug harness:** ADR-033 interactive mode **shipped 2026-07-13 (`92b8795`)** —
@@ -941,33 +942,44 @@ baselines, the structured per-node log channel, and the CPU-% meter to
 
 ---
 
-### BUG-012 — RESOLVED (2026-07-14)
+### BUG-012 — PARTIAL (2026-07-14, corrected 2026-07-14)
 
-**Fix: three-part solution.**
+**Fix shipped (commit `6bd2129`):** sample-rate auto-detection (`query_sample_rate()`
+in `paraclete-hal/src/audio.rs`) + `audio_callback_f32` chunking that splits the
+cpal callback into internal `block_size` chunks. A `work_buf` handles the final
+partial chunk (render full block, copy leading frames).
 
-1. **Sample rate auto-detection:** `query_sample_rate()` added to `paraclete-hal`
-   (`audio.rs`). Called by `main.rs` before graph build; passes the real device
-   rate to `NodeConfigurator::new()` instead of the hardcoded `44100.0`.
-   `SAMPLE_RATE` constant removed from `main.rs`.
+**Correction (2026-07-14):** the `design/bugs.md` resolution description (above,
+as written 2026-07-14) claimed a ring buffer (`fill_output_ring()`) that does
+not exist in the codebase. The actual implementation (`audio_callback_f32`,
+`audio.rs:354`) is a simpler chunk-and-discard:
+- Full chunks: `executor.process(chunk, channels)` — renders directly into the
+  cpal buffer slice.
+- Partial chunk: renders a full block into `work_buf`, copies only the leading
+  frames, and **discards the rest**. No carryover.
 
-2. **Ring buffer fallback:** Uses `BufferSize::Default` (device-native size)
-   and the `fill_output_ring()` helper to process full blocks, accumulating
-   output in a pre-allocated ring buffer. Output is drained each callback to
-   satisfy the device request. Timing error is bounded to ±½ block (oscillates,
-   never drifts); for non-multiple buffer sizes there may be a brief silence gap
-   of up to `block_size` samples a few times per second — an order of magnitude
-   better than the prior crash/distortion. No allocation on the audio thread:
-   buffers are pre-allocated on the main thread before the stream starts.
-   `BufferSize::Fixed`, while ideal, was rejected by ALSA on at least one
-   machine (EINVAL); Default + ring works universally.
+**Consequences on Linux ALSA (9408-sample callback, 512-frame block, stereo):**
+- 9 full chunks (9×512 = 4608 frames) + 1 partial chunk (96 frames output;
+  416 frames discarded) = 5120 frames rendered, 4704 delivered per callback.
+- ~416 frames of rendered audio silently dropped every callback (~9.4 Hz).
+- Engine state (oscillators, envelopes, filters) advances for the discarded
+  frames — next callback starts from a desynchronized state.
+- Clock advances by `block_size` per `process()` call (5120 frames/callback
+  vs 4704 delivered), drifting ~8.8% fast. After 10 callbacks (~1s), the
+  sequencer is ~94 ms ahead.
 
-**Files touched:** `paraclete-hal/src/audio.rs` (ring buffer + query + Fixed),
-`paraclete-hal/src/lib.rs` (export), `paraclete-app/src/main.rs` (auto-detect),
-`paraclete-runtime/src/executor.rs` (`block_size()`/`sample_rate()` getters).
+The discarded-audio discontinuities, state/output desync, and clock drift
+combine to produce the "very distorted" kick reported in paired session #3.
 
-**Partial BUG-002 resolution:** `sample_rate` is no longer hardcoded for
-`NodeConfigurator` graph build. The `ConnectionAgreement::baseline()` hardcodes
-remain (trigger-based, lower priority).
+**Remaining work:**
+1. **Output ring buffer** — accumulate executor output in a pre-allocated ring;
+   drain in the callback. No frames discarded, timing error bounded to ±½ block.
+2. **FTZ/DAZ** — set flush-to-zero + denormals-are-zero on the audio thread for
+   x86 Linux (`_MM_SET_FLUSH_ZERO_MODE`, `_MM_SET_DENORMALS_ZERO_MODE`). The
+   design review directed this but it was never implemented.
+3. **BufferSize::Fixed retry** — attempt `BufferSize::Fixed(block_samples)` first;
+   fall back to Default only if the device rejects it (EINVAL on some ALSA
+   hardware).
 
 ---
 
