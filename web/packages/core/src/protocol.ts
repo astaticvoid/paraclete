@@ -91,7 +91,8 @@ export type ClientMsg =
   | EncPushMsg
   | SetParamMsg
   | BumpParamMsg
-  | NodeCmdMsg;
+  | NodeCmdMsg
+  | GetViewMetaMsg;
 
 // ── Server → client ─────────────────────────────────────────────────────────
 
@@ -108,6 +109,8 @@ export interface NodeSummary {
   type_tag: string;
   name: string;
   params: ParamSummary[];
+  /** [W2] whether this node has a view (non-None view on the cap-doc). */
+  has_view?: boolean;
 }
 
 export interface TransportSummary {
@@ -186,4 +189,72 @@ export type ServerMsg =
   | ByeMsg
   | StateMsg
   | ContextMsg
-  | TopologyMsg;
+  | TopologyMsg
+  | ViewMetaMsg;
+
+// ── W2: view_meta types ────────────────────────────────────────────────────
+
+/** [W2] request composite page layout for a track. */
+export interface GetViewMetaMsg {
+  t: "get_view_meta";
+  track_id: number;
+  nonce?: string;
+}
+
+export interface ViewMetaParam {
+  id: string;
+  node_id: number;
+  label: string;
+  affordance: string;
+  env_group?: number;
+  slot: number;
+  stepped?: boolean;
+  options?: string[];
+  routing?: { dest: string };
+}
+
+export interface ViewMetaEnvelope {
+  id: number;
+  type: string;
+  label: string;
+  param_ids: string[];
+}
+
+export interface ViewMetaMacro {
+  name: string;
+  targets: string[];
+  page?: string;
+}
+
+export interface ViewMetaPage {
+  id: string;
+  label: string;
+  params: ViewMetaParam[];
+  envelopes?: ViewMetaEnvelope[];
+  macros?: ViewMetaMacro[];
+}
+
+export interface ViewMetaChainRoute {
+  source: number;
+  dest: string;
+  param_id: string;
+  value: number;
+}
+
+export interface ViewMetaChain {
+  nodes: number[];
+  node_labels: [number, string][];
+  routing?: ViewMetaChainRoute[];
+}
+
+/** [W2] composite page layout for a track. */
+export interface ViewMetaMsg {
+  t: "view_meta";
+  track_id: number;
+  nonce?: string;
+  engine_node_id: number;
+  engine_name: string;
+  display_name: string;
+  pages: ViewMetaPage[];
+  chain: ViewMetaChain;
+}

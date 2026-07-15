@@ -1379,6 +1379,7 @@ name = "paraclete-node-api"
 version = "0.1.0"
 dependencies = [
  "midi2",
+ "serde",
 ]
 
 [[package]]
