@@ -1041,3 +1041,24 @@ or `setpriority` call exists.
 use `thread::set_priority` (via a small unsafe block) at stream start. Requires
 `CAP_SYS_NICE` or a systemd `.service` limit bump. Also consider `cpal`'s
 `StreamConfig` timeout hint or `BufferSize::Fixed` retry (see BUG-012).
+
+**Impact:** Paraclete has twice left this machine with pipewire stranded on its
+`auto_null` sink — system-wide audio loss (KDE shows no output device).
+Recovery is `systemctl --user restart pipewire pipewire-pulse`. Root cause
+unknown; correlates with heavy ALSA underruns + high-CPU spin but not proven.
+
+---
+
+### INFRA-007 — Agent must verify audio sink health after shutdown
+
+**Severity:** High (causes missed diagnosis and user frustration)
+**Phase found:** W2 paired session #3 (2026-07-14)
+**Description:** Twice this session, paraclete exited and pipewire was left on
+`auto_null` — all system audio gone, KDE showed no device. The agent checked
+`fuser /dev/snd/*`, saw pipewire holding the device, and declared it fine.
+Wrong check — device ownership does not mean sink health. A null sink still
+"owns" the device from pipewire's perspective but produces no audio.
+**Location:** Agent workflow — post-shutdown checks.
+**Fix direction:** After killing paraclete, run:
+`pactl list short sinks | grep -c alsa_output` — if 0, restart pipewire +
+pipewire-pulse. Add to AGENTS.md shutdown checklist and session-close skill.
