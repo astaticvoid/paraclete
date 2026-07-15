@@ -225,6 +225,11 @@ cargo build -p paraclete-app --release --features embed-ui  # embed dist/ in bin
 
 ## Commit workflow
 
+**The agent must proactively commit after each logical unit of work** (bug
+fix, feature, doc update). Do NOT leave uncommitted changes accumulating across
+sessions — stacked dirty files from multiple sessions become impossible to
+untangle. Pushing to a remote still requires explicit user approval.
+
 Every commit: `cargo test --workspace` green, `cargo clippy --workspace` clean
 on touched crates. Design/doc changes in separate commits from code. Phase
 reports and `bugs.md` are append-only.
@@ -235,6 +240,10 @@ commit or closing the session. The subagent reads the diff (or the affected
 files), checks conformance to ADRs, layer boundaries, audio-thread rules,
 naming conventions, and test coverage, and returns findings. Do not skip this
 step — it is the quality gate between implementation pushes.
+
+**Before closing a session**, the agent must report any untracked files,
+uncommitted changes, or stale trackers. The working tree must be either clean
+or explicitly accounted for — never silent about dirt.
 
 After every implementation session, the agent must explicitly propose which
 design documents need updating, then update **all** that apply before the
