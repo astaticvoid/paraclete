@@ -141,13 +141,38 @@ the track; retirement is a later user decision (ADR-036 §Alternatives).
 | `TuiApp` tick/shutdown/`TestBackend` test pattern | main-loop integration + render tests |
 | Main-loop drain pattern (scripting, Antiphon) | command egress |
 
-### 2.6 Gaps that require extension (only these)
+### 2.6 Gaps that require extension
 
-1. **Live visualization data** — envelope level, LFO phase, output scope
+*(Amended 2026-07-21 post-review — the "only these" claim was wrong; the
+review found a blocker and two majors. See the amendment log at the end.)*
+
+1. **Transport control** *(blocks TK0; review B1)* — nothing on any surface
+   can play/stop or set tempo today. `InternalClock` handles **no**
+   commands (its `bpm` param is declared but never applied), and
+   `ConfigMessage::SetPlaying` flips executor transport flags without
+   injecting the `TransportEvent`s the clock actually reads. The clock's
+   `playing` only changes via CLAP-host/test paths. Extension (TK0):
+   `InternalClock` gains node-specific command handling (start/stop, and
+   `bpm` as a real bank param). Shape decided in the TK0 spec — OQ-T14.
+2. **Live visualization data** — envelope level, LFO phase, output scope
    are not published anywhere today. §5.3; TK2.
-2. **P-lock authoring path** — the sequencer stores per-step locks (P3),
-   but no current surface authors them; the exact command/event surface
-   needs confirming in the TK1 spec. OPEN — OQ-T8.
+3. **P-lock authoring path** — the sequencer stores per-step locks (P3),
+   but **no authoring surface exists at all**: locks are written only by
+   the v3 deserializer and tests, and a lock (step, node, param, value)
+   does not fit one `NodeCommand`. TK1 must *design* a packed lock-set
+   command (CMD 33+ is free), not confirm one. OPEN — OQ-T8.
+4. **Composite `Rule` assembly lives behind Antiphon** *(review M2)* — a
+   track-level view (engine SRC/AMP + downstream FLTR/FX merged) is
+   assembled only by `paraclete-antiphon`'s `ViewRegistry`, returns
+   protocol-shaped types, is built only when Antiphon is enabled, and uses
+   placeholder chain wiring. TK0 consumes **engine-local Rules** (SRC/AMP
+   exist on the engines today) and is unaffected; TK1's track pages need
+   the assembly hoisted somewhere both Antiphon and Theotokos can consume
+   (recommended: extract from Antiphon into a shared location). OQ-T13.
+5. **`LfoNode`/`EnvelopeNode` declare no `Rule` and no `LfoShape`
+   affordance exists on any node today** *(review m4)* — §5.2's LFO
+   graphics need a small L3 addition (TK-scoped). Engine envelopes and
+   filter shapes *do* exist and cover the POC.
 
 ---
 
@@ -172,7 +197,7 @@ modifiers for the hot path).
 | `Tab` / `Shift-Tab` | cycle modes forward / back |
 | `:` | command line (fuzzy; the M-x escape hatch — every long-tail command lives here) |
 | `Esc` | cancel / close / unfocus (the `C-g` reflex) |
-| `Ctrl-C` | quit |
+| `Ctrl-C` | quit (raw mode swallows SIGINT — the keymap sets a `should_quit()` flag the main loop polls; the `ctrlc` crate handler does not fire) |
 | `q w e r u i o p` | **select track 1–8 — invariant in every mode** (muscle memory rule #1) |
 | `t` | tap tempo (global; this is why `t` stays out of the track row) |
 | `y` | reserved (yank/copy family; assigned in TK1) |
@@ -186,7 +211,7 @@ window under the home row.
 |---|---|
 | `a s d f j k l ;` | toggle steps 1–8 of the current page on the active track (`CMD_TOGGLE_STEP`) |
 | `[` / `]` | previous / next 8-step page window (up to 64 steps) |
-| hold step key + jog | **p-lock** (HYPOTHESIS — needs kitty release events; fallback: leader-focus, §OQ-T1) |
+| hold step key + jog | **p-lock** (TK1 — no authoring path exists today, OQ-T8; gesture is HYPOTHESIS — needs kitty release events; fallback: leader-focus, §OQ-T1) |
 | `Enter` | step-focus toggle: focus step under cursor / last-touched step for p-lock editing; `Esc` releases |
 | `x` | clear active track pattern (confirm in echo area) |
 | `,` … | leader family: copy/paste steps, set length, set speed, conditions, micro-timing (grammar fixed in TK1) |
@@ -223,7 +248,10 @@ leader sequence.
 - **`+`/`-`** semantics OPEN — OQ-T4 (coarse jog vs step-size).
 
 **Param pages (left hand):** number row `1`–`6` selects the selected
-track's param page in `Rule` order (typically SRC/FLTR/AMP/FX/MOD/TRIG);
+track's param page **in the order the `Rule` declares its `page_groups`**
+(there is no platform-canonical page order today — ADR-032 §8's
+convention and the Antiphon implementation already differ, so Theotokos
+follows each Rule's own declaration, never a hardcoded list);
 page select rebinds A/B (and C on FX pages) to page defaults. Slots and
 bindings shown in the mode line at all times — **you never wonder what a
 key will do** (the legibility lesson from sessions s1/s2).
@@ -242,8 +270,9 @@ key will do** (the legibility lesson from sessions s1/s2).
 ## §4. Parameter performance model — DETERMINED mechanics
 
 1. **All motion is `CMD_BUMP_PARAM` relative deltas** — the platform's
-   relative-only contract; drift-free against the 30 Hz-equivalent state
-   mirror and against p-locks fighting the hand.
+   relative-only contract; drift-free against the live state bus (read
+   every ~1 ms main-loop tick — far fresher than Antiphon's 30 Hz WS
+   mirror) and against p-locks fighting the hand.
 2. **Jog step is per-param**: `max(0.001, range/128)` coarse default; fine
    = coarse/8; step-size scaler multiplies/divides by 2 within
    [range/1024, range/8]. (Exact constants are tuning knobs for sessions.)
@@ -288,6 +317,8 @@ and values are always on screen.
   affordance metadata exists for; zero engine changes.
 - **LFO/filter shapes**: from `AffordanceHint::{LfoShape,FilterShape}` +
   rate/depth/cutoff/resonance values. LFO phase is *static* until §5.3(b).
+  (`FilterShape` exists on engines/filters today; `LfoShape` is declared by
+  no node yet — gap §2.6.5.)
 - **Step grid**: trig state from `/node/{seq}/state/steps` text bitfield +
   `current_step` playheads; per-track colors.
 - **Value bars/meters**: block-element bars (the existing `paraclete-tui`
@@ -302,11 +333,14 @@ and values are always on screen.
    `/node/{id}/state/env_level` and `/node/{id}/state/lfo_phase` to their
    existing `published_state()` push-down — no trait changes, no new
    channels, coalesced to render rate. Then envelopes/LFOs *move*.
-3. **(c) Scope tap**: an SPSC ring tapped at the mix output (the
-   test-driver `CaptureRing` pattern: `try_push`, drop-on-full — the same
-   real-time-safe shape as the state-bus and debug-event SPSCs). Master
-   scope first; per-track taps only if sessions ask. Details frozen in the
-   TK2 spec; audio-thread rules unchanged.
+3. **(c) Scope tap**: an rtrb SPSC ring tapped at the mix output —
+   `try_push`, drop-on-full, the same real-time-safe idiom as the
+   state-bus and debug-event SPSCs. (**Not** the test-driver's
+   `CaptureRing`: that one is harness-grade — overwrite-by-wraparound,
+   per-block `Vec` alloc, mutex at the tap — fine offline, not copyable
+   into the app's audio path.) Master scope first; per-track taps only if
+   sessions ask. Details frozen in the TK2 spec; audio-thread rules
+   unchanged.
 
 ---
 
@@ -318,7 +352,7 @@ Testing is layered so that *feel* is the only thing a human must judge:
 |---|---|---|
 | Keymap | pure `map_key` unit tests (crossterm `KeyEvent`s are constructible) | wrong action for chord, mode leaks, dead keys |
 | Resolution | pure `resolve` tests against fixture cap-docs | wrong node/param, clamp errors |
-| Render | ratatui `TestBackend` buffer assertions (existing `tui_tests.rs` pattern; **no insta snapshots** — SPIKE-005 verdict stands) | layout breakage, missing bindings in mode line |
+| Render | ratatui `TestBackend` buffer assertions (existing `tui_tests.rs` pattern; **no insta snapshots** — SPIKE-005's snapshot trial remains open, default stays manual assertions) | layout breakage, missing bindings in mode line |
 | Engine effect | `tools/test-driver` scenarios asserting the same commands Theotokos emits | regressions in the command contract itself |
 | Feel | **paired usability session after every phase** | everything that matters most |
 
@@ -345,11 +379,20 @@ append to `design/phases/tkN-report.md`.
 Prove posture and feel, nothing else.
 
 - Crate + modal shell (SEQ/PERF only), global keys, track select, home-row
-  steps for the default instrument's 8 tracks (hardcoded ids acceptable
-  *inside the POC only*), `[`/`]` pages, play/stop.
+  steps for the default instrument's tracks — **4 in today's
+  `instrument.yaml`** (seqs 10–13, voices 20–22/27; the AGENTS.md 8-track
+  ID table is the aspirational graph, not the default). Keys map to
+  discovered tracks, ≤8; hardcoded discovery is acceptable *inside the POC
+  only*. `[`/`]` pages. Play/stop **via the new clock command path
+  (gap §2.6.1 — part of this phase, not a precondition)**.
 - PERF: slots A/B on the numpad bound to the selected track's first two
-  engine params; tap/hold jog with ramp; `1`–`6` page select via `Rule`;
+  engine params; tap/hold jog with ramp; `1`–`6` page select via
+  **engine-local** `Rule`s (track-composite pages are TK1, gap §2.6.4);
   mode line with live bindings/values; static envelope render (§5.2).
+  Demo note: the default 4-track instrument has **no FilterNode** — the
+  canonical cutoff+resonance sweep runs on the engines' `tone` param
+  (which carries a `FilterShape` affordance); a demo instrument YAML with
+  filters is a TK0 option, not a requirement.
 - Tests: keymap + resolve unit suites; TestBackend smoke for both modes.
 - **Exit:** all tests green; agent smoke-run; **usability session #1**
   (user plays it for 30 minutes on the default instrument; findings
@@ -366,8 +409,11 @@ Prove posture and feel, nothing else.
 
 ### TK2 — Performance layer
 
-- Numpad-`0` momentary ALT layer: mutes, fills; CHAIN mode; tap tempo;
-  temp save/reload *(dependency: P11 scope — flagged, may defer)*;
+- Numpad-`0` momentary ALT layer: mutes *(the mute system is P11 scope —
+  flagged like temp save/reload; a crude momentary mute via `MixNode`
+  per-input gains is possible today — TK2 spec decides which)*, fills;
+  CHAIN mode; tap tempo (rides the §2.6.1 clock extension); temp
+  save/reload *(dependency: P11 scope — flagged, may defer)*;
   §5.3(b)+(c) live visualization; numpad-less fallback layer (OQ-T3);
   ramp/acceleration retune from session telemetry.
 - **Session #3** → verdicts on performance ergonomics.
@@ -396,13 +442,38 @@ can re-cut the next phase.
 | OQ-T5 | Numpad type-in value entry vs command-line-only | OPEN | session #2 |
 | OQ-T6 | Kitty-less terminals: accept OS-repeat ramp degradation, or disable hold-ramp entirely | OPEN | session #1 (test in tmux + stock terminals) |
 | OQ-T7 | Esc/Tmux prefix delays and `Esc`-as-cancel ergonomics | OPEN | session #1 |
-| OQ-T8 | P-lock authoring path: confirm the sequencer lock-set command/event surface (no current surface authors locks) | OPEN — resolve in TK1 spec | TK1 spec |
+| OQ-T8 | P-lock authoring: **design** a packed lock-set command (CMD 33+ free; a lock is step+node+param+value, too wide for one `NodeCommand` — packing precedent: `CMD_SET_STEP_CONDITION`) | OPEN — no authoring path exists at all today (deserializer + tests only) | TK1 spec |
+| OQ-T13 | Composite `Rule` assembly location for TK1 track pages: reimplement in `paraclete-theotokos` (drift risk) vs extract from Antiphon to a shared home (recommended) vs app-side hoisting | OPEN — TK0 unaffected (engine-local Rules) | TK1 spec |
+| OQ-T14 | Transport extension shape: clock node-specific commands (start/stop + `bpm` bank param — recommended, keeps mutation on the declared plane) vs fixing `ConfigMessage::SetPlaying` to inject `TransportEvent`s | OPEN — blocks TK0's `Space` | TK0 spec |
 | OQ-T9 | Should Theotokos publish `/script/theotokos/selected` so Theoria/Launchpad follow its track selection | OPEN — default yes | TK1 |
 | OQ-T10 | Scope tap placement: master only vs per-track | OPEN — default master | TK2 spec |
 | OQ-T11 | Temp save/reload depends on P11 engine scope — ship UI-only or defer | OPEN | TK2 spec |
 | OQ-T12 | WT convergence: proceed / fold / defer | OPEN — user decision with session evidence | TK3 |
 
 ---
+
+## Amendment log
+
+**2026-07-21 — pre-ratification design review (subagent).** Verified 9/10
+lettered code claims line-for-line; architecture, layer story, reuse
+inventory, and test seams confirmed. Amendments applied inline above:
+
+- **B1 (blocker):** transport control is unreachable through the declared
+  mutation plane — added as gap §2.6.1, TK0 scope, OQ-T14, ADR-036
+  decision 7.
+- **M1:** default `instrument.yaml` is **4-track** (seqs 10–13, voices
+  20–22/27), not 8 — TK0 scope corrected; AGENTS.md ID table annotated as
+  the aspirational graph; filter-sweep demo note added (no FilterNode in
+  the default instrument).
+- **M2:** composite track `Rule` assembly lives behind Antiphon's protocol
+  boundary — gap §2.6.4, OQ-T13; TK0 explicitly engine-local; §3.3 now
+  follows each Rule's own `page_groups` order (no canonical order exists).
+- **M3:** OQ-T8 sharpened from "confirm" to "design a packed lock-set
+  command" (§2.6.3); §3.2 p-lock row marked TK1.
+- **Minors:** scope-tap citation corrected (rtrb idiom, not the
+  harness-grade `CaptureRing`); SPIKE-005 phrasing; state-bus freshness;
+  `LfoShape` gap (§2.6.5); mutes flagged P11 alongside temp save/reload;
+  `Ctrl-C` raw-mode note; ADR-018 exemption note appended.
 
 ## Cross-references
 

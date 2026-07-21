@@ -61,6 +61,11 @@ session notes, 2026-07-21):
    envelope groups, and affordance hints from `Rule` — the second consumer
    of the universal node-view contract. New engines get a terminal view
    with zero Theotokos changes. No terminal-only side doors into the engine.
+   **Scope note (review M2):** TK0 consumes *engine-local* Rules; the
+   track-*composite* assembly (ADR-032 §7) currently lives in
+   `paraclete-antiphon`, is protocol-shaped, and is built only when
+   Antiphon is enabled. Hoisting it to a location both renderers share is a
+   TK1 decision (OQ-T13), not a new architecture.
 
 5. **Keyboard-first modal interaction** — home-row steps (`asdfjkl;`),
    top-row tracks (`qweruiop`, invariant across modes), a numpad
@@ -78,13 +83,25 @@ session notes, 2026-07-21):
    TUI (one screen owner). `paraclete-tui` stays in place; its retirement
    is a separate user decision after Theotokos reaches parity-plus.
 
-7. **Live visualization extensions, pre-approved in direction, frozen per
-   phase spec:** (b) `EnvelopeNode`/`LfoNode` publish
+7. **Platform extensions, pre-approved in direction, frozen per phase
+   spec:**
+   (a) **Transport control (TK0).** `InternalClock` gains node-specific
+   command handling (start/stop; `bpm` becomes a real bank param) —
+   verified 2026-07-21 that nothing on any surface can play/stop the
+   standalone instrument today (the clock handles no commands;
+   `ConfigMessage::SetPlaying` injects no `TransportEvent`s; scripting
+   sandbox rejects `/transport/*` writes; Antiphon has no transport
+   message). TK0's `Space` depends on it.
+   (b) **Live visualization (TK2).** `EnvelopeNode`/`LfoNode` publish
    `/node/{id}/state/{env_level,lfo_phase}` via the existing
-   `published_state()` push-down (no trait changes); (c) an optional master
-   scope via an SPSC capture ring tapped at the mix output (`try_push`,
-   drop-on-full — the established real-time-safe SPSC shape). Static
-   `Rule`-derived graphics are the baseline and need no engine changes.
+   `published_state()` push-down (no trait changes).
+   (c) **Scope tap (TK2).** Optional master scope via an rtrb SPSC ring
+   tapped at the mix output (`try_push`, drop-on-full — the established
+   real-time-safe idiom; the test-driver's `CaptureRing` is harness-grade
+   and not the model).
+   Static `Rule`-derived graphics are the baseline and need no engine
+   changes (noting `LfoNode`/`EnvelopeNode` declare no `Rule` today — a
+   small L3 addition, TK-scoped).
 
 ## Alternatives considered
 
@@ -151,3 +168,26 @@ WT is editor/parity-first (generic views in the terminal). The gap is a
   changes, no Antiphon dependency.
 - **ADR-033/035** — the test-driver verifies the command contract Theotokos
   emits; baselines guard the engine beneath it.
+
+---
+
+## Implementation notes
+
+**2026-07-21 — pre-ratification design review (subagent).** All factual
+code claims verified (9/10 lettered claims line-for-line; layer story,
+dependency claims, reuse inventory, test seams confirmed). Findings folded
+into this ADR before ratification:
+
+- **B1 (blocker):** transport control gap → new decision 7(a); TK0-scoped;
+  shape question logged as OQ-T14.
+- **M1:** the default `instrument.yaml` is 4-track (seqs 10–13, voices
+  20–22/27), not the 8-track graph in AGENTS.md's ID table → TK0 scope
+  corrected in `design.md`; AGENTS.md annotated.
+- **M2:** composite `Rule` assembly location → scope note on decision 4;
+  OQ-T13 for TK1.
+- **M3:** p-lock authoring is a *design* task (packed CMD 33+), not a
+  confirmation → OQ-T8 sharpened.
+- **m7:** ADR-018's "sole exemption" wording — implementation note appended
+  to ADR-018 recording the Antiphon/TUI/Theotokos environment standing.
+
+Full findings: `design/theotokos/design.md` amendment log.

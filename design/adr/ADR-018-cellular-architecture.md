@@ -150,3 +150,24 @@ the boundary.
 - P3 implementation report — "update_output() stays in executor at P3;
   moving hardware callbacks to main thread is a P4 item and requires a
   device dual-ownership design"
+
+---
+
+## Implementation note (appended 2026-07-21)
+
+The "exemption is permanent and non-expandable… no other component earns
+that status" line above (2026-05) has been **extended in practice** by
+later decisions, all following its own test (environment/plumbing that
+interacts only through declared interfaces — cap-docs, state bus,
+NodeCommand channel — and never reaches into L1 internals):
+
+- the **Antiphon interface server** (ADR-031 §"Nodes All the Way Down") —
+  transport plumbing whose in-graph presence is its device/gateway nodes;
+- **`paraclete-tui`** — a main-thread, read-only state-bus subscriber
+  (ADR-026); display environment, no graph presence;
+- **Theotokos** (ADR-036, proposed 2026-07-21) — the keyboard-first
+  performance terminal, same standing claimed and justified there.
+
+The bar set here still holds: each of these was granted the standing **by
+an ADR arguing the environment shape**, not by accretion. Future non-node
+components remain invalid without the same argument.

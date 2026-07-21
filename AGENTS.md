@@ -231,6 +231,12 @@ Within the same `sample_offset`, the executor delivers events in this order:
 | 110–113 | `ScriptingGatewayNode` (LP, DT, KS, Theoria) |
 | 200 | `ReverbNode` |
 
+> **Note (2026-07-21):** this table is the ID *convention* for the full
+> 8-track graph. The default `instrument.yaml` wires **4 tracks** today —
+> sequencers 10–13, voices 20–22 + 27 (no Samplers 23–26, no Distortion/
+> Filter nodes). Clients must bind by discovery (`hello`/cap-docs), never
+> by this table.
+
 ## Main loop sequence (order matters)
 
 Each ~1 ms iteration:
