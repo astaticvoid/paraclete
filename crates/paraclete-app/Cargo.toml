@@ -28,6 +28,7 @@ paraclete-graph-nodes = { workspace = true }
 paraclete-antiphon    = { workspace = true }
 fastrand  = { workspace = true }
 log       = { workspace = true }
+env_logger = { workspace = true }
 rhai      = { workspace = true }
 ctrlc     = { workspace = true }
 ratatui   = { workspace = true }

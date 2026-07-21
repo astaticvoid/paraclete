@@ -40,6 +40,7 @@ const ID_GW_KS: u32 = 112;
 const ID_GW_THEORIA: u32 = 113;
 
 fn main() {
+    env_logger::init();
     let args: Vec<String> = std::env::args().collect();
 
     let instrument_path: PathBuf = args

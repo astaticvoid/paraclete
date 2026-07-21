@@ -29,10 +29,14 @@ fn unix_uid() -> u32 {
 pub fn try_acquire_realtime(priority: i32) -> bool {
     let mut sock = match connect_system_bus() {
         Some(s) => s,
-        None => return false,
+        None => {
+            log::warn!("realtime priority: rtkit not reachable (no system bus)");
+            return false;
+        }
     };
 
     if !dbus_auth(&mut sock) {
+        log::warn!("realtime priority: rtkit auth failed");
         return false;
     }
 
@@ -46,7 +50,7 @@ pub fn try_acquire_realtime(priority: i32) -> bool {
         true
     } else {
         log::warn!(
-            "realtime priority: rtkit call failed — falling back to raw pthread_setschedparam",
+            "realtime priority: rtkit method call failed — trying raw SCHED_FIFO",
         );
         false
     }

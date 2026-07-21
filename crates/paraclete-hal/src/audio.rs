@@ -41,15 +41,14 @@ mod lrt {
         let ret = unsafe { pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) };
         if ret != 0 {
             log::warn!(
-                "realtime priority: SCHED_FIFO failed (errno={}). \
-                 Rtkit unavailable, raw pthread_setschedparam failed. \
+                "realtime priority: SCHED_FIFO denied (errno={}). \
                  Audio runs without RT scheduling — may underrun under load. \
-                 Fix: ensure @audio rtprio in /etc/security/limits.conf, or: \
+                 Fix: ensure realtime-privileges installed + user in realtime group, or \
                  sudo setcap cap_sys_nice=eip <binary>",
                 ret,
             );
         } else {
-            log::info!("realtime priority: SCHED_FIFO prio=50 on audio thread (raw)");
+            log::info!("realtime priority: SCHED_FIFO prio=50 (raw pthread)");
         }
     }
 }
