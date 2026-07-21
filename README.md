@@ -29,8 +29,39 @@ if connected and are skipped otherwise.
 
 ## Keyboard controls
 
-When no Launchpad is connected, the 8x8 grid maps to the keyboard:
+### Theotokos (keyboard-first performance: `--theotokos`)
 
+`cargo run -- --theotokos` starts the keyboard-first modal performance terminal.
+Home-row steps, top-row tracks, vim-style parameter jog, live terminal graphics.
+
+**Global (all modes):**
+
+| Key | Action |
+|---|---|
+| `Space` | play / stop |
+| `Tab` / `Shift-Tab` | cycle modes (SEQ ↔ PERF) |
+| `q w e r u i o p` | select track 1–8 |
+| `Ctrl-C` | quit |
+
+**SEQ mode — pattern editing:**
+
+| Key | Action |
+|---|---|
+| `a s d f j k l ;` | toggle steps 1–8 on the active track |
+| `[` / `]` | previous / next 8-step page window |
+
+**PERF mode — parameter performance:**
+
+| Key | Action |
+|---|---|
+| `1`–`6` | select param page (SRC / FLTR / AMP / FX / MOD / TRIG) |
+| `j` / `k` | slot A jog down / up |
+| `,` / `.` | slot B jog down / up |
+| `J` / `K` | slot A fine jog (Shift) |
+
+### Emulator (legacy grid mirror)
+
+When no Launchpad is connected, the 8x8 grid maps to the keyboard:
 ```
 1 2 3 4 5 6 7 8   select track row (0–7)
 Q W E R T Y U I   toggle steps in the active row
@@ -86,6 +117,7 @@ cargo run -- --dev-ui                  # step/pattern on stderr
 cargo run -- --load=project.ron        # restore saved state
 cargo run -- --save=project.ron        # save state on exit
 cargo run -- --theoria-dir=web/packages/app/dist  # serve web client
+cargo run -- --theotokos              # keyboard-first performance terminal
 
 # Web client
 cd web && npm install && npm run build
@@ -100,6 +132,30 @@ cargo build --workspace -p paraclete-clap
 cargo run -p test-driver -- --trigger kick --at 1.0 -d 3
 cargo run -p test-driver -- tools/test-driver/tests/kick_reverb_clean.yaml
 ```
+
+---
+
+## Realtime audio (Linux)
+
+Paraclete requests `SCHED_FIFO` realtime scheduling on the audio thread for
+glitch-free playback under load.  Two paths are tried automatically at startup:
+
+1. **rtkit** — D-Bus service on PipeWire/PulseAudio desktops.  Works with zero
+   configuration on Debian, Ubuntu, Fedora.
+2. **Raw `pthread_setschedparam`** — works if the user has `rtprio` limits
+   (common on Arch via `realtime-privileges`).
+
+**Setup per distro:**
+
+| Distro | Package / config |
+|---|---|
+| Arch | `sudo pacman -S realtime-privileges rtkit && sudo usermod -a -G realtime $USER` (log out/in) |
+| Debian / Ubuntu | `rtkit` is installed with `pipewire` or `pulseaudio` — no extra steps |
+| Fedora | `sudo dnf install realtime-setup && sudo usermod -a -G realtime $USER` (log out/in) |
+| Other | `sudo setcap cap_sys_nice=eip target/release/paraclete` |
+
+If neither path succeeds, audio runs under normal scheduling with a warning —
+fine for light use, may produce underruns under heavy load.
 
 ---
 
@@ -154,7 +210,8 @@ crates/
   paraclete-app              GPL3 — binary entry point
   paraclete-clap             GPL3 — CLAP plugin output
   paraclete-clap-host        GPL3 — CLAP host (loads third-party .clap files)
-  paraclete-tui              GPL3 — terminal UI
+  paraclete-tui              GPL3 — terminal UI (display-only)
+  paraclete-theotokos        GPL3 — keyboard-first performance terminal
   paraclete-graph-nodes      GPL3 — nodes owning an inner executor
   paraclete-antiphon         GPL3 — WebSocket interface server
   paraclete-machine-*        GPL3 — single-node CLAP plugins

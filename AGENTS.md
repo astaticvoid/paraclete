@@ -36,6 +36,23 @@ cargo c   # = check --workspace
 cargo cl  # = clippy --workspace
 ```
 
+## Logging
+
+`env_logger` is initialized at the top of `main()`.  All terminal output must go
+through the `log` crate — no bare `eprintln!` / `println!` in library code
+(exception: pre-main error paths, e.g. CLI argument failures before
+`env_logger::init()`).
+
+| Macro | When |
+|---|---|
+| `log::info!()` | Startup milestones, successful operations (audio started, profile loaded, RT scheduling granted) |
+| `log::warn!()` | Non-fatal issues (Launchpad not found, RT scheduling denied, rtkit unavailable) |
+| `log::error!()` | Fatal conditions that exit the process |
+
+`RUST_LOG` controls verbosity at runtime (default: `info`).  The `[paraclete]`
+prefix is **not** used in log messages — the logger adds its own module/target
+prefix.
+
 ## Headless audio testing (ADR-033)
 
 `tools/test-driver` renders the graph without hardware and asserts on the
