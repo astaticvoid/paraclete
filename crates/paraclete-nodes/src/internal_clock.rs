@@ -1,8 +1,12 @@
 use paraclete_node_api::{
     CapabilityDocument, Event, ClockPriority, TransportEvent, TransportFlags, StateBusValue, Node,
     ParamDescriptor, ParamUnit, TempoSource, PortDescriptor, PortDirection, PortType,
-    ProcessInput, ProcessOutput, TimedEvent, TICKS_PER_BEAT,
+    ProcessInput, ProcessOutput, NodeCommand, CMD_SET_PARAM, CMD_BUMP_PARAM,
+    TimedEvent, TICKS_PER_BEAT,
 };
+
+pub const CMD_CLOCK_START: u32 = 16;
+pub const CMD_CLOCK_STOP:  u32 = 17;
 
 /// The internal clock master. Provides the primary clock domain in standalone mode.
 ///
@@ -128,6 +132,34 @@ impl InternalClock {
             }
         }
     }
+
+    fn handle_commands(&mut self, commands: &[NodeCommand]) {
+        let bpm_id = ParamDescriptor::id_for_name(Self::PARAM_BPM);
+        for cmd in commands {
+            match cmd.type_id {
+                CMD_CLOCK_START => {
+                    if !self.playing {
+                        self.playing = true;
+                        self.first_tick = true;
+                    }
+                }
+                CMD_CLOCK_STOP => {
+                    self.playing = false;
+                }
+                CMD_SET_PARAM => {
+                    if cmd.arg0 as u32 == bpm_id {
+                        self.bpm = cmd.arg1.clamp(20.0, 300.0);
+                    }
+                }
+                CMD_BUMP_PARAM => {
+                    if cmd.arg0 as u32 == bpm_id {
+                        self.bpm = (self.bpm + cmd.arg1).clamp(20.0, 300.0);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 impl Node for InternalClock {
@@ -168,6 +200,8 @@ impl Node for InternalClock {
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
+        self.handle_commands(input.commands);
+
         for timed in input.events {
             if let Event::Transport(te) = timed.event {
                 if te.flags.global_stop {
@@ -236,6 +270,15 @@ mod tests {
         block_size: usize,
         in_events: &[paraclete_node_api::TimedEvent],
     ) -> Vec<Event> {
+        run_internal_clock_with_commands(node, block_size, in_events, &[])
+    }
+
+    fn run_internal_clock_with_commands(
+        node: &mut InternalClock,
+        block_size: usize,
+        in_events: &[paraclete_node_api::TimedEvent],
+        commands: &[NodeCommand],
+    ) -> Vec<Event> {
         let mut audio = AudioBuffer::new(2, block_size);
         let mut events_out = EventOutputBuffer::new(256);
         let transport = TransportInfo::default();
@@ -253,7 +296,7 @@ mod tests {
             sample_rate: 44100.0,
             block_size,
             extended_events: &slab,
-            commands: &[],
+            commands,
         };
         let mut output = ProcessOutput::new(
             &mut outs,
@@ -372,5 +415,119 @@ mod tests {
             !resumed.is_empty(),
             "clock must emit ticks after GlobalStart following a stop"
         );
+    }
+
+    #[test]
+    fn clock_start_via_command_plays_and_resets_first_tick() {
+        let mut node = InternalClock::new();
+        node.activate(44100.0, 512);
+
+        let stop = NodeCommand { target_id: 0, type_id: CMD_CLOCK_STOP, arg0: 0, arg1: 0.0 };
+        let silent = run_internal_clock_with_commands(&mut node, 512, &[], &[stop]);
+        assert!(silent.is_empty(), "must be silent after CMD_CLOCK_STOP");
+        assert!(!node.playing, "playing must be false after CMD_CLOCK_STOP");
+
+        let start = NodeCommand { target_id: 0, type_id: CMD_CLOCK_START, arg0: 0, arg1: 0.0 };
+        let resumed = run_internal_clock_with_commands(&mut node, 512, &[], &[start]);
+        assert!(!resumed.is_empty(), "must emit ticks after CMD_CLOCK_START");
+        assert!(node.playing, "playing must be true after CMD_CLOCK_START");
+
+        let first = &resumed[0];
+        match first {
+            Event::Transport(te) => {
+                assert!(te.flags.global_start,
+                    "first tick after CMD_CLOCK_START must carry global_start flag");
+                assert!(te.flags.playing);
+            }
+            _ => panic!("expected Transport event, got {:?}", first),
+        }
+    }
+
+    #[test]
+    fn clock_start_is_idempotent_does_not_reset_first_tick() {
+        let mut node = InternalClock::new();
+        node.activate(44100.0, 512);
+
+        let start = NodeCommand { target_id: 0, type_id: CMD_CLOCK_START, arg0: 0, arg1: 0.0 };
+        run_internal_clock_with_commands(&mut node, 512, &[], &[start]);
+        assert!(node.playing);
+        let first_tick_before = node.first_tick;
+
+        let redundant = run_internal_clock_with_commands(&mut node, 512, &[], &[start]);
+        assert!(!redundant.is_empty(), "still emits ticks");
+        assert_eq!(node.first_tick, first_tick_before,
+            "redundant START must not reset first_tick");
+    }
+
+    #[test]
+    fn clock_stop_is_idempotent() {
+        let mut node = InternalClock::new();
+        node.activate(44100.0, 512);
+
+        let stop = NodeCommand { target_id: 0, type_id: CMD_CLOCK_STOP, arg0: 0, arg1: 0.0 };
+        run_internal_clock_with_commands(&mut node, 512, &[], &[stop]);
+        assert!(!node.playing);
+
+        let still_silent = run_internal_clock_with_commands(&mut node, 512, &[], &[stop]);
+        assert!(still_silent.is_empty());
+        assert!(!node.playing);
+    }
+
+    #[test]
+    fn clock_stop_happens_after_start() {
+        let mut node = InternalClock::new();
+        node.activate(44100.0, 512);
+
+        let start = NodeCommand { target_id: 0, type_id: CMD_CLOCK_START, arg0: 0, arg1: 0.0 };
+        let resumed = run_internal_clock_with_commands(&mut node, 512, &[], &[start]);
+        assert!(!resumed.is_empty());
+        assert!(node.playing);
+
+        let stop = NodeCommand { target_id: 0, type_id: CMD_CLOCK_STOP, arg0: 0, arg1: 0.0 };
+        let stopped = run_internal_clock_with_commands(&mut node, 512, &[], &[stop]);
+        assert!(stopped.is_empty(), "must be silent after CMD_CLOCK_STOP");
+        assert!(!node.playing);
+    }
+
+    #[test]
+    fn clock_bpm_set_param_applies_and_clamps() {
+        let mut node = InternalClock::new();
+        node.activate(44100.0, 512);
+
+        let bpm_id = ParamDescriptor::id_for_name(InternalClock::PARAM_BPM);
+        let set_200 = NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: bpm_id as i64, arg1: 200.0 };
+        run_internal_clock_with_commands(&mut node, 512, &[], &[set_200]);
+        assert!((node.bpm - 200.0).abs() < 0.001);
+
+        let set_over = NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: bpm_id as i64, arg1: 999.0 };
+        run_internal_clock_with_commands(&mut node, 512, &[], &[set_over]);
+        assert!((node.bpm - 300.0).abs() < 0.001, "must clamp to max 300.0");
+
+        let set_under = NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: bpm_id as i64, arg1: -10.0 };
+        run_internal_clock_with_commands(&mut node, 512, &[], &[set_under]);
+        assert!((node.bpm - 20.0).abs() < 0.001, "must clamp to min 20.0");
+    }
+
+    #[test]
+    fn clock_bpm_bump_param_applies() {
+        let mut node = InternalClock::new();
+        node.activate(44100.0, 512);
+
+        let bpm_id = ParamDescriptor::id_for_name(InternalClock::PARAM_BPM);
+        let init = NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: bpm_id as i64, arg1: 140.0 };
+        run_internal_clock_with_commands(&mut node, 512, &[], &[init]);
+        assert!((node.bpm - 140.0).abs() < 0.001);
+
+        let up = NodeCommand { target_id: 0, type_id: CMD_BUMP_PARAM, arg0: bpm_id as i64, arg1: 5.0 };
+        run_internal_clock_with_commands(&mut node, 512, &[], &[up]);
+        assert!((node.bpm - 145.0).abs() < 0.001);
+
+        let down = NodeCommand { target_id: 0, type_id: CMD_BUMP_PARAM, arg0: bpm_id as i64, arg1: -3.0 };
+        run_internal_clock_with_commands(&mut node, 512, &[], &[down]);
+        assert!((node.bpm - 142.0).abs() < 0.001);
+
+        let big_down = NodeCommand { target_id: 0, type_id: CMD_BUMP_PARAM, arg0: bpm_id as i64, arg1: -999.0 };
+        run_internal_clock_with_commands(&mut node, 512, &[], &[big_down]);
+        assert!((node.bpm - 20.0).abs() < 0.001, "must clamp at floor 20.0");
     }
 }
