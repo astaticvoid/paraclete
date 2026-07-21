@@ -372,7 +372,8 @@ reopened without new session evidence.
 
 Phase specs are written per-phase in `design/phases/` (`tk0-theotokos.md`…)
 only when that phase is next to start (the house front-load rule). Reports
-append to `design/phases/tkN-report.md`.
+append to `design/phases/tkN-report.md`. **TK0 spec drafted 2026-07-21**
+(`design/phases/tk0-theotokos.md`) at ADR-036 acceptance.
 
 ### TK0 — POC: the vertical slice *(next after ADR-036 ratification; 1–2 commits)*
 
@@ -444,7 +445,7 @@ can re-cut the next phase.
 | OQ-T7 | Esc/Tmux prefix delays and `Esc`-as-cancel ergonomics | OPEN | session #1 |
 | OQ-T8 | P-lock authoring: **design** a packed lock-set command (CMD 33+ free; a lock is step+node+param+value, too wide for one `NodeCommand` — packing precedent: `CMD_SET_STEP_CONDITION`) | OPEN — no authoring path exists at all today (deserializer + tests only) | TK1 spec |
 | OQ-T13 | Composite `Rule` assembly location for TK1 track pages: reimplement in `paraclete-theotokos` (drift risk) vs extract from Antiphon to a shared home (recommended) vs app-side hoisting | OPEN — TK0 unaffected (engine-local Rules) | TK1 spec |
-| OQ-T14 | Transport extension shape: clock node-specific commands (start/stop + `bpm` bank param — recommended, keeps mutation on the declared plane) vs fixing `ConfigMessage::SetPlaying` to inject `TransportEvent`s | OPEN — blocks TK0's `Space` | TK0 spec |
+| OQ-T14 | Transport extension shape: clock node-specific commands (start/stop + `bpm` bank param — recommended, keeps mutation on the declared plane) vs fixing `ConfigMessage::SetPlaying` to inject `TransportEvent`s | **DECIDED 2026-07-21 (tk0 spec C0):** clock node commands `CMD_CLOCK_START/STOP` (16/17) + SET/BUMP on `bpm` | TK0 spec |
 | OQ-T9 | Should Theotokos publish `/script/theotokos/selected` so Theoria/Launchpad follow its track selection | OPEN — default yes | TK1 |
 | OQ-T10 | Scope tap placement: master only vs per-track | OPEN — default master | TK2 spec |
 | OQ-T11 | Temp save/reload depends on P11 engine scope — ship UI-only or defer | OPEN | TK2 spec |
@@ -453,6 +454,12 @@ can re-cut the next phase.
 ---
 
 ## Amendment log
+
+**2026-07-21 (evening) — ADR-036 ACCEPTED.** Ratified by the user.
+Standing defect-filing directive issued (handoff guardrail 7); BUG-032
+(transport) and BUG-033 (TUI stale path) filed under it. TK0 spec drafted
+(`design/phases/tk0-theotokos.md`); OQ-T14 decided (clock node commands,
+tk0 C0).
 
 **2026-07-21 — pre-ratification design review (subagent).** Verified 9/10
 lettered code claims line-for-line; architecture, layer story, reuse
