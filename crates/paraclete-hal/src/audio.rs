@@ -35,9 +35,15 @@ mod lrt {
         let param = SchedParam { sched_priority: 50 };
         let ret = unsafe { pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) };
         if ret != 0 {
-            log::warn!("realtime priority: pthread_setschedparam SCHED_FIFO failed (errno={})", ret);
+            log::warn!(
+                "realtime priority: SCHED_FIFO failed (errno={}). \
+                 Audio will run without RT scheduling — may produce underruns under load. \
+                 Fix: ensure @audio rtprio in /etc/security/limits.conf, or: \
+                 sudo setcap cap_sys_nice=eip <binary>",
+                ret,
+            );
         } else {
-            log::info!("realtime priority: set SCHED_FIFO prio=50 on audio thread");
+            log::info!("realtime priority: SCHED_FIFO prio=50 on audio thread");
         }
     }
 }

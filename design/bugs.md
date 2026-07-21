@@ -6,7 +6,7 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ## Status (2026-07-21)
 
-**Actively open:** BUG-027 (engine exonerated by measurement — pending user headphone A/B, see addendum), INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036).
+**Actively open:** BUG-027 (engine exonerated by measurement — pending user headphone A/B, see addendum), INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), INFRA-009 (rtkit integration for unprivileged RT scheduling on Linux).
 **Fixed, pending hardware verification:** BUG-012 (output ring buffer + FTZ/DAZ `0f3d17b`, `BufferSize::Default` decision `c3c56db` — the chunk-and-discard distortion path is gone; awaiting Linux ALSA re-test of the session-#3 distortion).
 **Trigger-based (fix when named trigger fires):** BUG-002, BUG-003, BUG-006.
 **Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, INFRA-001, INFRA-002, INFRA-003, INFRA-004, INFRA-007.
@@ -1028,9 +1028,10 @@ constant.
 
 **Fixed:** `pthread_setschedparam(SCHED_FIFO, prio=50)` at the top of
 `audio_callback_f32` (raw FFI, no `libc` dep; Linux-only; once per process
-via `AtomicBool`). The callback runs on the cpal-owned audio thread where
-the priority must be set — cannot be done from the main thread's
-`AudioBackend::start`. Requires `CAP_SYS_NICE` or `setcap` on the binary.
+via `AtomicBool`). Works without `setcap` on systems with `@audio rtprio`
+in `limits.conf` (standard on PipeWire/PulseAudio desktops). Falls back to
+non-RT with a warning on failure. rtkit (D-Bus) integration deferred to
+INFRA-009.
 
 **Severity:** Low for idle, Medium under load — audio thread may be descheduled
 **Phase found:** W2 paired session #3 (2026-07-14)
@@ -1181,3 +1182,32 @@ of I/O. Theotokos (ADR-036) is designed around this — it reads keys on the
 main thread and is mutually exclusive with the emulator via `--theotokos` —
 so the fix is gated on the Theotokos track rather than blocking it. If Theotokos
 lands and the emulator stays as the no-hardware dev tool, fix it there.
+
+---
+
+### INFRA-009 — rtkit integration for unprivileged realtime scheduling
+
+**Severity:** Medium (distribution blocker — without rtkit or `setcap`,
+the audio thread runs under CFS and may underrun under load)
+**Phase found:** INFRA-006 follow-up (2026-07-21)
+**Description:** INFRA-006 added raw `pthread_setschedparam(SCHED_FIFO)`
+which works on systems with `@audio rtprio` in `limits.conf` (common on
+desktop Linux), but falls back to non-RT if that's not configured. rtkit
+(`org.freedesktop.RealtimeKit1` over D-Bus) is the standard mechanism
+PipeWire, JACK, PulseAudio, and Ardour use to grant unprivileged realtime
+scheduling — it would make Paraclete work on **every** desktop Linux
+install with zero configuration.
+**Location:** `crates/paraclete-hal/src/audio.rs` `lrt::try_set_realtime`
+**Fix direction:** Before trying raw `pthread_setschedparam`, attempt the
+rtkit D-Bus path:
+1. Connect to the system bus at `DBUS_SYSTEM_BUS_ADDRESS`
+2. Send `MakeThreadRealtime(tid, priority)` to
+   `org.freedesktop.RealtimeKit1`
+3. On success, rtkit calls `pthread_setschedparam` on the thread itself
+   (the return value is the granted max priority — may be lower than
+   requested)
+4. Fall back to the raw `pthread_setschedparam` if rtkit is unavailable
+Implementation: raw D-Bus wire protocol (~150 lines, deps-free, Linux-only
+`#[cfg]` module) — no `dbus` or `zbus` crate needed. The D-Bus auth
+handshake for the system bus is a single `AUTH EXTERNAL <uid>\r\n` line;
+the method call is a fixed-size message with standard headers.
