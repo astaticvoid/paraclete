@@ -12,6 +12,8 @@
 //! Handshake and frame-routing decisions are pure functions so the protocol
 //! behaviour is unit-testable without sockets.
 
+#[allow(unused_imports)]
+use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc;

@@ -684,7 +684,9 @@ impl NodeConfigurator {
             {
                 handle.deliver(hw_out);
             } else if self.warned_missing_handles.insert(device_id) {
-                eprintln!("[deliver] no output handle for device {device_id} ({} led updates dropped; further drops for this device are silent); registered: {:?}",
+                log::warn!(
+                    "no output handle for device {device_id} ({} led updates dropped; \
+                     further drops for this device are silent); registered: {:?}",
                     hw_out.led_updates.len(),
                     self.output_handles.iter().map(|(id, _)| *id).collect::<Vec<_>>());
             }

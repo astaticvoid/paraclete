@@ -322,9 +322,9 @@ fn register_builtins(engine: &mut Engine, state: Rc<RefCell<ScriptState>>) {
                             }
                         }
                         Ok(i) => {
-                            eprintln!("[rhai] on_surface_event: negative device id {i} ignored")
+                            log::warn!("on_surface_event: negative device id {i} ignored")
                         }
-                        Err(t) => eprintln!("[rhai] on_surface_event: non-integer device id ({t})"),
+                        Err(t) => log::warn!("on_surface_event: non-integer device id ({t})"),
                     }
                 }
             },
@@ -418,7 +418,7 @@ fn register_builtins(engine: &mut Engine, state: Rc<RefCell<ScriptState>>) {
 
     // ── debug_print(msg) ──────────────────────────────────────────────────────
     engine.register_fn("debug_print", |msg: &str| {
-        eprintln!("[rhai] {msg}");
+        log::debug!("[rhai] {msg}");
     });
 
     // ── get_step_state(node_id) → String ─────────────────────────────────────
@@ -613,7 +613,7 @@ impl ScriptingEngine {
         if let Err(e) = self.engine.call_fn::<()>(&mut scope, &ast, "on_load", ()) {
             if !matches!(*e, EvalAltResult::ErrorFunctionNotFound(ref n, _) if n.starts_with("on_load"))
             {
-                eprintln!("[rhai] on_load error ({name}): {e}");
+                log::error!("on_load error ({name}): {e}");
             }
         }
 
@@ -657,7 +657,7 @@ impl ScriptingEngine {
                     // FnPtr::call(engine, ast, args) — scope is embedded in captured closures.
                     if let Err(e) = handler.call::<()>(&self.engine, &ctx.ast, (event_dyn.clone(),))
                     {
-                        eprintln!("[rhai] surface-event handler error ({ctx_name}): {e}");
+                        log::error!("surface-event handler error ({ctx_name}): {e}");
                     }
                 }
             }
