@@ -75,10 +75,13 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
 }
 
 fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
-    let mut rows: Vec<Line> = Vec::with_capacity(data.track_names.len().max(1) * 2);
+    let mut rows: Vec<Line> = Vec::with_capacity(data.track_names.len().max(1) * 3);
     for t in 0..data.track_names.len() {
         rows.push(render_track_row(t, data, 0));
         rows.push(render_track_row(t, data, PAGE_SIZE));
+        if t + 1 < data.track_names.len() {
+            rows.push(Line::from(""));
+        }
     }
 
     let para = Paragraph::new(rows).block(
@@ -89,12 +92,17 @@ fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
     frame.render_widget(para, area);
 }
 
-fn render_track_row(track_idx: usize, data: &RenderData, window: usize) -> Line<'_> {
-    let window_base = data.page_window * PAGE_SIZE * 2;
-    let window = window_base + window;
+fn render_track_row(track_idx: usize, data: &RenderData, row_off: usize) -> Line<'_> {
+    let window = data.page_window * PAGE_SIZE * 2 + row_off;
     let mut spans: Vec<Span> = Vec::with_capacity(PAGE_SIZE + 2);
 
-    let label = format!("{:>2}:", track_idx + 1);
+    // Only the upper row gets the track label.
+    let is_upper = row_off == 0;
+    let label = if is_upper {
+        format!("{:>2}:", track_idx + 1)
+    } else {
+        "   ".to_string()
+    };
     spans.push(Span::styled(
         label,
         Style::default().fg(if track_idx == data.active_track {
