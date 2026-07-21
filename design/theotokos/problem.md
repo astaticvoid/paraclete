@@ -1,8 +1,8 @@
-# Praxis — Problem Statement
+# Theotokos — Problem Statement
 
 > **Stage 1 of a staged design.** This document was written first and states
 > the problem only. The design is appended aspect-by-aspect in
-> `design/praxis/design.md` as it is determined, so that a different session
+> `design/theotokos/design.md` as it is determined, so that a different session
 > can pick up the work at any point. Do not write code against this track
 > until ADR-036 is ratified.
 >
@@ -74,7 +74,7 @@ data, the state bus — which this track consumes as its **second renderer**
 
 The fork question (does this reorganize the design tree?) is answered in
 ADR-036: this is a **new track alongside the W-track**, not a fork of it.
-Track-local living documents live in `design/praxis/`; ADRs, phase specs,
+Track-local living documents live in `design/theotokos/`; ADRs, phase specs,
 session notes, and the roadmap stay in their canonical locations, exactly
 as the W-track does.
 

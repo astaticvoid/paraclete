@@ -1,10 +1,10 @@
-# ADR-036 — Praxis: Keyboard-First Performance Terminal
+# ADR-036 — Theotokos: Keyboard-First Performance Terminal
 
 **Status:** 🟡 **Proposed (2026-07-21)** — user ratification required before
 any code (handoff guardrail: new ADRs gate on the user).
 
-**Context documents:** `design/praxis/problem.md` (problem statement),
-`design/praxis/design.md` (full staged design), ADR-018 (cellular
+**Context documents:** `design/theotokos/problem.md` (problem statement),
+`design/theotokos/design.md` (full staged design), ADR-018 (cellular
 architecture), ADR-019 (universal parameter control), ADR-026 (terminal as
 instrument display), ADR-031/ADR-032 (Antiphon; the universal node-view
 contract), `design/interface-plan.md` (W-track and WT).
@@ -37,17 +37,17 @@ session notes, 2026-07-21):
 
 ## Decision
 
-1. **A new interface track — Praxis — alongside the W-track, not a fork of
-   it.** Track-local living docs in `design/praxis/`; ADRs, phase specs,
+1. **A new interface track — Theotokos — alongside the W-track, not a fork of
+   it.** Track-local living docs in `design/theotokos/`; ADRs, phase specs,
    session notes, and roadmap entries stay in their canonical locations
    (the W-track pattern). WT (Theoria/term parity client) is unaffected;
-   convergence is revisited with session evidence at PRX3 (OQ-P12).
+   convergence is revisited with session evidence at TK3 (OQ-T12).
 
-2. **New crate `paraclete-praxis`** (GPL3 platform crate, same standing as
+2. **New crate `paraclete-theotokos`** (GPL3 platform crate, same standing as
    `paraclete-tui`). Dependencies: `ratatui`, `crossterm` (already
    workspace-pinned), `paraclete-node-api`. **No new dependencies.**
 
-3. **In-process semantic plane; environment, not a node.** Praxis reads the
+3. **In-process semantic plane; environment, not a node.** Theotokos reads the
    shared `StateBusHandle` + startup cap-doc cache, and mutates only via
    ADR-019 commands and the declared sequencer vocabulary (16–32), drained
    as `Vec<NodeCommand>` by the app each main-loop iteration — the
@@ -57,10 +57,10 @@ session notes, 2026-07-21):
    `paraclete-tui`, the scripting engine, and the Antiphon server.
    **No JSON, no sockets, no new protocol.**
 
-4. **Views = `Rule` + state bus + renderer.** Praxis renders param pages,
+4. **Views = `Rule` + state bus + renderer.** Theotokos renders param pages,
    envelope groups, and affordance hints from `Rule` — the second consumer
    of the universal node-view contract. New engines get a terminal view
-   with zero Praxis changes. No terminal-only side doors into the engine.
+   with zero Theotokos changes. No terminal-only side doors into the engine.
 
 5. **Keyboard-first modal interaction** — home-row steps (`asdfjkl;`),
    top-row tracks (`qweruiop`, invariant across modes), a numpad
@@ -70,13 +70,13 @@ session notes, 2026-07-21):
    families, and a `:` command line for the long tail. This ADR freezes the
    **model** (modes, focus slots, semantic-plane-only mutation); **chord
    grammar is deliberately not frozen** — it converges through the
-   usability-session protocol in `design/praxis/design.md` §6.
+   usability-session protocol in `design/theotokos/design.md` §6.
 
 6. **Terminal ownership on the main thread.** Raw mode, alternate screen,
    and keyboard polling live on the main thread (never in `process()`).
-   Enabled by `--praxis`; mutually exclusive with the emulator and the old
+   Enabled by `--theotokos`; mutually exclusive with the emulator and the old
    TUI (one screen owner). `paraclete-tui` stays in place; its retirement
-   is a separate user decision after Praxis reaches parity-plus.
+   is a separate user decision after Theotokos reaches parity-plus.
 
 7. **Live visualization extensions, pre-approved in direction, frozen per
    phase spec:** (b) `EnvelopeNode`/`LfoNode` publish
@@ -92,7 +92,7 @@ session notes, 2026-07-21):
 
 The in-process transport does not exist (WT would create it). Building it
 first adds session/serialization machinery for zero in-process benefit —
-the semantic plane already exists as plain function calls. Praxis keeps its
+the semantic plane already exists as plain function calls. Theotokos keeps its
 `Action`→`NodeCommand` resolution pure and transport-free so a later
 in-process Antiphon client remains possible without redesign.
 
@@ -106,7 +106,7 @@ remain the hardware-surface mechanism, untouched.
 ### C. Extend `paraclete-tui` (rejected)
 
 It is display-only with a different purpose (ADR-026 feedback surface).
-Accreting a modal input machine onto it entangles two designs; Praxis
+Accreting a modal input machine onto it entangles two designs; Theotokos
 supersedes by replacement (flag-gated), not by growth.
 
 ### D. Wait for WT (rejected)
@@ -116,36 +116,38 @@ WT is editor/parity-first (generic views in the terminal). The gap is a
 
 ## Consequences
 
-- **New:** `crates/paraclete-praxis`; `--praxis` app flag; phase specs
-  `design/phases/prxN-*.md`; session notes `design/sessions/praxis-N.md`;
-  `/script/praxis/*` state-bus namespace (in-process writes only).
+- **New:** `crates/paraclete-theotokos`; `--theotokos` app flag; phase specs
+  `design/phases/tkN-*.md`; session notes `design/sessions/theotokos-N.md`;
+  `/script/theotokos/*` state-bus namespace (in-process writes only).
 - **Testing posture:** pure keymap/resolution unit tests, `TestBackend`
   render tests (no insta snapshots — SPIKE-005), test-driver scenarios for
-  the command contract, and a **paired usability session gating every PRX
+  the command contract, and a **paired usability session gating every TK
   phase**. No chord grammar is frozen without session evidence.
 - **Hard constraints reaffirmed:** no audio-thread input; no alloc/lock/
   block in `process()` (the scope tap uses the existing SPSC idiom);
-  layer-clean (`paraclete-praxis` depends on `paraclete-node-api` only);
+  layer-clean (`paraclete-theotokos` depends on `paraclete-node-api` only);
   no hardcoded counts — track count, page count, and slot bindings come
   from cap-docs/`Rule`, and the POC's hardcoded ids are replaced by
-  discovery in PRX1.
-- **Naming:** "Praxis" adopts the house vocabulary already assigned in
-  `interface-plan.md` ("the controls are praxis"). Third-party marks remain
+  discovery in TK1.
+- **Naming:** "Theotokos" (Θεοτόκος, "the bearer") continues the liturgical
+  register (Antiphon, Theoria, kerygma, epiclesis); it is the shipped
+  embodiment of the `interface-plan.md` vocabulary ("the controls are
+  praxis") without spending the plain word. Third-party marks remain
   design-prose analogy only; the keymap, modes, and UI strings use plain or
   house words.
-- **Doc trail:** `design/praxis/problem.md` + `design.md` are the living
-  design; this ADR's status line and implementation notes update as PRX
+- **Doc trail:** `design/theotokos/problem.md` + `design.md` are the living
+  design; this ADR's status line and implementation notes update as TK
   phases land (append-only body per house rule).
 
 ## Relation to other ADRs
 
-- **ADR-018** — Praxis is environment (main-thread plumbing), not a node.
+- **ADR-018** — Theotokos is environment (main-thread plumbing), not a node.
 - **ADR-019** — the only mutation path; relative-only `CMD_BUMP_PARAM` for
   all performance motion.
 - **ADR-026** — fulfills "the terminal is the instrument's display" with an
   *interactive* terminal; `paraclete-tui` untouched until the retirement
   decision.
-- **ADR-031/032** — Praxis is the second `Rule` consumer; no protocol
+- **ADR-031/032** — Theotokos is the second `Rule` consumer; no protocol
   changes, no Antiphon dependency.
-- **ADR-033/035** — the test-driver verifies the command contract Praxis
+- **ADR-033/035** — the test-driver verifies the command contract Theotokos
   emits; baselines guard the engine beneath it.

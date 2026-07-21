@@ -1,4 +1,4 @@
-# Praxis — Design (staged, append-only)
+# Theotokos — Design (staged, append-only)
 
 > **How this document grows.** The problem is fixed (`problem.md`). The
 > design below is appended **aspect by aspect**, each marked:
@@ -10,7 +10,7 @@
 > - **OPEN** — unresolved; has an entry in the Open Questions table.
 >
 > A new session picks up by reading `problem.md` → this file top to bottom →
-> the Open Questions table → the current PRX phase spec (when written).
+> the Open Questions table → the current TK phase spec (when written).
 > Stages are dated and never rewritten; corrections are appended with a new
 > dated note. Per naming policy, third-party marks appear here only as
 > design-prose analogy; never in identifiers.
@@ -27,13 +27,18 @@ deliberately HYPOTHESIS-grade; architecture is DETERMINED-grade.
 
 ## §1. Positioning and name — DETERMINED
 
-**Praxis.** `interface-plan.md` already fixed the house vocabulary: "The
-views are theoria; the controls are praxis; a surface is both." Theoria is
-the contemplative/editing surface family; **Praxis is the action/performance
-surface**: the keyboard-first modal terminal. Crate: `paraclete-praxis`
-(GPL3 platform crate, same standing as `paraclete-tui`).
+**Theotokos** (Θεοτόκος, "the bearer") — same liturgical register as
+Antiphon, Theoria, kerygma, epiclesis: the surface that *carries* the
+instrument in performance. It is the concrete embodiment of the house
+vocabulary `interface-plan.md` already fixed: "The views are theoria; the
+controls are praxis; a surface is both." Theoria is the
+contemplative/editing surface family; **Theotokos is the praxis side as a
+shipped component**: the keyboard-first modal terminal. Crate:
+`paraclete-theotokos` (GPL3 platform crate, same standing as
+`paraclete-tui`). Phases are **TK0–TK3**; session notes
+`design/sessions/theotokos-N.md`.
 
-Praxis targets **parity-plus with the web GUI for performance**: anything
+Theotokos targets **parity-plus with the web GUI for performance**: anything
 you can perform from the tablet you can perform from the keyboard, faster.
 It is *not* an editor replacement — deep editing stays on glass and on the
 composition floor.
@@ -46,7 +51,7 @@ composition floor.
 
 ADR-032 made a node's view a **serializable data contract** (`Rule`: page
 groups, param pages, macros, affordances, envelope groups) living on the
-cap-doc. The web client is its first renderer. **Praxis is the second** —
+cap-doc. The web client is its first renderer. **Theotokos is the second** —
 the proof that ADR-032 is the *universal node-view contract* rather than a
 web feature:
 
@@ -58,24 +63,24 @@ web feature:
                 │                                   │
         ┌───────┴───────────────┬───────────────────┴──────────┐
         ▼                       ▼                              ▼
-  theoria-web renderer    praxis renderer (ratatui)      future: WT / hw screens
+  theoria-web renderer    theotokos renderer (ratatui)      future: WT / hw screens
 ```
 
 A new engine ships a `ViewPlugin` impl and gets a terminal view **for
 free**. No terminal-only side doors: every mutation goes through ADR-019
 (`CMD_SET_PARAM`/`CMD_BUMP_PARAM`) or the declared sequencer command
 vocabulary (16–32) — the same semantic plane Antiphon exposes over JSON.
-Praxis speaks it in-process, without JSON.
+Theotokos speaks it in-process, without JSON.
 
 ### 2.2 Process topology
 
-Praxis is **environment, not a node** — the same ADR-018 exemption shape as
+Theotokos is **environment, not a node** — the same ADR-018 exemption shape as
 `paraclete-tui`, the scripting engine, and the Antiphon server (transport
 plumbing ticked on the main thread). It is **not** a `Surface` node and
 does **not** route through Rhai:
 
 - **Why not a Surface/gateway/profile:** surface events exist so *hardware*
-  semantics can live in profiles. Praxis's modal state machine is native,
+  semantics can live in profiles. Theotokos's modal state machine is native,
   latency-critical, and must be unit-testable; Rhai adds indirection and
   buys nothing here. Profiles remain the hardware-surface mechanism,
   untouched.
@@ -85,16 +90,16 @@ does **not** route through Rhai:
   iteration → `conf.send_command()` — byte-for-byte the
   `scripting.take_pending_commands()` / `antiphon.drain_commands()`
   pattern. Key→command latency ≈ one main-loop tick (~1 ms).
-- **Cross-surface awareness:** Praxis may read `/context/*` and `/script/*`
-  and will publish its own `/script/praxis/*` scratch (e.g.
-  `/script/praxis/selected` so other surfaces can follow its track
+- **Cross-surface awareness:** Theotokos may read `/context/*` and `/script/*`
+  and will publish its own `/script/theotokos/*` scratch (e.g.
+  `/script/theotokos/selected` so other surfaces can follow its track
   selection) via direct `StateBusHandle` writes — in-process, not
   sandboxed. Reconciliation with Theoria is the platform-wide
   last-writer-wins model; no new rules.
 
 ### 2.3 Crate shape and dependencies
 
-`crates/paraclete-praxis` — deps: `ratatui 0.26`, `crossterm 0.27` (both
+`crates/paraclete-theotokos` — deps: `ratatui 0.26`, `crossterm 0.27` (both
 already workspace-pinned), `paraclete-node-api` only. **No new
 dependencies.** It never sees `NodeConfigurator` (layer-clean: app drains
 its command queue, exactly like scripting).
@@ -107,18 +112,18 @@ Internal module split (this is where composability is enforced):
 | `action` | `Action` enum (semantic intents) + `resolve(&[Action], &CapDocCache, &Model) -> Vec<NodeCommand>` | **pure** — mirrors Antiphon's `resolve_semantic` |
 | `model` | view-model: subscribes state bus, holds mode/track/page/focus state, builds per-mode view state | main-thread, I/O at edges only |
 | `render` | ratatui widgets per mode (canvas + braille) | `TestBackend`-testable |
-| `lib` | `PraxisApp { model, pending: Vec<NodeCommand> }`, `tick(&mut Terminal, &StateBusHandle, now_ms)`, `take_pending_commands()` | same tick pattern as `TuiApp` |
+| `lib` | `TheotokosApp { model, pending: Vec<NodeCommand> }`, `tick(&mut Terminal, &StateBusHandle, now_ms)`, `take_pending_commands()` | same tick pattern as `TuiApp` |
 
 ### 2.4 Terminal ownership — main thread, exclusive
 
-Praxis owns raw mode, the alternate screen, and keyboard input **on the
+Theotokos owns raw mode, the alternate screen, and keyboard input **on the
 main thread**. The Launchpad emulator currently polls crossterm *inside
-`process()` on the audio thread* — a known defect Praxis must not copy.
+`process()` on the audio thread* — a known defect Theotokos must not copy.
 Keyboard enhancement flags (kitty protocol: press/release/repeat
 distinction) are enabled when the terminal supports them, with a
-repeat-event fallback when not (OPEN — OQ-P6).
+repeat-event fallback when not (OPEN — OQ-T6).
 
-Startup flags: `--praxis` enables; it implies `--no-emulator` and skips the
+Startup flags: `--theotokos` enables; it implies `--no-emulator` and skips the
 old TUI (one owner of the screen). `paraclete-tui` is left in place during
 the track; retirement is a later user decision (ADR-036 §Alternatives).
 
@@ -131,7 +136,7 @@ the track; retirement is a later user decision (ADR-036 §Alternatives).
 | cap-docs + `Rule` (ADR-032) | param pages, envelope groups, affordance hints, macros |
 | `StateBusHandle` subscribe/poll | all live values |
 | `/transport/*`, `/node/*/state/*`, `/engine/*` paths | transport, playheads, CPU meter |
-| `Antiphon server.rs::resolve_semantic` | *concept* — name→id resolution + clamp against cap-doc; Praxis implements its own pure `resolve` on the same rules |
+| `Antiphon server.rs::resolve_semantic` | *concept* — name→id resolution + clamp against cap-doc; Theotokos implements its own pure `resolve` on the same rules |
 | `tools/test-driver` command tables | reference vocabulary for `Action`; headless verification of command effects |
 | `TuiApp` tick/shutdown/`TestBackend` test pattern | main-loop integration + render tests |
 | Main-loop drain pattern (scripting, Antiphon) | command egress |
@@ -139,10 +144,10 @@ the track; retirement is a later user decision (ADR-036 §Alternatives).
 ### 2.6 Gaps that require extension (only these)
 
 1. **Live visualization data** — envelope level, LFO phase, output scope
-   are not published anywhere today. §5.3; PRX2.
+   are not published anywhere today. §5.3; TK2.
 2. **P-lock authoring path** — the sequencer stores per-step locks (P3),
    but no current surface authors them; the exact command/event surface
-   needs confirming in the PRX1 spec. OPEN — OQ-P8.
+   needs confirming in the TK1 spec. OPEN — OQ-T8.
 
 ---
 
@@ -170,7 +175,7 @@ modifiers for the hot path).
 | `Ctrl-C` | quit |
 | `q w e r u i o p` | **select track 1–8 — invariant in every mode** (muscle memory rule #1) |
 | `t` | tap tempo (global; this is why `t` stays out of the track row) |
-| `y` | reserved (yank/copy family; assigned in PRX1) |
+| `y` | reserved (yank/copy family; assigned in TK1) |
 
 ### 3.2 SEQ mode — DETERMINED core, HYPOTHESIS details
 
@@ -181,10 +186,10 @@ window under the home row.
 |---|---|
 | `a s d f j k l ;` | toggle steps 1–8 of the current page on the active track (`CMD_TOGGLE_STEP`) |
 | `[` / `]` | previous / next 8-step page window (up to 64 steps) |
-| hold step key + jog | **p-lock** (HYPOTHESIS — needs kitty release events; fallback: leader-focus, §OQ-P1) |
+| hold step key + jog | **p-lock** (HYPOTHESIS — needs kitty release events; fallback: leader-focus, §OQ-T1) |
 | `Enter` | step-focus toggle: focus step under cursor / last-touched step for p-lock editing; `Esc` releases |
 | `x` | clear active track pattern (confirm in echo area) |
-| `,` … | leader family: copy/paste steps, set length, set speed, conditions, micro-timing (grammar fixed in PRX1) |
+| `,` … | leader family: copy/paste steps, set length, set speed, conditions, micro-timing (grammar fixed in TK1) |
 
 ### 3.3 PERF mode — the performance cluster — model DETERMINED, chords HYPOTHESIS
 
@@ -201,7 +206,7 @@ leader sequence.
 
 ```
   7   8   9        A↑  B↑  C↑
-  4   5   6        (free — PRX1 assigns: 4/5/6 candidate for direct page select)
+  4   5   6        (free — TK1 assigns: 4/5/6 candidate for direct page select)
   1   2   3        A↓  B↓  C↓
   0       .   ⏎    ALT-layer (hold)   reset   value-entry
   +   -   *   /    coarse jog pair / step-size ×2 ÷2
@@ -213,9 +218,9 @@ leader sequence.
   `*`/`/` step-size scaling only. Sessions decide.
 - **`0` held = momentary ALT layer** (thumb): while held, `qweruiop` are
   momentary mutes, home row fires fills/trigs. The one-hand performance
-  money key. PRX2.
+  money key. TK2.
 - **`.`** reset slot A to default; `,`+`.` resets B. HYPOTHESIS.
-- **`+`/`-`** semantics OPEN — OQ-P4 (coarse jog vs step-size).
+- **`+`/`-`** semantics OPEN — OQ-T4 (coarse jog vs step-size).
 
 **Param pages (left hand):** number row `1`–`6` selects the selected
 track's param page in `Rule` order (typically SRC/FLTR/AMP/FX/MOD/TRIG);
@@ -225,8 +230,8 @@ key will do** (the legibility lesson from sessions s1/s2).
 
 ### 3.4 Further modes — scoped, detailed in their phase specs
 
-- **MIX** (PRX2): per-track level/sends; rows as faders on jogs.
-- **CHAIN** (PRX2): pattern bank, cue-blink, chain push/clear, page-loop
+- **MIX** (TK2): per-track level/sends; rows as faders on jogs.
+- **CHAIN** (TK2): pattern bank, cue-blink, chain push/clear, page-loop
   windows — the P10 command set given a performance layout.
 - **MODE** count stays small (Emacs lesson: few major modes, rich leader
   families). New modes are a design-doc decision, not an implementation
@@ -251,10 +256,10 @@ key will do** (the legibility lesson from sessions s1/s2).
    concurrently. Three slots exist because the numpad offers three columns;
    two-handed two-slot sweeps must never require a modifier.
 5. **Absolute entry** via the command line (`:set cutoff 0.7`) from day
-   one; numpad type-in entry is OPEN — OQ-P5.
+   one; numpad type-in entry is OPEN — OQ-T5.
 6. **P-locks**: a jog while a step is focused/held routes to the step's
    lock, not the live bank (per-cycle `node_locks` semantics already in the
-   engines; authoring path OQ-P8). The focused step is always visible.
+   engines; authoring path OQ-T8). The focused step is always visible.
 
 ---
 
@@ -289,7 +294,7 @@ and values are always on screen.
   idiom), yellow-flash on recent change.
 - **Frame policy**: dirty-flag redraw, ≤60 fps, canvases ≤30 fps.
 
-### 5.3 Live data (the one real gap) — PRX2, approved direction
+### 5.3 Live data (the one real gap) — TK2, approved direction
 
 1. **(a) Static-from-params** is the POC baseline — always works, for
    every node, forever.
@@ -301,7 +306,7 @@ and values are always on screen.
    test-driver `CaptureRing` pattern: `try_push`, drop-on-full — the same
    real-time-safe shape as the state-bus and debug-event SPSCs). Master
    scope first; per-track taps only if sessions ask. Details frozen in the
-   PRX2 spec; audio-thread rules unchanged.
+   TK2 spec; audio-thread rules unchanged.
 
 ---
 
@@ -314,11 +319,11 @@ Testing is layered so that *feel* is the only thing a human must judge:
 | Keymap | pure `map_key` unit tests (crossterm `KeyEvent`s are constructible) | wrong action for chord, mode leaks, dead keys |
 | Resolution | pure `resolve` tests against fixture cap-docs | wrong node/param, clamp errors |
 | Render | ratatui `TestBackend` buffer assertions (existing `tui_tests.rs` pattern; **no insta snapshots** — SPIKE-005 verdict stands) | layout breakage, missing bindings in mode line |
-| Engine effect | `tools/test-driver` scenarios asserting the same commands Praxis emits | regressions in the command contract itself |
+| Engine effect | `tools/test-driver` scenarios asserting the same commands Theotokos emits | regressions in the command contract itself |
 | Feel | **paired usability session after every phase** | everything that matters most |
 
 Session protocol (adopts the W-track instrument): notes append-only in
-`design/sessions/praxis-N.md`; each session ends with an explicit
+`design/sessions/theotokos-N.md`; each session ends with an explicit
 **converged / revise / park** verdict per hypothesis tested; the roadmap
 and this file's HYPOTHESIS marks are updated in the same commit as the
 session notes.
@@ -329,13 +334,13 @@ reopened without new session evidence.
 
 ---
 
-## §7. Roadmap — PRX phases with testing cycles
+## §7. Roadmap — TK phases with testing cycles
 
-Phase specs are written per-phase in `design/phases/` (`prx0-praxis.md`…)
+Phase specs are written per-phase in `design/phases/` (`tk0-theotokos.md`…)
 only when that phase is next to start (the house front-load rule). Reports
-append to `design/phases/prxN-report.md`.
+append to `design/phases/tkN-report.md`.
 
-### PRX0 — POC: the vertical slice *(next after ADR-036 ratification; 1–2 commits)*
+### TK0 — POC: the vertical slice *(next after ADR-036 ratification; 1–2 commits)*
 
 Prove posture and feel, nothing else.
 
@@ -348,30 +353,30 @@ Prove posture and feel, nothing else.
 - Tests: keymap + resolve unit suites; TestBackend smoke for both modes.
 - **Exit:** all tests green; agent smoke-run; **usability session #1**
   (user plays it for 30 minutes on the default instrument; findings
-  recorded). Explicit go/no-go on PRX1 scope.
+  recorded). Explicit go/no-go on TK1 scope.
 
-### PRX1 — Editing depth *(scope re-cut by session #1)*
+### TK1 — Editing depth *(scope re-cut by session #1)*
 
 - Discovery-driven binding (no hardcoded ids; `InstrumentIds`/cap-docs).
 - Full `Rule` param pages incl. sub-pages; explicit slot rebinding leader
-  grammar; `y` yank/copy family; step-focus p-locks (OQ-P1, OQ-P8);
+  grammar; `y` yank/copy family; step-focus p-locks (OQ-T1, OQ-T8);
   pattern select + cue; `:` command line real (fuzzy over a generated
   command index).
 - **Session #2** → verdicts on chord grammar.
 
-### PRX2 — Performance layer
+### TK2 — Performance layer
 
 - Numpad-`0` momentary ALT layer: mutes, fills; CHAIN mode; tap tempo;
   temp save/reload *(dependency: P11 scope — flagged, may defer)*;
-  §5.3(b)+(c) live visualization; numpad-less fallback layer (OQ-P3);
+  §5.3(b)+(c) live visualization; numpad-less fallback layer (OQ-T3);
   ramp/acceleration retune from session telemetry.
 - **Session #3** → verdicts on performance ergonomics.
 
-### PRX3 — Breadth & convergence
+### TK3 — Breadth & convergence
 
 - MIX mode; chain view; macro support from `Rule`; keymap config file
   (Ordo-adjacent, plain-data keymap); **WT convergence decision** (does WT
-  proceed as specced, fold into Praxis, or stay deferred — user decision,
+  proceed as specced, fold into Theotokos, or stay deferred — user decision,
   informed by three sessions of evidence).
 - **Session #4.**
 
@@ -384,27 +389,27 @@ can re-cut the next phase.
 
 | # | Question | Status | Where decided |
 |---|---|---|---|
-| OQ-P1 | P-lock gesture: hold-step (kitty) vs leader-focus vs both | OPEN — POC tests hold; focus is the fallback | session #1 |
-| OQ-P2 | Leader key: `,` vs `\` vs double-tap-Space | OPEN — `,` is the working choice | session #1 |
-| OQ-P3 | Numpad-less fallback jog map (candidates: `j`/`k`+`u`/`i`; `,`/`.`+`<`/`>`) | OPEN — post-phase-1 by brief | session #2 |
-| OQ-P4 | Numpad `+`/`-`: coarse jog pair vs step-size scaling | OPEN | session #1 |
-| OQ-P5 | Numpad type-in value entry vs command-line-only | OPEN | session #2 |
-| OQ-P6 | Kitty-less terminals: accept OS-repeat ramp degradation, or disable hold-ramp entirely | OPEN | session #1 (test in tmux + stock terminals) |
-| OQ-P7 | Esc/Tmux prefix delays and `Esc`-as-cancel ergonomics | OPEN | session #1 |
-| OQ-P8 | P-lock authoring path: confirm the sequencer lock-set command/event surface (no current surface authors locks) | OPEN — resolve in PRX1 spec | PRX1 spec |
-| OQ-P9 | Should Praxis publish `/script/praxis/selected` so Theoria/Launchpad follow its track selection | OPEN — default yes | PRX1 |
-| OQ-P10 | Scope tap placement: master only vs per-track | OPEN — default master | PRX2 spec |
-| OQ-P11 | Temp save/reload depends on P11 engine scope — ship UI-only or defer | OPEN | PRX2 spec |
-| OQ-P12 | WT convergence: proceed / fold / defer | OPEN — user decision with session evidence | PRX3 |
+| OQ-T1 | P-lock gesture: hold-step (kitty) vs leader-focus vs both | OPEN — POC tests hold; focus is the fallback | session #1 |
+| OQ-T2 | Leader key: `,` vs `\` vs double-tap-Space | OPEN — `,` is the working choice | session #1 |
+| OQ-T3 | Numpad-less fallback jog map (candidates: `j`/`k`+`u`/`i`; `,`/`.`+`<`/`>`) | OPEN — post-phase-1 by brief | session #2 |
+| OQ-T4 | Numpad `+`/`-`: coarse jog pair vs step-size scaling | OPEN | session #1 |
+| OQ-T5 | Numpad type-in value entry vs command-line-only | OPEN | session #2 |
+| OQ-T6 | Kitty-less terminals: accept OS-repeat ramp degradation, or disable hold-ramp entirely | OPEN | session #1 (test in tmux + stock terminals) |
+| OQ-T7 | Esc/Tmux prefix delays and `Esc`-as-cancel ergonomics | OPEN | session #1 |
+| OQ-T8 | P-lock authoring path: confirm the sequencer lock-set command/event surface (no current surface authors locks) | OPEN — resolve in TK1 spec | TK1 spec |
+| OQ-T9 | Should Theotokos publish `/script/theotokos/selected` so Theoria/Launchpad follow its track selection | OPEN — default yes | TK1 |
+| OQ-T10 | Scope tap placement: master only vs per-track | OPEN — default master | TK2 spec |
+| OQ-T11 | Temp save/reload depends on P11 engine scope — ship UI-only or defer | OPEN | TK2 spec |
+| OQ-T12 | WT convergence: proceed / fold / defer | OPEN — user decision with session evidence | TK3 |
 
 ---
 
 ## Cross-references
 
-- `design/praxis/problem.md` — the fixed problem statement
-- `design/adr/ADR-036-praxis-performance-terminal.md` — the architectural
+- `design/theotokos/problem.md` — the fixed problem statement
+- `design/adr/ADR-036-theotokos-performance-terminal.md` — the architectural
   decision (proposed)
 - ADR-018 (environment-vs-node), ADR-019 (semantic plane), ADR-026
   (terminal as instrument display), ADR-032 (universal node-view contract)
-- `design/interface-plan.md` — W-track; WT relationship (§2.1, OQ-P12)
+- `design/interface-plan.md` — W-track; WT relationship (§2.1, OQ-T12)
 - `design/instrument-vision.md` — performance-first tiebreaker
