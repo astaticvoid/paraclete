@@ -75,10 +75,11 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
 }
 
 fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
-    let track_count = data.track_names.len().max(1);
-    let rows: Vec<Line> = (0..track_count)
-        .map(|t| render_track_row(t, data))
-        .collect();
+    let mut rows: Vec<Line> = Vec::with_capacity(data.track_names.len().max(1) * 2);
+    for t in 0..data.track_names.len() {
+        rows.push(render_track_row(t, data, 0));
+        rows.push(render_track_row(t, data, PAGE_SIZE));
+    }
 
     let para = Paragraph::new(rows).block(
         Block::default()
@@ -88,7 +89,7 @@ fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
     frame.render_widget(para, area);
 }
 
-fn render_track_row(track_idx: usize, data: &RenderData) -> Line<'_> {
+fn render_track_row(track_idx: usize, data: &RenderData, window: usize) -> Line<'_> {
     let window = data.page_window * PAGE_SIZE;
     let mut spans: Vec<Span> = Vec::with_capacity(PAGE_SIZE + 2);
 

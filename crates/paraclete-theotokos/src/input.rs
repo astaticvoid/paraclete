@@ -23,6 +23,14 @@ static STEP_KEYS: &[KeyCode] = &[
     KeyCode::Char('k'),
     KeyCode::Char('l'),
     KeyCode::Char(';'),
+    KeyCode::Char('z'),
+    KeyCode::Char('x'),
+    KeyCode::Char('c'),
+    KeyCode::Char('v'),
+    KeyCode::Char('m'),
+    KeyCode::Char(','),
+    KeyCode::Char('.'),
+    KeyCode::Char('/'),
 ];
 
 pub fn map_key(mode: Mode, ev: &KeyEvent) -> Action {
@@ -111,6 +119,8 @@ mod tests {
     fn seq_home_row_toggles_steps() {
         assert!(matches!(map_key(Mode::Seq, &key('a')), Action::ToggleStep { col: 0 }));
         assert!(matches!(map_key(Mode::Seq, &key(';')), Action::ToggleStep { col: 7 }));
+        assert!(matches!(map_key(Mode::Seq, &key('z')), Action::ToggleStep { col: 8 }));
+        assert!(matches!(map_key(Mode::Seq, &key('/')), Action::ToggleStep { col: 15 }));
     }
 
     #[test]
@@ -123,7 +133,7 @@ mod tests {
 
     #[test]
     fn unknown_key_is_noop() {
-        assert!(matches!(map_key(Mode::Seq, &key('z')), Action::Noop));
+        assert!(matches!(map_key(Mode::Seq, &key('0')), Action::Noop));
     }
 
     #[test]
