@@ -199,7 +199,7 @@ impl Node for Level3NegotiatingNode {
     fn process(&mut self, _input: &ProcessInput, _output: &mut ProcessOutput) {}
 
     fn negotiate(&mut self, _their_doc: &CapabilityDocument) -> ConnectionAgreement {
-        let agreement = ConnectionAgreement::baseline();
+        let agreement = ConnectionAgreement::baseline(44100.0, 512);
         self.agreed_sample_rate = Some(agreement.sample_rate);
         agreement
     }

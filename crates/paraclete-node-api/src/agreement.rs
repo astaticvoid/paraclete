@@ -44,11 +44,13 @@ pub struct ConnectionAgreement {
 
 impl ConnectionAgreement {
     /// Baseline agreement — standard stereo audio, no custom event spaces,
-    /// no lockable parameters.
-    pub fn baseline() -> Self {
+    /// no lockable parameters.  Sample rate and block size are explicit;
+    /// the caller must supply the hardware values.  The hardcoded 44100/512
+    /// previously here was wrong on non‑44.1 kHz hardware (BUG-002).
+    pub fn baseline(sample_rate: f32, block_size: usize) -> Self {
         Self {
-            sample_rate: 44100.0,
-            block_size: 512,
+            sample_rate,
+            block_size,
             channels: 2,
             space_ids: vec![],
             initial_transport: None,
@@ -78,33 +80,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn baseline_agreement_sample_rate_is_44100() {
-        assert_eq!(ConnectionAgreement::baseline().sample_rate, 44100.0);
+    fn baseline_agreement_passes_through_sample_rate() {
+        assert_eq!(ConnectionAgreement::baseline(44100.0, 512).sample_rate, 44100.0);
+        assert_eq!(ConnectionAgreement::baseline(48000.0, 512).sample_rate, 48000.0);
     }
 
     #[test]
-    fn baseline_agreement_block_size_is_512() {
-        assert_eq!(ConnectionAgreement::baseline().block_size, 512);
+    fn baseline_agreement_passes_through_block_size() {
+        assert_eq!(ConnectionAgreement::baseline(44100.0, 512).block_size, 512);
+        assert_eq!(ConnectionAgreement::baseline(44100.0, 256).block_size, 256);
     }
 
     #[test]
     fn baseline_agreement_is_stereo() {
-        assert_eq!(ConnectionAgreement::baseline().channels, 2);
+        assert_eq!(ConnectionAgreement::baseline(44100.0, 512).channels, 2);
     }
 
     #[test]
     fn baseline_agreement_has_no_custom_event_spaces() {
-        assert!(ConnectionAgreement::baseline().space_ids.is_empty());
+        assert!(ConnectionAgreement::baseline(44100.0, 512).space_ids.is_empty());
     }
 
     #[test]
     fn baseline_agreement_has_no_lockable_params() {
-        assert!(ConnectionAgreement::baseline().lockable_params.is_empty());
+        assert!(ConnectionAgreement::baseline(44100.0, 512).lockable_params.is_empty());
     }
 
     #[test]
     fn connection_agreement_carries_lockable_params() {
-        let mut ag = ConnectionAgreement::baseline();
+        let mut ag = ConnectionAgreement::baseline(44100.0, 512);
         ag.lockable_params.push(LockableParam {
             param_id: 42,
             name: "pitch".into(),
@@ -135,7 +139,7 @@ mod tests {
     #[test]
     fn connection_record_stores_partner_id_and_port() {
         let record = ConnectionRecord {
-            agreement: ConnectionAgreement::baseline(),
+            agreement: ConnectionAgreement::baseline(44100.0, 512),
             partner_id: 7,
             local_port_id: 2,
         };

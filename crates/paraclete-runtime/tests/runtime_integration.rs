@@ -682,7 +682,7 @@ impl Node for NegotiatingInstrument {
 
     fn negotiate(&mut self, _their_doc: &CapabilityDocument) -> ConnectionAgreement {
         self.negotiate_called.fetch_add(1, Ordering::Relaxed);
-        ConnectionAgreement::baseline()
+        ConnectionAgreement::baseline(44100.0, 512)
     }
 
     fn set_connection_record(&mut self, _record: ConnectionRecord) {

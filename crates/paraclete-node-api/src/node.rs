@@ -167,7 +167,7 @@ pub trait Node: Send {
     ///
     /// Called on the main thread at connection time.
     fn negotiate(&mut self, _their_doc: &CapabilityDocument) -> ConnectionAgreement {
-        ConnectionAgreement::baseline()
+        ConnectionAgreement::baseline(44100.0, 512)
     }
 
     /// Receive the reconciled connection record after both sides have negotiated.

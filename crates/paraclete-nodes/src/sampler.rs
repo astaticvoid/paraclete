@@ -638,7 +638,7 @@ impl Node for Sampler {
 
     /// Declare all parameters as lockable.
     fn negotiate(&mut self, _their_doc: &CapabilityDocument) -> ConnectionAgreement {
-        let mut agreement = ConnectionAgreement::baseline();
+        let mut agreement = ConnectionAgreement::baseline(44100.0, 512);
         agreement.lockable_params = self.lockable_params_list();
         agreement
     }
@@ -960,7 +960,7 @@ mod tests {
     fn sampler_set_connection_record_stores_record() {
         let mut s = Sampler::new();
         s.set_connection_record(ConnectionRecord {
-            agreement: ConnectionAgreement::baseline(),
+            agreement: ConnectionAgreement::baseline(44100.0, 512),
             partner_id: 5,
             local_port_id: 0,
         });

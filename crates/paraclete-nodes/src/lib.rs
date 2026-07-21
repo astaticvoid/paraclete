@@ -100,7 +100,7 @@ impl Node for SilentNode {
         }
     }
     fn negotiate(&mut self, _their_doc: &CapabilityDocument) -> ConnectionAgreement {
-        ConnectionAgreement::baseline()
+        ConnectionAgreement::baseline(44100.0, 512)
     }
 }
 
