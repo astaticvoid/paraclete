@@ -82,9 +82,8 @@ as the W-track does.
 
 1. **Keyboard-first.** Not a pad emulator. The keyboard is the controller;
    the terminal is the screen.
-2. **Home-row steps, top-row tracks.** `asdfjkl;` = the 8 steps of the
-   current page; `qweruiop` = the 8 tracks. (`t`/`y` deliberately unused in
-   the row — reserved; see design.md §3.)
+2. **Home-row steps, top-row tracks.** `asdfjkl;` + `zxcvm,./` = the 16
+   steps of the default pattern (home row 1–8, lower row 9–16);
 3. **Modal, Emacs-flavored.** Modes with distinct keymaps; prefix/leader
    composition; a command line for everything else.
 4. **Two-parameter performance.** At least two params modifiable at once,

@@ -204,13 +204,15 @@ modifiers for the hot path).
 
 ### 3.2 SEQ mode — DETERMINED core, HYPOTHESIS details
 
-The default programming posture. One track selected; its 8-step page
-window under the home row.
+The default programming posture. One track selected; 16 steps visible
+across two rows — home row + lower row — matching the default pattern
+length exactly.
 
 | Key | Action |
 |---|---|
-| `a s d f j k l ;` | toggle steps 1–8 of the current page on the active track (`CMD_TOGGLE_STEP`) |
-| `[` / `]` | previous / next 8-step page window (up to 64 steps) |
+| `a s d f j k l ;` | toggle steps 1–8 on the active track |
+| `z x c v m , . /` | toggle steps 9–16 (each key physically below its home-row counterpart) |
+| `[` / `]`  (or `-` / `=`) | previous / next 16-step page window (for extended 32–64 step patterns) |
 | hold step key + jog | **p-lock** (TK1 — no authoring path exists today, OQ-T8; gesture is HYPOTHESIS — needs kitty release events; fallback: leader-focus, §OQ-T1) |
 | `Enter` | step-focus toggle: focus step under cursor / last-touched step for p-lock editing; `Esc` releases |
 | `x` | clear active track pattern (confirm in echo area) |
@@ -299,7 +301,7 @@ key will do** (the legibility lesson from sessions s1/s2).
 ```
 ┌ transport: BPM · ▶/■ · pattern · position · CPU ──────────────┐
 │ contextual window (per mode)                                   │
-│   SEQ:  8-track × 8-step page grid, playheads, trig colors     │
+│   SEQ:  track × 16-step two-row grid, playheads, trig colors    │
 │   PERF: param page — envelope/LFO/filter graphics + value bars │
 │   CHAIN: pattern bank + chain lane                             │
 ├ mode line: MODE · track · page · A/B/C bindings+values · step ┤
@@ -320,7 +322,8 @@ and values are always on screen.
   (`FilterShape` exists on engines/filters today; `LfoShape` is declared by
   no node yet — gap §2.6.5.)
 - **Step grid**: trig state from `/node/{seq}/state/steps` text bitfield +
-  `current_step` playheads; per-track colors.
+  `current_step` playheads; per-track colors; **two rows per track** (home
+  row = steps 1–8, lower row = steps 9–16).
 - **Value bars/meters**: block-element bars (the existing `paraclete-tui`
   idiom), yellow-flash on recent change.
 - **Frame policy**: dirty-flag redraw, ≤60 fps, canvases ≤30 fps.
@@ -454,6 +457,12 @@ can re-cut the next phase.
 ---
 
 ## Amendment log
+
+**2026-07-21 (evening) — 16-step two-row grid.** User testing on hardware:
+the 8-step page window is too narrow for the default 16-step pattern.
+Lower row `z x c v m , . /` now maps steps 9–16 (each key physically below
+its home-row counterpart). Page windows preserve extended 32–64 step
+patterns. §3.2 SEQ keymap, §5.1 layout, §5.2 step grid updated.
 
 **2026-07-21 (evening) — ADR-036 ACCEPTED.** Ratified by the user.
 Standing defect-filing directive issued (handoff guardrail 7); BUG-032

@@ -48,7 +48,8 @@ Home-row steps, top-row tracks, vim-style parameter jog, live terminal graphics.
 | Key | Action |
 |---|---|
 | `a s d f j k l ;` | toggle steps 1–8 on the active track |
-| `[` / `]` | previous / next 8-step page window |
+| `z x c v m , . /` | toggle steps 9–16 (each key below its home-row counterpart) |
+| `[` / `]`  or `-` / `=` | previous / next 16-step page window (for extended patterns) |
 
 **PERF mode — parameter performance:**
 
