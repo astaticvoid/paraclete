@@ -449,12 +449,25 @@ mod tests {
         node.activate(44100.0, 512);
 
         let start = NodeCommand { target_id: 0, type_id: CMD_CLOCK_START, arg0: 0, arg1: 0.0 };
-        run_internal_clock_with_commands(&mut node, 512, &[], &[start]);
+        let first = run_internal_clock_with_commands(&mut node, 512, &[], &[start]);
         assert!(node.playing);
+
+        let has_global_start = first.iter().any(|e| {
+            matches!(e, Event::Transport(te) if te.flags.global_start)
+        });
+        assert!(has_global_start,
+            "first tick when auto-started must carry global_start");
         let first_tick_before = node.first_tick;
+        assert!(!first_tick_before, "first_tick consumed by emit_transport during first block");
 
         let redundant = run_internal_clock_with_commands(&mut node, 512, &[], &[start]);
         assert!(!redundant.is_empty(), "still emits ticks");
+
+        let redundant_has_global_start = redundant.iter().any(|e| {
+            matches!(e, Event::Transport(te) if te.flags.global_start)
+        });
+        assert!(!redundant_has_global_start,
+            "redundant START must not re-emit global_start");
         assert_eq!(node.first_tick, first_tick_before,
             "redundant START must not reset first_tick");
     }
@@ -529,5 +542,13 @@ mod tests {
         let big_down = NodeCommand { target_id: 0, type_id: CMD_BUMP_PARAM, arg0: bpm_id as i64, arg1: -999.0 };
         run_internal_clock_with_commands(&mut node, 512, &[], &[big_down]);
         assert!((node.bpm - 20.0).abs() < 0.001, "must clamp at floor 20.0");
+
+        let init_high = NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: bpm_id as i64, arg1: 295.0 };
+        run_internal_clock_with_commands(&mut node, 512, &[], &[init_high]);
+        assert!((node.bpm - 295.0).abs() < 0.001);
+
+        let big_up = NodeCommand { target_id: 0, type_id: CMD_BUMP_PARAM, arg0: bpm_id as i64, arg1: 999.0 };
+        run_internal_clock_with_commands(&mut node, 512, &[], &[big_up]);
+        assert!((node.bpm - 300.0).abs() < 0.001, "must clamp at ceiling 300.0");
     }
 }
