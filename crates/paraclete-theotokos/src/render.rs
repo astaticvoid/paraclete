@@ -134,3 +134,46 @@ fn render_mode_line(frame: &mut Frame, area: Rect, data: &RenderData) {
     let para = Paragraph::new(line).block(Block::default().borders(Borders::NONE));
     frame.render_widget(para, area);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Mode, StepState};
+
+    #[test]
+    fn render_does_not_panic() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let data = RenderData {
+            mode: Mode::Seq,
+            active_track: 0,
+            track_names: vec!["Kick".into(), "Snare".into()],
+            bpm: 140.0,
+            playing: true,
+            page_window: 0,
+            step_state: StepState {
+                current_step: 3,
+                pattern_length: 16,
+                steps: vec![true, false, true, false, false, false, false, false, false, false, false, false, false, false, false, false],
+                page_count: 2,
+            },
+        };
+        terminal.draw(|f| render(f, &data)).unwrap();
+    }
+
+    #[test]
+    fn render_empty_tracks_does_not_panic() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let data = RenderData {
+            mode: Mode::Perf,
+            active_track: 0,
+            track_names: vec![],
+            bpm: 120.0,
+            playing: false,
+            page_window: 0,
+            step_state: StepState::default(),
+        };
+        terminal.draw(|f| render(f, &data)).unwrap();
+    }
+}

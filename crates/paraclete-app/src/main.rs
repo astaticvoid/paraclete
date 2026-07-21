@@ -76,6 +76,9 @@ fn main() {
     let no_tui = args.iter().any(|a| a == "--no-tui");
     let no_emulator = args.iter().any(|a| a == "--no-emulator");
     let theotokos = args.iter().any(|a| a == "--theotokos");
+    if theotokos {
+        no_emulator = true;
+    }
     let dev_ui = args.iter().any(|a| a == "--dev-ui");
 
     let no_antiphon = args.iter().any(|a| a == "--no-antiphon");

@@ -68,3 +68,41 @@ impl Action {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn play_toggle_when_playing_sends_stop() {
+        let out = Action::PlayToggle.execute(1, 0, 0, true);
+        assert!(matches!(out, Outcome::Command(cmd) if cmd.target_id == 1 && cmd.type_id == CMD_CLOCK_STOP));
+    }
+
+    #[test]
+    fn play_toggle_when_stopped_sends_start() {
+        let out = Action::PlayToggle.execute(1, 0, 0, false);
+        assert!(matches!(out, Outcome::Command(cmd) if cmd.target_id == 1 && cmd.type_id == CMD_CLOCK_START));
+    }
+
+    #[test]
+    fn toggle_step_offset_includes_page_window() {
+        let out = Action::ToggleStep { col: 5 }.execute(0, 10, 0, false);
+        assert!(matches!(out, Outcome::Command(cmd) if cmd.target_id == 10 && cmd.arg0 == 5));
+
+        let out = Action::ToggleStep { col: 3 }.execute(0, 10, 2, false);
+        assert!(matches!(out, Outcome::Command(cmd) if cmd.arg0 == 19));
+    }
+
+    #[test]
+    fn quit_action_produces_quit_outcome() {
+        let out = Action::Quit.execute(0, 0, 0, false);
+        assert!(matches!(out, Outcome::Quit));
+    }
+
+    #[test]
+    fn noop_produces_noop() {
+        let out = Action::Noop.execute(0, 0, 0, false);
+        assert!(matches!(out, Outcome::Noop));
+    }
+}
