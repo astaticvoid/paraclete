@@ -25,6 +25,7 @@ use paraclete_nodes::{ScriptEventConsumer, ScriptingGatewayNode};
 use paraclete_runtime::NodeConfigurator;
 use paraclete_scripting::ScriptingEngine;
 use paraclete_tui::{TuiApp, TuiConfig};
+use paraclete_theotokos::{TheotokosApp, TheotokosConfig};
 
 const BLOCK_SIZE: usize = 512;
 
@@ -74,6 +75,7 @@ fn main() {
 
     let no_tui = args.iter().any(|a| a == "--no-tui");
     let no_emulator = args.iter().any(|a| a == "--no-emulator");
+    let theotokos = args.iter().any(|a| a == "--theotokos");
     let dev_ui = args.iter().any(|a| a == "--dev-ui");
 
     let no_antiphon = args.iter().any(|a| a == "--no-antiphon");
@@ -348,17 +350,45 @@ fn main() {
     })
     .ok();
 
-    // ── 12. TUI setup (unless --no-tui) ──────────────────────────────────────
-    let tui_config = TuiConfig {
-        clock_id: ids.clock,
-        seq_ids: ids.sequencers.clone(),
-        encoder_count: 8,
-        fps: 30,
-    };
-
+    // ── 12. TUI / Theotokos setup ──────────────────────────────────────────────
     type CrosstermTerminal = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>;
     let mut tui_opt: Option<(TuiApp, CrosstermTerminal)> = None;
-    if paraclete_app::tui_enabled(no_tui) {
+    let mut theotokos_opt: Option<(TheotokosApp, CrosstermTerminal)> = None;
+    if theotokos && !no_tui {
+        match setup_terminal() {
+            Ok(terminal) => {
+                let gen_names: Vec<String> = ids
+                    .generators
+                    .iter()
+                    .map(|id| {
+                        cap_docs
+                            .get(id)
+                            .map(|d| d.name.to_string())
+                            .unwrap_or_else(|| format!("Node{}", id))
+                    })
+                    .collect();
+                match TheotokosApp::new(TheotokosConfig {
+                    clock_id: ids.clock,
+                    seq_ids: ids.sequencers.clone(),
+                    gen_ids: ids.generators.clone(),
+                    gen_names,
+                    fps: 30,
+                }) {
+                    Ok(app) => {
+                        theotokos_opt = Some((app, terminal));
+                    }
+                    Err(e) => eprintln!("[paraclete] Theotokos setup failed: {e}"),
+                }
+            }
+            Err(e) => eprintln!("[paraclete] Theotokos terminal setup failed: {e}"),
+        }
+    } else if paraclete_app::tui_enabled(no_tui) {
+        let tui_config = TuiConfig {
+            clock_id: ids.clock,
+            seq_ids: ids.sequencers.clone(),
+            encoder_count: 8,
+            fps: 30,
+        };
         match setup_terminal() {
             Ok(terminal) => {
                 tui_opt = Some((
@@ -477,6 +507,19 @@ fn main() {
             conf.deliver_script_output(led_output);
         }
 
+        if let Some((ref mut tk, ref mut terminal)) = theotokos_opt {
+            let now_ms = loop_clock.elapsed().as_millis() as u64;
+            if let Err(e) = tk.tick(terminal, &bus_handle, now_ms) {
+                eprintln!("[paraclete] Theotokos error: {e}");
+            }
+            for cmd in tk.take_pending_commands() {
+                conf.send_command(cmd).ok();
+            }
+            if tk.should_quit() {
+                running.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
         if let Some((ref mut tui, ref mut terminal)) = tui_opt {
             if let Err(e) = tui.tick(terminal) {
                 eprintln!("[paraclete] TUI error: {e}");
@@ -496,7 +539,10 @@ fn main() {
     }
 
     // ── 14. Shutdown ──────────────────────────────────────────────────────────
-    if let Some((tui, terminal)) = tui_opt {
+    if let Some((tk, terminal)) = theotokos_opt {
+        tk.shutdown().ok();
+        restore_terminal(terminal).ok();
+    } else if let Some((tui, terminal)) = tui_opt {
         tui.shutdown().ok();
         restore_terminal(terminal).ok();
     }

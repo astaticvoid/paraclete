@@ -15,6 +15,7 @@ members = [
     "crates/paraclete-machine-fm-bell",
     "crates/paraclete-machine-fm-bass",
     "crates/paraclete-tui",
+    "crates/paraclete-theotokos",
     "crates/paraclete-clap-host",
     "crates/paraclete-graph-nodes",
     "crates/paraclete-antiphon",
