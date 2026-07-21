@@ -53,7 +53,12 @@ fn map_global(ev: &KeyEvent) -> Option<Action> {
         }
         KeyCode::Char(' ') => Some(Action::PlayToggle),
         KeyCode::Esc => Some(Action::Noop),
-        _ => track_idx(ev.code).map(Action::SelectTrack),
+        _ => {
+            if let Some(col) = step_col(ev.code) {
+                return Some(Action::ToggleStep { col });
+            }
+            track_idx(ev.code).map(Action::SelectTrack)
+        }
     }
 }
 
@@ -63,11 +68,16 @@ fn map_seq(ev: &KeyEvent) -> Action {
             Action::PageWindow(Dir::Prev),
         KeyCode::Char(']') | KeyCode::Char('}') | KeyCode::Char('=') =>
             Action::PageWindow(Dir::Next),
-        _ => step_col(ev.code).map(|col| Action::ToggleStep { col }).unwrap_or(Action::Noop),
+        _ => Action::Noop,
     }
 }
 
 fn map_perf(ev: &KeyEvent) -> Action {
+    let mag = if ev.modifiers.contains(KeyModifiers::SHIFT) {
+        Mag::Fine
+    } else {
+        Mag::Normal
+    };
     match ev.code {
         KeyCode::Char('1') => Action::SelectParamPage(0),
         KeyCode::Char('2') => Action::SelectParamPage(1),
@@ -75,12 +85,10 @@ fn map_perf(ev: &KeyEvent) -> Action {
         KeyCode::Char('4') => Action::SelectParamPage(3),
         KeyCode::Char('5') => Action::SelectParamPage(4),
         KeyCode::Char('6') => Action::SelectParamPage(5),
-        KeyCode::Char('j') => Action::Jog { slot: Slot::A, dir: Dir::Prev, mag: Mag::Normal },
-        KeyCode::Char('k') => Action::Jog { slot: Slot::A, dir: Dir::Next, mag: Mag::Normal },
-        KeyCode::Char(',') => Action::Jog { slot: Slot::B, dir: Dir::Prev, mag: Mag::Normal },
-        KeyCode::Char('.') => Action::Jog { slot: Slot::B, dir: Dir::Next, mag: Mag::Normal },
-        KeyCode::Char('J') => Action::Jog { slot: Slot::A, dir: Dir::Prev, mag: Mag::Fine },
-        KeyCode::Char('K') => Action::Jog { slot: Slot::A, dir: Dir::Next, mag: Mag::Fine },
+        KeyCode::Up    => Action::Jog { slot: Slot::A, dir: Dir::Next, mag },
+        KeyCode::Down  => Action::Jog { slot: Slot::A, dir: Dir::Prev, mag },
+        KeyCode::Right => Action::Jog { slot: Slot::B, dir: Dir::Next, mag },
+        KeyCode::Left  => Action::Jog { slot: Slot::B, dir: Dir::Prev, mag },
         _ => Action::Noop,
     }
 }
@@ -124,6 +132,13 @@ mod tests {
     }
 
     #[test]
+    fn step_keys_invariant_in_perf() {
+        assert!(matches!(map_key(Mode::Perf, &key('a')), Action::ToggleStep { col: 0 }));
+        assert!(matches!(map_key(Mode::Perf, &key(',')), Action::ToggleStep { col: 13 }));
+        assert!(matches!(map_key(Mode::Perf, &key('z')), Action::ToggleStep { col: 8 }));
+    }
+
+    #[test]
     fn seq_page_window_keys() {
         assert!(matches!(map_key(Mode::Seq, &key('[')), Action::PageWindow(Dir::Prev)));
         assert!(matches!(map_key(Mode::Seq, &key(']')), Action::PageWindow(Dir::Next)));
@@ -157,10 +172,21 @@ mod tests {
 
     #[test]
     fn perf_jog_keys() {
-        assert!(matches!(map_key(Mode::Perf, &key('j')), Action::Jog { slot: Slot::A, dir: Dir::Prev, mag: Mag::Normal }));
-        assert!(matches!(map_key(Mode::Perf, &key('k')), Action::Jog { slot: Slot::A, dir: Dir::Next, mag: Mag::Normal }));
-        assert!(matches!(map_key(Mode::Perf, &key(',')), Action::Jog { slot: Slot::B, dir: Dir::Prev, mag: Mag::Normal }));
-        assert!(matches!(map_key(Mode::Perf, &key('.')), Action::Jog { slot: Slot::B, dir: Dir::Next, mag: Mag::Normal }));
-        assert!(matches!(map_key(Mode::Perf, &KeyEvent::new(KeyCode::Char('J'), KeyModifiers::SHIFT)), Action::Jog { slot: Slot::A, dir: Dir::Prev, mag: Mag::Fine }));
+        let up    = KeyEvent::new(KeyCode::Up,    KeyModifiers::NONE);
+        let down  = KeyEvent::new(KeyCode::Down,  KeyModifiers::NONE);
+        let right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
+        let left  = KeyEvent::new(KeyCode::Left,  KeyModifiers::NONE);
+        let fine_up = KeyEvent::new(KeyCode::Up,  KeyModifiers::SHIFT);
+
+        assert!(matches!(map_key(Mode::Perf, &up),
+            Action::Jog { slot: Slot::A, dir: Dir::Next, mag: Mag::Normal }));
+        assert!(matches!(map_key(Mode::Perf, &down),
+            Action::Jog { slot: Slot::A, dir: Dir::Prev, mag: Mag::Normal }));
+        assert!(matches!(map_key(Mode::Perf, &right),
+            Action::Jog { slot: Slot::B, dir: Dir::Next, mag: Mag::Normal }));
+        assert!(matches!(map_key(Mode::Perf, &left),
+            Action::Jog { slot: Slot::B, dir: Dir::Prev, mag: Mag::Normal }));
+        assert!(matches!(map_key(Mode::Perf, &fine_up),
+            Action::Jog { slot: Slot::A, dir: Dir::Next, mag: Mag::Fine }));
     }
 }

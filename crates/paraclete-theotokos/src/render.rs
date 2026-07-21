@@ -90,7 +90,8 @@ fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
 }
 
 fn render_track_row(track_idx: usize, data: &RenderData, window: usize) -> Line<'_> {
-    let window = data.page_window * PAGE_SIZE;
+    let window_base = data.page_window * PAGE_SIZE * 2;
+    let window = window_base + window;
     let mut spans: Vec<Span> = Vec::with_capacity(PAGE_SIZE + 2);
 
     let label = format!("{:>2}:", track_idx + 1);
@@ -108,7 +109,7 @@ fn render_track_row(track_idx: usize, data: &RenderData, window: usize) -> Line<
         let is_active = data.step_state.steps.get(step).copied().unwrap_or(false);
 
         let (glyph, color) = if step == data.step_state.current_step {
-            (" ▓", Color::Green)
+            (" ▓", Color::Yellow)
         } else if is_active {
             (" █", Color::Cyan)
         } else {
