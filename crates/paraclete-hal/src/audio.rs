@@ -6,6 +6,42 @@ use cpal::{BufferSize, SampleFormat, SampleRate, StreamConfig};
 
 use paraclete_runtime::{NodeExecutor, RuntimeCounters};
 
+#[cfg(target_os = "linux")]
+mod lrt {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[repr(C)]
+    struct SchedParam {
+        sched_priority: i32,
+    }
+
+    const SCHED_FIFO: i32 = 1;
+
+    extern "C" {
+        fn pthread_self() -> usize;
+        fn pthread_setschedparam(
+            thread: usize,
+            policy: i32,
+            param: *const SchedParam,
+        ) -> i32;
+    }
+
+    static ONCE: AtomicBool = AtomicBool::new(false);
+
+    pub fn try_set_realtime() {
+        if ONCE.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        let param = SchedParam { sched_priority: 50 };
+        let ret = unsafe { pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) };
+        if ret != 0 {
+            log::warn!("realtime priority: pthread_setschedparam SCHED_FIFO failed (errno={})", ret);
+        } else {
+            log::info!("realtime priority: set SCHED_FIFO prio=50 on audio thread");
+        }
+    }
+}
+
 pub struct AudioBackend {
     _stream: cpal::Stream,
 }
@@ -459,6 +495,9 @@ fn audio_callback_f32(
     channels: usize,
     block_samples: usize,
 ) {
+    #[cfg(target_os = "linux")]
+    lrt::try_set_realtime();
+
     // Process full blocks: render into ring, drain to output.
     let mut out_pos = 0usize;
     while out_pos < data.len() {

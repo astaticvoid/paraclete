@@ -69,7 +69,7 @@ impl TuiApp {
             }
         }
 
-        let active_track = if let Some(StateBusValue::Float(v)) = bus.read("/script/selected_track")
+        let active_track = if let Some(StateBusValue::Float(v)) = bus.read("/script/lp/selected")
         {
             (*v as usize).min(self.config.seq_ids.len().saturating_sub(1))
         } else {

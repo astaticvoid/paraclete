@@ -6,7 +6,7 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ## Status (2026-07-21)
 
-**Actively open:** BUG-027 (engine exonerated by measurement — pending user headphone A/B, see addendum), BUG-032 (transport unreachable from any surface — fix pre-approved, TK0 Commit 0 per ADR-036 7(a)), BUG-033 (TUI reads unwritten `/script/selected_track` — low, superseded by Theotokos), INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-006 (idle ALSA underruns — no realtime priority), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036).
+**Actively open:** BUG-027 (engine exonerated by measurement — pending user headphone A/B, see addendum), INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036).
 **Fixed, pending hardware verification:** BUG-012 (output ring buffer + FTZ/DAZ `0f3d17b`, `BufferSize::Default` decision `c3c56db` — the chunk-and-discard distortion path is gone; awaiting Linux ALSA re-test of the session-#3 distortion).
 **Trigger-based (fix when named trigger fires):** BUG-002, BUG-003, BUG-006.
 **Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, INFRA-001, INFRA-002, INFRA-003, INFRA-004, INFRA-007.
@@ -1026,6 +1026,12 @@ constant.
 
 ### INFRA-006 — Idle ALSA underruns (no realtime priority on audio thread)
 
+**Fixed:** `pthread_setschedparam(SCHED_FIFO, prio=50)` at the top of
+`audio_callback_f32` (raw FFI, no `libc` dep; Linux-only; once per process
+via `AtomicBool`). The callback runs on the cpal-owned audio thread where
+the priority must be set — cannot be done from the main thread's
+`AudioBackend::start`. Requires `CAP_SYS_NICE` or `setcap` on the binary.
+
 **Severity:** Low for idle, Medium under load — audio thread may be descheduled
 **Phase found:** W2 paired session #3 (2026-07-14)
 **Description:** ~4,400 ALSA underruns logged during idle operation (empty graph,
@@ -1097,6 +1103,8 @@ audio. Realtime priority remains open separately as INFRA-006.
 
 ### BUG-032 — Transport control is unreachable from every surface; clock ignores all commands
 
+**Fixed:** TK0 C0 (`903536a`, `1905bbf`) — `CMD_CLOCK_START/STOP` (16/17) + `bpm` via `CMD_SET_PARAM`/`CMD_BUMP_PARAM` (clamp 20–300).
+
 **Severity:** High for the Theotokos track (blocks TK0's play/stop key);
 latent platform gap today (no surface even attempts transport control).
 **Phase found:** Theotokos pre-ratification design review (2026-07-21);
@@ -1135,6 +1143,8 @@ Antiphon clients, profiles — gets transport for free. Spec:
 ---
 
 ### BUG-033 — paraclete-tui reads `/script/selected_track`; nothing writes it
+
+**Fixed:** read `/script/lp/selected` instead (one line in `tui/app.rs:72`).
 
 **Severity:** Low (display only — the TUI's active-track indicator always
 shows the default).
