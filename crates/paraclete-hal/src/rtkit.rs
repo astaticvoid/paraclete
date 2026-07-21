@@ -169,3 +169,58 @@ fn pad_to(buf: &mut Vec<u8>, align: usize) {
         buf.resize(buf.len() + align - rem, 0);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn method_call_message_structure() {
+        let msg = build_method_call(12345, 50);
+
+        assert_eq!(msg[0], 0x6C, "endian must be 'l'");
+        assert_eq!(msg[1], 0x01, "message type must be METHOD_CALL");
+        assert_eq!(msg[3], 0x01, "protocol version 1");
+
+        let header_len = 16u32;
+        let field_array_len = u32::from_le_bytes(msg[12..16].try_into().unwrap());
+        assert!(field_array_len > 0, "must have header fields");
+
+        // Body must start at an 8-byte-aligned offset after the field array.
+        let body_start = (header_len as usize + field_array_len as usize + 7) & !7;
+        assert_eq!(body_start % 8, 0, "body must be 8-byte aligned");
+
+        // Body: tid (u64 LE) + priority (u32 LE).
+        let tid_bytes = &msg[body_start..body_start + 8];
+        let tid = u64::from_le_bytes(tid_bytes.try_into().unwrap());
+        assert_eq!(tid, 12345);
+
+        let pri_bytes = &msg[body_start + 8..body_start + 12];
+        let pri = u32::from_le_bytes(pri_bytes.try_into().unwrap());
+        assert_eq!(pri, 50);
+
+        // Total message must not extend past the computed body.
+        assert_eq!(msg.len(), body_start + 12, "message length must match header + fields + body");
+    }
+
+    #[test]
+    fn body_alignment_for_various_field_sizes() {
+        // Pick two different tids — the message structure should be independent
+        // of the actual values (only the body content changes, not layout).
+        let a = build_method_call(0, 99);
+        let b = build_method_call(u64::MAX, 1);
+
+        assert_eq!(a.len(), b.len(), "message length must be independent of body values");
+        // Verify the header fields are identical (first 185 bytes or so, up to body).
+        let body_off = a.len() - 12;
+        assert_eq!(&a[..body_off], &b[..body_off], "header+fields must be identical");
+    }
+
+    #[test]
+    fn try_acquire_fails_gracefully_when_no_rtkit() {
+        // This box may or may not have rtkit.  The function must never crash;
+        // it returns a bool — whichever answer, it's a clean return.
+        let result = std::panic::catch_unwind(|| try_acquire_realtime(50));
+        assert!(result.is_ok(), "try_acquire_realtime must never panic");
+    }
+}
