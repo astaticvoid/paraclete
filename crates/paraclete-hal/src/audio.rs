@@ -26,30 +26,30 @@ mod lrt {
         ) -> i32;
     }
 
-    static ONCE: AtomicBool = AtomicBool::new(false);
+    static CB_ONCE: AtomicBool = AtomicBool::new(false);
 
-    pub fn try_set_realtime() {
-        if ONCE.swap(true, Ordering::Relaxed) {
-            return;
-        }
-        // rtkit grants SCHED_FIFO without CAP_SYS_NICE on desktop Linux
-        // where PipeWire/PulseAudio is installed.
-        if crate::rtkit::try_acquire_realtime(50) {
+    pub fn set_realtime_callback() {
+        if CB_ONCE.swap(true, Ordering::Relaxed) {
             return;
         }
         let param = SchedParam { sched_priority: 50 };
         let ret = unsafe { pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) };
         if ret != 0 {
-            log::warn!(
-                "realtime priority: SCHED_FIFO denied (errno={}). \
-                 Audio runs without RT scheduling — may underrun under load. \
-                 Fix: ensure realtime-privileges installed + user in realtime group, or \
-                 sudo setcap cap_sys_nice=eip <binary>",
-                ret,
-            );
+            log::warn!("SCHED_FIFO: denied (errno={}). Audio runs without RT scheduling.", ret);
         } else {
-            log::info!("realtime priority: SCHED_FIFO prio=50 (raw pthread)");
+            log::info!("SCHED_FIFO prio=50 (audio thread)");
         }
+    }
+
+    static RTKIT_ONCE: AtomicBool = AtomicBool::new(false);
+
+    pub fn try_rtkit_from_main() {
+        if RTKIT_ONCE.swap(true, Ordering::Relaxed) {
+            return;
+        }
+        // rtkit involves D-Bus socket I/O — must NOT run on the audio callback thread.
+        // Called from AudioBackend::start() on the main thread before the stream opens.
+        crate::rtkit::try_acquire_realtime(50);
     }
 }
 
@@ -127,6 +127,12 @@ impl AudioBackend {
         // allocates on the audio path.
         let work_buf: Vec<f32> = vec![0.0; block_samples];
         let mut ring = OutputRing::new(block_samples, RING_BLOCKS);
+
+        // rtkit D-Bus call must run on the main thread (socket I/O — not
+        // safe on the audio callback). The raw pthread_setschedparam runs
+        // in the callback on the audio thread itself.
+        #[cfg(target_os = "linux")]
+        lrt::try_rtkit_from_main();
 
         let stream = match supported.sample_format() {
             SampleFormat::F32 => {
@@ -507,7 +513,7 @@ fn audio_callback_f32(
     block_samples: usize,
 ) {
     #[cfg(target_os = "linux")]
-    lrt::try_set_realtime();
+    lrt::set_realtime_callback();
 
     // Process full blocks: render into ring, drain to output.
     let mut out_pos = 0usize;

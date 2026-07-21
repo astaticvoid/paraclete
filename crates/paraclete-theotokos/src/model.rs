@@ -110,6 +110,15 @@ impl Model {
     }
 
     pub fn select_perf_page(&mut self, idx: usize) {
+        let gen_id = self.tracks[self.active_track].generator_id;
+        let max = self.caps
+            .get(&gen_id)
+            .and_then(|c| c.view.as_ref())
+            .map(|r| r.page_groups.len())
+            .unwrap_or(0);
+        if idx >= max {
+            return;
+        }
         self.perf_page = idx;
         self.bind_page();
     }
@@ -373,17 +382,110 @@ impl JogTracker {
     }
 
     pub fn repeat(&mut self, now: std::time::Instant, tick_ms: u64) -> Option<u64> {
+        let held_since = self.held_since?;
         if tick_ms <= self.last_tick_ms + 200 {
             self.last_tick_ms = tick_ms;
-            let held = self.held_since.map(|h| now.duration_since(h).as_millis() as u64).unwrap_or(0);
+            let held = now.duration_since(held_since).as_millis() as u64;
             Some(held)
         } else {
             self.held_since = None;
+            self.last_tick_ms = 0;
             None
         }
     }
 
     pub fn release(&mut self) {
         self.held_since = None;
+        self.last_tick_ms = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn jog_step_normal() {
+        let t = Tuning::default();
+        let step = t.jog_step(1.0, 0, Mag::Normal);
+        assert!((step - 1.0 / 128.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn jog_step_fine() {
+        let t = Tuning::default();
+        let step = t.jog_step(1.0, 0, Mag::Fine);
+        assert!((step - 1.0 / 128.0 / 8.0).abs() < 0.00001);
+    }
+
+    #[test]
+    fn jog_step_coarse() {
+        let t = Tuning::default();
+        let step = t.jog_step(1.0, 0, Mag::Coarse);
+        assert!((step - 1.0 / 128.0 * 4.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn jog_step_minimum() {
+        let t = Tuning::default();
+        let step = t.jog_step(0.0001, 0, Mag::Normal);
+        assert!((step - 0.001).abs() < 0.0001, "must floor at min_step");
+    }
+
+    #[test]
+    fn jog_step_ramp_accelerates() {
+        let t = Tuning::default();
+        let base = t.jog_step(1.0, 0, Mag::Normal);
+        let ramped = t.jog_step(1.0, 500, Mag::Normal);
+        assert!(ramped > base, "ramp must accelerate over time");
+    }
+
+    #[test]
+    fn jog_step_ramp_capped() {
+        let t = Tuning::default();
+        let base = t.jog_step(1.0, 0, Mag::Normal);
+        let capped = t.jog_step(1.0, 10000, Mag::Normal);
+        let ratio = capped / base;
+        assert!(ratio <= 8.0 + 0.01, "ramp must not exceed cap ×8");
+    }
+
+    #[test]
+    fn jog_tracker_press_sets_held_returns_zero() {
+        let mut jt = JogTracker::new();
+        let now = Instant::now();
+        let held = jt.press(now, 0);
+        assert_eq!(held, 0);
+    }
+
+    #[test]
+    fn jog_tracker_repeat_within_window_returns_duration() {
+        let mut jt = JogTracker::new();
+        let t0 = Instant::now();
+        jt.press(t0, 0);
+        let t1 = t0 + Duration::from_millis(100);
+        let held = jt.repeat(t1, 100);
+        assert!(held.is_some());
+        assert!(held.unwrap() >= 90);
+    }
+
+    #[test]
+    fn jog_tracker_repeat_outside_window_resets() {
+        let mut jt = JogTracker::new();
+        let t0 = Instant::now();
+        jt.press(t0, 0);
+        let t1 = t0 + Duration::from_millis(300);
+        let held = jt.repeat(t1, 300);
+        assert!(held.is_none(), "200ms+ gap must reset tracker");
+    }
+
+    #[test]
+    fn jog_tracker_release_clears_state() {
+        let mut jt = JogTracker::new();
+        jt.press(Instant::now(), 0);
+        jt.release();
+        let t1 = Instant::now() + Duration::from_millis(10);
+        let held = jt.repeat(t1, 10);
+        assert!(held.is_none(), "release must prevent future repeats");
     }
 }
