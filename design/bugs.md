@@ -6,7 +6,7 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ## Status (2026-07-21)
 
-**Actively open:** BUG-027 (engine exonerated by measurement — pending user headphone A/B, see addendum), INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), INFRA-009 (rtkit integration for unprivileged RT scheduling on Linux).
+**Actively open:** BUG-027 (reverb init crackle — pending user headphone A/B, see addendum), INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036).
 **Fixed, pending hardware verification:** BUG-012 (output ring buffer + FTZ/DAZ `0f3d17b`, `BufferSize::Default` decision `c3c56db` — the chunk-and-discard distortion path is gone; awaiting Linux ALSA re-test of the session-#3 distortion).
 **Trigger-based (fix when named trigger fires):** BUG-002, BUG-003, BUG-006.
 **Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, INFRA-001, INFRA-002, INFRA-003, INFRA-004, INFRA-007.
@@ -1186,6 +1186,10 @@ lands and the emulator stays as the no-hardware dev tool, fix it there.
 ---
 
 ### INFRA-009 — rtkit integration for unprivileged realtime scheduling
+
+**Fixed:** `crates/paraclete-hal/src/rtkit.rs` — raw D-Bus wire protocol client
+(~110 lines, deps-free). Tries rtkit before raw `pthread_setschedparam` in
+the audio callback.
 
 **Severity:** Medium (distribution blocker — without rtkit or `setcap`,
 the audio thread runs under CFS and may underrun under load)
