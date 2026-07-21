@@ -1,8 +1,9 @@
 mod action;
 pub mod input;
-mod model;
+pub mod model;
 mod render;
 
+use std::collections::HashMap;
 use std::io::Stdout;
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -10,12 +11,12 @@ use std::time::Instant;
 
 use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use crossterm::execute;
-use paraclete_node_api::{NodeCommand, StateBusHandle};
+use paraclete_node_api::{CapabilityDocument, NodeCommand, StateBusHandle};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::action::{Action, Outcome};
-use crate::model::Dir;
+use crate::model::{Dir, JogTracker, Model, Slot, Tuning};
 
 pub type BusHandle = Rc<RefCell<StateBusHandle>>;
 
@@ -24,27 +25,32 @@ pub struct TheotokosConfig {
     pub seq_ids: Vec<u32>,
     pub gen_ids: Vec<u32>,
     pub gen_names: Vec<String>,
+    pub caps: HashMap<u32, CapabilityDocument>,
     pub fps: u64,
 }
 
 pub struct TheotokosApp {
-    model: model::Model,
+    model: Model,
     pending: Vec<NodeCommand>,
     quit: bool,
     dirty: bool,
     last_render: Instant,
     frame_ms: u64,
+    tuning: Tuning,
+    jog_a: JogTracker,
+    jog_b: JogTracker,
 }
 
 impl TheotokosApp {
     pub fn new(config: TheotokosConfig) -> Result<Self, String> {
         setup_keyboard_flags()?;
 
-        let model = model::Model::new(
+        let model = Model::new(
             config.clock_id,
             &config.seq_ids,
             &config.gen_ids,
             &config.gen_names,
+            config.caps,
         );
 
         let frame_ms = if config.fps > 0 { 1000 / config.fps } else { 33 };
@@ -56,6 +62,9 @@ impl TheotokosApp {
             dirty: true,
             last_render: Instant::now(),
             frame_ms,
+            tuning: Tuning::default(),
+            jog_a: JogTracker::new(),
+            jog_b: JogTracker::new(),
         })
     }
 
@@ -68,12 +77,14 @@ impl TheotokosApp {
         let bus_ref = bus.borrow();
         let bus = &*bus_ref;
         let playing = self.model.playing(bus);
+        let now = Instant::now();
+        let tick_ms = now.elapsed().as_millis() as u64;
 
         let mut actions: Vec<Action> = Vec::with_capacity(32);
         while event::poll(std::time::Duration::ZERO).map_err(|e| e.to_string())? {
             match event::read().map_err(|e| e.to_string())? {
                 Event::Key(ev) => {
-                    if Self::is_press_or_repeat(ev) {
+                    if is_press_or_repeat(ev) {
                         actions.push(input::map_key(self.model.mode, &ev));
                     }
                 }
@@ -91,12 +102,9 @@ impl TheotokosApp {
                     self.model.cycle_mode();
                     self.dirty = true;
                 }
-                Action::SelectTrack(i) if i < self.model.tracks.len() => {
-                    self.model.active_track = i;
+                Action::SelectTrack(i) => {
+                    self.model.select_track(i);
                     self.dirty = true;
-                }
-                Action::SelectTrack(_) => {
-                    // out of range — no-op
                 }
                 Action::PageWindow(dir) => {
                     let max_page = self
@@ -114,6 +122,44 @@ impl TheotokosApp {
                         }
                     }
                     self.dirty = true;
+                }
+                Action::SelectParamPage(idx) => {
+                    self.model.select_perf_page(idx);
+                    self.dirty = true;
+                }
+                Action::Jog { slot, dir, mag } => {
+                    let binding = match slot {
+                        Slot::A => &self.model.slot_a,
+                        Slot::B => &self.model.slot_b,
+                        Slot::C => continue,
+                    };
+                    if let Some(ref b) = binding {
+                        let tracker = match slot {
+                            Slot::A => &mut self.jog_a,
+                            Slot::B => &mut self.jog_b,
+                            Slot::C => continue,
+                        };
+                        let held = match tracker.repeat(now, tick_ms) {
+                            Some(h) => h,
+                            None => {
+                                tracker.press(now, tick_ms);
+                                0
+                            }
+                        };
+                        let range = b.max - b.min;
+                        let delta = self.tuning.jog_step(range, held, mag);
+                        let signed = match dir {
+                            Dir::Next => delta,
+                            Dir::Prev => -delta,
+                        };
+                        self.pending.push(NodeCommand {
+                            target_id: b.node_id,
+                            type_id: paraclete_node_api::CMD_BUMP_PARAM,
+                            arg0: b.param_id as i64,
+                            arg1: signed,
+                        });
+                        self.dirty = true;
+                    }
                 }
                 Action::PlayToggle => {
                     let outcome = action.execute(
@@ -151,6 +197,27 @@ impl TheotokosApp {
             let step_state = self.model.read_step_state(bus, self.model.active_track);
             let bpm = self.model.read_bpm(bus);
 
+            let slot_a_value = self
+                .model
+                .slot_a
+                .as_ref()
+                .map(|s| self.model.read_param_value(bus, s.node_id, s.param_id))
+                .unwrap_or(0.0);
+            let slot_b_value = self
+                .model
+                .slot_b
+                .as_ref()
+                .map(|s| self.model.read_param_value(bus, s.node_id, s.param_id))
+                .unwrap_or(0.0);
+
+            let envelope = self
+                .model
+                .envelope_for_active_track()
+                .map(|e| {
+                    let val = self.model.read_param_value(bus, e.node_id, e.param_id);
+                    (e, val)
+                });
+
             let render_data = render::RenderData {
                 mode: self.model.mode,
                 active_track: self.model.active_track,
@@ -159,6 +226,13 @@ impl TheotokosApp {
                 playing,
                 page_window: self.model.page_windows[self.model.active_track],
                 step_state,
+                slot_a: self.model.slot_a.clone(),
+                slot_a_value,
+                slot_b: self.model.slot_b.clone(),
+                slot_b_value,
+                page_groups: self.model.page_groups_for_active_track(),
+                perf_page: self.model.perf_page,
+                envelope,
             };
 
             drop(bus_ref);
@@ -188,10 +262,10 @@ impl TheotokosApp {
         pop_keyboard_flags()?;
         Ok(())
     }
+}
 
-    fn is_press_or_repeat(ev: KeyEvent) -> bool {
-        matches!(ev.kind, KeyEventKind::Press | KeyEventKind::Repeat)
-    }
+fn is_press_or_repeat(ev: KeyEvent) -> bool {
+    matches!(ev.kind, KeyEventKind::Press | KeyEventKind::Repeat)
 }
 
 fn setup_keyboard_flags() -> Result<(), String> {

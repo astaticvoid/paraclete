@@ -1,4 +1,5 @@
-use paraclete_node_api::{StateBusHandle, StateBusValue};
+use std::collections::HashMap;
+use paraclete_node_api::{CapabilityDocument, PageRef, StateBusHandle, StateBusValue};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -21,6 +22,29 @@ pub enum Dir {
     Next,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Slot {
+    A,
+    B,
+    C,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mag {
+    Normal,
+    Fine,
+    Coarse,
+}
+
+#[derive(Clone)]
+pub struct SlotBinding {
+    pub node_id: u32,
+    pub param_id: u32,
+    pub param_name: String,
+    pub min: f64,
+    pub max: f64,
+}
+
 pub struct TrackInfo {
     pub sequencer_id: u32,
     pub generator_id: u32,
@@ -33,10 +57,20 @@ pub struct Model {
     pub tracks: Vec<TrackInfo>,
     pub clock_id: u32,
     pub page_windows: Vec<usize>,
+    pub caps: HashMap<u32, CapabilityDocument>,
+    pub perf_page: usize,
+    pub slot_a: Option<SlotBinding>,
+    pub slot_b: Option<SlotBinding>,
 }
 
 impl Model {
-    pub fn new(clock_id: u32, seq_ids: &[u32], gen_ids: &[u32], gen_names: &[String]) -> Self {
+    pub fn new(
+        clock_id: u32,
+        seq_ids: &[u32],
+        gen_ids: &[u32],
+        gen_names: &[String],
+        caps: HashMap<u32, CapabilityDocument>,
+    ) -> Self {
         let count = seq_ids.len().min(gen_ids.len());
         let tracks: Vec<TrackInfo> = (0..count)
             .map(|i| TrackInfo {
@@ -49,17 +83,100 @@ impl Model {
             })
             .collect();
         let page_windows: Vec<usize> = vec![0; tracks.len()];
-        Self {
+        let mut model = Self {
             mode: Mode::Seq,
             active_track: 0,
             tracks,
             clock_id,
             page_windows,
-        }
+            caps,
+            perf_page: 0,
+            slot_a: None,
+            slot_b: None,
+        };
+        model.bind_page();
+        model
     }
 
     pub fn cycle_mode(&mut self) {
         self.mode = self.mode.next();
+    }
+
+    pub fn select_track(&mut self, i: usize) {
+        if i < self.tracks.len() {
+            self.active_track = i;
+            self.bind_page();
+        }
+    }
+
+    pub fn select_perf_page(&mut self, idx: usize) {
+        self.perf_page = idx;
+        self.bind_page();
+    }
+
+    fn bind_page(&mut self) {
+        let (a, b) = self.resolve_page_params();
+        self.slot_a = a.map(|(nid, pid, name, min, max)| SlotBinding {
+            node_id: nid,
+            param_id: pid,
+            param_name: name,
+            min,
+            max,
+        });
+        self.slot_b = b.map(|(nid, pid, name, min, max)| SlotBinding {
+            node_id: nid,
+            param_id: pid,
+            param_name: name,
+            min,
+            max,
+        });
+    }
+
+    fn resolve_page_params(&self) -> (
+        Option<(u32, u32, String, f64, f64)>,
+        Option<(u32, u32, String, f64, f64)>,
+    ) {
+        let gen_id = self.tracks[self.active_track].generator_id;
+        let cap = match self.caps.get(&gen_id) {
+            Some(c) => c,
+            None => return (None, None),
+        };
+        let rule = match &cap.view {
+            Some(r) => r,
+            None => return (None, None),
+        };
+        let page = match rule.page_groups.get(self.perf_page) {
+            Some(p) => p.as_ref(),
+            None => {
+                let fallback_params = &cap.params;
+                let a = fallback_params.first();
+                let b = fallback_params.get(1);
+                return (
+                    a.map(|p| (gen_id, p.id, p.name.to_string(), p.min, p.max)),
+                    b.map(|p| (gen_id, p.id, p.name.to_string(), p.min, p.max)),
+                );
+            }
+        };
+
+        let mut params: Vec<&(u32, PageRef)> = rule
+            .param_pages
+            .iter()
+            .filter(|(_, pr)| pr.page.as_ref() == page)
+            .collect();
+        params.sort_by_key(|(_, pr)| pr.slot);
+        let a = params.first().and_then(|(pid, _)| {
+            cap.params
+                .iter()
+                .find(|pd| pd.id == *pid)
+                .map(|pd| (gen_id, pd.id, pd.name.to_string(), pd.min, pd.max))
+        });
+        let b = params.get(1).and_then(|(pid, _)| {
+            cap.params
+                .iter()
+                .find(|pd| pd.id == *pid)
+                .map(|pd| (gen_id, pd.id, pd.name.to_string(), pd.min, pd.max))
+        });
+        (a, b)
     }
 
     pub fn playing(&self, bus: &StateBusHandle) -> bool {
@@ -75,6 +192,26 @@ impl Model {
                 _ => None,
             })
             .unwrap_or(120.0)
+    }
+
+    pub fn read_param_value(&self, bus: &StateBusHandle, node_id: u32, param_id: u32) -> f64 {
+        let param_name = self
+            .caps
+            .get(&node_id)
+            .and_then(|c| c.params.iter().find(|p| p.id == param_id))
+            .map(|p| p.name.to_string());
+
+        match param_name {
+            Some(name) => bus
+                .read(&format!("/node/{}/param/{}", node_id, name))
+                .and_then(|v| match v {
+                    StateBusValue::Float(f) => Some(*f),
+                    StateBusValue::Int(i) => Some(*i as f64),
+                    _ => None,
+                })
+                .unwrap_or(0.0),
+            None => 0.0,
+        }
     }
 
     pub fn read_step_state(
@@ -122,6 +259,35 @@ impl Model {
             page_count,
         }
     }
+
+    pub fn page_groups_for_active_track(&self) -> Vec<String> {
+        let gen_id = self.tracks[self.active_track].generator_id;
+        self.caps
+            .get(&gen_id)
+            .and_then(|c| c.view.as_ref())
+            .map(|r| r.page_groups.iter().map(|g| g.to_string()).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn envelope_for_active_track(&self) -> Option<EnvelopeData> {
+        let gen_id = self.tracks[self.active_track].generator_id;
+        let cap = self.caps.get(&gen_id)?;
+        let rule = cap.view.as_ref()?;
+        let env = rule.envelopes.first()?;
+        let pid = env.param_ids[0];
+        if pid == 0 {
+            return None;
+        }
+        let param = cap.params.iter().find(|p| p.id == pid)?;
+        Some(EnvelopeData {
+            param_id: pid,
+            param_name: param.name.to_string(),
+            node_id: gen_id,
+            env_type: env.env_type.to_string(),
+            min: param.min,
+            max: param.max,
+        })
+    }
 }
 
 #[derive(Default)]
@@ -130,4 +296,94 @@ pub struct StepState {
     pub pattern_length: usize,
     pub steps: Vec<bool>,
     pub page_count: usize,
+}
+
+#[derive(Clone)]
+pub struct EnvelopeData {
+    pub param_id: u32,
+    pub param_name: String,
+    pub node_id: u32,
+    pub env_type: String,
+    pub min: f64,
+    pub max: f64,
+}
+
+#[derive(Clone)]
+pub struct Tuning {
+    pub base_divisor: f64,
+    pub min_step: f64,
+    pub fine_divisor: f64,
+    pub coarse_multiplier: f64,
+    pub ramp_hz: f64,
+    pub ramp_dwell_ms: u64,
+    pub ramp_accel_factor: f64,
+    pub ramp_accel_cap: f64,
+}
+
+impl Default for Tuning {
+    fn default() -> Self {
+        Self {
+            base_divisor: 128.0,
+            min_step: 0.001,
+            fine_divisor: 8.0,
+            coarse_multiplier: 4.0,
+            ramp_hz: 60.0,
+            ramp_dwell_ms: 150,
+            ramp_accel_factor: 1.05,
+            ramp_accel_cap: 8.0,
+        }
+    }
+}
+
+impl Tuning {
+    pub fn jog_step(&self, range: f64, held_ms: u64, mag: Mag) -> f64 {
+        let base = (range / self.base_divisor).max(self.min_step);
+        let step = match mag {
+            Mag::Normal => base,
+            Mag::Fine => base / self.fine_divisor,
+            Mag::Coarse => base * self.coarse_multiplier,
+        };
+        if held_ms > self.ramp_dwell_ms {
+            let n = (held_ms - self.ramp_dwell_ms) as f64 / (1000.0 / self.ramp_hz);
+            let mult = self.ramp_accel_factor.powf(n).min(self.ramp_accel_cap);
+            step * mult
+        } else {
+            step
+        }
+    }
+}
+
+pub struct JogTracker {
+    pub held_since: Option<std::time::Instant>,
+    pub last_tick_ms: u64,
+}
+
+impl JogTracker {
+    pub fn new() -> Self {
+        Self {
+            held_since: None,
+            last_tick_ms: 0,
+        }
+    }
+
+    pub fn press(&mut self, now: std::time::Instant, tick_ms: u64) -> u64 {
+        self.held_since = Some(now);
+        self.last_tick_ms = tick_ms;
+        0
+    }
+
+    pub fn repeat(&mut self, now: std::time::Instant, tick_ms: u64) -> Option<u64> {
+        if tick_ms <= self.last_tick_ms + 200 {
+            self.last_tick_ms = tick_ms;
+            let held = self.held_since.map(|h| now.duration_since(h).as_millis() as u64).unwrap_or(0);
+            Some(held)
+        } else {
+            self.held_since = None;
+            None
+        }
+    }
+
+    pub fn release(&mut self) {
+        self.held_since = None;
+    }
 }

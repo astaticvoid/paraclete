@@ -74,7 +74,7 @@ fn main() {
         });
 
     let no_tui = args.iter().any(|a| a == "--no-tui");
-    let no_emulator = args.iter().any(|a| a == "--no-emulator");
+    let mut no_emulator = args.iter().any(|a| a == "--no-emulator");
     let theotokos = args.iter().any(|a| a == "--theotokos");
     if theotokos {
         no_emulator = true;
@@ -375,6 +375,7 @@ fn main() {
                     seq_ids: ids.sequencers.clone(),
                     gen_ids: ids.generators.clone(),
                     gen_names,
+                    caps: cap_docs.clone(),
                     fps: 30,
                 }) {
                     Ok(app) => {

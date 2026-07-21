@@ -1,5 +1,5 @@
 use paraclete_node_api::NodeCommand;
-use crate::model::Dir;
+use crate::model::{Dir, Mag, Slot};
 
 pub const CMD_CLOCK_START: u32 = 16;
 pub const CMD_CLOCK_STOP: u32 = 17;
@@ -14,6 +14,8 @@ pub enum Action {
     SelectTrack(usize),
     ToggleStep { col: usize },
     PageWindow(Dir),
+    SelectParamPage(usize),
+    Jog { slot: Slot, dir: Dir, mag: Mag },
     Noop,
 }
 
@@ -35,7 +37,8 @@ impl Action {
     ) -> Outcome {
         match self {
             Action::Quit => Outcome::Quit,
-            Action::CycleMode(_) => Outcome::StateOnly,
+            Action::CycleMode(_) | Action::SelectTrack(_) | Action::PageWindow(_) |
+            Action::SelectParamPage(_) | Action::Jog { .. } => Outcome::StateOnly,
             Action::PlayToggle => {
                 if playing {
                     Outcome::Command(NodeCommand {
@@ -53,7 +56,6 @@ impl Action {
                     })
                 }
             }
-            Action::SelectTrack(_) => Outcome::StateOnly,
             Action::ToggleStep { col } => {
                 let step = (page_window * PAGE_SIZE + col) as i64;
                 Outcome::Command(NodeCommand {
@@ -63,7 +65,6 @@ impl Action {
                     arg1: 0.0,
                 })
             }
-            Action::PageWindow(_) => Outcome::StateOnly,
             Action::Noop => Outcome::Noop,
         }
     }
