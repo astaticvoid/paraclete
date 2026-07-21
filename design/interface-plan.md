@@ -36,6 +36,11 @@ Reserved for later, same register: **Ordo** (workflow/layout profiles — the
 *ordo* is the order of service) and **Triptych** (multi-panel layout system).
 Don't spend these before the features exist.
 
+Assigned outside Antiphon (2026-07-21): **Praxis** (*action* — the controls
+half of "the views are theoria; the controls are praxis" above) — the
+keyboard-first modal performance terminal. Track docs: `design/praxis/`;
+decision: ADR-036.
+
 **Rule:** evocative names go to *our own* components — crates, modules,
 binaries, genuinely novel features. Wire messages and standard concepts keep
 plain names (`hello`, `state`, `led`, *pages*, *grid*) — never rename
