@@ -60,7 +60,16 @@ pub const CMD_CLOCK_START: u32 = 16;  // node-specific range
 pub const CMD_CLOCK_STOP:  u32 = 17;
 ```
 
-### 0.2 Command semantics (override `handle_commands`)
+### 0.2 Command semantics
+
+**Mechanism (review M1):** scan `input.commands` at the **top of
+`process()`, before the `!playing` early return** (`internal_clock.rs:182`)
+— otherwise `CMD_CLOCK_STOP`-then-`START` is dead code exactly when the
+clock is stopped. Follow the established idiom: an *inherent* scan method
+invoked as the first statement of `process()` (`sequencer.rs:1001`,
+`sampler.rs:546`, `analog_engine.rs:378`). The `Node` trait has **no**
+`handle_commands` — do **not** add one (that would be an unscoped L2
+LGPL-boundary API change).
 
 | Command | Effect |
 |---|---|
@@ -98,6 +107,12 @@ crossterm = { workspace = true }
 paraclete-node-api = { path = "../paraclete-node-api" }
 ```
 
+Also required (review m1): the root `Cargo.toml` `members` list is
+**explicit, not a glob** — add `crates/paraclete-theotokos` there, and add
+`paraclete-theotokos = { path = "../paraclete-theotokos" }` to
+`crates/paraclete-app/Cargo.toml`. (`default-members` stays
+`paraclete-app`-only; the house `--workspace` aliases cover the rest.)
+
 Modules and purity contracts (ADR-036 §2.3 — this is the composability
 seam, do not collapse it):
 
@@ -124,6 +139,11 @@ seam, do not collapse it):
 - Cap-doc cache built at startup from the app's existing step-7
   collection; track map from `InstrumentIds` (sequencers zipped with
   generators, sorted by id, ≤8 entries → keys `q w e r u i o p`).
+  **Pairing is positional** (correct for the default instrument's YAML
+  order); edge-derived mapping is TK1 (review m3).
+- `should_quit()` is OR-ed into the main loop's `running` condition; the
+  egress drain uses `.ok()` on `conf.send_command(...)` like the existing
+  scripting/Antiphon drains (review m5).
 
 ### 1.3 `Action` enum (initial contract — exhaustive for TK0)
 
@@ -186,8 +206,10 @@ track's sequencer, `arg0 = window_base + col`; `[`/`]` → PageWindow
 ### 2.1 Focus slots (ADR-036.5)
 
 Two live slots `A`, `B` (`Slot` enum carries a `C` variant, unbound in
-TK0). Each slot binds `(node_id, param_id)`. Bindings and values are
-always visible in the mode line.
+TK0 — C is model-frozen but FX-page-bound per design.md §3.3, and
+engine-local TK0 has no FX pages; review m4). Each slot binds
+`(node_id, param_id)`. Bindings and values are always visible in the mode
+line.
 
 ### 2.2 Page select → slot binding
 
@@ -215,8 +237,12 @@ first two cap-doc params. Out-of-range page key → Noop.
   step` — bindings **always** on screen (s1/s2 legibility contract).
 - Envelope: if the bound page's engine `Rule` declares an
   `EnvelopeGroup`, draw the piecewise curve from live param values on a
-  braille canvas; redraw on value change. No engine changes (ADR-036.7
-  baseline). `LfoShape`/live phase are TK2 (gap §2.6.5).
+  braille canvas; redraw on value change. **Sentinel rule (review m2):**
+  treat `param_ids[i] == 0` as absent, and note both default engines
+  declare `env_type: "AD"` (not in `rule.rs`'s documented enumeration)
+  with only `decay` live — the renderer must degrade to a two-stage
+  curve, not expect four stages. No engine changes (ADR-036.7 baseline).
+  `LfoShape`/live phase are TK2 (gap §2.6.5).
 
 ### 2.5 Tests (named)
 
