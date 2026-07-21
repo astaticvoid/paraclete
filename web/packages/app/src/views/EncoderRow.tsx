@@ -208,12 +208,15 @@ export function EncoderRow({ connection, stateStore, contextStore, nodes }: Enco
         ctx.strokeRect(x + 3, 3, cellW - 6, vh - 6);
 
         ctx.fillStyle = flashing ? "#041" : held ? "#bbc" : "#999";
-        ctx.font = "600 12px ui-monospace, monospace";
+        // Fonts scale with cell width so 8 cells stay legible on a
+        // phone-width row (~48 px/cell); at tablet widths (≥ ~100 px/cell)
+        // these clamp to the original 12/18 px.
+        ctx.font = `600 ${Math.max(9, Math.min(12, Math.floor(cellW * 0.22)))}px ui-monospace, monospace`;
         ctx.textAlign = "center";
         ctx.fillText(slot?.param ? slot.param : "—", x + cellW / 2, vh * 0.28, cellW - 10);
 
         ctx.fillStyle = flashing ? "#041" : "#ddd";
-        ctx.font = "500 18px ui-monospace, monospace";
+        ctx.font = `500 ${Math.max(12, Math.min(18, Math.floor(cellW * 0.34)))}px ui-monospace, monospace`;
         ctx.fillText(
           value !== undefined ? formatValue(value) : "",
           x + cellW / 2,

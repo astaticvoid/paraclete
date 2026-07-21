@@ -122,7 +122,12 @@ export function Grid({ connection, bus, stateStore, tracks, velocityPct }: GridP
       const n = visibleCellCount();
       cellRects = [];
       if (n === 0) return;
-      const cols = modeN === 1 ? STEP_COLS : Math.min(n, STEP_COLS);
+      // TRIG on a phone-width viewport: wrap to ~160 px columns so pads
+      // stay big (2×2 for four tracks) instead of spreading one thin row
+      // across the width. Wider viewports keep the single-row behaviour.
+      const trigCols =
+        viewW < 700 ? Math.max(2, Math.floor(viewW / 160)) : STEP_COLS;
+      const cols = modeN === 1 ? STEP_COLS : Math.min(n, trigCols);
       const rows = Math.ceil(n / cols);
       const maxCell = modeN === 1 ? 150 : 220;
       const cell = Math.max(

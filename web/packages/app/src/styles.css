@@ -643,3 +643,108 @@ body {
   font-size: 10px;
   margin-left: auto;
 }
+
+/* ── Phone adaptation ──────────────────────────────────────────────────────
+   Portrait handsets (≤700 px): the W2 side-rail layout is landscape-shaped
+   and does not fit a phone held upright, so the track column becomes a
+   horizontal strip across the top and the bottom rail wraps into two rows
+   (page nav, then transport). Landscape phones (width > 700 px) keep the
+   tablet layout unchanged. */
+@media (max-width: 700px) {
+  .editor-layout {
+    flex-direction: column;
+  }
+
+  /* Track select: vertical left column → horizontal top strip */
+  .track-select-col {
+    flex-direction: row;
+    flex: 0 0 auto;
+    border-right: none;
+    border-bottom: 1px solid #26262e;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding-top: max(6px, env(safe-area-inset-top));
+  }
+
+  .track-col-btn {
+    flex-direction: row;
+    flex: 0 0 auto;
+    gap: 6px;
+    min-height: 40px;
+    min-width: 44px;
+    padding: 4px 10px;
+  }
+
+  /* Page nav + transport cannot fit side by side: stack them */
+  .bottom-rail {
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 4px 6px;
+    padding-bottom: max(4px, env(safe-area-inset-bottom));
+  }
+
+  .page-nav {
+    flex: 1 1 100%;
+  }
+
+  .page-nav-btn {
+    flex: 1 1 0;
+    min-width: 0;
+    padding: 6px 2px;
+  }
+
+  .transport-bar {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    padding: 2px 4px;
+  }
+
+  .mode-btn {
+    min-width: 44px;
+  }
+
+  .encoder-row-container {
+    flex-basis: 88px;
+  }
+
+  .grid-header {
+    padding: 4px 8px;
+    gap: 6px;
+    font-size: 11px;
+  }
+
+  .velocity-slider input[type="range"] {
+    width: 56px;
+  }
+
+  /* The transport already carries connection status; the fixed readout
+     would overlap the taller wrapped bottom rail. */
+  .rtt-readout {
+    display: none;
+  }
+}
+
+/* Landscape phones (short viewports, any width): keep the side-rail layout
+   but compact the bottom rail so every transport item stays on-screen, and
+   drop the readout that would overlap the velocity slider. */
+@media (max-height: 500px) {
+  .rtt-readout {
+    display: none;
+  }
+
+  .bottom-rail {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+
+  .transport-bar {
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 2px 6px;
+  }
+
+  .velocity-slider input[type="range"] {
+    width: 56px;
+  }
+}

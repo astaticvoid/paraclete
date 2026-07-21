@@ -268,6 +268,13 @@ cargo run -- --theoria-dir=web/packages/app/dist
 cargo build -p paraclete-app --release --features embed-ui  # embed dist/ in binary
 ```
 
+Phone adaptation: `@media (max-width: 700px)` in `styles.css` restacks the
+W2 layout vertically (track column → top strip, page nav + transport wrap to
+two rows); TRIG pads wrap to ~160 px columns in `Grid.tsx`; encoder canvas
+fonts scale with cell width. `@media (max-height: 500px)` compacts the rail
+for landscape phones. Tablet layout is untouched — verify any rail/grid CSS
+change at both 390×844 and 1024×768 before committing.
+
 ## Commit workflow
 
 **The agent must proactively commit after each logical unit of work** (bug
