@@ -670,7 +670,7 @@ body {
     flex-direction: row;
     flex: 0 0 auto;
     gap: 6px;
-    min-height: 40px;
+    min-height: 44px;
     min-width: 44px;
     padding: 4px 10px;
   }
@@ -726,16 +726,23 @@ body {
 }
 
 /* Landscape phones (short viewports, any width): keep the side-rail layout
-   but compact the bottom rail so every transport item stays on-screen, and
-   drop the readout that would overlap the velocity slider. */
+   but compact the bottom rail so every transport item stays on-screen, pad
+   the short edges for the notch/Dynamic Island (viewport-fit=cover draws
+   under it; env() is 0 on tablets, so this is tablet-inert), and drop the
+   readout that would overlap the velocity slider. */
 @media (max-height: 500px) {
   .rtt-readout {
     display: none;
   }
 
+  .track-select-col {
+    padding-left: max(4px, env(safe-area-inset-left));
+  }
+
   .bottom-rail {
     flex-wrap: wrap;
     row-gap: 2px;
+    padding-right: max(6px, env(safe-area-inset-right));
   }
 
   .transport-bar {

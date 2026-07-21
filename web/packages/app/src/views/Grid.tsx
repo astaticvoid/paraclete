@@ -113,8 +113,9 @@ export function Grid({ connection, bus, stateStore, tracks, velocityPct }: GridP
       return 0;
     }
 
-    /** Cell id -> rect, for the current mode. TRIG: track pads, wrapping at
-     * STEP_COLS per row. STEP: steps in the profile's two banks of 8. Cells
+    /** Cell id -> rect, for the current mode. TRIG: track pads, one row of
+     * up to STEP_COLS on wide viewports, ~160 px columns (wrapping) on
+     * phone-width ones. STEP: steps in the profile's two banks of 8. Cells
      * grow to fill the area within a comfortable maximum, so nothing dead
      * pads the space; the lower clamp keeps cells hittable (and the layout
      * sane) on absurdly small viewports. */
@@ -124,9 +125,13 @@ export function Grid({ connection, bus, stateStore, tracks, velocityPct }: GridP
       if (n === 0) return;
       // TRIG on a phone-width viewport: wrap to ~160 px columns so pads
       // stay big (2×2 for four tracks) instead of spreading one thin row
-      // across the width. Wider viewports keep the single-row behaviour.
-      const trigCols =
-        viewW < 700 ? Math.max(2, Math.floor(viewW / 160)) : STEP_COLS;
+      // across the width. Keyed on the VIEWPORT width (not the container's,
+      // which is viewport−90 px under the tablet side rail) so this matches
+      // the styles.css phone breakpoint exactly; wider viewports keep the
+      // single-row-of-STEP_COLS behaviour.
+      const trigCols = window.matchMedia("(max-width: 700px)").matches
+        ? Math.max(2, Math.floor(viewW / 160))
+        : STEP_COLS;
       const cols = modeN === 1 ? STEP_COLS : Math.min(n, trigCols);
       const rows = Math.ceil(n / cols);
       const maxCell = modeN === 1 ? 150 : 220;
