@@ -20,9 +20,10 @@ For new tools/components outside the phase structure: find the ADR in
 `design/adr/` (e.g. ADR-033 for the headless test driver). ADRs are the spec;
 implementation follows in a separate commit.
 
-For the Theotokos performance-terminal track (proposed 2026-07-21):
-`design/theotokos/problem.md` → `design/theotokos/design.md` → ADR-036. The ADR
-must be ratified by the user before any TK0 code.
+For the Theotokos performance-terminal track (ADR-036 **accepted
+2026-07-21**): `design/theotokos/problem.md` → `design/theotokos/design.md`
+→ `design/phases/tk0-theotokos.md` (POC spec). TK0 Commit 0 fixes BUG-032
+(clock command handling) before any crate code.
 
 ## Task routing by tier
 
@@ -62,9 +63,6 @@ They are judgment calls to make *with* the user in session, not solo.)
 - Protocol v1 freeze (W4); any protocol change beyond the v0 spec
 - Re-ordering P10 C2–C5 after paired session #1 (user decision, informed by
   `design/sessions/s1.md`)
-- **ADR-036 (Theotokos performance terminal) ratification** — proposed
-  2026-07-21 with full staged design in `design/theotokos/`; ratify, amend, or
-  reject with the user before TK0 code
 - Any deviation from a spec contract; any new ADR
 
 ## Guardrails (all tiers)
@@ -94,7 +92,11 @@ They are judgment calls to make *with* the user in session, not solo.)
    published APIs, single-purpose fields. Flag findings to the user even
    unprompted; file them before format freezes (serializers, wire protocol,
    crates.io APIs), where limitations become permanent.
-7. **Every commit:** `cargo test --workspace` green (bare `cargo test` only
+7. **Defect-filing (standing user directive, 2026-07-21):** architectural
+   defects found during design or review work are **filed in `bugs.md`
+   against the code** and the design is adjusted — never silently worked
+   around in prose. (Filed under it so far: BUG-032, BUG-033, INFRA-008.)
+8. **Every commit:** `cargo test --workspace` green (bare `cargo test` only
    runs the app crate), clippy clean on touched crates, update the phase
    report as you go — not at the end.
 

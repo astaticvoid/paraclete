@@ -1,7 +1,11 @@
 # ADR-036 — Theotokos: Keyboard-First Performance Terminal
 
-**Status:** 🟡 **Proposed (2026-07-21)** — user ratification required before
-any code (handoff guardrail: new ADRs gate on the user).
+**Status:** ✅ **Accepted (2026-07-21)** — ratified by the user after the
+pre-ratification design review (findings folded same day, see below).
+Standing user directive issued at ratification: **architectural defects
+found during design/review work are filed in `bugs.md` against the code,
+with design adjustments as necessary — not silently worked around.**
+(BUG-032 and BUG-033 were filed under it immediately.)
 
 **Context documents:** `design/theotokos/problem.md` (problem statement),
 `design/theotokos/design.md` (full staged design), ADR-018 (cellular
@@ -172,6 +176,12 @@ WT is editor/parity-first (generic views in the terminal). The gap is a
 ---
 
 ## Implementation notes
+
+**2026-07-21 — accepted.** Ratified by the user; the review amendments
+below were folded pre-ratification. BUG-032 (transport) and BUG-033 (TUI
+stale path) filed at acceptance under the standing defect-filing
+directive. Next artifact: `design/phases/tk0-theotokos.md` (POC spec);
+TK0 Commit 0 implements decision 7(a).
 
 **2026-07-21 — pre-ratification design review (subagent).** All factual
 code claims verified (9/10 lettered claims line-for-line; layer story,

@@ -3,7 +3,12 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-21. **Theotokos track proposed** — keyboard-first
+> **Last updated:** 2026-07-21 (evening). **Theotokos track ACCEPTED** —
+> keyboard-first modal performance terminal (`design/theotokos/`, ADR-036 ✅
+> 2026-07-21). Review found+fixed pre-ratification: BUG-032 (transport
+> unreachable — TK0 C0), BUG-033, 4-track default instrument, Antiphon-bound
+> composite Rules. TK0 POC spec: `design/phases/tk0-theotokos.md`.
+> Previous: 2026-07-21. **Theotokos track proposed** — keyboard-first
 > modal performance terminal (`design/theotokos/`, ADR-036 🟡 proposed; awaits
 > user ratification, then TK0 POC). A new track *alongside* the W-track, not
 > a fork: WT unaffected, convergence revisited at TK3.
@@ -189,7 +194,7 @@ Ordered by nearness to the critical path.
 | **P15** | Effects Palette | Distortion variety, chorus/phaser/flanger, BBD/tape delay, spring/plate | — |
 | **P16** | Macro & Terminal Control | Macro system; TUI as editing surface | — |
 | **W4** | Interface maturity | Ordo layout profiles, multi-client polish, wavetable view, protocol freeze, headless protocol CI driver | Ongoing after W3 |
-| **TK** | Theotokos performance terminal | Keyboard-first modal TUI (home-row steps, numpad focus-slot performance cluster, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **Proposed** (ADR-036; `design/theotokos/`; TK0 POC starts after ratification) |
+| **TK** | Theotokos performance terminal | Keyboard-first modal TUI (home-row steps, numpad focus-slot performance cluster, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **Accepted** (ADR-036, 2026-07-21; `design/theotokos/`; TK0 spec `design/phases/tk0-theotokos.md` — POC next) |
 
 The interface track (Antiphon server + Theoria clients) is specified in
 `design/interface-plan.md` (**accepted July 2026**; ADR-031 authored with W0,
