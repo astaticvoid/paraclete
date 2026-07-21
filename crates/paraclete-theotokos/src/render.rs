@@ -25,6 +25,7 @@ pub struct RenderData {
     pub page_groups: Vec<String>,
     pub perf_page: usize,
     pub envelope: Option<(EnvelopeData, f64)>,
+    pub debug_event: Option<String>,
 }
 
 pub fn render(frame: &mut Frame, data: &RenderData) {
@@ -240,6 +241,7 @@ mod tests {
             page_groups: vec![],
             perf_page: 0,
             envelope: None,
+            debug_event: None,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
     }
@@ -282,6 +284,7 @@ mod tests {
                 min: 0.0,
                 max: 1.0,
             }, 0.42)),
+            debug_event: None,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
     }

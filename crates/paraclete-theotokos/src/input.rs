@@ -51,8 +51,10 @@ fn map_global(ev: &KeyEvent) -> Option<Action> {
 
 fn map_seq(ev: &KeyEvent) -> Action {
     match ev.code {
-        KeyCode::Char('[') => Action::PageWindow(Dir::Prev),
-        KeyCode::Char(']') => Action::PageWindow(Dir::Next),
+        KeyCode::Char('[') | KeyCode::Char('{') | KeyCode::Char('-') =>
+            Action::PageWindow(Dir::Prev),
+        KeyCode::Char(']') | KeyCode::Char('}') | KeyCode::Char('=') =>
+            Action::PageWindow(Dir::Next),
         _ => step_col(ev.code).map(|col| Action::ToggleStep { col }).unwrap_or(Action::Noop),
     }
 }
@@ -115,6 +117,8 @@ mod tests {
     fn seq_page_window_keys() {
         assert!(matches!(map_key(Mode::Seq, &key('[')), Action::PageWindow(Dir::Prev)));
         assert!(matches!(map_key(Mode::Seq, &key(']')), Action::PageWindow(Dir::Next)));
+        assert!(matches!(map_key(Mode::Seq, &key('-')), Action::PageWindow(Dir::Prev)));
+        assert!(matches!(map_key(Mode::Seq, &key('=')), Action::PageWindow(Dir::Next)));
     }
 
     #[test]

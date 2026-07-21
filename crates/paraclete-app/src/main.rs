@@ -552,6 +552,24 @@ fn main() {
         restore_terminal(terminal).ok();
     }
     eprintln!("[paraclete] stopped.");
+
+    // PipeWire may strand on auto_null after Paraclete's direct ALSA access
+    // closes.  Warn if no real hardware sink is visible.
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(output) = std::process::Command::new("pactl")
+            .args(["list", "short", "sinks"])
+            .output()
+        {
+            let sinks = String::from_utf8_lossy(&output.stdout);
+            if !sinks.contains("alsa_output") {
+                eprintln!(
+                    "[paraclete] WARNING: no ALSA sink visible — PipeWire may be stranded on auto_null.\n\
+                     Fix: systemctl --user restart pipewire pipewire-pulse"
+                );
+            }
+        }
+    }
 }
 
 /// Load CLAP plugin libraries needed by the instrument definition.
