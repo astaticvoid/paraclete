@@ -4,9 +4,9 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ---
 
-## Status (2026-07-20)
+## Status (2026-07-21)
 
-**Actively open:** BUG-027 (engine exonerated by measurement — pending user headphone A/B, see addendum), INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-006 (idle ALSA underruns — no realtime priority).
+**Actively open:** BUG-027 (engine exonerated by measurement — pending user headphone A/B, see addendum), INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-006 (idle ALSA underruns — no realtime priority), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Praxis track, ADR-036).
 **Fixed, pending hardware verification:** BUG-012 (output ring buffer + FTZ/DAZ `0f3d17b`, `BufferSize::Default` decision `c3c56db` — the chunk-and-discard distortion path is gone; awaiting Linux ALSA re-test of the session-#3 distortion).
 **Trigger-based (fix when named trigger fires):** BUG-002, BUG-003, BUG-006.
 **Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, INFRA-001, INFRA-002, INFRA-003, INFRA-004, INFRA-007.
@@ -1092,3 +1092,25 @@ commits landed 2026-07-14, same day as session #3):
 clock ~8.8% fast) no longer exists by construction. Close after a re-test on
 the Linux ALSA box in the paired-session #3 configuration confirms clean
 audio. Realtime priority remains open separately as INFRA-006.
+
+---
+
+### INFRA-008 — LaunchpadEmulator polls the keyboard on the audio thread
+
+**Severity:** Medium (real-time rule violation in the hot path)
+**Phase found:** Praxis design scaffolding inventory (2026-07-21)
+**Description:** `LaunchpadEmulator::poll_keyboard()` runs *inside* the
+node's `process()` on the audio thread: `crossterm::event::poll` + `read()`
+every block. crossterm reads from stdin via syscalls and may allocate;
+neither is permitted in `process()` (hard constraint 1). In practice the
+zero-timeout poll usually returns immediately, which is why no dropout has
+been attributed to it — but the constraint is structural, not statistical.
+**Location:** `crates/paraclete-hal/src/emulator/mod.rs` (`poll_keyboard`,
+called from `process()`)
+**Fix direction:** Move keyboard polling to the main thread (an
+`EmulatorInputHandle` ticked like `SurfaceOutputHandle`s, injecting
+`SurfaceEvent`s through the existing SPSC path), leaving `process()` free
+of I/O. Praxis (ADR-036) is designed around this — it reads keys on the
+main thread and is mutually exclusive with the emulator via `--praxis` —
+so the fix is gated on the Praxis track rather than blocking it. If Praxis
+lands and the emulator stays as the no-hardware dev tool, fix it there.
