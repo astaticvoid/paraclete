@@ -116,7 +116,13 @@ impl TheotokosApp {
 
         let bus_ref = bus.borrow();
         let bus = &*bus_ref;
-        let step_state = self.model.read_step_state(bus, self.model.active_track);
+        let step_states: Vec<_> = (0..self.model.tracks.len())
+            .map(|t| self.model.read_step_state(bus, t))
+            .collect();
+        let step_state = step_states
+            .get(self.model.active_track)
+            .cloned()
+            .unwrap_or_default();
         let bpm = self.model.read_bpm(bus);
 
         let slot_a_value = self.model.slot_a.as_ref()
@@ -140,6 +146,7 @@ impl TheotokosApp {
             playing: self.model.playing(bus),
             page_window: self.model.page_windows[self.model.active_track],
             step_state,
+            step_states,
             slot_a: self.model.slot_a.clone(),
             slot_a_value,
             slot_b: self.model.slot_b.clone(),

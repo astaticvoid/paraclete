@@ -299,7 +299,7 @@ impl Model {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct StepState {
     pub current_step: usize,
     pub pattern_length: usize,

@@ -18,6 +18,7 @@ pub struct RenderData {
     pub playing: bool,
     pub page_window: usize,
     pub step_state: StepState,
+    pub step_states: Vec<StepState>,
     pub slot_a: Option<SlotBinding>,
     pub slot_a_value: f64,
     pub slot_b: Option<SlotBinding>,
@@ -93,6 +94,7 @@ fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
 }
 
 fn render_track_row(track_idx: usize, data: &RenderData, row_off: usize) -> Line<'_> {
+    let st = data.step_states.get(track_idx).unwrap_or(&data.step_state);
     let window = data.page_window * PAGE_SIZE * 2 + row_off;
     let mut spans: Vec<Span> = Vec::with_capacity(PAGE_SIZE + 2);
 
@@ -114,9 +116,9 @@ fn render_track_row(track_idx: usize, data: &RenderData, row_off: usize) -> Line
 
     for col in 0..PAGE_SIZE {
         let step = window + col;
-        let is_active = data.step_state.steps.get(step).copied().unwrap_or(false);
+        let is_active = st.steps.get(step).copied().unwrap_or(false);
 
-        let (glyph, color) = if step == data.step_state.current_step {
+        let (glyph, color) = if step == st.current_step {
             (" ▓", Color::Yellow)
         } else if is_active {
             (" █", Color::Cyan)
@@ -244,6 +246,7 @@ mod tests {
                 steps: vec![true; 16],
                 page_count: 2,
             },
+            step_states: vec![],
             slot_a: None,
             slot_a_value: 0.0,
             slot_b: None,
@@ -268,6 +271,7 @@ mod tests {
             playing: false,
             page_window: 0,
             step_state: StepState::default(),
+            step_states: vec![],
             slot_a: Some(SlotBinding {
                 node_id: 20,
                 param_id: 1,
