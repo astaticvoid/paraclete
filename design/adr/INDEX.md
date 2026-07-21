@@ -41,3 +41,4 @@ but cannot resolve them without this index.
 | ADR-033 | `ADR-033-headless-test-driver.md` | Headless test driver |
 | ADR-034 | `ADR-034-runtime-observability.md` | Runtime observability — live dropout/xrun/drop counters |
 | ADR-035 | `ADR-035-debug-baselines-and-structured-log.md` | Audio regression baselines + structured per-node debug log (🟡 proposed) |
+| ADR-036 | `ADR-036-praxis-performance-terminal.md` | Praxis keyboard-first performance terminal (🟡 proposed) |

@@ -20,6 +20,10 @@ For new tools/components outside the phase structure: find the ADR in
 `design/adr/` (e.g. ADR-033 for the headless test driver). ADRs are the spec;
 implementation follows in a separate commit.
 
+For the Praxis performance-terminal track (proposed 2026-07-21):
+`design/praxis/problem.md` → `design/praxis/design.md` → ADR-036. The ADR
+must be ratified by the user before any PRX0 code.
+
 ## Task routing by tier
 
 Route by the **judgment density** of the task, not its size. When in doubt,
@@ -58,6 +62,9 @@ They are judgment calls to make *with* the user in session, not solo.)
 - Protocol v1 freeze (W4); any protocol change beyond the v0 spec
 - Re-ordering P10 C2–C5 after paired session #1 (user decision, informed by
   `design/sessions/s1.md`)
+- **ADR-036 (Praxis performance terminal) ratification** — proposed
+  2026-07-21 with full staged design in `design/praxis/`; ratify, amend, or
+  reject with the user before PRX0 code
 - Any deviation from a spec contract; any new ADR
 
 ## Guardrails (all tiers)
