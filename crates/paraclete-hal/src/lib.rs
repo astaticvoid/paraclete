@@ -10,6 +10,8 @@ pub mod emulator;
 pub mod keystep;
 pub mod launchpad;
 pub mod midi;
+#[cfg(target_os = "linux")]
+mod rtkit;
 
 pub use audio::{query_sample_rate, AudioBackend, AudioEngine, AudioError};
 pub use digitakt::DigitaktMidiNode;

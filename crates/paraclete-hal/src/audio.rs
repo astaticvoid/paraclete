@@ -32,18 +32,24 @@ mod lrt {
         if ONCE.swap(true, Ordering::Relaxed) {
             return;
         }
+        // rtkit grants SCHED_FIFO without CAP_SYS_NICE on desktop Linux
+        // where PipeWire/PulseAudio is installed.
+        if crate::rtkit::try_acquire_realtime(50) {
+            return;
+        }
         let param = SchedParam { sched_priority: 50 };
         let ret = unsafe { pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) };
         if ret != 0 {
             log::warn!(
                 "realtime priority: SCHED_FIFO failed (errno={}). \
-                 Audio will run without RT scheduling — may produce underruns under load. \
+                 Rtkit unavailable, raw pthread_setschedparam failed. \
+                 Audio runs without RT scheduling — may underrun under load. \
                  Fix: ensure @audio rtprio in /etc/security/limits.conf, or: \
                  sudo setcap cap_sys_nice=eip <binary>",
                 ret,
             );
         } else {
-            log::info!("realtime priority: SCHED_FIFO prio=50 on audio thread");
+            log::info!("realtime priority: SCHED_FIFO prio=50 on audio thread (raw)");
         }
     }
 }
