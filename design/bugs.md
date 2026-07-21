@@ -4,14 +4,12 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ---
 
-## Status (2026-07-14)
+## Status (2026-07-20)
 
 **Actively open:** BUG-027 (engine exonerated by measurement — pending user headphone A/B, see addendum), INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-006 (idle ALSA underruns — no realtime priority).
-**Partially resolved:** BUG-012 (ring buffer + FTZ shipped; BufferSize::Fixed retry + realtime priority remain — see INFRA-006).
-**Partially resolved:** BUG-012 (sample rate detection shipped; output ring buffer not yet implemented — causes distortion on Linux ALSA with non-multiple block sizes).
-**Fixed, pending hardware verification:** (none).
-**Trigger-based (fix when named trigger fires):** BUG-003, BUG-006.
-**Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, INFRA-001, INFRA-002, INFRA-003.
+**Fixed, pending hardware verification:** BUG-012 (output ring buffer + FTZ/DAZ `0f3d17b`, `BufferSize::Default` decision `c3c56db` — the chunk-and-discard distortion path is gone; awaiting Linux ALSA re-test of the session-#3 distortion).
+**Trigger-based (fix when named trigger fires):** BUG-002, BUG-003, BUG-006.
+**Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, INFRA-001, INFRA-002, INFRA-003, INFRA-004, INFRA-007.
 **Debug harness:** ADR-033 interactive mode **shipped 2026-07-13 (`92b8795`)** —
 the harness-gated audit items below are now reachable without hardware (see the
 2026-07-13 entry at the bottom).
@@ -1062,3 +1060,35 @@ Wrong check — device ownership does not mean sink health. A null sink still
 **Fix direction:** After killing paraclete, run:
 `pactl list short sinks | grep -c alsa_output` — if 0, restart pipewire +
 pipewire-pulse. Add to AGENTS.md shutdown checklist and session-close skill.
+**RESOLVED** (2026-07-14): Linux-only shutdown sink check added to AGENTS.md
+(`39867ab`, `190d946`) and the session-close skill gained health checks +
+working-tree reporting (`2225492`).
+
+---
+
+### BUG-012 — UPDATE (2026-07-20): all three remaining items addressed; pending hardware verification
+
+The remaining-work list from the 2026-07-14 partial entry is complete (all
+commits landed 2026-07-14, same day as session #3):
+
+1. **Output ring buffer — shipped (`0f3d17b`).** `OutputRing` in
+   `paraclete-hal/src/audio.rs` bridges the executor's fixed `block_samples`
+   rendering to arbitrary device callback sizes: the executor renders full
+   blocks into the ring, the callback drains exactly what the device asked
+   for. No audio is discarded; timing error is bounded to the ring depth.
+   Pre-allocated on the main thread — no allocation on the audio path.
+2. **FTZ/DAZ — shipped (`0f3d17b`).** MXCSR bits 15 (FTZ) and 6 (DAZ) set
+   once on the audio thread (x86_64; ARM NEON needs no explicit denormal
+   handling).
+3. **BufferSize::Fixed retry — resolved by decision (`c3c56db`).** The stream
+   config deliberately uses `BufferSize::Default`: the ring bridge handles
+   any device buffer size, while Fixed would only skip the ring on
+   exact-match hardware and some ALSA devices reject it. The ring is the
+   general answer.
+
+**Status: fixed, pending hardware verification.** The session-#3 failure mode
+(9408-sample ALSA callbacks vs 512-frame blocks; chunk-and-discard dropping
+~416 rendered frames per callback, desyncing engine state and drifting the
+clock ~8.8% fast) no longer exists by construction. Close after a re-test on
+the Linux ALSA box in the paired-session #3 configuration confirms clean
+audio. Realtime priority remains open separately as INFRA-006.

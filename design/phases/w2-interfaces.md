@@ -596,7 +596,7 @@ for the corresponding `param_id` on the owning `node_id`, using the
 
 ---
 
-## Commit 7: Exit criteria + paired session #2
+## Commit 7: Exit criteria + paired session #3
 
 ### 7.1 Exit criteria
 

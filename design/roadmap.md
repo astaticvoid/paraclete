@@ -3,12 +3,21 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-14. **BUG-012 shipped** — sample-rate auto-detection + ring
-> buffer chunking (see bugs.md). **W2 Commits 0–6 shipped** — `Rule` + `ViewPlugin`
-> trait (L2), 7 node impls (L3), Antiphon `view_meta` protocol + composite
-> assembly, web four-zone rail layout, param page grid rendering, chain view,
-> ViewRegistry wired with real data. All 557 tests pass, web builds clean.
-> Next: Commit 7 (paired session #3).
+> **Last updated:** 2026-07-20. **Paired session #3 held 2026-07-14** — went to
+> Linux/ALSA audio bring-up instead of the W2 §7.1 exit-criteria pass; findings
+> BUG-012 (Linux confirmation) + INFRA-004…007 (`design/sessions/s3.md`).
+> **BUG-012 fix complete, pending hardware verification** — output ring buffer
+> + FTZ/DAZ (`0f3d17b`), `BufferSize::Default` decision (`c3c56db`); the
+> chunk-and-discard distortion path is gone. **INFRA-004 shipped** —
+> `--no-emulator` headless mode (`c3c56db`). **W2 Commits 0–6 shipped** —
+> `Rule` + `ViewPlugin` trait (L2), 7 node impls (L3), Antiphon `view_meta`
+> protocol + composite assembly, web four-zone rail layout, param page grid
+> rendering, chain view, ViewRegistry wired with real data. All 581 tests pass,
+> web builds clean. **Next: W2 Commit 7** — formal §7.1 exit-criteria pass on
+> the fixed audio path (session #3 did not run it).
+> Previous: 2026-07-14. **BUG-012 shipped** — sample-rate auto-detection +
+> callback chunking (later corrected: chunk-and-discard, not a ring buffer —
+> see bugs.md). W2 Commits 0–6 shipped. 557 tests.
 > Previous: 2026-07-13. **Debug/test harness (ADR-033) promoted to
 > Rank 2.** The agent lane pivots from the (completed) universality audit to
 > building live-engine interrogation, a null audio backend, audio snapshot/diff,
@@ -100,7 +109,7 @@ properly with serializer v3 in P10 C1 — scheduled before session #1 regardless
 | 1 | ~~P10 C0 pre-flight~~ — **shipped** (BUG-001 re-diagnosed via measurement harness; BUG-008 fixed) | Done |
 | 2 | ~~**W0**~~ — **shipped** (Theoria grid POC: `paraclete-antiphon` crate + canvas grid) | Done |
 | 3 | ~~**P10 C1**~~ — **shipped** (`6212242`; `Pattern` struct + serializer v3 = BUG-005) | Done — data-loss class closed before sessions |
-| 3.5 | ~~**BUG-012**~~ — **shipped** (2026-07-14): sample-rate auto-detection, Fixed buffer request, output ring buffer fallback. Pending hardware verification on Linux ALSA. | Resolved — see bugs.md for details |
+| 3.5 | ~~**BUG-012**~~ — **fix complete, pending hardware verification** (2026-07-14): sample-rate auto-detection, output ring buffer + FTZ/DAZ (`0f3d17b`), `BufferSize::Default` decision (`c3c56db`). The earlier "ring buffer fallback" claim was a doc error (chunk-and-discard) — corrected in bugs.md. Awaiting Linux ALSA re-test. | Pending verification — see bugs.md |
 | 4 | ~~**W1**~~ — **C0–C4 shipped** (trigger+velocity, path scheme, state mirror, semantic plane, theoria-web) | Runtime side done + web client builds; C5 = the session |
 | 5 | ~~**Paired session #1**~~ — **held 2026-07-09** (`design/sessions/s1.md`) | Pipe proven; verdict = UX not legible ("Behringer, needs Elektron"). Delta: discoverability is the keystone |
 | 6 | ~~**Theoria legibility phase**~~ — **implemented 2026-07-10** (`7e7a39a`/`e553c62`; report: `theoria-legibility-report.md`) | Minimum bar items 1–4 done + contextual encoders; judged live in Chrome. **Exit gate = paired tablet judgment (next session)**; F7 cleanup + F4/save-reload deferred |
@@ -166,7 +175,7 @@ Ordered by nearness to the critical path.
 | **P10 C0–C1** | Pattern engine foundation | BUG-001/008 pre-flight (C0, runs before W0); `Pattern` struct + serializer v3 = BUG-005 (C1) | **Shipped** (C0 `b0cf2c8`, C1 `6212242`) |
 | **W1** | Theoria MVP | Touch encoders (relative → `CMD_BUMP_PARAM`), context display, transport, state mirror v1 → **paired session #1** | **C0–C4 shipped** (`w1-report.md`); C5 = paired session #1 (next) |
 | **P10 C2–C5** | Pattern Engine depth | Multi-page (64-step) + page-loop; seamless switching + chaining; per-track length/speed; BUG-004 **+ BUG-013 (sub-block voice starts — micro-timing must be audible) + Sampler Hermite playback** in C3; grid/TUI surface | **Shipped 2026-07-11** (C2–C5 + BUG-004; BUG-013 landed post-C5: engines `309a9e6`, Sampler Hermite + span-split 2026-07-11; BUG-025 executor deferral and BUG-026 stable sort fixed 2026-07-11) |
-| **W2** | Theoria editor | Cap-doc-driven parameter pages for every engine; chain view; view-plugin API (ADR-032) → **paired session #3** | **In progress** — Commits 0–2 shipped (types + node impls + protocol); Commit 3 next (web rail) |
+| **W2** | Theoria editor | Cap-doc-driven parameter pages for every engine; chain view; view-plugin API (ADR-032) → **paired session #3** | **In progress** — Commits 0–6 shipped (types, node impls, protocol, web rail, param pages, kick vertical slice, chain view); Commit 7 (§7.1 exit criteria + s3.md) next — session #3 held 2026-07-14 went to ALSA bring-up; formal pass pending |
 | **WT** | Theoria/term | Terminal client over in-process Antiphon transport; parameter pages + grid in the terminal | After W2, parallel W3 |
 | **W3** | Sequencer deep views | 64-step pattern view, cue/chain, hold-step p-lock overlay, condition/timing editors | Hard dependency on P10 C2–C5 |
 | **P11** | Live Performance | Mute system, temp save/reload, Perform Kit, live record | — (W3 mute view follows) |
