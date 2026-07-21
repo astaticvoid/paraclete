@@ -6,7 +6,7 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ## Status (2026-07-21)
 
-**Actively open:** BUG-027 (engine exonerated by measurement — pending user headphone A/B, see addendum), INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-006 (idle ALSA underruns — no realtime priority), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036).
+**Actively open:** BUG-027 (engine exonerated by measurement — pending user headphone A/B, see addendum), BUG-032 (transport unreachable from any surface — fix pre-approved, TK0 Commit 0 per ADR-036 7(a)), BUG-033 (TUI reads unwritten `/script/selected_track` — low, superseded by Theotokos), INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-006 (idle ALSA underruns — no realtime priority), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036).
 **Fixed, pending hardware verification:** BUG-012 (output ring buffer + FTZ/DAZ `0f3d17b`, `BufferSize::Default` decision `c3c56db` — the chunk-and-discard distortion path is gone; awaiting Linux ALSA re-test of the session-#3 distortion).
 **Trigger-based (fix when named trigger fires):** BUG-002, BUG-003, BUG-006.
 **Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, INFRA-001, INFRA-002, INFRA-003, INFRA-004, INFRA-007.
@@ -1092,6 +1092,63 @@ commits landed 2026-07-14, same day as session #3):
 clock ~8.8% fast) no longer exists by construction. Close after a re-test on
 the Linux ALSA box in the paired-session #3 configuration confirms clean
 audio. Realtime priority remains open separately as INFRA-006.
+
+---
+
+### BUG-032 — Transport control is unreachable from every surface; clock ignores all commands
+
+**Severity:** High for the Theotokos track (blocks TK0's play/stop key);
+latent platform gap today (no surface even attempts transport control).
+**Phase found:** Theotokos pre-ratification design review (2026-07-21);
+filed per the standing user directive (architectural defects are filed
+against code, not worked around in design).
+**Description:** Three independent gaps compose into one: the standalone
+instrument auto-starts and **cannot be stopped or re-tempo'd from any
+surface**.
+1. `InternalClock` declares `bpm` in `capability_document()`
+   (`internal_clock.rs:147-156`) but implements **no `handle_commands`** —
+   `CMD_SET_PARAM bpm` from any client is silently dropped; `bpm` is set
+   only at construction.
+2. `playing` flips only inside `process()` on `Event::Transport`
+   `global_start`/`global_stop` flags (`internal_clock.rs:170-180`), and
+   **nothing in the standalone app emits those events**. The only injector
+   is `Executor::set_transport_override` (`executor.rs:303`), whose sole
+   producers are the CLAP-plugin host path and tests.
+3. `ConfigMessage::SetPlaying(bool)` (`message.rs:10`) exists but
+   `apply_messages` only flips executor-side `transport.playing`
+   (`executor.rs:367`) — it injects **no** `TransportEvent`, so the clock
+   node never learns. Meanwhile the scripting sandbox rejects
+   `/transport/*` writes, Antiphon has no transport message, and
+   `paraclete-tui` is display-only.
+**Location:** `crates/paraclete-nodes/src/internal_clock.rs` (command
+handling absent); `crates/paraclete-runtime/src/executor.rs:367` +
+`message.rs:10` (inert SetPlaying).
+**Fix direction:** ADR-036 decision 7(a), TK0 scope: `InternalClock` gains
+node-specific command handling — start/stop commands that drive the same
+`playing`/`first_tick` semantics the `global_start` flag drives, and `bpm`
+as an applied parameter (`CMD_SET_PARAM`/`CMD_BUMP_PARAM`, clamped).
+Node commands (not an executor/`SetPlaying` change) keep mutation on the
+declared ADR-019 plane: every present and future surface — Theotokos,
+Antiphon clients, profiles — gets transport for free. Spec:
+`design/phases/tk0-theotokos.md` Commit 0.
+
+---
+
+### BUG-033 — paraclete-tui reads `/script/selected_track`; nothing writes it
+
+**Severity:** Low (display only — the TUI's active-track indicator always
+shows the default).
+**Phase found:** Theotokos scaffolding inventory (2026-07-21); filed per
+the standing user directive.
+**Description:** `TuiApp` polls `/script/selected_track` for the active
+track (`crates/paraclete-tui/src/app.rs:72`), but the Launchpad profile
+publishes `/script/lp/selected` (`profiles/launchpad.rhai:29,117`) and the
+app's auto-context path also reads `/script/lp/selected` (`main.rs:389`).
+No writer of `/script/selected_track` exists anywhere.
+**Location:** `crates/paraclete-tui/src/app.rs:72`
+**Fix direction:** Read `/script/lp/selected` (one-line). Low priority:
+Theotokos (ADR-036) supersedes `paraclete-tui`; fix only if the old TUI
+remains in use through the TK track.
 
 ---
 
