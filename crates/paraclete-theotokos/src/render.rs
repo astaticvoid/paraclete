@@ -79,6 +79,7 @@ fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
     let mut rows: Vec<Line> = Vec::with_capacity(data.track_names.len().max(1) * 4);
     for t in 0..data.track_names.len() {
         rows.push(render_track_row(t, data, 0));
+        rows.push(Line::from(""));
         rows.push(render_track_row(t, data, PAGE_SIZE));
         if t + 1 < data.track_names.len() {
             rows.push(Line::from(""));
