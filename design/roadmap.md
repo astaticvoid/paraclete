@@ -10,8 +10,8 @@
 > (`design/phases/tk1-theotokos.md`, 8 commits + session #2) — **D1–D4
 > ratified** (`paraclete-view-assembly` crate, sequencer-`mute` trig-gate,
 > CMD 33–35 lock pair, `\` leader); **design review held — no blockers**,
-> findings M1–M7/m1–m12 folded. BUG-034 filed (page-window stride; fix =
-> TK1 C0).
+> findings M1–M7/m1–m12 folded. BUG-034 filed and **FIXED 2026-07-22**
+> (page-window stride; `GRID_STEPS=16`).
 > Previous: 2026-07-21 (evening). **Theotokos track ACCEPTED** —
 > keyboard-first modal performance terminal (`design/theotokos/`, ADR-036 ✅
 > 2026-07-21). Review found+fixed pre-ratification: BUG-032 (transport

@@ -58,7 +58,7 @@
 
 | Commit | Crate(s) | Deliverable |
 |---|---|---|
-| **C0** | `paraclete-theotokos` | **Pre-flight:** BUG-034 page-window stride fix; deprecate `[`/`]` (keep `-`/`=`); publish `/script/theotokos/selected` (OQ-T9 → yes). |
+| **C0** | `paraclete-theotokos` | **Pre-flight:** ~~BUG-034 page-window stride fix~~ (**DONE 2026-07-22** — `GRID_STEPS=16`; commits `fd8d4ac`); deprecate `[`/`]` (keep `-`/`=`); publish `/script/theotokos/selected` (OQ-T9 → yes). |
 | **C1** | `paraclete-nodes`, `tools/test-driver` | **OQ-T8:** p-lock command family (CMD 33/34/35) + step-field commands (CMD 36/37, for paste) + dirty-gated lock state publish + overflow counter + new test-driver actions. |
 | **C2** | `paraclete-view-assembly` (new), `paraclete-antiphon`, `paraclete-app` | **OQ-T13:** extract composite assembly to the shared crate; edge-derived chains replace placeholder wiring; Antiphon wire format unchanged. |
 | **C3** | `paraclete-theotokos`, `paraclete-app` | **Composite track pages** in PERF mode + edge-derived track map. |
