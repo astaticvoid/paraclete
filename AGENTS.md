@@ -376,3 +376,35 @@ stale is an incomplete session.
 
 `Hardware*` was renamed to `Surface*` in July 2026. Historical docs use old
 names — map accordingly; do not edit those documents.
+
+## MCP tool selection
+
+**Serena** (symbol-level code navigation/refactoring — LSP-backed):
+- Use `find_symbol`, `find_referencing_symbols`, `find_declaration` for
+  navigating Rust code at the symbol level.
+- Use `rename_symbol` for cross-file renames (single atomic call).
+- Use `replace_symbol_body`, `insert_before_symbol`, `insert_after_symbol`
+  for surgical edits.
+- Use `get_symbols_overview` for a file's top-level symbol outline.
+- **Never** use Serena's `read_file`, `search_for_pattern`, `list_dir`,
+  `find_file`, `replace_content` — opencode's built-in Read/Grep/Glob/
+  Edit tools are superior and the Serena variants confuse tool selection.
+
+**narsil** (structural analysis — call graph, control flow, data flow):
+- Use `find_references`, `get_callers`/`get_callees`, `find_call_path`
+  for understanding how code is wired together.
+- Use `get_control_flow`, `get_data_flow`, `get_complexity` for
+  understanding individual function internals.
+- Use `find_dead_code`, `find_circular_imports` for code health.
+- Serena and narsil complement each other: Serena = editing, narsil = analysis.
+
+**context7** (`resolve-library-id`, `query-docs`):
+- **Always** check context7 before writing code that depends on an external
+  Rust crate (cpal, petgraph, rtrb, ratatui, clap, tree-sitter, tungstenite,
+  etc.) to verify the current API surface. Training data is stale.
+
+**Chrome DevTools**: The primary method for testing and debugging the Theoria
+web UI (`web/` directory). Navigate to `http://localhost:7274` (antiphon),
+inspect DOM/console/network. Not relevant for Rust-only changes.
+**The `chrome-devtools` MCP server must be enabled in `opencode.json` before
+testing web views** (`"enabled": true` in the `mcp` block).

@@ -64,10 +64,12 @@ fn map_global(ev: &KeyEvent) -> Option<Action> {
 
 fn map_seq(ev: &KeyEvent) -> Action {
     match ev.code {
-        KeyCode::Char('[') | KeyCode::Char('{') | KeyCode::Char('-') =>
-            Action::PageWindow(Dir::Prev),
-        KeyCode::Char(']') | KeyCode::Char('}') | KeyCode::Char('=') =>
-            Action::PageWindow(Dir::Next),
+        KeyCode::Char('[') | KeyCode::Char('{') | KeyCode::Char('-') => {
+            Action::PageWindow(Dir::Prev)
+        }
+        KeyCode::Char(']') | KeyCode::Char('}') | KeyCode::Char('=') => {
+            Action::PageWindow(Dir::Next)
+        }
         _ => Action::Noop,
     }
 }
@@ -85,10 +87,26 @@ fn map_perf(ev: &KeyEvent) -> Action {
         KeyCode::Char('4') => Action::SelectParamPage(3),
         KeyCode::Char('5') => Action::SelectParamPage(4),
         KeyCode::Char('6') => Action::SelectParamPage(5),
-        KeyCode::Up    => Action::Jog { slot: Slot::A, dir: Dir::Next, mag },
-        KeyCode::Down  => Action::Jog { slot: Slot::A, dir: Dir::Prev, mag },
-        KeyCode::Right => Action::Jog { slot: Slot::B, dir: Dir::Next, mag },
-        KeyCode::Left  => Action::Jog { slot: Slot::B, dir: Dir::Prev, mag },
+        KeyCode::Up => Action::Jog {
+            slot: Slot::A,
+            dir: Dir::Next,
+            mag,
+        },
+        KeyCode::Down => Action::Jog {
+            slot: Slot::A,
+            dir: Dir::Prev,
+            mag,
+        },
+        KeyCode::Right => Action::Jog {
+            slot: Slot::B,
+            dir: Dir::Next,
+            mag,
+        },
+        KeyCode::Left => Action::Jog {
+            slot: Slot::B,
+            dir: Dir::Prev,
+            mag,
+        },
         _ => Action::Noop,
     }
 }
@@ -125,25 +143,58 @@ mod tests {
 
     #[test]
     fn seq_home_row_toggles_steps() {
-        assert!(matches!(map_key(Mode::Seq, &key('a')), Action::ToggleStep { col: 0 }));
-        assert!(matches!(map_key(Mode::Seq, &key(';')), Action::ToggleStep { col: 7 }));
-        assert!(matches!(map_key(Mode::Seq, &key('z')), Action::ToggleStep { col: 8 }));
-        assert!(matches!(map_key(Mode::Seq, &key('/')), Action::ToggleStep { col: 15 }));
+        assert!(matches!(
+            map_key(Mode::Seq, &key('a')),
+            Action::ToggleStep { col: 0 }
+        ));
+        assert!(matches!(
+            map_key(Mode::Seq, &key(';')),
+            Action::ToggleStep { col: 7 }
+        ));
+        assert!(matches!(
+            map_key(Mode::Seq, &key('z')),
+            Action::ToggleStep { col: 8 }
+        ));
+        assert!(matches!(
+            map_key(Mode::Seq, &key('/')),
+            Action::ToggleStep { col: 15 }
+        ));
     }
 
     #[test]
     fn step_keys_invariant_in_perf() {
-        assert!(matches!(map_key(Mode::Perf, &key('a')), Action::ToggleStep { col: 0 }));
-        assert!(matches!(map_key(Mode::Perf, &key(',')), Action::ToggleStep { col: 13 }));
-        assert!(matches!(map_key(Mode::Perf, &key('z')), Action::ToggleStep { col: 8 }));
+        assert!(matches!(
+            map_key(Mode::Perf, &key('a')),
+            Action::ToggleStep { col: 0 }
+        ));
+        assert!(matches!(
+            map_key(Mode::Perf, &key(',')),
+            Action::ToggleStep { col: 13 }
+        ));
+        assert!(matches!(
+            map_key(Mode::Perf, &key('z')),
+            Action::ToggleStep { col: 8 }
+        ));
     }
 
     #[test]
     fn seq_page_window_keys() {
-        assert!(matches!(map_key(Mode::Seq, &key('[')), Action::PageWindow(Dir::Prev)));
-        assert!(matches!(map_key(Mode::Seq, &key(']')), Action::PageWindow(Dir::Next)));
-        assert!(matches!(map_key(Mode::Seq, &key('-')), Action::PageWindow(Dir::Prev)));
-        assert!(matches!(map_key(Mode::Seq, &key('=')), Action::PageWindow(Dir::Next)));
+        assert!(matches!(
+            map_key(Mode::Seq, &key('[')),
+            Action::PageWindow(Dir::Prev)
+        ));
+        assert!(matches!(
+            map_key(Mode::Seq, &key(']')),
+            Action::PageWindow(Dir::Next)
+        ));
+        assert!(matches!(
+            map_key(Mode::Seq, &key('-')),
+            Action::PageWindow(Dir::Prev)
+        ));
+        assert!(matches!(
+            map_key(Mode::Seq, &key('=')),
+            Action::PageWindow(Dir::Next)
+        ));
     }
 
     #[test]
@@ -165,28 +216,67 @@ mod tests {
 
     #[test]
     fn perf_page_select_keys() {
-        assert!(matches!(map_key(Mode::Perf, &key('1')), Action::SelectParamPage(0)));
-        assert!(matches!(map_key(Mode::Perf, &key('3')), Action::SelectParamPage(2)));
-        assert!(matches!(map_key(Mode::Perf, &key('6')), Action::SelectParamPage(5)));
+        assert!(matches!(
+            map_key(Mode::Perf, &key('1')),
+            Action::SelectParamPage(0)
+        ));
+        assert!(matches!(
+            map_key(Mode::Perf, &key('3')),
+            Action::SelectParamPage(2)
+        ));
+        assert!(matches!(
+            map_key(Mode::Perf, &key('6')),
+            Action::SelectParamPage(5)
+        ));
     }
 
     #[test]
     fn perf_jog_keys() {
-        let up    = KeyEvent::new(KeyCode::Up,    KeyModifiers::NONE);
-        let down  = KeyEvent::new(KeyCode::Down,  KeyModifiers::NONE);
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
         let right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
-        let left  = KeyEvent::new(KeyCode::Left,  KeyModifiers::NONE);
-        let fine_up = KeyEvent::new(KeyCode::Up,  KeyModifiers::SHIFT);
+        let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
+        let fine_up = KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT);
 
-        assert!(matches!(map_key(Mode::Perf, &up),
-            Action::Jog { slot: Slot::A, dir: Dir::Next, mag: Mag::Normal }));
-        assert!(matches!(map_key(Mode::Perf, &down),
-            Action::Jog { slot: Slot::A, dir: Dir::Prev, mag: Mag::Normal }));
-        assert!(matches!(map_key(Mode::Perf, &right),
-            Action::Jog { slot: Slot::B, dir: Dir::Next, mag: Mag::Normal }));
-        assert!(matches!(map_key(Mode::Perf, &left),
-            Action::Jog { slot: Slot::B, dir: Dir::Prev, mag: Mag::Normal }));
-        assert!(matches!(map_key(Mode::Perf, &fine_up),
-            Action::Jog { slot: Slot::A, dir: Dir::Next, mag: Mag::Fine }));
+        assert!(matches!(
+            map_key(Mode::Perf, &up),
+            Action::Jog {
+                slot: Slot::A,
+                dir: Dir::Next,
+                mag: Mag::Normal
+            }
+        ));
+        assert!(matches!(
+            map_key(Mode::Perf, &down),
+            Action::Jog {
+                slot: Slot::A,
+                dir: Dir::Prev,
+                mag: Mag::Normal
+            }
+        ));
+        assert!(matches!(
+            map_key(Mode::Perf, &right),
+            Action::Jog {
+                slot: Slot::B,
+                dir: Dir::Next,
+                mag: Mag::Normal
+            }
+        ));
+        assert!(matches!(
+            map_key(Mode::Perf, &left),
+            Action::Jog {
+                slot: Slot::B,
+                dir: Dir::Prev,
+                mag: Mag::Normal
+            }
+        ));
+        assert!(matches!(
+            map_key(Mode::Perf, &fine_up),
+            Action::Jog {
+                slot: Slot::A,
+                dir: Dir::Next,
+                mag: Mag::Fine
+            }
+        ));
     }
 }

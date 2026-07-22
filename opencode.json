@@ -2,17 +2,22 @@
   "$schema": "https://opencode.ai/config.json",
   "instructions": ["AGENTS.md"],
   "skills": {
-    "paths": [".opencode/skills"]
+    "paths": [".opencode/skills", "/home/dv6n/code/dev-agent/skills"]
   },
   "mcp": {
-    "git": {
-      "type": "local",
-      "command": ["python3", "-m", "mcp_server_git", "--repository", "."],
-      "enabled": true
-    },
     "narsil": {
       "type": "local",
       "command": ["narsil-mcp", "--repos", ".", "--git", "--call-graph", "--preset", "balanced"],
+      "enabled": true
+    },
+    "serena": {
+      "type": "local",
+      "command": ["/home/dv6n/.local/bin/uvx", "serena-agent", "start-mcp-server"],
+      "enabled": false
+    },
+    "chrome-devtools": {
+      "type": "local",
+      "command": ["npx", "-y", "chrome-devtools-mcp@latest"],
       "enabled": true
     }
   }
