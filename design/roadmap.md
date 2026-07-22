@@ -3,7 +3,15 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-21 (evening). **Theotokos track ACCEPTED** —
+> **Last updated:** 2026-07-21 (late). **TK0 COMPLETE — usable sign-off**
+> (session #1, `design/sessions/theotokos-1.md`; report + spec-divergence
+> table `design/phases/tk0-report.md`). Theotokos is now the default
+> surface (`cargo run`; `--emulator` for legacy). **TK1 spec drafted**
+> (`design/phases/tk1-theotokos.md`, 8 commits + session #2) — decisions
+> D1–D4 pending user ratification: `paraclete-view-assembly` crate (OQ-T13),
+> sequencer-`mute` trig-gate, CMD 33–35 lock pair (OQ-T8), `\` leader.
+> BUG-034 filed (page-window stride; fix = TK1 C0).
+> Previous: 2026-07-21 (evening). **Theotokos track ACCEPTED** —
 > keyboard-first modal performance terminal (`design/theotokos/`, ADR-036 ✅
 > 2026-07-21). Review found+fixed pre-ratification: BUG-032 (transport
 > unreachable — TK0 C0), BUG-033, 4-track default instrument, Antiphon-bound
@@ -194,7 +202,7 @@ Ordered by nearness to the critical path.
 | **P15** | Effects Palette | Distortion variety, chorus/phaser/flanger, BBD/tape delay, spring/plate | — |
 | **P16** | Macro & Terminal Control | Macro system; TUI as editing surface | — |
 | **W4** | Interface maturity | Ordo layout profiles, multi-client polish, wavetable view, protocol freeze, headless protocol CI driver | Ongoing after W3 |
-| **TK** | Theotokos performance terminal | Keyboard-first modal TUI (home-row steps, numpad focus-slot performance cluster, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **Accepted** (ADR-036, 2026-07-21; `design/theotokos/`; TK0 spec `design/phases/tk0-theotokos.md` — POC next) |
+| **TK** | Theotokos performance terminal | Keyboard-first modal TUI (home-row steps, numpad focus-slot performance cluster, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **TK0 shipped 2026-07-21** (ADR-036; usable sign-off, session #1; default surface on `cargo run`). **TK1 spec drafted** (`design/phases/tk1-theotokos.md` — composite pages, p-locks, mutes, `:` line, patterns; D1–D4 pending ratification) |
 
 The interface track (Antiphon server + Theoria clients) is specified in
 `design/interface-plan.md` (**accepted July 2026**; ADR-031 authored with W0,

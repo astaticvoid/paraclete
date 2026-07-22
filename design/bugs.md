@@ -6,7 +6,7 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ## Status (2026-07-21)
 
-**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036).
+**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), BUG-034 (Theotokos page-window stride inconsistency — fix scheduled as TK1 C0).
 **Fixed, hardware-verified:** BUG-012 (output ring buffer + FTZ/DAZ `0f3d17b`, `BufferSize::Default` decision `c3c56db` — verified 2026-07-21 on the session-#3 ALSA box at 48 kHz × 1024-sample period: 550 buffers, 0 dropouts, 0 lock misses, 0 state-bus overflows).
 **Trigger-based (fix when named trigger fires):** BUG-003, BUG-006.
 **Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, INFRA-001, INFRA-002, INFRA-003, INFRA-004, INFRA-007.
@@ -1228,3 +1228,28 @@ Implementation: raw D-Bus wire protocol (~150 lines, deps-free, Linux-only
 `#[cfg]` module) — no `dbus` or `zbus` crate needed. The D-Bus auth
 handshake for the system bus is a single `AUTH EXTERNAL <uid>\r\n` line;
 the method call is a fixed-size message with standard headers.
+
+---
+
+### BUG-034 — Theotokos page-window stride inconsistency (toggle/render/page-count disagree)
+
+**Severity:** Medium — page windows beyond page 0 render and toggle the wrong
+steps; any pattern longer than 16 steps misbehaves; a 16-step pattern reports
+a phantom second page
+**Phase found:** TK0 (shipped behavior; found in the TK1 design review
+2026-07-21 — filed under the standing defect-filing directive, handoff
+guardrail 7)
+**Description:** Three stride values disagree in the TK0 code. The renderer
+strides 16 (`render.rs:101`: window base = `page_window * PAGE_SIZE * 2`),
+but `ToggleStep` strides 8 (`action.rs:60`: `page_window * PAGE_SIZE + col`
+with `PAGE_SIZE = 8`), and `page_count` divides by 8
+(`model.rs:262`: `pattern_length.div_ceil(8)`). Consequences: on a 32-step
+pattern, page 1 renders steps 16–31 but home-row toggles hit steps 8–15
+(already visible on page 0); on a 16-step pattern `page_count` reports 2, so
+page 1 is reachable but empty. The `lib.rs` bracket/toggle tests encode the
+stale 8-step semantics.
+**Location:** `crates/paraclete-theotokos/src/{action.rs:7,60; model.rs:262;
+render.rs:101}`; tests in `lib.rs:374-439`
+**Fix direction:** One shared `GRID_STEPS = 16` constant for the toggle
+offset and `page_count` (render already strides 16); update the four stale
+tests. Scheduled as TK1 C0 (`design/phases/tk1-theotokos.md` §0.1).

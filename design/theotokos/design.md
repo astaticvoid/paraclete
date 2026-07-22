@@ -402,13 +402,15 @@ Prove posture and feel, nothing else.
   (user plays it for 30 minutes on the default instrument; findings
   recorded). Explicit go/no-go on TK1 scope.
 
-### TK1 — Editing depth *(scope re-cut by session #1)*
+### TK1 — Editing depth *(spec drafted 2026-07-21 — `design/phases/tk1-theotokos.md`)*
 
-- Discovery-driven binding (no hardcoded ids; `InstrumentIds`/cap-docs).
-- Full `Rule` param pages incl. sub-pages; explicit slot rebinding leader
-  grammar; `y` yank/copy family; step-focus p-locks (OQ-T1, OQ-T8);
-  pattern select + cue; `:` command line real (fuzzy over a generated
-  command index).
+- Discovery-driven binding (edge-derived; `all_edges()` + cap-docs).
+- Full `Rule` param pages via the shared composite assembly (OQ-T13 →
+  `paraclete-view-assembly`, C2/C3); explicit slot rebinding leader grammar
+  (`\`, C7); `y`/`Y` yank/paste (C7); step-focus p-locks on the new CMD
+  33–35 family (OQ-T8, C1+C5); mutes via sequencer `mute` param (C4);
+  pattern select + cue (C7); `:` command line full (fuzzy over a generated
+  command index, C6).
 - **Session #2** → verdicts on chord grammar.
 
 ### TK2 — Performance layer
@@ -439,17 +441,17 @@ can re-cut the next phase.
 
 | # | Question | Status | Where decided |
 |---|---|---|---|
-| OQ-T1 | P-lock gesture: hold-step (kitty) vs leader-focus vs both | OPEN — POC tests hold; focus is the fallback | session #1 |
-| OQ-T2 | Leader key: `,` vs `\` vs double-tap-Space | OPEN — `,` is the working choice | session #1 |
-| OQ-T3 | Numpad-less fallback jog map (candidates: `j`/`k`+`u`/`i`; `,`/`.`+`<`/`>`) | OPEN — post-phase-1 by brief | session #2 |
-| OQ-T4 | Numpad `+`/`-`: coarse jog pair vs step-size scaling | OPEN | session #1 |
+| OQ-T1 | P-lock gesture: hold-step (kitty) vs leader-focus vs both | OPEN — TK1 C5 ships the **step-focus** model (`Enter` focus + jog); hold-step needs kitty release events and remains the session #2 probe | session #2 |
+| OQ-T2 | Leader key: `,` vs `\` vs double-tap-Space | OPEN — **`\` is the working choice** (`,` is step 14 on the invariant grid; double-tap-Space conflicts with transport). HYPOTHESIS in TK1 C7 | session #2 |
+| OQ-T3 | Numpad-less fallback jog map (candidates: `j`/`k`+`u`/`i`; `,`/`.`+`<`/`>`) | OPEN — post-phase-1 by brief (arrows settled for TK0/TK1) | session #2 |
+| OQ-T4 | Numpad `+`/`-`: coarse jog pair vs step-size scaling | OPEN | session #2 |
 | OQ-T5 | Numpad type-in value entry vs command-line-only | OPEN | session #2 |
-| OQ-T6 | Kitty-less terminals: accept OS-repeat ramp degradation, or disable hold-ramp entirely | OPEN | session #1 (test in tmux + stock terminals) |
-| OQ-T7 | Esc/Tmux prefix delays and `Esc`-as-cancel ergonomics | OPEN | session #1 |
-| OQ-T8 | P-lock authoring: **design** a packed lock-set command (CMD 33+ free; a lock is step+node+param+value, too wide for one `NodeCommand` — packing precedent: `CMD_SET_STEP_CONDITION`) | OPEN — no authoring path exists at all today (deserializer + tests only) | TK1 spec |
-| OQ-T13 | Composite `Rule` assembly location for TK1 track pages: reimplement in `paraclete-theotokos` (drift risk) vs extract from Antiphon to a shared home (recommended) vs app-side hoisting | OPEN — TK0 unaffected (engine-local Rules) | TK1 spec |
+| OQ-T6 | Kitty-less terminals: accept OS-repeat ramp degradation, or disable hold-ramp entirely | **Resolved 2026-07-21 (TK0/session #1):** OS-repeat degradation is OK in practice; `-`/`=` page-nav fallback covers the bracket ESC-sequence issue | TK0 report |
+| OQ-T7 | Esc/Tmux prefix delays and `Esc`-as-cancel ergonomics | OPEN — `Esc` gains its first real semantics in TK1 C5/C6 (cancel/release/`:` line) | session #2 |
+| OQ-T8 | P-lock authoring: **design** a packed lock-set command (CMD 33+ free; a lock is step+node+param+value, too wide for one `NodeCommand` — packing precedent: `CMD_SET_STEP_CONDITION`) | **DECIDED 2026-07-21 (tk1 spec C1, D3):** two-command pair — `CMD_SET_LOCK_TARGET` (33, full-width node+param) + `CMD_SET_STEP_LOCK` (34, step + full f64 value) + `CMD_CLEAR_STEP_LOCK` (35). No bit-truncation. | TK1 spec |
+| OQ-T13 | Composite `Rule` assembly location for TK1 track pages: reimplement in `paraclete-theotokos` (drift risk) vs extract from Antiphon to a shared home (recommended) vs app-side hoisting | **DECIDED 2026-07-21 (tk1 spec C2, D1):** extract to a new GPL platform crate `paraclete-view-assembly`; Antiphon keeps a thin L2→protocol mapping; wire format unchanged | TK1 spec |
 | OQ-T14 | Transport extension shape: clock node-specific commands (start/stop + `bpm` bank param — recommended, keeps mutation on the declared plane) vs fixing `ConfigMessage::SetPlaying` to inject `TransportEvent`s | **DECIDED 2026-07-21 (tk0 spec C0):** clock node commands `CMD_CLOCK_START/STOP` (16/17) + SET/BUMP on `bpm` | TK0 spec |
-| OQ-T9 | Should Theotokos publish `/script/theotokos/selected` so Theoria/Launchpad follow its track selection | OPEN — default yes | TK1 |
+| OQ-T9 | Should Theotokos publish `/script/theotokos/selected` so Theoria/Launchpad follow its track selection | **DECIDED 2026-07-21 (tk1 spec C0.3):** yes — `Int(sequencer node id)` on select + startup | TK1 spec |
 | OQ-T10 | Scope tap placement: master only vs per-track | OPEN — default master | TK2 spec |
 | OQ-T11 | Temp save/reload depends on P11 engine scope — ship UI-only or defer | OPEN | TK2 spec |
 | OQ-T12 | WT convergence: proceed / fold / defer | OPEN — user decision with session evidence | TK3 |
@@ -457,6 +459,22 @@ can re-cut the next phase.
 ---
 
 ## Amendment log
+
+**2026-07-21 (late) — TK1 spec drafted** (`design/phases/tk1-theotokos.md`,
+8 commits + session #2). Decisions taken in the spec, pending user
+ratification: **D1** OQ-T13 → extract composite `Rule` assembly to a new
+GPL platform crate `paraclete-view-assembly` (Antiphon keeps a thin
+L2→protocol mapping; wire unchanged); **D2** mutes → sequencer `mute` bank
+param (trig-gate; click-free; MixNode gain route rejected — no smoothing,
+ambiguous shared param name); **D3** OQ-T8 → two-command lock pair
+(CMD_SET_LOCK_TARGET 33 + CMD_SET_STEP_LOCK 34 + CMD_CLEAR_STEP_LOCK 35 —
+full-width ids, full f64 value, no bit-truncation); **D4** OQ-T2 → leader
+is `\` (`,` is step 14 on the invariant grid). BUG-034 (page-window stride
+inconsistency — render 16 / toggle 8 / page-count ÷8) filed under the
+standing defect-filing directive; fix is TK1 C0. OQ-T9 decided yes;
+OQ-T6 resolved by session #1. OQ table updated. Also caught: design.md
+§3.2's `x`-clear and `,`-leader rows are superseded by the two-row
+invariant grid (clear → `:` line; leader → `\`).
 
 **2026-07-21 (session #1) — TK0 complete, usable sign-off.**  Session notes
 in `design/sessions/theotokos-1.md`; phase report in

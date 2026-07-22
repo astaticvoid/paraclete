@@ -22,8 +22,10 @@ implementation follows in a separate commit.
 
 For the Theotokos performance-terminal track (ADR-036 **accepted
 2026-07-21**): `design/theotokos/problem.md` → `design/theotokos/design.md`
-→ `design/phases/tk0-theotokos.md` (POC spec). TK0 Commit 0 fixes BUG-032
-(clock command handling) before any crate code.
+→ the current phase spec. **TK0 shipped** (usable sign-off, session #1;
+report + TK1 planner notes in `design/phases/tk0-report.md`). **TK1 is the
+active phase** — spec `design/phases/tk1-theotokos.md`; TK1 Commit 0 fixes
+BUG-034 (page-window stride) before any feature work.
 
 ## Task routing by tier
 
