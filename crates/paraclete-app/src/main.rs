@@ -43,6 +43,12 @@ fn main() {
     env_logger::init();
     let args: Vec<String> = std::env::args().collect();
 
+    // ── --recover: fix stranded pipewire-pulse and exit ──────────────────────
+    if args.iter().any(|a| a == "--recover") {
+        recover_audio_sink();
+        return;
+    }
+
     let instrument_path: PathBuf = args
         .iter()
         .find(|a| a.starts_with("--instrument="))
@@ -554,22 +560,10 @@ fn main() {
     eprintln!("[paraclete] stopped.");
 
     // PipeWire may strand on auto_null after Paraclete's direct ALSA access
-    // closes.  Auto-restart pipewire if no real hardware sink is visible.
+    // closes.  Restart only pipewire-pulse (not the full pipewire daemon) —
+    // this re-discovers the ALSA sink without killing other applications.
     #[cfg(target_os = "linux")]
-    {
-        if let Ok(output) = std::process::Command::new("pactl")
-            .args(["list", "short", "sinks"])
-            .output()
-        {
-            let sinks = String::from_utf8_lossy(&output.stdout);
-            if !sinks.contains("alsa_output") {
-                eprintln!("[paraclete] PipeWire stranded on auto_null — restarting pipewire");
-                let _ = std::process::Command::new("systemctl")
-                    .args(["--user", "restart", "pipewire", "pipewire-pulse"])
-                    .output();
-            }
-        }
-    }
+    recover_audio_sink();
 }
 
 /// Load CLAP plugin libraries needed by the instrument definition.
@@ -930,3 +924,24 @@ fn try_open_keystep(conf: &mut NodeConfigurator) -> Option<u32> {
         Err(_) => None,
     }
 }
+
+#[cfg(target_os = "linux")]
+fn recover_audio_sink() {
+    let sinks = std::process::Command::new("pactl")
+        .args(["list", "short", "sinks"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
+        .unwrap_or_default();
+
+    if sinks.contains("alsa_output") {
+        return;
+    }
+
+    eprintln!("[paraclete] audio sink missing — restarting pipewire-pulse");
+    let _ = std::process::Command::new("systemctl")
+        .args(["--user", "restart", "pipewire-pulse"])
+        .output();
+}
+
+#[cfg(not(target_os = "linux"))]
+fn recover_audio_sink() {}
