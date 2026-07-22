@@ -174,6 +174,7 @@ impl NodeSlot {
 unsafe impl Send for NodeExecutor {}
 
 impl NodeExecutor {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         nodes: Vec<(u32, NodeOrDevice)>,
         event_routes: Vec<Vec<usize>>,

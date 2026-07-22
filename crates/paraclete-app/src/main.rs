@@ -24,8 +24,8 @@ use paraclete_hal::{
 use paraclete_nodes::{ScriptEventConsumer, ScriptingGatewayNode};
 use paraclete_runtime::NodeConfigurator;
 use paraclete_scripting::ScriptingEngine;
-use paraclete_tui::{TuiApp, TuiConfig};
 use paraclete_theotokos::{TheotokosApp, TheotokosConfig};
+use paraclete_tui::{TuiApp, TuiConfig};
 
 const BLOCK_SIZE: usize = 512;
 
@@ -138,10 +138,7 @@ fn main() {
     // ── 1.5. Query device sample rate (before graph build) ─────────────────────
     let sample_rate = query_sample_rate().unwrap_or(44100.0);
     if sample_rate != 44100.0 {
-        eprintln!(
-            "[paraclete] device sample rate: {:.0} Hz",
-            sample_rate
-        );
+        eprintln!("[paraclete] device sample rate: {:.0} Hz", sample_rate);
     }
 
     // ── 2. Pre-load CLAP plugins (one load per .clap file) ───────────────────
@@ -516,7 +513,7 @@ fn main() {
                             // Mirrored updates first: downstream is last-write-wins,
                             // so a profile's direct-to-Theoria write beats the mirror.
                             std::mem::swap(&mut lp_out.led_updates, &mut o.led_updates);
-                            o.led_updates.extend(lp_out.led_updates.drain(..));
+                            o.led_updates.append(&mut lp_out.led_updates);
                         })
                         .or_insert(lp_out);
                 }
@@ -617,26 +614,22 @@ fn load_plugin_libraries(def: &InstrumentDefinition) -> HashMap<String, Arc<Plug
 
     if !unresolved.is_empty() {
         for clap_path in scan_clap_paths() {
-            match PluginLibrary::load(&clap_path) {
-                Ok(lib) => {
-                    let matched: Vec<String> = lib
-                        .descriptors()
-                        .iter()
-                        .filter(|d| unresolved.contains(&d.id.as_str()))
-                        .map(|d| d.id.clone())
-                        .collect();
-                    if !matched.is_empty() {
-                        let lib = Arc::new(lib);
-                        for id in matched {
-                            if !libraries.contains_key(&id) {
-                                eprintln!("[paraclete] CLAP plugin found via scan: {id}");
-                                libraries.insert(id, Arc::clone(&lib));
-                            }
-                        }
+            if let Ok(lib) = PluginLibrary::load(&clap_path) {
+                let matched: Vec<String> = lib
+                    .descriptors()
+                    .iter()
+                    .filter(|d| unresolved.contains(&d.id.as_str()))
+                    .map(|d| d.id.clone())
+                    .collect();
+                if !matched.is_empty() {
+                    let lib = Arc::new(lib);
+                    for id in matched {
+                        libraries.entry(id.clone()).or_insert_with(|| {
+                            eprintln!("[paraclete] CLAP plugin found via scan: {id}");
+                            Arc::clone(&lib)
+                        });
                     }
-                    // If no match: lib is dropped here (deinit called once — acceptable).
                 }
-                Err(_) => {}
             }
         }
     }
@@ -846,7 +839,10 @@ fn build_constants(
         )
     }
     vec![
-        ("LP_DEVICE_ID".into(), rhai::Dynamic::from(lp_dev_id.unwrap_or(0) as i64)),
+        (
+            "LP_DEVICE_ID".into(),
+            rhai::Dynamic::from(lp_dev_id.unwrap_or(0) as i64),
+        ),
         (
             "DT_DEVICE_ID".into(),
             rhai::Dynamic::from(digitakt_id.unwrap_or(0) as i64),
@@ -878,7 +874,7 @@ fn setup_terminal(
     let mut stdout = std::io::stdout();
     execute!(stdout, EnterAlternateScreen)?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
-    Ok(ratatui::Terminal::new(backend)?)
+    ratatui::Terminal::new(backend)
 }
 
 fn restore_terminal(

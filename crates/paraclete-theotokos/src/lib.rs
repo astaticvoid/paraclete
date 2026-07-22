@@ -213,7 +213,7 @@ impl TheotokosApp {
                     match dir {
                         Dir::Prev => *pw = pw.saturating_sub(1),
                         Dir::Next => {
-                            if *pw < max_page.max(0) {
+                            if *pw < max_page {
                                 *pw += 1;
                             }
                         }
