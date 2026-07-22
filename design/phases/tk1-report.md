@@ -10,3 +10,4 @@
 | C1 | `9fb0795` | P-lock command family (CMD 33–37): lock target/step-lock/clear/velocity/length + dirty-gated /state/locks publish + test-driver actions + plock scenario with baseline |
 | C2 | `04e57a9` | Extract composite Rule assembly to `paraclete-view-assembly` crate; Antiphon thin mapper; edge-derived chains in main.rs |
 | C3 | `24216bf` | Composite track pages + edge-derived track map; PERF mode consumes composite pages; ViewRegistry cloned for Antiphon+Theotokos |
+| C4 | `da7f48f` | Mutes: sequencer `mute` param + emit_note_on_at/lock gate + bus mirroring + v3 persistence + Theotokos Shift+track-key toggle + 5 tests |
