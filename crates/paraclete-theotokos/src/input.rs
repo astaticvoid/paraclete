@@ -64,12 +64,8 @@ fn map_global(ev: &KeyEvent) -> Option<Action> {
 
 fn map_seq(ev: &KeyEvent) -> Action {
     match ev.code {
-        KeyCode::Char('[') | KeyCode::Char('{') | KeyCode::Char('-') => {
-            Action::PageWindow(Dir::Prev)
-        }
-        KeyCode::Char(']') | KeyCode::Char('}') | KeyCode::Char('=') => {
-            Action::PageWindow(Dir::Next)
-        }
+        KeyCode::Char('-') => Action::PageWindow(Dir::Prev),
+        KeyCode::Char('=') => Action::PageWindow(Dir::Next),
         _ => Action::Noop,
     }
 }
@@ -178,15 +174,7 @@ mod tests {
     }
 
     #[test]
-    fn seq_page_window_keys() {
-        assert!(matches!(
-            map_key(Mode::Seq, &key('[')),
-            Action::PageWindow(Dir::Prev)
-        ));
-        assert!(matches!(
-            map_key(Mode::Seq, &key(']')),
-            Action::PageWindow(Dir::Next)
-        ));
+    fn minus_equals_navigate_pages() {
         assert!(matches!(
             map_key(Mode::Seq, &key('-')),
             Action::PageWindow(Dir::Prev)
@@ -195,6 +183,14 @@ mod tests {
             map_key(Mode::Seq, &key('=')),
             Action::PageWindow(Dir::Next)
         ));
+    }
+
+    #[test]
+    fn bracket_keys_are_noop() {
+        assert!(matches!(map_key(Mode::Seq, &key('[')), Action::Noop));
+        assert!(matches!(map_key(Mode::Seq, &key(']')), Action::Noop));
+        assert!(matches!(map_key(Mode::Seq, &key('{')), Action::Noop));
+        assert!(matches!(map_key(Mode::Seq, &key('}')), Action::Noop));
     }
 
     #[test]

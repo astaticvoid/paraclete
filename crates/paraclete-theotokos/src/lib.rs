@@ -181,12 +181,13 @@ impl TheotokosApp {
     /// Returns whether a redraw is needed.
     pub fn handle_keys(&mut self, bus: &BusHandle, key_events: &[KeyEvent]) -> bool {
         let bus_ref = bus.borrow();
-        let bus = &*bus_ref;
-        let playing = self.model.playing(bus);
+        let state = &*bus_ref;
+        let playing = self.model.playing(state);
         let now = Instant::now();
         let tick_ms = now.elapsed().as_millis() as u64;
 
         let mut dirty = false;
+        let mut selected_changed = false;
         for ev in key_events {
             let action = input::map_key(self.model.mode, ev);
             if !matches!(action, Action::Noop) || self.last_debug_event.is_some() {
@@ -202,11 +203,12 @@ impl TheotokosApp {
                 Action::SelectTrack(i) => {
                     self.model.select_track(i);
                     dirty = true;
+                    selected_changed = true;
                 }
                 Action::PageWindow(dir) => {
                     let max_page = self
                         .model
-                        .read_step_state(bus, self.model.active_track)
+                        .read_step_state(state, self.model.active_track)
                         .page_count
                         .saturating_sub(1);
                     let pw = &mut self.model.page_windows[self.model.active_track];
@@ -279,6 +281,15 @@ impl TheotokosApp {
             }
         }
         drop(bus_ref);
+        if selected_changed {
+            if let Some(track) = self.model.tracks.get(self.model.active_track) {
+                let mut bus_mut = bus.borrow_mut();
+                bus_mut.write(
+                    "/script/theotokos/selected",
+                    paraclete_node_api::StateBusValue::Int(track.sequencer_id as i64),
+                );
+            }
+        }
         dirty
     }
 
@@ -404,7 +415,7 @@ mod tests {
     }
 
     #[test]
-    fn bracket_right_increments_page_window() {
+    fn equals_increments_page_window() {
         let bus = test_bus();
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         {
@@ -432,12 +443,12 @@ mod tests {
         }
 
         assert_eq!(app.model.page_windows[0], 0);
-        app.handle_keys(&bus, &[kc(']')]);
-        assert_eq!(app.model.page_windows[0], 1, "']' must advance to page 2");
+        app.handle_keys(&bus, &[kc('=')]);
+        assert_eq!(app.model.page_windows[0], 1, "'=' must advance to page 2");
     }
 
     #[test]
-    fn bracket_left_clamps_at_zero() {
+    fn minus_clamps_at_zero() {
         let bus = test_bus();
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         {
@@ -452,15 +463,15 @@ mod tests {
             );
         }
 
-        app.handle_keys(&bus, &[kc('[')]);
+        app.handle_keys(&bus, &[kc('-')]);
         assert_eq!(
             app.model.page_windows[0], 0,
-            "'[' clamped at zero must stay 0"
+            "'-' clamped at zero must stay 0"
         );
     }
 
     #[test]
-    fn bracket_right_clamps_at_page_count() {
+    fn equals_clamps_at_page_count() {
         let bus = test_bus();
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         {
@@ -476,10 +487,10 @@ mod tests {
         }
 
         app.model.page_windows[0] = 2;
-        app.handle_keys(&bus, &[kc(']')]);
+        app.handle_keys(&bus, &[kc('=')]);
         assert_eq!(
             app.model.page_windows[0], 2,
-            "']' must not exceed page count"
+            "'=' must not exceed page count"
         );
     }
 
@@ -505,5 +516,25 @@ mod tests {
         assert_eq!(cmd.target_id, 200);
         assert_eq!(cmd.type_id, 16);
         assert_eq!(cmd.arg0, 16);
+    }
+
+    #[test]
+    fn select_track_publishes_selected_sequencer_id() {
+        let bus = test_bus();
+        let mut app = test_app(
+            1,
+            vec![200, 201],
+            vec![100, 101],
+            vec!["T1".into(), "T2".into()],
+        );
+        assert_eq!(app.model.tracks[1].sequencer_id, 201);
+
+        app.handle_keys(&bus, &[kc('w')]);
+        let selected = bus.borrow().read("/script/theotokos/selected").cloned();
+        assert_eq!(
+            selected,
+            Some(paraclete_node_api::StateBusValue::Int(201)),
+            "SelectTrack(w) must publish seq id 201"
+        );
     }
 }

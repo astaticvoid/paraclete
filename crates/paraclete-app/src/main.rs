@@ -391,6 +391,14 @@ fn main() {
                     fps: 30,
                 }) {
                     Ok(app) => {
+                        // TK1 C0: initial /script/theotokos/selected publish
+                        if let Some(first_seq) = ids.sequencers.first() {
+                            let mut bus_mut = bus_handle.borrow_mut();
+                            bus_mut.write(
+                                "/script/theotokos/selected",
+                                paraclete_node_api::StateBusValue::Int(*first_seq as i64),
+                            );
+                        }
                         theotokos_opt = Some((app, terminal));
                     }
                     Err(e) => eprintln!("[paraclete] Theotokos setup failed: {e}"),

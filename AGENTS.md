@@ -98,7 +98,7 @@ The legacy Launchpad-emulator grid requires `--emulator`. To run without any
 terminal UI: `--no-tui` (headless — use for debugging and test-driver).
 
 ```
-SEQ mode:          asdfjkl;zxcvm,./ = 16-step grid     [] or -= = page window
+SEQ mode:          asdfjkl;zxcvm,./ = 16-step grid     -/= = page window
 PERF mode:         1-6 = param pages    arrows = jog A/B    Shift+arrow = fine
 Global (all modes): qweruiop = tracks   Space = play/stop  Tab = cycle modes
 ```
