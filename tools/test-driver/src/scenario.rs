@@ -118,6 +118,21 @@ pub enum TimelineAction {
     ChainClear {
         target: String,
     },
+    SetLockTarget {
+        target: String,
+        node_id: u32,
+        param_id: u32,
+    },
+    SetStepLock {
+        target: String,
+        step: i64,
+        value: f64,
+    },
+    ClearStepLock {
+        target: String,
+        step: i64,
+        param_id: Option<u32>,
+    },
 }
 
 #[derive(Debug)]
@@ -193,6 +208,21 @@ pub enum ResolvedActionKind {
     },
     ChainClear {
         target_id: u32,
+    },
+    SetLockTarget {
+        target_id: u32,
+        node_id: u32,
+        param_id: u32,
+    },
+    SetStepLock {
+        target_id: u32,
+        step: i64,
+        value: f64,
+    },
+    ClearStepLock {
+        target_id: u32,
+        step: i64,
+        param_id: i64,
     },
 }
 

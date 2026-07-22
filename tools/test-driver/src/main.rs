@@ -34,6 +34,9 @@ const CMD_SET_FILL_B: u32 = Sequencer::CMD_SET_FILL_B;
 const CMD_SET_STEP_CONDITION: u32 = Sequencer::CMD_SET_STEP_CONDITION;
 const CMD_CHAIN_PUSH: u32 = Sequencer::CMD_CHAIN_PUSH;
 const CMD_CHAIN_CLEAR: u32 = Sequencer::CMD_CHAIN_CLEAR;
+const CMD_SET_LOCK_TARGET: u32 = Sequencer::CMD_SET_LOCK_TARGET;
+const CMD_SET_STEP_LOCK: u32 = Sequencer::CMD_SET_STEP_LOCK;
+const CMD_CLEAR_STEP_LOCK: u32 = Sequencer::CMD_CLEAR_STEP_LOCK;
 
 fn auto_play_command() -> &'static str {
     #[cfg(target_os = "macos")]
@@ -259,6 +262,40 @@ fn dispatch_action(conf: &mut NodeConfigurator, action: &ResolvedActionKind) -> 
             type_id: CMD_CHAIN_CLEAR,
             arg0: 0,
             arg1: 0.0,
+        },
+        ResolvedActionKind::SetLockTarget {
+            target_id,
+            node_id,
+            param_id,
+        } => {
+            // Send pair: CMD_SET_LOCK_TARGET immediately before CMD_SET_STEP_LOCK
+            // Only set the target here; the caller must send SetStepLock next.
+            NodeCommand {
+                target_id: *target_id,
+                type_id: CMD_SET_LOCK_TARGET,
+                arg0: *node_id as i64,
+                arg1: *param_id as f64,
+            }
+        }
+        ResolvedActionKind::SetStepLock {
+            target_id,
+            step,
+            value,
+        } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_SET_STEP_LOCK,
+            arg0: *step,
+            arg1: *value,
+        },
+        ResolvedActionKind::ClearStepLock {
+            target_id,
+            step,
+            param_id,
+        } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_CLEAR_STEP_LOCK,
+            arg0: *step,
+            arg1: *param_id as f64,
         },
     };
     conf.send_command(cmd)
@@ -1053,6 +1090,33 @@ fn resolve_action(
         },
         TimelineAction::ChainClear { target } => ResolvedActionKind::ChainClear {
             target_id: resolve_target(resolver, target)?,
+        },
+        TimelineAction::SetLockTarget {
+            target,
+            node_id,
+            param_id,
+        } => ResolvedActionKind::SetLockTarget {
+            target_id: resolve_target(resolver, target)?,
+            node_id: *node_id,
+            param_id: *param_id,
+        },
+        TimelineAction::SetStepLock {
+            target,
+            step,
+            value,
+        } => ResolvedActionKind::SetStepLock {
+            target_id: resolve_target(resolver, target)?,
+            step: *step,
+            value: *value,
+        },
+        TimelineAction::ClearStepLock {
+            target,
+            step,
+            param_id,
+        } => ResolvedActionKind::ClearStepLock {
+            target_id: resolve_target(resolver, target)?,
+            step: *step,
+            param_id: param_id.map_or(-1, |p| p as i64),
         },
     })
 }

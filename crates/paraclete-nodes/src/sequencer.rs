@@ -1,8 +1,11 @@
 use paraclete_node_api::{
-    CapabilityDocument, DebugEventKind, Event, NodeCommand, ParameterBank, ParamDescriptor,
-    ParamLockEvent, ParamUnit, PortDescriptor, PortDirection, PortName, PortType, ProcessInput,
-    ProcessOutput, StateBusValue, TimedEvent, TransportEvent, Node, TICKS_PER_BEAT,
+    CapabilityDocument, DebugEventKind, Event, Node, NodeCommand, ParamDescriptor, ParamLockEvent,
+    ParamUnit, ParameterBank, PortDescriptor, PortDirection, PortName, PortType, ProcessInput,
+    ProcessOutput, StateBusValue, TimedEvent, TransportEvent, TICKS_PER_BEAT,
 };
+
+use std::cell::Cell;
+use std::fmt::Write;
 
 // ── Timing / Condition types ──────────────────────────────────────────────────
 
@@ -30,7 +33,10 @@ impl StepTiming {
 pub enum RepeatCondition {
     Always,
     /// Fire on the nth repetition of every m loops (1-indexed n).
-    NthOfM { n: u8, m: u8 },
+    NthOfM {
+        n: u8,
+        m: u8,
+    },
 }
 
 /// Fill gate: how fill buttons interact with a trig.
@@ -50,16 +56,16 @@ pub enum FillCondition {
 pub struct SequencerCycleState {
     /// Increments each time the pattern completes (wrapping).
     pub loop_count: u32,
-    pub fill_a:     bool,
-    pub fill_b:     bool,
+    pub fill_a: bool,
+    pub fill_b: bool,
 }
 
 /// Condition governing whether a trig fires on a given loop iteration.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TrigCondition {
     Simple {
-        repeat:      RepeatCondition,
-        fill:        FillCondition,
+        repeat: RepeatCondition,
+        fill: FillCondition,
         /// 0–100. 100 = always (no RNG). 0 = never.
         probability: u8,
     },
@@ -69,28 +75,40 @@ impl TrigCondition {
     /// Evaluate the condition. Order: repeat gate → fill gate → probability roll.
     pub fn evaluate(&self, cycle_state: &SequencerCycleState, rng: &mut fastrand::Rng) -> bool {
         match self {
-            TrigCondition::Simple { repeat, fill, probability } => {
+            TrigCondition::Simple {
+                repeat,
+                fill,
+                probability,
+            } => {
                 let repeat_pass = match repeat {
                     RepeatCondition::Always => true,
                     RepeatCondition::NthOfM { n, m } => {
                         *m > 0 && (cycle_state.loop_count % *m as u32) == (*n as u32 - 1)
                     }
                 };
-                if !repeat_pass { return false; }
+                if !repeat_pass {
+                    return false;
+                }
 
                 let fill_pass = match fill {
-                    FillCondition::Ignore   => true,
-                    FillCondition::FillA    => cycle_state.fill_a,
-                    FillCondition::FillB    => cycle_state.fill_b,
-                    FillCondition::FillAny  => cycle_state.fill_a || cycle_state.fill_b,
-                    FillCondition::NoFill   => !cycle_state.fill_a && !cycle_state.fill_b,
+                    FillCondition::Ignore => true,
+                    FillCondition::FillA => cycle_state.fill_a,
+                    FillCondition::FillB => cycle_state.fill_b,
+                    FillCondition::FillAny => cycle_state.fill_a || cycle_state.fill_b,
+                    FillCondition::NoFill => !cycle_state.fill_a && !cycle_state.fill_b,
                     FillCondition::NotFillA => !cycle_state.fill_a,
                     FillCondition::NotFillB => !cycle_state.fill_b,
                 };
-                if !fill_pass { return false; }
+                if !fill_pass {
+                    return false;
+                }
 
-                if *probability >= 100 { return true; }
-                if *probability == 0   { return false; }
+                if *probability >= 100 {
+                    return true;
+                }
+                if *probability == 0 {
+                    return false;
+                }
                 rng.u8(0..100) < *probability
             }
         }
@@ -100,8 +118,8 @@ impl TrigCondition {
 impl Default for TrigCondition {
     fn default() -> Self {
         TrigCondition::Simple {
-            repeat:      RepeatCondition::Always,
-            fill:        FillCondition::Ignore,
+            repeat: RepeatCondition::Always,
+            fill: FillCondition::Ignore,
             probability: 100,
         }
     }
@@ -114,37 +132,37 @@ pub struct ConditionId(pub u32);
 
 #[derive(Clone, Debug)]
 pub struct Step {
-    pub active:      bool,
-    pub note:        u8,
-    pub velocity:    u16,
-    pub length:      f32,
+    pub active: bool,
+    pub note: u8,
+    pub velocity: u16,
+    pub length: f32,
     pub param_locks: Vec<StepParamLock>,
-    pub condition:   TrigCondition,
-    pub timing:      StepTiming,
+    pub condition: TrigCondition,
+    pub timing: StepTiming,
     /// Per-step CV value locks. Each entry is `(cv_port_index, value)`.
     /// `cv_port_index` is 0-relative (cv_out_0 = index 0).
     /// Out-of-range indices are silently ignored at process time.
-    pub cv_locks:    Vec<(u16, f32)>,
+    pub cv_locks: Vec<(u16, f32)>,
 }
 
 #[derive(Clone, Debug)]
 pub struct StepParamLock {
-    pub node_id:  u32,
+    pub node_id: u32,
     pub param_id: u32,
-    pub value:    f64,
+    pub value: f64,
 }
 
 impl Step {
     pub fn empty() -> Self {
         Step {
-            active:      false,
-            note:        60,
-            velocity:    32768,
-            length:      0.75,
-            param_locks: Vec::new(),
-            condition:   TrigCondition::default(),
-            timing:      StepTiming::default(),
-            cv_locks:    Vec::new(),
+            active: false,
+            note: 60,
+            velocity: 32768,
+            length: 0.75,
+            param_locks: Vec::with_capacity(Sequencer::LOCK_CAP_PER_STEP),
+            condition: TrigCondition::default(),
+            timing: StepTiming::default(),
+            cv_locks: Vec::new(),
         }
     }
 }
@@ -167,10 +185,10 @@ pub const PAGE_SIZE: usize = 8;
 /// of truth.
 #[derive(Clone, Debug)]
 pub struct Pattern {
-    pub steps:     Vec<Step>,
-    pub length:    usize,
+    pub steps: Vec<Step>,
+    pub length: usize,
     pub page_loop: (u8, u8),
-    pub swing:     f32,
+    pub swing: f32,
 }
 
 impl Pattern {
@@ -179,10 +197,10 @@ impl Pattern {
     pub fn empty(steps: usize) -> Self {
         let pages = steps.div_ceil(PAGE_SIZE).max(1);
         Pattern {
-            steps:     vec![Step::empty(); steps],
-            length:    steps,
+            steps: vec![Step::empty(); steps],
+            length: steps,
             page_loop: (0, (pages - 1) as u8),
-            swing:     0.0,
+            swing: 0.0,
         }
     }
 }
@@ -228,17 +246,17 @@ pub struct Sequencer {
     group: u8,
     channel: u8,
 
-    cycle_state:    SequencerCycleState,
-    rng:            fastrand::Rng,
+    cycle_state: SequencerCycleState,
+    rng: fastrand::Rng,
     active_pattern: usize,
     /// Pattern to switch to at the next cycle boundary. Inert until P10 C4.
-    cued_pattern:   Option<usize>,
+    cued_pattern: Option<usize>,
     /// Volatile pattern chain. Inert until P10 C4.
-    chain:          Vec<usize>,
-    chain_pos:      usize,
+    chain: Vec<usize>,
+    chain_pos: usize,
     /// Per-track speed multiplier. Inert until P10 C3.
-    speed_mult:     f32,
-    swing_amount:   f32,
+    speed_mult: f32,
+    swing_amount: f32,
     /// Last bank `swing` value forwarded to the active pattern. The bank is
     /// a write-conduit only (P10 C2, spec 2.3): a changed bank value means
     /// an encoder/CMD_SET_PARAM wrote it, and it is forwarded to
@@ -246,10 +264,10 @@ pub struct Sequencer {
     /// this field (not the pattern) keeps a pattern switch from writing the
     /// old pattern's swing into the new one.
     last_bank_swing: f32,
-    sample_rate:    f32,
+    sample_rate: f32,
 
-    cv_outputs:  usize,
-    current_cv:  Vec<f32>,
+    cv_outputs: usize,
+    current_cv: Vec<f32>,
 
     /// Note given to steps that were never explicitly set (toggle-created,
     /// re-padded on load). 60 by default; drum tracks driving a synth engine
@@ -258,47 +276,65 @@ pub struct Sequencer {
     /// same pitch (BUG-022). Per-step notes remain full-range.
     default_note: u8,
 
-    /// Lazily-built `/node/{id}/state/*` path strings for the 17
-    /// unconditional `published_state()` entries (BUG-007 fix: eliminates
-    /// the per-cycle `format!` on the audio thread for these fixed keys).
-    /// Keyed to `self.node_id` at first `published_state()` call. The
-    /// conditional `track_name` entry and all VALUEs are still computed
+    /// Lazily-built `/node/{id}/state/*` path strings (BUG-007 fix).
+    /// Keyed to `self.node_id` at first `published_state()` call.
+    /// The `track_name`, `locks` entries and all VALUEs are still computed
     /// fresh each call.
-    state_path_cache: std::sync::OnceLock<[String; 17]>,
+    state_path_cache: std::sync::OnceLock<[String; 19]>,
+
+    /// TK1 C1: current lock target set by CMD_SET_LOCK_TARGET.
+    lock_target: Option<(u32, u32)>,
+    /// TK1 C1: counter for dropped CMD_SET_STEP_LOCK commands (no target
+    /// set, or step-at-capacity).
+    lock_dropped: u64,
+    /// TK1 C1: set when locks change (CMD 34/35, deserialize); cleared
+    /// after /state/locks publish. Interior mutability through Cell.
+    locks_dirty: Cell<bool>,
 }
 
 impl Sequencer {
-    pub const PORT_CLOCK_IN:   u32 = 0;
-    pub const PORT_EVENTS_IN:  u32 = 1;
+    pub const PORT_CLOCK_IN: u32 = 0;
+    pub const PORT_EVENTS_IN: u32 = 1;
     pub const PORT_EVENTS_OUT: u32 = 2;
     /// First port ID used for CV output ports. cv_out_i is at port PORT_CV_OUT_BASE + i.
     pub const PORT_CV_OUT_BASE: u32 = 3;
 
     /// Universal NodeCommand type IDs (node-specific, ≥ 16).
-    pub const CMD_TOGGLE_STEP:        u32 = 16;
-    pub const CMD_SET_STEP:           u32 = 17;
-    pub const CMD_CLEAR:              u32 = 18;
-    pub const CMD_SET_FILL_A:         u32 = 23;
-    pub const CMD_SET_FILL_B:         u32 = 24;
-    pub const CMD_SET_STEP_TIMING:    u32 = 25;
+    pub const CMD_TOGGLE_STEP: u32 = 16;
+    pub const CMD_SET_STEP: u32 = 17;
+    pub const CMD_CLEAR: u32 = 18;
+    pub const CMD_SET_FILL_A: u32 = 23;
+    pub const CMD_SET_FILL_B: u32 = 24;
+    pub const CMD_SET_STEP_TIMING: u32 = 25;
     pub const CMD_SET_STEP_CONDITION: u32 = 26;
-    pub const CMD_SET_PATTERN:        u32 = 27;
+    pub const CMD_SET_PATTERN: u32 = 27;
     /// P10 C3: arg0 = step count (clamped 1..=64 and to the pattern's step
     /// capacity), arg1 = pattern index (>= 0) or -1 for the active pattern.
     /// Re-derives page count and clamps page_loop into range.
-    pub const CMD_SET_LENGTH:         u32 = 28;
+    pub const CMD_SET_LENGTH: u32 = 28;
     /// P10 C3: arg1 = per-track speed multiplier, clamped to [0.125, 2.0].
     /// Takes effect at the next step boundary.
-    pub const CMD_SET_SPEED:          u32 = 29;
+    pub const CMD_SET_SPEED: u32 = 29;
     /// P10 C2: arg0 = start_page, arg1 = end_page (inclusive). Rejected
     /// (window unchanged) unless start <= end and both pages exist for the
     /// active pattern's current length.
-    pub const CMD_SET_PAGE_LOOP:      u32 = 30;
+    pub const CMD_SET_PAGE_LOOP: u32 = 30;
     /// P10 C4: arg0 = pattern index appended to the volatile chain
     /// (capacity CHAIN_CAP; pushes beyond it or unknown indices ignored).
-    pub const CMD_CHAIN_PUSH:         u32 = 31;
+    pub const CMD_CHAIN_PUSH: u32 = 31;
     /// P10 C4: empty the chain and reset its position.
-    pub const CMD_CHAIN_CLEAR:        u32 = 32;
+    pub const CMD_CHAIN_CLEAR: u32 = 32;
+
+    /// TK1 C1: arg0 = node_id (i64 → u32), arg1 = param_id as f64 (u32 exact).
+    pub const CMD_SET_LOCK_TARGET: u32 = 33;
+    /// TK1 C1: arg0 = step index, arg1 = value. Requires lock_target.
+    pub const CMD_SET_STEP_LOCK: u32 = 34;
+    /// TK1 C1: arg0 = step index, arg1 = param_id as f64 (−1.0 = all lanes).
+    pub const CMD_CLEAR_STEP_LOCK: u32 = 35;
+    /// TK1 C1: arg0 = step index, arg1 = velocity (0.0–1.0).
+    pub const CMD_SET_STEP_VELOCITY: u32 = 36;
+    /// TK1 C1: arg0 = step index, arg1 = length (f32 unit/scale).
+    pub const CMD_SET_STEP_LENGTH: u32 = 37;
 
     /// Runtime step capacity per pattern (P10: 8 pages × 8 steps). The
     /// serialized format stores counts as plain integers and does not depend
@@ -315,6 +351,10 @@ impl Sequencer {
     /// Chain capacity (spec 4.2): pushes beyond this are ignored, so the
     /// chain Vec (reserved at construction) never grows on the audio thread.
     pub const CHAIN_CAP: usize = 8;
+
+    /// Maximum per-step parameter locks (TK1 C1). Step construction reserves
+    /// this capacity so Vec::push within it never allocates on the audio thread.
+    pub(crate) const LOCK_CAP_PER_STEP: usize = 8;
 
     pub fn new() -> Self {
         Self::with_name("")
@@ -354,16 +394,31 @@ impl Sequencer {
 
     fn with_name_and_cv(name: &str, cv_outputs: usize) -> Self {
         let mut ports = vec![
-            PortDescriptor { id: Self::PORT_CLOCK_IN,   name: "clock_in".into(),   direction: PortDirection::Input,  port_type: PortType::Clock },
-            PortDescriptor { id: Self::PORT_EVENTS_IN,  name: "events_in".into(),  direction: PortDirection::Input,  port_type: PortType::Event },
-            PortDescriptor { id: Self::PORT_EVENTS_OUT, name: "events_out".into(), direction: PortDirection::Output, port_type: PortType::Event },
+            PortDescriptor {
+                id: Self::PORT_CLOCK_IN,
+                name: "clock_in".into(),
+                direction: PortDirection::Input,
+                port_type: PortType::Clock,
+            },
+            PortDescriptor {
+                id: Self::PORT_EVENTS_IN,
+                name: "events_in".into(),
+                direction: PortDirection::Input,
+                port_type: PortType::Event,
+            },
+            PortDescriptor {
+                id: Self::PORT_EVENTS_OUT,
+                name: "events_out".into(),
+                direction: PortDirection::Output,
+                port_type: PortType::Event,
+            },
         ];
         for i in 0..cv_outputs {
             ports.push(PortDescriptor {
-                id:         Self::PORT_CV_OUT_BASE + i as u32,
-                name:       PortName::Dynamic(format!("cv_out_{i}")),
-                direction:  PortDirection::Output,
-                port_type:  PortType::Cv,
+                id: Self::PORT_CV_OUT_BASE + i as u32,
+                name: PortName::Dynamic(format!("cv_out_{i}")),
+                direction: PortDirection::Output,
+                port_type: PortType::Cv,
             });
         }
         // The full pattern bank is allocated here, on the main thread
@@ -398,20 +453,23 @@ impl Sequencer {
             bank: ParameterBank::empty(),
             group: 0,
             channel: 0,
-            cycle_state:    SequencerCycleState::default(),
-            rng:            fastrand::Rng::new(),
+            cycle_state: SequencerCycleState::default(),
+            rng: fastrand::Rng::new(),
             active_pattern: 0,
-            cued_pattern:   None,
-            chain:          Vec::with_capacity(Self::CHAIN_CAP),
-            chain_pos:      0,
-            speed_mult:     1.0,
-            swing_amount:   0.0,
+            cued_pattern: None,
+            chain: Vec::with_capacity(Self::CHAIN_CAP),
+            chain_pos: 0,
+            speed_mult: 1.0,
+            swing_amount: 0.0,
             last_bank_swing: 0.0,
-            sample_rate:    44100.0,
+            sample_rate: 44100.0,
             cv_outputs,
-            current_cv:  vec![0.0_f32; cv_outputs],
+            current_cv: vec![0.0_f32; cv_outputs],
             default_note: 60,
             state_path_cache: std::sync::OnceLock::new(),
+            lock_target: None,
+            lock_dropped: 0,
+            locks_dirty: Cell::new(false),
         }
     }
 
@@ -441,7 +499,11 @@ impl Sequencer {
     fn advance_step(&self, current: usize) -> (usize, bool) {
         let (start, end) = self.window();
         let next = current + 1;
-        if next < start || next >= end { (start, true) } else { (next, false) }
+        if next < start || next >= end {
+            (start, true)
+        } else {
+            (next, false)
+        }
     }
 
     /// Exact (fractional) tick length of one step at the current speed.
@@ -477,7 +539,8 @@ impl Sequencer {
         // suppress the new pattern's entry step at the boundary.
         self.early_fired = None;
         let swing = self.patterns[idx].swing;
-        self.bank.set(ParamDescriptor::id_for_name("swing"), swing as f64);
+        self.bank
+            .set(ParamDescriptor::id_for_name("swing"), swing as f64);
         self.last_bank_swing = swing;
     }
 
@@ -485,9 +548,9 @@ impl Sequencer {
         let pat = self.active_index();
         let steps = &mut self.patterns[pat].steps;
         if index < steps.len() {
-            steps[index].note     = note;
+            steps[index].note = note;
             steps[index].velocity = velocity;
-            steps[index].active   = active;
+            steps[index].active = active;
         }
     }
 
@@ -524,7 +587,7 @@ impl Sequencer {
                         if cmd.arg1 < 0.0 {
                             steps[idx].active = false;
                         } else {
-                            steps[idx].note   = cmd.arg1 as u8;
+                            steps[idx].note = cmd.arg1 as u8;
                             steps[idx].active = true;
                         }
                     }
@@ -553,13 +616,17 @@ impl Sequencer {
                     if idx < steps.len() {
                         let enc = cmd.arg1 as i64 as u64;
                         let probability = (enc & 0xFF) as u8;
-                        let repeat_n    = ((enc >> 8) & 0xFF) as u8;
-                        let repeat_m    = ((enc >> 16) & 0xFF) as u8;
-                        let fill_disc   = ((enc >> 24) & 0xFF) as u8;
+                        let repeat_n = ((enc >> 8) & 0xFF) as u8;
+                        let repeat_m = ((enc >> 16) & 0xFF) as u8;
+                        let fill_disc = ((enc >> 24) & 0xFF) as u8;
 
                         let repeat = repeat_from_nm(repeat_n, repeat_m);
                         let fill = fill_from_discriminant(fill_disc);
-                        steps[idx].condition = TrigCondition::Simple { repeat, fill, probability };
+                        steps[idx].condition = TrigCondition::Simple {
+                            repeat,
+                            fill,
+                            probability,
+                        };
                     }
                 }
                 Self::CMD_SET_LENGTH => {
@@ -569,7 +636,9 @@ impl Sequencer {
                         pat
                     } else {
                         let i = cmd.arg1 as usize;
-                        if i >= self.patterns.len() { continue; }
+                        if i >= self.patterns.len() {
+                            continue;
+                        }
                         i
                     };
                     let p = &mut self.patterns[idx];
@@ -590,9 +659,11 @@ impl Sequencer {
                     // pages within the active pattern's current page count.
                     // arg1 < 0 is rejected before the cast — `as i64`
                     // truncates toward zero, so -0.5 would slip in as page 0.
-                    if cmd.arg1 < 0.0 { continue; }
+                    if cmd.arg1 < 0.0 {
+                        continue;
+                    }
                     let start = cmd.arg0;
-                    let end   = cmd.arg1 as i64;
+                    let end = cmd.arg1 as i64;
                     let p = &mut self.patterns[pat];
                     let page_count = p.length.div_ceil(PAGE_SIZE) as i64;
                     if start >= 0 && end >= start && end < page_count {
@@ -628,18 +699,101 @@ impl Sequencer {
                     self.chain.clear();
                     self.chain_pos = 0;
                 }
+                Self::CMD_SET_LOCK_TARGET => {
+                    let node_id = cmd.arg0 as u32;
+                    let param_id = cmd.arg1 as u32;
+                    self.lock_target = Some((node_id, param_id));
+                }
+                Self::CMD_SET_STEP_LOCK => {
+                    let (nid, pid) = match self.lock_target {
+                        Some(t) => t,
+                        None => {
+                            self.lock_dropped = self.lock_dropped.wrapping_add(1);
+                            continue;
+                        }
+                    };
+                    let idx = cmd.arg0 as usize;
+                    let steps = &mut self.patterns[pat].steps;
+                    if idx >= steps.len() || idx >= Self::STEP_CAPACITY {
+                        self.lock_dropped = self.lock_dropped.wrapping_add(1);
+                        continue;
+                    }
+                    let val = cmd.arg1;
+                    let locks = &mut steps[idx].param_locks;
+                    if let Some(existing) = locks
+                        .iter_mut()
+                        .find(|l| l.node_id == nid && l.param_id == pid)
+                    {
+                        existing.value = val;
+                    } else if locks.len() < Self::LOCK_CAP_PER_STEP {
+                        locks.push(StepParamLock {
+                            node_id: nid,
+                            param_id: pid,
+                            value: val,
+                        });
+                    } else {
+                        self.lock_dropped = self.lock_dropped.wrapping_add(1);
+                        continue;
+                    }
+                    self.locks_dirty.set(true);
+                }
+                Self::CMD_CLEAR_STEP_LOCK => {
+                    let idx = cmd.arg0 as usize;
+                    let steps = &mut self.patterns[pat].steps;
+                    if idx >= steps.len() || idx >= Self::STEP_CAPACITY {
+                        continue;
+                    }
+                    let param_id = cmd.arg1 as i64;
+                    let locks = &mut steps[idx].param_locks;
+                    if param_id == -1 {
+                        if !locks.is_empty() {
+                            locks.clear();
+                            self.locks_dirty.set(true);
+                        }
+                    } else {
+                        let pid = param_id as u32;
+                        let prev = locks.len();
+                        locks.retain(|l| {
+                            let (target_nid, _) = self.lock_target.unwrap_or((0, 0));
+                            l.node_id != target_nid || l.param_id != pid
+                        });
+                        if locks.len() != prev {
+                            self.locks_dirty.set(true);
+                        }
+                    }
+                }
+                Self::CMD_SET_STEP_VELOCITY => {
+                    let idx = cmd.arg0 as usize;
+                    let steps = &mut self.patterns[pat].steps;
+                    if idx < steps.len() && idx < Self::STEP_CAPACITY {
+                        steps[idx].velocity =
+                            ((cmd.arg1.clamp(0.0, 1.0) * 65535.0) as u32).min(65535) as u16;
+                    }
+                }
+                Self::CMD_SET_STEP_LENGTH => {
+                    let idx = cmd.arg0 as usize;
+                    let steps = &mut self.patterns[pat].steps;
+                    if idx < steps.len() && idx < Self::STEP_CAPACITY {
+                        steps[idx].length = cmd.arg1 as f32;
+                    }
+                }
                 _ => {}
             }
         }
     }
 
-    fn handle_transport(&mut self, k: &TransportEvent, sample_offset: u32, output: &mut ProcessOutput) {
+    fn handle_transport(
+        &mut self,
+        k: &TransportEvent,
+        sample_offset: u32,
+        output: &mut ProcessOutput,
+    ) {
         let spb = 60.0 * self.sample_rate as f64 / k.bpm.max(1.0);
         let pat = self.active_index();
 
         if k.flags.sync_pulse {
             let bars_elapsed = (k.bar - 1).max(0) as u64;
-            let total_ticks  = bars_elapsed * k.time_sig_num as u64 * TICKS_PER_BEAT as u64
+            let total_ticks = bars_elapsed * k.time_sig_num as u64 * TICKS_PER_BEAT as u64
                 + k.beat as u64 * TICKS_PER_BEAT as u64
                 + k.tick as u64;
             // Transport position maps into the page-loop window (P10 C2):
@@ -652,18 +806,17 @@ impl Sequencer {
             let wlen = (wend - wstart) as u64;
             let exact = self.exact_period();
             let steps_elapsed = (total_ticks as f64 / exact).floor();
-            let step_index  = wstart + (steps_elapsed as u64 % wlen) as usize;
-            let new_tick    = (total_ticks as f64 - steps_elapsed * exact).floor() as u32;
+            let step_index = wstart + (steps_elapsed as u64 % wlen) as usize;
+            let new_tick = (total_ticks as f64 - steps_elapsed * exact).floor() as u32;
 
             // Drift correction only (BUG-001 fix, s0 re-diagnosis): when internal
             // counting is in sync, the natural advance below handles this event —
             // the snap must be a no-op or it pre-empts the wrap (and loop_count).
             // "In sync" = the natural path reaches (step_index, new_tick) this
             // event: either we are already there, or we are one increment away.
-            let next_tick   = self.step_tick + 1;
+            let next_tick = self.step_tick + 1;
             let in_sync = if next_tick >= self.step_period {
-                new_tick == 0
-                    && step_index == self.advance_step(self.current_step).0
+                new_tick == 0 && step_index == self.advance_step(self.current_step).0
             } else {
                 step_index == self.current_step && new_tick == next_tick
             };
@@ -683,10 +836,13 @@ impl Sequencer {
             if !in_sync && new_tick == 0 && self.playing && k.flags.playing {
                 let step_active = self.patterns[pat].steps[self.current_step].active;
                 if step_active {
-                    let cond = self.patterns[pat].steps[self.current_step].condition.clone();
+                    let cond = self.patterns[pat].steps[self.current_step]
+                        .condition
+                        .clone();
                     let should_fire = cond.evaluate(&self.cycle_state, &mut self.rng);
                     if should_fire {
-                        let note_off = sample_offset + self.step_sample_offset(self.current_step, spb);
+                        let note_off =
+                            sample_offset + self.step_sample_offset(self.current_step, spb);
                         if self.gate_open {
                             self.emit_note_off(sample_offset, output);
                         }
@@ -695,9 +851,9 @@ impl Sequencer {
                             output.events_out.push(TimedEvent::new(
                                 note_off,
                                 Event::ParamLock(ParamLockEvent {
-                                    node_id:  lock.node_id,
+                                    node_id: lock.node_id,
                                     param_id: lock.param_id,
-                                    value:    lock.value,
+                                    value: lock.value,
                                 }),
                             ));
                         }
@@ -724,12 +880,12 @@ impl Sequencer {
         }
 
         if k.flags.global_start {
-            self.playing      = true;
+            self.playing = true;
             // Transport start enters the pattern at the page-loop window's
             // first step (P10 C2) — step 0 for the default full window.
             let (wstart, _) = self.window();
             self.current_step = wstart;
-            self.step_tick    = 0;
+            self.step_tick = 0;
             self.reset_period();
             // Fire the entry step (BUG-001 fix): previously the first step
             // was never emitted by the boundary path and only sounded via
@@ -745,9 +901,9 @@ impl Sequencer {
                         output.events_out.push(TimedEvent::new(
                             note_off,
                             Event::ParamLock(ParamLockEvent {
-                                node_id:  lock.node_id,
+                                node_id: lock.node_id,
                                 param_id: lock.param_id,
-                                value:    lock.value,
+                                value: lock.value,
                             }),
                         ));
                     }
@@ -783,11 +939,11 @@ impl Sequencer {
         // then advances position without re-firing (early_fired).
         if self.early_fired.is_none() && self.step_tick < self.step_period {
             let (next, _) = self.advance_step(self.current_step);
-            let micro  = self.patterns[pat].steps[next].timing.micro_offset;
+            let micro = self.patterns[pat].steps[next].timing.micro_offset;
             let active = self.patterns[pat].steps[next].active;
             if active && micro < 0 {
-                let early_ticks = ((-(micro as i32)) as u32 * (TICKS_PER_BEAT / 96))
-                    .min(self.step_period - 1);
+                let early_ticks =
+                    ((-(micro as i32)) as u32 * (TICKS_PER_BEAT / 96)).min(self.step_period - 1);
                 if self.step_tick >= self.step_period - early_ticks {
                     // The condition rolls at fire time (pre-wrap loop_count
                     // for a window-wrapping early step — documented choice),
@@ -803,9 +959,9 @@ impl Sequencer {
                             output.events_out.push(TimedEvent::new(
                                 sample_offset,
                                 Event::ParamLock(ParamLockEvent {
-                                    node_id:  lock.node_id,
+                                    node_id: lock.node_id,
                                     param_id: lock.param_id,
-                                    value:    lock.value,
+                                    value: lock.value,
                                 }),
                             ));
                         }
@@ -816,7 +972,7 @@ impl Sequencer {
         }
 
         if self.step_tick >= self.step_period {
-            self.step_tick   = 0;
+            self.step_tick = 0;
             self.step_period = self.next_step_period();
             let (next, wrapped) = self.advance_step(self.current_step);
             self.current_step = next;
@@ -839,7 +995,8 @@ impl Sequencer {
                     // entries in order from the first boundary (spec 4.4
                     // test), then wraps.
                     let target = self.chain[self.chain_pos.min(self.chain.len() - 1)];
-                    self.chain_pos = (self.chain_pos.min(self.chain.len() - 1) + 1) % self.chain.len();
+                    self.chain_pos =
+                        (self.chain_pos.min(self.chain.len() - 1) + 1) % self.chain.len();
                     if target < self.patterns.len() {
                         self.switch_pattern(target);
                         self.current_step = self.window().0;
@@ -857,7 +1014,9 @@ impl Sequencer {
             let fired_early = self.early_fired.take() == Some(self.current_step);
             let step_active = self.patterns[pat].steps[self.current_step].active;
             if step_active && !fired_early {
-                let cond = self.patterns[pat].steps[self.current_step].condition.clone();
+                let cond = self.patterns[pat].steps[self.current_step]
+                    .condition
+                    .clone();
                 let should_fire = cond.evaluate(&self.cycle_state, &mut self.rng);
                 if should_fire {
                     let note_off = sample_offset + self.step_sample_offset(self.current_step, spb);
@@ -866,9 +1025,9 @@ impl Sequencer {
                         output.events_out.push(TimedEvent::new(
                             note_off,
                             Event::ParamLock(ParamLockEvent {
-                                node_id:  lock.node_id,
+                                node_id: lock.node_id,
                                 param_id: lock.param_id,
-                                value:    lock.value,
+                                value: lock.value,
                             }),
                         ));
                     }
@@ -878,17 +1037,27 @@ impl Sequencer {
     }
 
     fn emit_note_on_at(&mut self, step_idx: usize, sample_offset: u32, output: &mut ProcessOutput) {
-        let pat  = self.active_index();
+        let pat = self.active_index();
         let step = &self.patterns[pat].steps[step_idx];
-        self.active_note     = step.note;
-        self.gate_open       = true;
+        self.active_note = step.note;
+        self.gate_open = true;
         self.gate_ticks_left = (step.length * self.step_period as f32).max(1.0) as u32;
-        self.trig_count      = self.trig_count.wrapping_add(1);
+        self.trig_count = self.trig_count.wrapping_add(1);
         self.last_fired_step = step_idx;
-        output.emit_debug(sample_offset, DebugEventKind::StepFired, step_idx as i64, step.note as f64);
+        output.emit_debug(
+            sample_offset,
+            DebugEventKind::StepFired,
+            step_idx as i64,
+            step.note as f64,
+        );
         output.events_out.push(TimedEvent::new(
             sample_offset,
-            Event::Midi2(build_note_on(self.group, self.channel, step.note, step.velocity)),
+            Event::Midi2(build_note_on(
+                self.group,
+                self.channel,
+                step.note,
+                step.velocity,
+            )),
         ));
         // Apply per-step CV locks (sample-and-hold until next step fires).
         for &(idx, val) in &step.cv_locks {
@@ -937,11 +1106,15 @@ impl Sequencer {
 }
 
 impl Default for Sequencer {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Node for Sequencer {
-    fn ports(&self) -> &[PortDescriptor] { &self.ports }
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
 
     fn set_node_id(&mut self, id: u32) {
         self.node_id = id;
@@ -957,24 +1130,36 @@ impl Node for Sequencer {
                 ParamDescriptor {
                     id: ParamDescriptor::id_for_name("pattern_length"),
                     name: "pattern_length".into(),
-                    min: 1.0, max: 64.0, default: 16.0,
-                    stepped: true, unit: ParamUnit::Generic, display: None,
+                    min: 1.0,
+                    max: 64.0,
+                    default: 16.0,
+                    stepped: true,
+                    unit: ParamUnit::Generic,
+                    display: None,
                 },
                 ParamDescriptor {
                     id: ParamDescriptor::id_for_name("ticks_per_step"),
                     name: "ticks_per_step".into(),
-                    min: 60.0, max: 3840.0, default: 240.0,
-                    stepped: true, unit: ParamUnit::Generic, display: None,
+                    min: 60.0,
+                    max: 3840.0,
+                    default: 240.0,
+                    stepped: true,
+                    unit: ParamUnit::Generic,
+                    display: None,
                 },
                 ParamDescriptor {
                     id: ParamDescriptor::id_for_name("swing"),
                     name: "swing".into(),
-                    min: 0.0, max: 0.5, default: 0.0,
-                    stepped: false, unit: ParamUnit::Generic, display: None,
+                    min: 0.0,
+                    max: 0.5,
+                    default: 0.0,
+                    stepped: false,
+                    unit: ParamUnit::Generic,
+                    display: None,
                 },
             ],
             extensions: vec!["paraclete.sequencer".into()],
-    view: None,
+            view: None,
         }
     }
 
@@ -993,7 +1178,8 @@ impl Node for Sequencer {
         // class). `last_bank_swing` tracks the conduit (P10 C2) so this
         // re-apply is not mistaken for an encoder write in process().
         let swing = self.patterns[self.active_index()].swing;
-        self.bank.set(ParamDescriptor::id_for_name("swing"), swing as f64);
+        self.bank
+            .set(ParamDescriptor::id_for_name("swing"), swing as f64);
         self.last_bank_swing = swing;
     }
 
@@ -1039,7 +1225,6 @@ impl Node for Sequencer {
                 format!("/node/{id}/state/loop_count"),
                 format!("/node/{id}/state/fill_a"),
                 format!("/node/{id}/state/fill_b"),
-                // P10 C5 pattern-engine surface (spec 5.1).
                 format!("/node/{id}/state/active_pattern"),
                 format!("/node/{id}/state/cued_pattern"),
                 format!("/node/{id}/state/current_page"),
@@ -1048,33 +1233,94 @@ impl Node for Sequencer {
                 format!("/node/{id}/state/page_loop_end"),
                 format!("/node/{id}/state/speed_mult"),
                 format!("/node/{id}/state/chain_len"),
+                // TK1 C1 — lock state
+                format!("/node/{id}/state/lock_dropped"),
+                format!("/node/{id}/state/locks"),
             ]
         });
         let p = &self.patterns[self.active_index()];
-        buf.push((paths[0].clone(), StateBusValue::Int(self.current_step as i64)));
+        buf.push((
+            paths[0].clone(),
+            StateBusValue::Int(self.current_step as i64),
+        ));
         buf.push((paths[1].clone(), StateBusValue::Int(p.length as i64)));
         buf.push((paths[2].clone(), StateBusValue::Bool(self.playing)));
         buf.push((paths[3].clone(), StateBusValue::Text(self.steps_bitfield())));
         buf.push((paths[4].clone(), StateBusValue::Int(self.trig_count as i64)));
-        buf.push((paths[5].clone(), StateBusValue::Int(self.last_fired_step as i64)));
-        buf.push((paths[6].clone(), StateBusValue::Int(self.cycle_state.loop_count as i64)));
-        buf.push((paths[7].clone(), StateBusValue::Float(if self.cycle_state.fill_a { 1.0 } else { 0.0 })));
-        buf.push((paths[8].clone(), StateBusValue::Float(if self.cycle_state.fill_b { 1.0 } else { 0.0 })));
-        buf.push((paths[9].clone(), StateBusValue::Int(self.active_index() as i64)));
-        buf.push((paths[10].clone(), StateBusValue::Int(self.cued_pattern.map_or(-1, |c| c as i64))));
-        buf.push((paths[11].clone(), StateBusValue::Int((self.current_step / PAGE_SIZE) as i64)));
-        buf.push((paths[12].clone(), StateBusValue::Int(p.length.div_ceil(PAGE_SIZE) as i64)));
+        buf.push((
+            paths[5].clone(),
+            StateBusValue::Int(self.last_fired_step as i64),
+        ));
+        buf.push((
+            paths[6].clone(),
+            StateBusValue::Int(self.cycle_state.loop_count as i64),
+        ));
+        buf.push((
+            paths[7].clone(),
+            StateBusValue::Float(if self.cycle_state.fill_a { 1.0 } else { 0.0 }),
+        ));
+        buf.push((
+            paths[8].clone(),
+            StateBusValue::Float(if self.cycle_state.fill_b { 1.0 } else { 0.0 }),
+        ));
+        buf.push((
+            paths[9].clone(),
+            StateBusValue::Int(self.active_index() as i64),
+        ));
+        buf.push((
+            paths[10].clone(),
+            StateBusValue::Int(self.cued_pattern.map_or(-1, |c| c as i64)),
+        ));
+        buf.push((
+            paths[11].clone(),
+            StateBusValue::Int((self.current_step / PAGE_SIZE) as i64),
+        ));
+        buf.push((
+            paths[12].clone(),
+            StateBusValue::Int(p.length.div_ceil(PAGE_SIZE) as i64),
+        ));
         buf.push((paths[13].clone(), StateBusValue::Int(p.page_loop.0 as i64)));
         buf.push((paths[14].clone(), StateBusValue::Int(p.page_loop.1 as i64)));
-        buf.push((paths[15].clone(), StateBusValue::Float(self.speed_mult as f64)));
-        buf.push((paths[16].clone(), StateBusValue::Int(self.chain.len() as i64)));
+        buf.push((
+            paths[15].clone(),
+            StateBusValue::Float(self.speed_mult as f64),
+        ));
+        buf.push((
+            paths[16].clone(),
+            StateBusValue::Int(self.chain.len() as i64),
+        ));
+        // TK1 C1 — lock state
+        buf.push((
+            paths[17].clone(),
+            StateBusValue::Int(self.lock_dropped as i64),
+        ));
+        if self.locks_dirty.get() {
+            self.locks_dirty.set(false);
+            let mut s = String::new();
+            for (si, step) in p.steps.iter().enumerate() {
+                for lock in &step.param_locks {
+                    if !s.is_empty() {
+                        s.push(';');
+                    }
+                    let _ = write!(
+                        s,
+                        "s{}:{}:{}={:.6}",
+                        si, lock.node_id, lock.param_id, lock.value
+                    );
+                }
+            }
+            buf.push((paths[18].clone(), StateBusValue::Text(s)));
+        }
         // Conditional entry — not cached: caching would require a second
         // OnceLock keyed on presence-at-first-call, which is fragile if
         // track_name is set after construction but before the first publish.
         // format! here is cheap (single optional String) relative to the 17
         // unconditional entries above.
         if !self.track_name.is_empty() {
-            buf.push((format!("/node/{id}/state/track_name"), StateBusValue::Text(self.track_name.clone())));
+            buf.push((
+                format!("/node/{id}/state/track_name"),
+                StateBusValue::Text(self.track_name.clone()),
+            ));
         }
     }
 
@@ -1093,7 +1339,9 @@ impl Node for Sequencer {
         // one, and always including the active pattern — empty-but-active is
         // a legitimate state); untouched trailing bank slots are recreated at
         // load time.
-        let used = self.patterns.iter()
+        let used = self
+            .patterns
+            .iter()
             .rposition(pattern_is_used)
             .map(|i| i + 1)
             .unwrap_or(1)
@@ -1133,11 +1381,13 @@ impl Node for Sequencer {
     }
 
     fn deserialize(&mut self, data: &[u8]) {
-        if data.is_empty() { return; }
+        if data.is_empty() {
+            return;
+        }
         match data[0] {
             1 | 2 => self.deserialize_legacy(data),
-            3     => self.deserialize_v3(data),
-            _     => {}
+            3 => self.deserialize_v3(data),
+            _ => {}
         }
     }
 }
@@ -1149,35 +1399,56 @@ impl Sequencer {
         let version = data[0];
         let mut r = ByteReader::new(&data[1..]);
 
-        let Some(pattern_length) = r.u8().map(|v| v as usize) else { return };
-        let Some(ticks_per_step) = r.u32() else { return };
+        let Some(pattern_length) = r.u8().map(|v| v as usize) else {
+            return;
+        };
+        let Some(ticks_per_step) = r.u32() else {
+            return;
+        };
 
         let mut steps = Vec::with_capacity(pattern_length);
         for _ in 0..pattern_length {
-            let Some(active)     = r.u8().map(|v| v != 0) else { return };
-            let Some(note)       = r.u8() else { return };
-            let Some(velocity)   = r.u16() else { return };
-            let Some(length)     = r.f32() else { return };
-            let Some(lock_count) = r.u8().map(|v| v as usize) else { return };
-            let mut param_locks = Vec::with_capacity(lock_count);
+            let Some(active) = r.u8().map(|v| v != 0) else {
+                return;
+            };
+            let Some(note) = r.u8() else { return };
+            let Some(velocity) = r.u16() else { return };
+            let Some(length) = r.f32() else { return };
+            let Some(lock_count) = r.u8().map(|v| v as usize) else {
+                return;
+            };
+            let mut param_locks = Vec::with_capacity(lock_count.max(Self::LOCK_CAP_PER_STEP));
             for _ in 0..lock_count {
-                let Some(node_id)  = r.u32() else { return };
+                let Some(node_id) = r.u32() else { return };
                 let Some(param_id) = r.u32() else { return };
-                let Some(value)    = r.f64() else { return };
-                param_locks.push(StepParamLock { node_id, param_id, value });
+                let Some(value) = r.f64() else { return };
+                param_locks.push(StepParamLock {
+                    node_id,
+                    param_id,
+                    value,
+                });
             }
             let mut cv_locks = Vec::new();
             if version >= 2 {
-                let Some(cv_count) = r.u8().map(|v| v as usize) else { return };
+                let Some(cv_count) = r.u8().map(|v| v as usize) else {
+                    return;
+                };
                 for _ in 0..cv_count {
                     let Some(idx) = r.u16() else { return };
                     let Some(val) = r.f32() else { return };
                     cv_locks.push((idx, val));
                 }
             }
-            steps.push(Step { active, note, velocity, length, param_locks,
-                             condition: TrigCondition::default(), timing: StepTiming::default(),
-                             cv_locks });
+            steps.push(Step {
+                active,
+                note,
+                velocity,
+                length,
+                param_locks,
+                condition: TrigCondition::default(),
+                timing: StepTiming::default(),
+                cv_locks,
+            });
         }
 
         let mut pattern = self.blank_pattern(Self::STEP_CAPACITY.max(pattern_length));
@@ -1185,7 +1456,7 @@ impl Sequencer {
             pattern.steps[i] = step;
         }
         // Clamp: a zero-length pattern would divide-by-zero in playback.
-        pattern.length    = pattern_length.clamp(1, pattern.steps.len());
+        pattern.length = pattern_length.clamp(1, pattern.steps.len());
         pattern.page_loop = (0, (pattern_length.div_ceil(PAGE_SIZE).max(1) - 1) as u8);
 
         // Restore the construction-time bank size (see deserialize_v3).
@@ -1194,22 +1465,29 @@ impl Sequencer {
         while patterns.len() < bank_size {
             patterns.push(self.blank_pattern(Self::STEP_CAPACITY));
         }
-        self.patterns       = patterns;
+        self.patterns = patterns;
+        self.locks_dirty.set(true);
         self.active_pattern = 0;
-        self.cued_pattern   = None;
+        self.cued_pattern = None;
         self.chain.clear();
-        self.chain_pos      = 0;
-        self.speed_mult     = 1.0;
+        self.chain_pos = 0;
+        self.speed_mult = 1.0;
         self.ticks_per_step = ticks_per_step;
         self.reset_period();
     }
 
     fn deserialize_v3(&mut self, data: &[u8]) {
         let mut r = ByteReader::new(&data[1..]);
-        let Some(ticks_per_step) = r.u32() else { return };
-        let Some(speed_mult)     = r.f32() else { return };
-        let Some(active_pattern) = r.u16().map(|v| v as usize) else { return };
-        let Some(chain_len)      = r.u8().map(|v| v as usize) else { return };
+        let Some(ticks_per_step) = r.u32() else {
+            return;
+        };
+        let Some(speed_mult) = r.f32() else { return };
+        let Some(active_pattern) = r.u16().map(|v| v as usize) else {
+            return;
+        };
+        let Some(chain_len) = r.u8().map(|v| v as usize) else {
+            return;
+        };
         // Capacity CHAIN_CAP regardless of the loaded length (P10 C4): a
         // later CMD_CHAIN_PUSH on the audio thread must never reallocate.
         // Entries beyond the cap (foreign/corrupt blob) are dropped.
@@ -1220,7 +1498,9 @@ impl Sequencer {
                 chain.push(c as usize);
             }
         }
-        let Some(pattern_count) = r.u16().map(|v| v as usize) else { return };
+        let Some(pattern_count) = r.u16().map(|v| v as usize) else {
+            return;
+        };
         // Foreign/corrupt blobs may claim more patterns than the bank holds
         // (u16 count × 64 Steps each = unbounded memory, and every comment
         // in this file assumes the PATTERN_BANK_SIZE invariant). Read only
@@ -1231,27 +1511,43 @@ impl Sequencer {
         for _ in 0..pattern_count {
             // Pattern records are length-prefixed like step records; unknown
             // trailing bytes are future per-pattern fields — skip them.
-            let Some(record_len) = r.u32().map(|v| v as usize) else { return };
-            let Some(end) = r.cur.checked_add(record_len) else { return };
-            if end > r.data.len() { return; }
-            let Some(length)     = r.u16().map(|v| v as usize) else { return };
-            let Some(pl_start)   = r.u8() else { return };
-            let Some(pl_end)     = r.u8() else { return };
-            let Some(swing)      = r.f32() else { return };
-            let Some(step_count) = r.u16().map(|v| v as usize) else { return };
+            let Some(record_len) = r.u32().map(|v| v as usize) else {
+                return;
+            };
+            let Some(end) = r.cur.checked_add(record_len) else {
+                return;
+            };
+            if end > r.data.len() {
+                return;
+            }
+            let Some(length) = r.u16().map(|v| v as usize) else {
+                return;
+            };
+            let Some(pl_start) = r.u8() else { return };
+            let Some(pl_end) = r.u8() else { return };
+            let Some(swing) = r.f32() else { return };
+            let Some(step_count) = r.u16().map(|v| v as usize) else {
+                return;
+            };
             let mut steps = Vec::with_capacity(step_count.max(Self::STEP_CAPACITY));
             for _ in 0..step_count {
-                let Some(step) = read_step_record(&mut r) else { return };
+                let Some(step) = read_step_record(&mut r) else {
+                    return;
+                };
                 steps.push(step);
             }
-            if r.cur > end { return; }
+            if r.cur > end {
+                return;
+            }
             r.cur = end;
             // Sanitize: a pattern must hold at least one step, `length` must
             // stay within the step Vec (playback indexes `steps[..length]` on
             // the audio thread — a corrupt blob must not panic there), and
             // the runtime step capacity is restored so step editing after a
             // load behaves the same as after construction.
-            if steps.is_empty() { return; }
+            if steps.is_empty() {
+                return;
+            }
             if steps.len() < Self::STEP_CAPACITY {
                 // Padded steps carry this instance's default note (BUG-022),
                 // not the Step::empty() constant.
@@ -1269,9 +1565,16 @@ impl Sequencer {
             } else {
                 (0, pages - 1)
             };
-            patterns.push(Pattern { steps, length, page_loop, swing });
+            patterns.push(Pattern {
+                steps,
+                length,
+                page_loop,
+                swing,
+            });
         }
-        if patterns.is_empty() { return; }
+        if patterns.is_empty() {
+            return;
+        }
         // Restore the construction-time bank size: saved patterns fill the
         // low indices, untouched trailing slots are recreated empty (§1.3).
         let bank_size = self.patterns.len();
@@ -1280,12 +1583,14 @@ impl Sequencer {
         }
 
         self.ticks_per_step = ticks_per_step;
-        self.speed_mult     = speed_mult.clamp(0.125, 2.0);
+        self.speed_mult = speed_mult.clamp(0.125, 2.0);
         self.active_pattern = active_pattern.min(patterns.len() - 1);
-        self.chain          = chain;
-        self.chain_pos      = 0;
-        self.cued_pattern   = None;
-        self.patterns       = patterns;
+        self.chain = chain;
+        self.chain_pos = 0;
+        self.cued_pattern = None;
+        self.patterns = patterns;
+        // TK1 C1: loaded locks must be published on the next cycle.
+        self.locks_dirty.set(true);
         // Deterministic period machinery for the loaded speed (P10 C3).
         self.reset_period();
         // Mirror the loaded swing into the bank conduit (P10 C2: the pattern
@@ -1294,7 +1599,8 @@ impl Sequencer {
         // encoder write. No-op when deserialize runs before activate();
         // activate() then re-applies both from the pattern.
         let swing = self.patterns[self.active_index()].swing;
-        self.bank.set(ParamDescriptor::id_for_name("swing"), swing as f64);
+        self.bank
+            .set(ParamDescriptor::id_for_name("swing"), swing as f64);
         self.last_bank_swing = swing;
     }
 }
@@ -1305,13 +1611,14 @@ impl Sequencer {
 /// are dropped from the blob and recreated at load time — writing the full
 /// pre-allocated bank would bloat every project file for no benefit.
 fn pattern_is_used(p: &Pattern) -> bool {
-    p.swing != 0.0 || p.steps.iter().any(|s| {
-        s.active
-            || !s.param_locks.is_empty()
-            || !s.cv_locks.is_empty()
-            || s.timing.micro_offset != 0
-            || s.condition != TrigCondition::default()
-    })
+    p.swing != 0.0
+        || p.steps.iter().any(|s| {
+            s.active
+                || !s.param_locks.is_empty()
+                || !s.cv_locks.is_empty()
+                || s.timing.micro_offset != 0
+                || s.condition != TrigCondition::default()
+        })
 }
 
 /// The zero-sentinel (n, m) ⇄ `RepeatCondition` mapping shared by the
@@ -1326,18 +1633,18 @@ fn repeat_from_nm(n: u8, m: u8) -> RepeatCondition {
 
 fn nm_from_repeat(r: RepeatCondition) -> (u8, u8) {
     match r {
-        RepeatCondition::Always          => (0, 0),
+        RepeatCondition::Always => (0, 0),
         RepeatCondition::NthOfM { n, m } => (n, m),
     }
 }
 
 fn fill_discriminant(f: FillCondition) -> u8 {
     match f {
-        FillCondition::Ignore   => 0,
-        FillCondition::FillA    => 1,
-        FillCondition::FillB    => 2,
-        FillCondition::FillAny  => 3,
-        FillCondition::NoFill   => 4,
+        FillCondition::Ignore => 0,
+        FillCondition::FillA => 1,
+        FillCondition::FillB => 2,
+        FillCondition::FillAny => 3,
+        FillCondition::NoFill => 4,
         FillCondition::NotFillA => 5,
         FillCondition::NotFillB => 6,
     }
@@ -1366,7 +1673,11 @@ fn write_step_record(step: &Step, buf: &mut Vec<u8>) {
     buf.extend_from_slice(&step.velocity.to_le_bytes());
     buf.extend_from_slice(&step.length.to_le_bytes());
     let (probability, n, m, fill) = match &step.condition {
-        TrigCondition::Simple { repeat, fill, probability } => {
+        TrigCondition::Simple {
+            repeat,
+            fill,
+            probability,
+        } => {
             let (n, m) = nm_from_repeat(*repeat);
             (*probability, n, m, fill_discriminant(*fill))
         }
@@ -1396,24 +1707,30 @@ fn write_step_record(step: &Step, buf: &mut Vec<u8>) {
 fn read_step_record(r: &mut ByteReader) -> Option<Step> {
     let record_len = r.u16()? as usize;
     let end = r.cur.checked_add(record_len)?;
-    if end > r.data.len() { return None; }
+    if end > r.data.len() {
+        return None;
+    }
 
-    let active      = r.u8()? != 0;
-    let note        = r.u8()?;
-    let velocity    = r.u16()?;
-    let length      = r.f32()?;
+    let active = r.u8()? != 0;
+    let note = r.u8()?;
+    let velocity = r.u16()?;
+    let length = r.f32()?;
     let probability = r.u8()?;
-    let n           = r.u8()?;
-    let m           = r.u8()?;
-    let fill        = fill_from_discriminant(r.u8()?);
-    let micro       = r.u8()? as i8;
-    let pl_count    = r.u8()? as usize;
-    let mut param_locks = Vec::with_capacity(pl_count);
+    let n = r.u8()?;
+    let m = r.u8()?;
+    let fill = fill_from_discriminant(r.u8()?);
+    let micro = r.u8()? as i8;
+    let pl_count = r.u8()? as usize;
+    let mut param_locks = Vec::with_capacity(pl_count.max(Sequencer::LOCK_CAP_PER_STEP));
     for _ in 0..pl_count {
-        let node_id  = r.u32()?;
+        let node_id = r.u32()?;
         let param_id = r.u32()?;
-        let value    = r.f64()?;
-        param_locks.push(StepParamLock { node_id, param_id, value });
+        let value = r.f64()?;
+        param_locks.push(StepParamLock {
+            node_id,
+            param_id,
+            value,
+        });
     }
     let cv_count = r.u8()? as usize;
     let mut cv_locks = Vec::with_capacity(cv_count);
@@ -1424,14 +1741,26 @@ fn read_step_record(r: &mut ByteReader) -> Option<Step> {
     }
     // A record whose declared length is shorter than its own fields is
     // malformed; anything between here and `end` is a future field — skip it.
-    if r.cur > end { return None; }
+    if r.cur > end {
+        return None;
+    }
     r.cur = end;
 
     let repeat = repeat_from_nm(n, m);
     Some(Step {
-        active, note, velocity, length, param_locks,
-        condition: TrigCondition::Simple { repeat, fill, probability },
-        timing:    StepTiming { micro_offset: micro },
+        active,
+        note,
+        velocity,
+        length,
+        param_locks,
+        condition: TrigCondition::Simple {
+            repeat,
+            fill,
+            probability,
+        },
+        timing: StepTiming {
+            micro_offset: micro,
+        },
         cv_locks,
     })
 }
@@ -1439,7 +1768,7 @@ fn read_step_record(r: &mut ByteReader) -> Option<Step> {
 /// Bounds-checked little-endian reader over a serialized node blob.
 struct ByteReader<'a> {
     data: &'a [u8],
-    cur:  usize,
+    cur: usize,
 }
 
 impl<'a> ByteReader<'a> {
@@ -1478,24 +1807,43 @@ impl<'a> ByteReader<'a> {
     }
 }
 
-use crate::{build_note_on, build_note_off};
+use crate::{build_note_off, build_note_on};
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use paraclete_node_api::{
-        AudioBuffer, EventOutputBuffer, Event, TransportEvent, TransportFlags,
-        ExtendedEventSlab, TransportInfo, UmpMessage, TICKS_PER_BEAT,
-        midi::ChannelVoice2,
+        midi::ChannelVoice2, AudioBuffer, Event, EventOutputBuffer, ExtendedEventSlab,
+        TransportEvent, TransportFlags, TransportInfo, UmpMessage, TICKS_PER_BEAT,
     };
 
-    fn transport_tick(tick: u32, playing: bool, global_start: bool, global_stop: bool, sync_pulse: bool) -> TimedEvent {
-        TimedEvent::new(0, Event::Transport(TransportEvent {
-            domain_id: 0, bar: 1, beat: 0, tick,
-            ticks_per_beat: TICKS_PER_BEAT, bpm: 120.0,
-            time_sig_num: 4, time_sig_den: 4,
-            flags: TransportFlags { playing, global_start, global_stop, sync_pulse, ..TransportFlags::default() },
-        }))
+    fn transport_tick(
+        tick: u32,
+        playing: bool,
+        global_start: bool,
+        global_stop: bool,
+        sync_pulse: bool,
+    ) -> TimedEvent {
+        TimedEvent::new(
+            0,
+            Event::Transport(TransportEvent {
+                domain_id: 0,
+                bar: 1,
+                beat: 0,
+                tick,
+                ticks_per_beat: TICKS_PER_BEAT,
+                bpm: 120.0,
+                time_sig_num: 4,
+                time_sig_den: 4,
+                flags: TransportFlags {
+                    playing,
+                    global_start,
+                    global_stop,
+                    sync_pulse,
+                    ..TransportFlags::default()
+                },
+            }),
+        )
     }
 
     fn run_seq(seq: &mut Sequencer, events: &[TimedEvent]) -> Vec<Event> {
@@ -1508,14 +1856,16 @@ mod tests {
         let audio_ref: &mut AudioBuffer = unsafe { &mut *audio_ptr };
         let mut outs = [audio_ref];
         let input = ProcessInput {
-            audio_inputs: &[], signal_inputs: &[], events,
-            transport: &transport, sample_rate: 44100.0, block_size: block,
-            extended_events: &slab, commands: &[],
+            audio_inputs: &[],
+            signal_inputs: &[],
+            events,
+            transport: &transport,
+            sample_rate: 44100.0,
+            block_size: block,
+            extended_events: &slab,
+            commands: &[],
         };
-        let mut output = ProcessOutput::new(
-            &mut outs, &mut [],
-            &mut events_out,
-        );
+        let mut output = ProcessOutput::new(&mut outs, &mut [], &mut events_out);
         seq.process(&input, &mut output);
         events_out.as_slice().iter().map(|e| e.event).collect()
     }
@@ -1530,14 +1880,16 @@ mod tests {
         let audio_ref: &mut AudioBuffer = unsafe { &mut *audio_ptr };
         let mut outs = [audio_ref];
         let input = ProcessInput {
-            audio_inputs: &[], signal_inputs: &[], events: &[],
-            transport: &transport, sample_rate: 44100.0, block_size: block,
-            extended_events: &slab, commands: cmds,
+            audio_inputs: &[],
+            signal_inputs: &[],
+            events: &[],
+            transport: &transport,
+            sample_rate: 44100.0,
+            block_size: block,
+            extended_events: &slab,
+            commands: cmds,
         };
-        let mut output = ProcessOutput::new(
-            &mut outs, &mut [],
-            &mut events_out,
-        );
+        let mut output = ProcessOutput::new(&mut outs, &mut [], &mut events_out);
         seq.process(&input, &mut output);
     }
 
@@ -1546,7 +1898,9 @@ mod tests {
         let seq = Sequencer::new();
         let mut state = Vec::new();
         seq.published_state(&mut state);
-        let len = state.iter().find(|(k, _)| k.ends_with("/state/pattern_length"));
+        let len = state
+            .iter()
+            .find(|(k, _)| k.ends_with("/state/pattern_length"));
         assert!(matches!(len, Some((_, StateBusValue::Int(16)))));
     }
 
@@ -1565,7 +1919,10 @@ mod tests {
         let ticks_per_step = TICKS_PER_BEAT / 4;
         let mut all_out = run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
         for t in 1..=ticks_per_step {
-            all_out.extend(run_seq(&mut seq, &[transport_tick(t, true, false, false, false)]));
+            all_out.extend(run_seq(
+                &mut seq,
+                &[transport_tick(t, true, false, false, false)],
+            ));
         }
         let has_note_on = all_out.iter().any(|e| {
             matches!(e, Event::Midi2(ump) if matches!(ump, UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_))))
@@ -1586,9 +1943,25 @@ mod tests {
         let mut seq = Sequencer::new();
         seq.activate(44100.0, 64);
         assert!(!seq.patterns[0].steps[3].active);
-        run_seq_with_cmds(&mut seq, &[NodeCommand { target_id: 0, type_id: Sequencer::CMD_TOGGLE_STEP, arg0: 3, arg1: 0.0 }]);
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_TOGGLE_STEP,
+                arg0: 3,
+                arg1: 0.0,
+            }],
+        );
         assert!(seq.patterns[0].steps[3].active);
-        run_seq_with_cmds(&mut seq, &[NodeCommand { target_id: 0, type_id: Sequencer::CMD_TOGGLE_STEP, arg0: 3, arg1: 0.0 }]);
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_TOGGLE_STEP,
+                arg0: 3,
+                arg1: 0.0,
+            }],
+        );
         assert!(!seq.patterns[0].steps[3].active);
     }
 
@@ -1596,8 +1969,18 @@ mod tests {
     fn sequencer_cmd_clear_deactivates_all_steps() {
         let mut seq = Sequencer::new();
         seq.activate(44100.0, 64);
-        for i in 0..16 { seq.set_step(i, 60, 32768, true); }
-        run_seq_with_cmds(&mut seq, &[NodeCommand { target_id: 0, type_id: Sequencer::CMD_CLEAR, arg0: 0, arg1: 0.0 }]);
+        for i in 0..16 {
+            seq.set_step(i, 60, 32768, true);
+        }
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_CLEAR,
+                arg0: 0,
+                arg1: 0.0,
+            }],
+        );
         assert!(seq.patterns[0].steps.iter().all(|s| !s.active));
     }
 
@@ -1632,7 +2015,7 @@ mod tests {
     // Step 0 was silently skipped every bar.
     #[test]
     fn step_0_fires_on_sync_pulse_at_bar_boundary() {
-        let _tps = TICKS_PER_BEAT / 4;  // 240
+        let _tps = TICKS_PER_BEAT / 4; // 240
         let bar_ticks = (4 * TICKS_PER_BEAT) as u64; // 3840 = one 4/4 bar
 
         let mut seq = Sequencer::new();
@@ -1647,7 +2030,12 @@ mod tests {
         let mut fired_before_sync = false;
         for tick in 1u32..(bar_ticks as u32) {
             let events = run_seq(&mut seq, &[transport_tick(tick, true, false, false, false)]);
-            if events.iter().any(|e| matches!(e, Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_))))) {
+            if events.iter().any(|e| {
+                matches!(
+                    e,
+                    Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_)))
+                )
+            }) {
                 fired_before_sync = true;
             }
         }
@@ -1656,17 +2044,31 @@ mod tests {
 
         // Send a sync_pulse at the bar boundary — step 0 must fire.
         let _sync_tick = bar_ticks as u32;
-        let sync_event = TimedEvent::new(0, Event::Transport(TransportEvent {
-            domain_id: 0, bar: 2, beat: 0, tick: 0,
-            ticks_per_beat: TICKS_PER_BEAT, bpm: 140.0,
-            time_sig_num: 4, time_sig_den: 4,
-            flags: TransportFlags {
-                playing: true, sync_pulse: true, ..TransportFlags::default()
-            },
-        }));
+        let sync_event = TimedEvent::new(
+            0,
+            Event::Transport(TransportEvent {
+                domain_id: 0,
+                bar: 2,
+                beat: 0,
+                tick: 0,
+                ticks_per_beat: TICKS_PER_BEAT,
+                bpm: 140.0,
+                time_sig_num: 4,
+                time_sig_den: 4,
+                flags: TransportFlags {
+                    playing: true,
+                    sync_pulse: true,
+                    ..TransportFlags::default()
+                },
+            }),
+        );
         let sync_events = run_seq(&mut seq, &[sync_event]);
-        let fired_at_sync = sync_events.iter().any(|e|
-            matches!(e, Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_)))));
+        let fired_at_sync = sync_events.iter().any(|e| {
+            matches!(
+                e,
+                Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_)))
+            )
+        });
 
         assert!(fired_at_sync || fired_before_sync,
             "step 0 must fire: either via normal boundary before sync or via sync_pulse at bar boundary");
@@ -1679,9 +2081,25 @@ mod tests {
         let mut seq = Sequencer::new();
         seq.activate(44100.0, 64);
         assert!(!seq.cycle_state.fill_a);
-        run_seq_with_cmds(&mut seq, &[NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_FILL_A, arg0: 1, arg1: 0.0 }]);
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_SET_FILL_A,
+                arg0: 1,
+                arg1: 0.0,
+            }],
+        );
         assert!(seq.cycle_state.fill_a);
-        run_seq_with_cmds(&mut seq, &[NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_FILL_A, arg0: 0, arg1: 0.0 }]);
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_SET_FILL_A,
+                arg0: 0,
+                arg1: 0.0,
+            }],
+        );
         assert!(!seq.cycle_state.fill_a);
     }
 
@@ -1689,7 +2107,15 @@ mod tests {
     fn sequencer_cmd_set_fill_b_updates_cycle_state() {
         let mut seq = Sequencer::new();
         seq.activate(44100.0, 64);
-        run_seq_with_cmds(&mut seq, &[NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_FILL_B, arg0: 1, arg1: 0.0 }]);
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_SET_FILL_B,
+                arg0: 1,
+                arg1: 0.0,
+            }],
+        );
         assert!(seq.cycle_state.fill_b);
     }
 
@@ -1697,7 +2123,15 @@ mod tests {
     fn sequencer_cmd_set_step_timing_updates_micro_offset() {
         let mut seq = Sequencer::new();
         seq.activate(44100.0, 64);
-        run_seq_with_cmds(&mut seq, &[NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_STEP_TIMING, arg0: 3, arg1: 12.0 }]);
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_SET_STEP_TIMING,
+                arg0: 3,
+                arg1: 12.0,
+            }],
+        );
         assert_eq!(seq.patterns[0].steps[3].timing.micro_offset, 12i8);
     }
 
@@ -1707,19 +2141,38 @@ mod tests {
         seq.activate(44100.0, 64);
         // probability=75, repeat_n=1, repeat_m=2, fill=Ignore(0)
         let enc: i64 = 75 | (1 << 8) | (2 << 16);
-        run_seq_with_cmds(&mut seq, &[NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_STEP_CONDITION, arg0: 5, arg1: enc as f64 }]);
-        assert!(matches!(&seq.patterns[0].steps[5].condition, TrigCondition::Simple {
-            repeat: RepeatCondition::NthOfM { n: 1, m: 2 },
-            fill:   FillCondition::Ignore,
-            probability: 75,
-        }));
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_SET_STEP_CONDITION,
+                arg0: 5,
+                arg1: enc as f64,
+            }],
+        );
+        assert!(matches!(
+            &seq.patterns[0].steps[5].condition,
+            TrigCondition::Simple {
+                repeat: RepeatCondition::NthOfM { n: 1, m: 2 },
+                fill: FillCondition::Ignore,
+                probability: 75,
+            }
+        ));
     }
 
     #[test]
     fn sequencer_cmd_set_pattern_is_stubbed() {
         let mut seq = Sequencer::new();
         seq.activate(44100.0, 64);
-        run_seq_with_cmds(&mut seq, &[NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_PATTERN, arg0: 3, arg1: 0.0 }]);
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_SET_PATTERN,
+                arg0: 3,
+                arg1: 0.0,
+            }],
+        );
         assert_eq!(seq.active_pattern, 3); // stored but has no playback effect
     }
 
@@ -1736,7 +2189,10 @@ mod tests {
         seq.activate(44100.0, 64);
         seq.set_step(0, 60, 32768, true);
         let out = run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
-        assert!(contains_note_on(&out), "step 0 must fire on the global_start event (BUG-001 fix)");
+        assert!(
+            contains_note_on(&out),
+            "step 0 must fire on the global_start event (BUG-001 fix)"
+        );
     }
 
     #[test]
@@ -1758,9 +2214,17 @@ mod tests {
                 fire_ticks.push(t);
             }
         }
-        assert!(fire_ticks.len() >= 4, "expected >=4 fires, got {:?}", fire_ticks);
+        assert!(
+            fire_ticks.len() >= 4,
+            "expected >=4 fires, got {:?}",
+            fire_ticks
+        );
         for w in fire_ticks.windows(2) {
-            assert_eq!(w[1] - w[0], tps, "step period must be exactly {tps} ticks, fires: {fire_ticks:?}");
+            assert_eq!(
+                w[1] - w[0],
+                tps,
+                "step period must be exactly {tps} ticks, fires: {fire_ticks:?}"
+            );
         }
     }
 
@@ -1768,8 +2232,8 @@ mod tests {
     fn sequencer_loop_count_increments_on_pattern_wrap() {
         let mut seq = Sequencer::new();
         seq.activate(44100.0, 64);
-        let tps = TICKS_PER_BEAT / 4;  // 240 ticks per step
-        // BUG-001 fixed (P10 C0): each step takes exactly tps ticks.
+        let tps = TICKS_PER_BEAT / 4; // 240 ticks per step
+                                      // BUG-001 fixed (P10 C0): each step takes exactly tps ticks.
         let wrap_tick = 16 * tps;
 
         run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
@@ -1778,7 +2242,10 @@ mod tests {
         for t in 1..=wrap_tick {
             run_seq(&mut seq, &[transport_tick(t, true, false, false, false)]);
         }
-        assert_eq!(seq.cycle_state.loop_count, 1, "loop_count must increment after one full pattern");
+        assert_eq!(
+            seq.cycle_state.loop_count, 1,
+            "loop_count must increment after one full pattern"
+        );
     }
 
     #[test]
@@ -1807,7 +2274,10 @@ mod tests {
         let doc = seq.capability_document();
         let swing_id = ParamDescriptor::id_for_name("swing");
         let swing = doc.params.iter().find(|p| p.id == swing_id);
-        assert!(swing.is_some(), "swing param must be declared in capability_document");
+        assert!(
+            swing.is_some(),
+            "swing param must be declared in capability_document"
+        );
         assert_eq!(swing.unwrap().default, 0.0);
         assert_eq!(swing.unwrap().max, 0.5);
     }
@@ -1818,8 +2288,11 @@ mod tests {
         seq.activate(44100.0, 64);
         seq.swing_amount = 0.25;
         let spb = 60.0 * 44100.0f64 / 140.0;
-        assert_eq!(seq.step_sample_offset(0, spb), 0,  "even step: no swing");
-        assert!(seq.step_sample_offset(1, spb) > 0,    "odd step: swing pushes forward");
+        assert_eq!(seq.step_sample_offset(0, spb), 0, "even step: no swing");
+        assert!(
+            seq.step_sample_offset(1, spb) > 0,
+            "odd step: swing pushes forward"
+        );
     }
 
     #[test]
@@ -1829,8 +2302,8 @@ mod tests {
         // Step 1 fires only when fill A is active
         seq.patterns[0].steps[1].active = true;
         seq.patterns[0].steps[1].condition = TrigCondition::Simple {
-            repeat:      RepeatCondition::Always,
-            fill:        FillCondition::FillA,
+            repeat: RepeatCondition::Always,
+            fill: FillCondition::FillA,
             probability: 100,
         };
         seq.cycle_state.fill_a = false;
@@ -1841,11 +2314,19 @@ mod tests {
         let mut fired = false;
         for t in 1..=tps {
             let events = run_seq(&mut seq, &[transport_tick(t, true, false, false, false)]);
-            if events.iter().any(|e| matches!(e, Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_))))) {
+            if events.iter().any(|e| {
+                matches!(
+                    e,
+                    Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_)))
+                )
+            }) {
                 fired = true;
             }
         }
-        assert!(!fired, "step with FillA condition must not fire when fill_a is false");
+        assert!(
+            !fired,
+            "step with FillA condition must not fire when fill_a is false"
+        );
     }
 
     #[test]
@@ -1866,14 +2347,17 @@ mod tests {
         let cond = TrigCondition::default();
         let state = SequencerCycleState::default();
         let mut rng = fastrand::Rng::with_seed(0);
-        assert!(cond.evaluate(&state, &mut rng), "default condition must always fire");
+        assert!(
+            cond.evaluate(&state, &mut rng),
+            "default condition must always fire"
+        );
     }
 
     #[test]
     fn trig_condition_probability_zero_never_fires() {
         let cond = TrigCondition::Simple {
             repeat: RepeatCondition::Always,
-            fill:   FillCondition::Ignore,
+            fill: FillCondition::Ignore,
             probability: 0,
         };
         let state = SequencerCycleState::default();
@@ -1887,7 +2371,7 @@ mod tests {
     fn trig_condition_probability_100_always_fires() {
         let cond = TrigCondition::Simple {
             repeat: RepeatCondition::Always,
-            fill:   FillCondition::Ignore,
+            fill: FillCondition::Ignore,
             probability: 100,
         };
         let state = SequencerCycleState::default();
@@ -1901,15 +2385,21 @@ mod tests {
     fn trig_condition_nth_of_m_fires_on_correct_loop() {
         let cond = TrigCondition::Simple {
             repeat: RepeatCondition::NthOfM { n: 1, m: 2 },
-            fill:   FillCondition::Ignore,
+            fill: FillCondition::Ignore,
             probability: 100,
         };
         let mut rng = fastrand::Rng::with_seed(0);
         // loop_count=0 → n=1, 0%2==0 == (1-1)=0 → fires
-        let state0 = SequencerCycleState { loop_count: 0, ..Default::default() };
+        let state0 = SequencerCycleState {
+            loop_count: 0,
+            ..Default::default()
+        };
         assert!(cond.evaluate(&state0, &mut rng));
         // loop_count=1 → 1%2==1 ≠ 0 → does not fire
-        let state1 = SequencerCycleState { loop_count: 1, ..Default::default() };
+        let state1 = SequencerCycleState {
+            loop_count: 1,
+            ..Default::default()
+        };
         assert!(!cond.evaluate(&state1, &mut rng));
     }
 
@@ -1917,12 +2407,18 @@ mod tests {
     fn trig_condition_fill_a_only_fires_when_fill_a_active() {
         let cond = TrigCondition::Simple {
             repeat: RepeatCondition::Always,
-            fill:   FillCondition::FillA,
+            fill: FillCondition::FillA,
             probability: 100,
         };
         let mut rng = fastrand::Rng::with_seed(0);
-        let fill_on  = SequencerCycleState { fill_a: true,  ..Default::default() };
-        let fill_off = SequencerCycleState { fill_a: false, ..Default::default() };
+        let fill_on = SequencerCycleState {
+            fill_a: true,
+            ..Default::default()
+        };
+        let fill_off = SequencerCycleState {
+            fill_a: false,
+            ..Default::default()
+        };
         assert!(cond.evaluate(&fill_on, &mut rng));
         assert!(!cond.evaluate(&fill_off, &mut rng));
     }
@@ -1931,12 +2427,20 @@ mod tests {
     fn trig_condition_no_fill_fires_when_neither_fill_active() {
         let cond = TrigCondition::Simple {
             repeat: RepeatCondition::Always,
-            fill:   FillCondition::NoFill,
+            fill: FillCondition::NoFill,
             probability: 100,
         };
         let mut rng = fastrand::Rng::with_seed(0);
-        let no_fill   = SequencerCycleState { fill_a: false, fill_b: false, ..Default::default() };
-        let fill_a_on = SequencerCycleState { fill_a: true,  fill_b: false, ..Default::default() };
+        let no_fill = SequencerCycleState {
+            fill_a: false,
+            fill_b: false,
+            ..Default::default()
+        };
+        let fill_a_on = SequencerCycleState {
+            fill_a: true,
+            fill_b: false,
+            ..Default::default()
+        };
         assert!(cond.evaluate(&no_fill, &mut rng));
         assert!(!cond.evaluate(&fill_a_on, &mut rng));
     }
@@ -1957,11 +2461,14 @@ mod tests {
     #[test]
     fn step_empty_has_default_condition_and_timing() {
         let step = Step::empty();
-        assert!(matches!(step.condition, TrigCondition::Simple {
-            repeat: RepeatCondition::Always,
-            fill:   FillCondition::Ignore,
-            probability: 100,
-        }));
+        assert!(matches!(
+            step.condition,
+            TrigCondition::Simple {
+                repeat: RepeatCondition::Always,
+                fill: FillCondition::Ignore,
+                probability: 100,
+            }
+        ));
         assert_eq!(step.timing.micro_offset, 0);
     }
 
@@ -1989,15 +2496,16 @@ mod tests {
         let mut sig_outs = [cv_slot];
 
         let input = ProcessInput {
-            audio_inputs: &[], signal_inputs: &[], events,
-            transport: &transport, sample_rate: 44100.0, block_size: block,
-            extended_events: &slab, commands: &[],
+            audio_inputs: &[],
+            signal_inputs: &[],
+            events,
+            transport: &transport,
+            sample_rate: 44100.0,
+            block_size: block,
+            extended_events: &slab,
+            commands: &[],
         };
-        let mut output = ProcessOutput::new(
-            &mut outs,
-            &mut sig_outs,
-            &mut events_out,
-        );
+        let mut output = ProcessOutput::new(&mut outs, &mut sig_outs, &mut events_out);
         seq.process(&input, &mut output);
         cv_buf
     }
@@ -2007,9 +2515,18 @@ mod tests {
         let seq = Sequencer::with_cv_outputs(2);
         let ports = seq.ports();
         let names: Vec<&str> = ports.iter().map(|p| p.name.as_str()).collect();
-        assert!(names.contains(&"cv_out_0"), "missing cv_out_0 in {:?}", names);
-        assert!(names.contains(&"cv_out_1"), "missing cv_out_1 in {:?}", names);
-        let cv_ports: Vec<_> = ports.iter()
+        assert!(
+            names.contains(&"cv_out_0"),
+            "missing cv_out_0 in {:?}",
+            names
+        );
+        assert!(
+            names.contains(&"cv_out_1"),
+            "missing cv_out_1 in {:?}",
+            names
+        );
+        let cv_ports: Vec<_> = ports
+            .iter()
             .filter(|p| p.port_type == PortType::Cv && p.direction == PortDirection::Output)
             .collect();
         assert_eq!(cv_ports.len(), 2, "expected 2 CvSignal Output ports");
@@ -2018,10 +2535,15 @@ mod tests {
     #[test]
     fn sequencer_no_cv_no_extra_ports() {
         let seq = Sequencer::new();
-        let cv_ports: Vec<_> = seq.ports().iter()
+        let cv_ports: Vec<_> = seq
+            .ports()
+            .iter()
             .filter(|p| p.port_type == PortType::Cv && p.direction == PortDirection::Output)
             .collect();
-        assert!(cv_ports.is_empty(), "Sequencer::new() must have no CvSignal Output ports");
+        assert!(
+            cv_ports.is_empty(),
+            "Sequencer::new() must have no CvSignal Output ports"
+        );
     }
 
     #[test]
@@ -2031,7 +2553,11 @@ mod tests {
         // No step fires — initial hold value must be 0.0.
         let cv_port_id = Sequencer::PORT_CV_OUT_BASE;
         let out = run_seq_with_cv(&mut seq, &[], cv_port_id, 256);
-        assert!(out.iter().all(|&v| v == 0.0), "CV output must be all zeros initially: {:?}", &out[..4]);
+        assert!(
+            out.iter().all(|&v| v == 0.0),
+            "CV output must be all zeros initially: {:?}",
+            &out[..4]
+        );
     }
 
     #[test]
@@ -2046,12 +2572,22 @@ mod tests {
         let cv_port_id = Sequencer::PORT_CV_OUT_BASE;
 
         // global_start: current_step=0, step_tick=0→1
-        let _ = run_seq_with_cv(&mut seq, &[transport_tick(0, true, true, false, false)], cv_port_id, 64);
+        let _ = run_seq_with_cv(
+            &mut seq,
+            &[transport_tick(0, true, true, false, false)],
+            cv_port_id,
+            64,
+        );
 
         // Advance tps ticks: at t=tps the boundary fires and step 1 triggers.
         let mut cv_after_fire = vec![0.0f32; 64];
         for t in 1..=tps {
-            cv_after_fire = run_seq_with_cv(&mut seq, &[transport_tick(t, true, false, false, false)], cv_port_id, 64);
+            cv_after_fire = run_seq_with_cv(
+                &mut seq,
+                &[transport_tick(t, true, false, false, false)],
+                cv_port_id,
+                64,
+            );
         }
         assert!(
             cv_after_fire.iter().any(|&v| (v - 0.75).abs() < 1e-6),
@@ -2073,12 +2609,22 @@ mod tests {
         let cv_port_id = Sequencer::PORT_CV_OUT_BASE;
 
         // global_start
-        let _ = run_seq_with_cv(&mut seq, &[transport_tick(0, true, true, false, false)], cv_port_id, 64);
+        let _ = run_seq_with_cv(
+            &mut seq,
+            &[transport_tick(0, true, true, false, false)],
+            cv_port_id,
+            64,
+        );
 
         // Advance 2*tps ticks: step 1 fires at tps, step 2 fires at 2*tps.
         let mut after_step2 = vec![0.0f32; 64];
         for t in 1..=(2 * tps) {
-            let out = run_seq_with_cv(&mut seq, &[transport_tick(t, true, false, false, false)], cv_port_id, 64);
+            let out = run_seq_with_cv(
+                &mut seq,
+                &[transport_tick(t, true, false, false, false)],
+                cv_port_id,
+                64,
+            );
             if t == 2 * tps {
                 after_step2 = out;
             }
@@ -2101,10 +2647,20 @@ mod tests {
         let tps = TICKS_PER_BEAT / 4;
         let cv_port_id = Sequencer::PORT_CV_OUT_BASE;
 
-        let _ = run_seq_with_cv(&mut seq, &[transport_tick(0, true, true, false, false)], cv_port_id, 64);
+        let _ = run_seq_with_cv(
+            &mut seq,
+            &[transport_tick(0, true, true, false, false)],
+            cv_port_id,
+            64,
+        );
         let mut final_out = vec![0.0f32; 64];
         for t in 1..=tps {
-            final_out = run_seq_with_cv(&mut seq, &[transport_tick(t, true, false, false, false)], cv_port_id, 64);
+            final_out = run_seq_with_cv(
+                &mut seq,
+                &[transport_tick(t, true, false, false, false)],
+                cv_port_id,
+                64,
+            );
         }
         // cv_out_0 must remain 0.0 — out-of-range index is silently ignored.
         assert!(
@@ -2129,11 +2685,20 @@ mod tests {
         seq2.activate(44100.0, 64);
         seq2.deserialize(&data);
 
-        assert_eq!(seq2.patterns[0].steps[0].cv_locks, vec![(0u16, 0.3f32), (1u16, 0.7f32)],
-            "step 0 cv_locks mismatch after roundtrip");
-        assert_eq!(seq2.patterns[0].steps[3].cv_locks, vec![(0u16, 1.0f32)],
-            "step 3 cv_locks mismatch after roundtrip");
-        assert!(seq2.patterns[0].steps[1].cv_locks.is_empty(), "step 1 cv_locks must be empty");
+        assert_eq!(
+            seq2.patterns[0].steps[0].cv_locks,
+            vec![(0u16, 0.3f32), (1u16, 0.7f32)],
+            "step 0 cv_locks mismatch after roundtrip"
+        );
+        assert_eq!(
+            seq2.patterns[0].steps[3].cv_locks,
+            vec![(0u16, 1.0f32)],
+            "step 3 cv_locks mismatch after roundtrip"
+        );
+        assert!(
+            seq2.patterns[0].steps[1].cv_locks.is_empty(),
+            "step 1 cv_locks must be empty"
+        );
     }
 
     // ── P10 C1: Pattern + serializer v3 tests ─────────────────────────────────
@@ -2143,19 +2708,24 @@ mod tests {
         let mut seq = Sequencer::new();
         seq.patterns[0].steps[5].active = true;
         seq.patterns[0].steps[5].condition = TrigCondition::Simple {
-            repeat:      RepeatCondition::NthOfM { n: 2, m: 4 },
-            fill:        FillCondition::NotFillB,
+            repeat: RepeatCondition::NthOfM { n: 2, m: 4 },
+            fill: FillCondition::NotFillB,
             probability: 42,
         };
         let data = seq.serialize();
         let mut restored = Sequencer::new();
         restored.deserialize(&data);
-        assert!(matches!(&restored.patterns[0].steps[5].condition,
-            TrigCondition::Simple {
-                repeat: RepeatCondition::NthOfM { n: 2, m: 4 },
-                fill:   FillCondition::NotFillB,
-                probability: 42,
-            }), "TrigCondition must survive a v3 roundtrip (BUG-005)");
+        assert!(
+            matches!(
+                &restored.patterns[0].steps[5].condition,
+                TrigCondition::Simple {
+                    repeat: RepeatCondition::NthOfM { n: 2, m: 4 },
+                    fill: FillCondition::NotFillB,
+                    probability: 42,
+                }
+            ),
+            "TrigCondition must survive a v3 roundtrip (BUG-005)"
+        );
     }
 
     #[test]
@@ -2166,8 +2736,10 @@ mod tests {
         let data = seq.serialize();
         let mut restored = Sequencer::new();
         restored.deserialize(&data);
-        assert_eq!(restored.patterns[0].steps[7].timing.micro_offset, -12,
-            "StepTiming micro_offset must survive a v3 roundtrip (BUG-005)");
+        assert_eq!(
+            restored.patterns[0].steps[7].timing.micro_offset, -12,
+            "StepTiming micro_offset must survive a v3 roundtrip (BUG-005)"
+        );
     }
 
     #[test]
@@ -2175,21 +2747,28 @@ mod tests {
         let mut seq = Sequencer::new();
         seq.activate(44100.0, 64);
         // Set swing the way an encoder does: CMD_SET_PARAM through process().
-        run_seq_with_cmds(&mut seq, &[NodeCommand {
-            target_id: 0,
-            type_id:   paraclete_node_api::CMD_SET_PARAM,
-            arg0:      ParamDescriptor::id_for_name("swing") as i64,
-            arg1:      0.3,
-        }]);
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: paraclete_node_api::CMD_SET_PARAM,
+                arg0: ParamDescriptor::id_for_name("swing") as i64,
+                arg1: 0.3,
+            }],
+        );
         let data = seq.serialize();
         let mut restored = Sequencer::new();
         restored.activate(44100.0, 64);
         restored.deserialize(&data);
-        assert!((restored.patterns[0].swing - 0.3).abs() < 1e-6,
-            "pattern swing must survive a v3 roundtrip (BUG-005)");
+        assert!(
+            (restored.patterns[0].swing - 0.3).abs() < 1e-6,
+            "pattern swing must survive a v3 roundtrip (BUG-005)"
+        );
         let bank_swing = restored.bank.get(ParamDescriptor::id_for_name("swing"));
-        assert!((bank_swing - 0.3).abs() < 1e-6,
-            "loaded swing must be re-applied to the bank (emission source until C2)");
+        assert!(
+            (bank_swing - 0.3).abs() < 1e-6,
+            "loaded swing must be re-applied to the bank (emission source until C2)"
+        );
     }
 
     #[test]
@@ -2200,35 +2779,43 @@ mod tests {
         let data = seq.serialize();
         let mut restored = Sequencer::with_cv_outputs(2);
         restored.deserialize(&data);
-        assert_eq!(restored.patterns[0].steps[2].cv_locks,
+        assert_eq!(
+            restored.patterns[0].steps[2].cv_locks,
             vec![(0u16, 0.25f32), (1u16, 0.9f32)],
-            "cv_locks must survive a v3 roundtrip (v2 regression guard)");
+            "cv_locks must survive a v3 roundtrip (v2 regression guard)"
+        );
     }
 
     #[test]
     fn deserialize_v2_into_single_pattern() {
         // Hand-built v2 blob matching the P9 writer: 16 steps, step 3 active.
         let mut blob = Vec::new();
-        blob.push(2u8);   // version
-        blob.push(16u8);  // pattern_length
+        blob.push(2u8); // version
+        blob.push(16u8); // pattern_length
         blob.extend_from_slice(&240u32.to_le_bytes()); // ticks_per_step
         for i in 0..16u8 {
-            blob.push((i == 3) as u8);                       // active
-            blob.push(if i == 3 { 72 } else { 60 });          // note
+            blob.push((i == 3) as u8); // active
+            blob.push(if i == 3 { 72 } else { 60 }); // note
             blob.extend_from_slice(&32768u16.to_le_bytes()); // velocity
-            blob.extend_from_slice(&0.75f32.to_le_bytes());  // length
-            blob.push(0);                                     // param_locks
-            blob.push(0);                                     // cv_locks
+            blob.extend_from_slice(&0.75f32.to_le_bytes()); // length
+            blob.push(0); // param_locks
+            blob.push(0); // cv_locks
         }
         let mut seq = Sequencer::new();
         seq.deserialize(&blob);
         // C4: the bank is restored to PATTERN_BANK_SIZE on load; the legacy
         // single pattern fills index 0 and the rest are empty (spec 1.3).
         assert_eq!(seq.patterns.len(), Sequencer::PATTERN_BANK_SIZE);
-        assert!(seq.patterns[1..].iter().all(|p| !pattern_is_used(p)),
-            "v2 blob fills only pattern 0");
+        assert!(
+            seq.patterns[1..].iter().all(|p| !pattern_is_used(p)),
+            "v2 blob fills only pattern 0"
+        );
         assert_eq!(seq.patterns[0].length, 16);
-        assert_eq!(seq.patterns[0].page_loop, (0, 1), "page_loop must span the loaded length");
+        assert_eq!(
+            seq.patterns[0].page_loop,
+            (0, 1),
+            "page_loop must span the loaded length"
+        );
         assert!(seq.patterns[0].steps[3].active);
         assert_eq!(seq.patterns[0].steps[3].note, 72);
         assert_eq!(seq.speed_mult, 1.0);
@@ -2248,17 +2835,25 @@ mod tests {
         }
         let tps = TICKS_PER_BEAT / 4;
         let mut fire_ticks = Vec::new();
-        if contains_note_on(&run_seq(&mut seq, &[transport_tick(0, true, true, false, false)])) {
+        if contains_note_on(&run_seq(
+            &mut seq,
+            &[transport_tick(0, true, true, false, false)],
+        )) {
             fire_ticks.push(0);
         }
         for t in 1..=(32 * tps) {
-            if contains_note_on(&run_seq(&mut seq, &[transport_tick(t, true, false, false, false)])) {
+            if contains_note_on(&run_seq(
+                &mut seq,
+                &[transport_tick(t, true, false, false, false)],
+            )) {
                 fire_ticks.push(t);
             }
         }
         let expected: Vec<u32> = (0..=8).map(|i| i * 4 * tps).collect();
-        assert_eq!(fire_ticks, expected,
-            "step-fire tick sequence must be identical to P9");
+        assert_eq!(
+            fire_ticks, expected,
+            "step-fire tick sequence must be identical to P9"
+        );
     }
 
     #[test]
@@ -2290,8 +2885,10 @@ mod tests {
         restored.deserialize(&blob);
         assert!(restored.patterns[0].steps[0].active);
         assert_eq!(restored.patterns[0].steps[0].note, 61);
-        assert!(restored.patterns[0].steps[1].active,
-            "step 1 must parse correctly after skipped unknown bytes");
+        assert!(
+            restored.patterns[0].steps[1].active,
+            "step 1 must parse correctly after skipped unknown bytes"
+        );
         assert_eq!(restored.patterns[0].steps[1].note, 62);
     }
 
@@ -2320,9 +2917,9 @@ mod tests {
         let mut blob = vec![3u8];
         blob.extend_from_slice(&240u32.to_le_bytes()); // ticks_per_step
         blob.extend_from_slice(&1.0f32.to_le_bytes()); // speed_mult
-        blob.extend_from_slice(&0u16.to_le_bytes());   // active_pattern
-        blob.push(0);                                   // chain_len
-        blob.extend_from_slice(&1u16.to_le_bytes());   // pattern_count
+        blob.extend_from_slice(&0u16.to_le_bytes()); // active_pattern
+        blob.push(0); // chain_len
+        blob.extend_from_slice(&1u16.to_le_bytes()); // pattern_count
         let mut body = Vec::new();
         body.extend_from_slice(&length.to_le_bytes());
         body.push(0);
@@ -2344,7 +2941,10 @@ mod tests {
         let mut seq = Sequencer::new();
         seq.set_step(3, 72, 32768, true);
         seq.deserialize(&v3_blob(16, &[]));
-        assert!(seq.patterns[0].steps[3].active, "prior state must be retained");
+        assert!(
+            seq.patterns[0].steps[3].active,
+            "prior state must be retained"
+        );
         assert_eq!(seq.patterns[0].length, 16);
     }
 
@@ -2357,9 +2957,12 @@ mod tests {
         let steps = vec![s, Step::empty()];
         let mut seq = Sequencer::new();
         seq.deserialize(&v3_blob(100, &steps));
-        assert!(seq.patterns[0].length <= seq.patterns[0].steps.len(),
+        assert!(
+            seq.patterns[0].length <= seq.patterns[0].steps.len(),
             "length {} must be clamped within steps {}",
-            seq.patterns[0].length, seq.patterns[0].steps.len());
+            seq.patterns[0].length,
+            seq.patterns[0].steps.len()
+        );
     }
 
     #[test]
@@ -2388,27 +2991,30 @@ mod tests {
         let mut s = Step::empty();
         s.active = true;
         let mut blob = vec![3u8];
-        blob.extend_from_slice(&240u32.to_le_bytes());  // ticks_per_step
-        blob.extend_from_slice(&1.0f32.to_le_bytes());  // speed_mult
-        blob.extend_from_slice(&999u16.to_le_bytes());  // active_pattern: way out of range
-        blob.push(0);                                    // chain_len
-        blob.extend_from_slice(&2u16.to_le_bytes());    // pattern_count = 2
+        blob.extend_from_slice(&240u32.to_le_bytes()); // ticks_per_step
+        blob.extend_from_slice(&1.0f32.to_le_bytes()); // speed_mult
+        blob.extend_from_slice(&999u16.to_le_bytes()); // active_pattern: way out of range
+        blob.push(0); // chain_len
+        blob.extend_from_slice(&2u16.to_le_bytes()); // pattern_count = 2
         for _ in 0..2 {
             let mut body = Vec::new();
             body.extend_from_slice(&1u16.to_le_bytes()); // length
-            body.push(0);                                 // page_loop start
-            body.push(0);                                 // page_loop end
+            body.push(0); // page_loop start
+            body.push(0); // page_loop end
             body.extend_from_slice(&0.0f32.to_le_bytes()); // swing
-            body.extend_from_slice(&1u16.to_le_bytes());  // step_count
+            body.extend_from_slice(&1u16.to_le_bytes()); // step_count
             write_step_record(&s, &mut body);
             blob.extend_from_slice(&(body.len() as u32).to_le_bytes());
             blob.extend_from_slice(&body);
         }
         let mut seq = Sequencer::new();
         seq.deserialize(&blob);
-        assert!(seq.active_pattern < seq.patterns.len(),
+        assert!(
+            seq.active_pattern < seq.patterns.len(),
             "active_pattern {} must be clamped inside the bank of {}",
-            seq.active_pattern, seq.patterns.len());
+            seq.active_pattern,
+            seq.patterns.len()
+        );
         // Playback index paths must not panic on the loaded state.
         let _ = seq.window();
     }
@@ -2419,16 +3025,22 @@ mod tests {
     #[test]
     fn deserialize_v3_zero_pattern_count_keeps_existing_state() {
         let mut blob = vec![3u8];
-        blob.extend_from_slice(&240u32.to_le_bytes());  // ticks_per_step
-        blob.extend_from_slice(&1.0f32.to_le_bytes());  // speed_mult
-        blob.extend_from_slice(&0u16.to_le_bytes());    // active_pattern
-        blob.push(0);                                    // chain_len
-        blob.extend_from_slice(&0u16.to_le_bytes());    // pattern_count = 0
+        blob.extend_from_slice(&240u32.to_le_bytes()); // ticks_per_step
+        blob.extend_from_slice(&1.0f32.to_le_bytes()); // speed_mult
+        blob.extend_from_slice(&0u16.to_le_bytes()); // active_pattern
+        blob.push(0); // chain_len
+        blob.extend_from_slice(&0u16.to_le_bytes()); // pattern_count = 0
         let mut seq = Sequencer::new();
         seq.set_step(3, 72, 32768, true);
         seq.deserialize(&blob);
-        assert!(!seq.patterns.is_empty(), "patterns bank must never be empty");
-        assert!(seq.patterns[0].steps[3].active, "prior state must be retained");
+        assert!(
+            !seq.patterns.is_empty(),
+            "patterns bank must never be empty"
+        );
+        assert!(
+            seq.patterns[0].steps[3].active,
+            "prior state must be retained"
+        );
     }
 
     #[test]
@@ -2447,7 +3059,10 @@ mod tests {
         assert_eq!(restored.active_pattern, 5, "valid index round-trips");
 
         run_seq_with_cmds(&mut seq, &[set_pattern_cmd(99)]);
-        assert_eq!(seq.active_pattern, 5, "out-of-bank index is rejected, not stored");
+        assert_eq!(
+            seq.active_pattern, 5,
+            "out-of-bank index is rejected, not stored"
+        );
     }
 
     #[test]
@@ -2457,14 +3072,20 @@ mod tests {
         let mut p = Pattern::empty(64);
         assert!(!pattern_is_used(&p));
         p.steps[5].timing.micro_offset = 12;
-        assert!(pattern_is_used(&p), "micro-timing-only step must count as used");
+        assert!(
+            pattern_is_used(&p),
+            "micro-timing-only step must count as used"
+        );
         let mut q = Pattern::empty(64);
         q.steps[2].condition = TrigCondition::Simple {
             repeat: RepeatCondition::Always,
-            fill:   FillCondition::FillA,
+            fill: FillCondition::FillA,
             probability: 100,
         };
-        assert!(pattern_is_used(&q), "condition-only step must count as used");
+        assert!(
+            pattern_is_used(&q),
+            "condition-only step must count as used"
+        );
     }
 
     #[test]
@@ -2475,12 +3096,27 @@ mod tests {
         // but the per-command resolution is what C4's bank relies on).
         let mut seq = Sequencer::new();
         seq.activate(44100.0, 64);
-        run_seq_with_cmds(&mut seq, &[
-            NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_PATTERN, arg0: 0, arg1: 0.0 },
-            NodeCommand { target_id: 0, type_id: Sequencer::CMD_TOGGLE_STEP, arg0: 7, arg1: 0.0 },
-        ]);
-        assert!(seq.patterns[0].steps[7].active,
-            "step edit after CMD_SET_PATTERN in one batch must land");
+        run_seq_with_cmds(
+            &mut seq,
+            &[
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_PATTERN,
+                    arg0: 0,
+                    arg1: 0.0,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_TOGGLE_STEP,
+                    arg0: 7,
+                    arg1: 0.0,
+                },
+            ],
+        );
+        assert!(
+            seq.patterns[0].steps[7].active,
+            "step edit after CMD_SET_PATTERN in one batch must land"
+        );
     }
 
     // ── P10 C2: multi-page patterns ──────────────────────────────────────────
@@ -2500,7 +3136,12 @@ mod tests {
     }
 
     fn set_page_loop_cmd(start: i64, end: f64) -> NodeCommand {
-        NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_PAGE_LOOP, arg0: start, arg1: end }
+        NodeCommand {
+            target_id: 0,
+            type_id: Sequencer::CMD_SET_PAGE_LOOP,
+            arg0: start,
+            arg1: end,
+        }
     }
 
     #[test]
@@ -2514,9 +3155,14 @@ mod tests {
         run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
         assert_eq!(seq.current_step, 0);
         let positions = drive_steps(&mut seq, 40);
-        assert!(positions.iter().all(|&p| p < 16),
-            "a (0,1) window must never reach step 16: {positions:?}");
-        let at15 = positions.iter().position(|&p| p == 15).expect("reaches step 15");
+        assert!(
+            positions.iter().all(|&p| p < 16),
+            "a (0,1) window must never reach step 16: {positions:?}"
+        );
+        let at15 = positions
+            .iter()
+            .position(|&p| p == 15)
+            .expect("reaches step 15");
         assert_eq!(positions[at15 + 1], 0, "wraps 15 -> 0");
     }
 
@@ -2573,8 +3219,10 @@ mod tests {
         assert_eq!(seq.current_step, 8, "start enters at the window start");
         assert_eq!(seq.current_step / PAGE_SIZE, 1);
         let positions = drive_steps(&mut seq, 12);
-        assert!(positions.iter().all(|&p| p / PAGE_SIZE == 1),
-            "every step in a (1,1) window derives page 1: {positions:?}");
+        assert!(
+            positions.iter().all(|&p| p / PAGE_SIZE == 1),
+            "every step in a (1,1) window derives page 1: {positions:?}"
+        );
         assert!(positions.contains(&8) && positions.contains(&15));
 
         // Page-0 half through playback too: default window (0,1) on 16 steps
@@ -2584,8 +3232,10 @@ mod tests {
         run_seq(&mut seq0, &[transport_tick(0, true, true, false, false)]);
         assert_eq!(seq0.current_step / PAGE_SIZE, 0, "start (step 0) is page 0");
         let first7 = drive_steps(&mut seq0, 7);
-        assert!(first7.iter().all(|&p| p / PAGE_SIZE == 0),
-            "steps 1-7 derive page 0: {first7:?}");
+        assert!(
+            first7.iter().all(|&p| p / PAGE_SIZE == 0),
+            "steps 1-7 derive page 0: {first7:?}"
+        );
     }
 
     #[test]
@@ -2597,20 +3247,38 @@ mod tests {
 
         // Encoder write (CMD_SET_PARAM through the bank conduit) lands on the
         // active pattern only.
-        run_seq_with_cmds(&mut seq, &[NodeCommand {
-            target_id: 0, type_id: 0, arg0: swing_id as i64, arg1: 0.3,
-        }]);
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: 0,
+                arg0: swing_id as i64,
+                arg1: 0.3,
+            }],
+        );
         assert!((seq.patterns[0].swing - 0.3).abs() < 1e-6);
         assert_eq!(seq.patterns[1].swing, 0.0, "inactive pattern untouched");
 
         // Switch active; a new write lands on pattern 1, pattern 0 keeps its own.
         seq.active_pattern = 1;
-        run_seq_with_cmds(&mut seq, &[NodeCommand {
-            target_id: 0, type_id: 0, arg0: swing_id as i64, arg1: 0.1,
-        }]);
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: 0,
+                arg0: swing_id as i64,
+                arg1: 0.1,
+            }],
+        );
         assert!((seq.patterns[1].swing - 0.1).abs() < 1e-6);
-        assert!((seq.patterns[0].swing - 0.3).abs() < 1e-6, "patterns hold independent swing");
-        assert!((seq.swing_amount - 0.1).abs() < 1e-6, "emission reads the active pattern");
+        assert!(
+            (seq.patterns[0].swing - 0.3).abs() < 1e-6,
+            "patterns hold independent swing"
+        );
+        assert!(
+            (seq.swing_amount - 0.1).abs() < 1e-6,
+            "emission reads the active pattern"
+        );
     }
 
     #[test]
@@ -2625,23 +3293,49 @@ mod tests {
         seq.patterns[1].swing = 0.5;
 
         // Pattern 0's swing = 0.3 via the conduit.
-        run_seq_with_cmds(&mut seq, &[NodeCommand {
-            target_id: 0, type_id: 0, arg0: swing_id as i64, arg1: 0.3,
-        }]);
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: 0,
+                arg0: swing_id as i64,
+                arg1: 0.3,
+            }],
+        );
         // Live switch to pattern 1: bank must now read 0.5, not 0.3.
-        run_seq_with_cmds(&mut seq, &[NodeCommand {
-            target_id: 0, type_id: Sequencer::CMD_SET_PATTERN, arg0: 1, arg1: 0.0,
-        }]);
-        assert!((seq.bank.get(swing_id) - 0.5).abs() < 1e-6, "conduit refreshed on switch");
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_SET_PATTERN,
+                arg0: 1,
+                arg1: 0.0,
+            }],
+        );
+        assert!(
+            (seq.bank.get(swing_id) - 0.5).abs() < 1e-6,
+            "conduit refreshed on switch"
+        );
         assert!((seq.swing_amount - 0.5).abs() < 1e-6);
 
         // Writing exactly the pre-switch value (0.3) must land on pattern 1.
-        run_seq_with_cmds(&mut seq, &[NodeCommand {
-            target_id: 0, type_id: 0, arg0: swing_id as i64, arg1: 0.3,
-        }]);
-        assert!((seq.patterns[1].swing - 0.3).abs() < 1e-6,
-            "write of the stale value is not dropped");
-        assert!((seq.patterns[0].swing - 0.3).abs() < 1e-6, "pattern 0 untouched by the switch");
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: 0,
+                arg0: swing_id as i64,
+                arg1: 0.3,
+            }],
+        );
+        assert!(
+            (seq.patterns[1].swing - 0.3).abs() < 1e-6,
+            "write of the stale value is not dropped"
+        );
+        assert!(
+            (seq.patterns[0].swing - 0.3).abs() < 1e-6,
+            "pattern 0 untouched by the switch"
+        );
     }
 
     #[test]
@@ -2659,19 +3353,27 @@ mod tests {
         // Baseline at speed 1.0: swing = swing_amount * samples_per_beat.
         seq.speed_mult = 1.0;
         let period_1x = seq.exact_period();
-        let swing_1x  = seq.step_sample_offset(1, spb);
-        assert_eq!(swing_1x, (0.25 * spb) as u32,
-            "at speed 1.0 swing = swing_amount * samples_per_beat");
+        let swing_1x = seq.step_sample_offset(1, spb);
+        assert_eq!(
+            swing_1x,
+            (0.25 * spb) as u32,
+            "at speed 1.0 swing = swing_amount * samples_per_beat"
+        );
 
         // At speed 2.0 the step period halves AND the swing offset halves with
         // it — the swing stays the same fraction of the (now shorter) step.
         seq.speed_mult = 2.0;
         let period_2x = seq.exact_period();
-        let swing_2x  = seq.step_sample_offset(1, spb);
-        assert!((period_2x - period_1x / 2.0).abs() < 1e-9,
-            "step period halves at speed 2.0: {period_2x} vs {period_1x}/2");
-        assert_eq!(swing_2x, swing_1x / 2,
-            "swing offset scales with the step (halves at speed 2.0)");
+        let swing_2x = seq.step_sample_offset(1, spb);
+        assert!(
+            (period_2x - period_1x / 2.0).abs() < 1e-9,
+            "step period halves at speed 2.0: {period_2x} vs {period_1x}/2"
+        );
+        assert_eq!(
+            swing_2x,
+            swing_1x / 2,
+            "swing offset scales with the step (halves at speed 2.0)"
+        );
 
         // Even step never swings, at any speed.
         assert_eq!(seq.step_sample_offset(0, spb), 0, "even steps do not swing");
@@ -2680,11 +3382,21 @@ mod tests {
     // ── P10 C3: per-track length & speed + BUG-004 ──────────────────────────
 
     fn set_length_cmd(count: i64, pattern: f64) -> NodeCommand {
-        NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_LENGTH, arg0: count, arg1: pattern }
+        NodeCommand {
+            target_id: 0,
+            type_id: Sequencer::CMD_SET_LENGTH,
+            arg0: count,
+            arg1: pattern,
+        }
     }
 
     fn set_speed_cmd(mult: f64) -> NodeCommand {
-        NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_SPEED, arg0: 0, arg1: mult }
+        NodeCommand {
+            target_id: 0,
+            type_id: Sequencer::CMD_SET_SPEED,
+            arg0: 0,
+            arg1: mult,
+        }
     }
 
     fn is_note_on(e: &Event) -> bool {
@@ -2710,11 +3422,18 @@ mod tests {
         seq.activate(44100.0, 64);
         run_seq_with_cmds(&mut seq, &[set_length_cmd(8, -1.0)]);
         assert_eq!(seq.patterns[0].length, 8);
-        assert_eq!(seq.patterns[0].page_loop, (0, 0), "window re-clamped to the new page count");
+        assert_eq!(
+            seq.patterns[0].page_loop,
+            (0, 0),
+            "window re-clamped to the new page count"
+        );
 
         run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
         let positions = drive_steps(&mut seq, 20);
-        assert!(positions.iter().all(|&p| p < 8), "length 8 wraps after 8 steps: {positions:?}");
+        assert!(
+            positions.iter().all(|&p| p < 8),
+            "length 8 wraps after 8 steps: {positions:?}"
+        );
         let at7 = positions.iter().position(|&p| p == 7).unwrap();
         assert_eq!(positions[at7 + 1], 0);
     }
@@ -2752,7 +3471,11 @@ mod tests {
         run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
         // At 0.5x a step lasts two base steps of ticks.
         let positions = drive_steps(&mut seq, 4);
-        assert_eq!(positions, vec![0, 1, 1, 2], "0.5x advances every other base step");
+        assert_eq!(
+            positions,
+            vec![0, 1, 1, 2],
+            "0.5x advances every other base step"
+        );
     }
 
     #[test]
@@ -2785,8 +3508,10 @@ mod tests {
                 last_step = seq.current_step;
                 boundaries += 1;
                 let ideal = boundaries as f64 * exact;
-                assert!((ticks as f64 - ideal).abs() <= 1.0,
-                    "boundary {boundaries} at tick {ticks}, ideal {ideal:.1}");
+                assert!(
+                    (ticks as f64 - ideal).abs() <= 1.0,
+                    "boundary {boundaries} at tick {ticks}, ideal {ideal:.1}"
+                );
             }
         }
     }
@@ -2843,7 +3568,11 @@ mod tests {
             run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
             ticks_until_note_on(&mut seq, 2000).expect("negative offset fires")
         };
-        assert_eq!(base - early, 120, "-12 units = 120 ticks early (base {base}, early {early})");
+        assert_eq!(
+            base - early,
+            120,
+            "-12 units = 120 ticks early (base {base}, early {early})"
+        );
 
         // +N stays on the boundary tick, displaced by samples instead.
         let mut seq = Sequencer::new();
@@ -2864,23 +3593,32 @@ mod tests {
             let mut outs = [audio_ref];
             let evs = [transport_tick(1, true, false, false, false)];
             let input = ProcessInput {
-                audio_inputs: &[], signal_inputs: &[], events: &evs,
-                transport: &transport, sample_rate: 44100.0, block_size: block,
-                extended_events: &slab, commands: &[],
+                audio_inputs: &[],
+                signal_inputs: &[],
+                events: &evs,
+                transport: &transport,
+                sample_rate: 44100.0,
+                block_size: block,
+                extended_events: &slab,
+                commands: &[],
             };
-            let mut output = ProcessOutput::new(
-                &mut outs, &mut [],
-                &mut events_out,
-            );
+            let mut output = ProcessOutput::new(&mut outs, &mut [], &mut events_out);
             seq.process(&input, &mut output);
-            if let Some(te) = events_out.as_slice().iter().find(|te| is_note_on(&te.event)) {
+            if let Some(te) = events_out
+                .as_slice()
+                .iter()
+                .find(|te| is_note_on(&te.event))
+            {
                 late_tick = Some(t);
                 late_sample = te.sample_offset;
                 break;
             }
         }
         assert_eq!(late_tick, Some(base), "+N fires on the grid boundary tick");
-        assert!(late_sample > 0, "+N displaces by samples (got {late_sample})");
+        assert!(
+            late_sample > 0,
+            "+N displaces by samples (got {late_sample})"
+        );
     }
 
     fn is_note_off(e: &Event) -> bool {
@@ -2909,8 +3647,10 @@ mod tests {
             }
         }
         let held = off_after.expect("note off arrives");
-        assert!((170..=190).contains(&held),
-            "early note holds its own gate (~180 ticks), got {held} (on at tick {on_tick})");
+        assert!(
+            (170..=190).contains(&held),
+            "early note holds its own gate (~180 ticks), got {held} (on at tick {on_tick})"
+        );
     }
 
     #[test]
@@ -2948,7 +3688,10 @@ mod tests {
                 break;
             }
         }
-        assert!(boundary_fired, "step 0's fire must not be swallowed by step 7's early_fired");
+        assert!(
+            boundary_fired,
+            "step 0's fire must not be swallowed by step 7's early_fired"
+        );
         assert_eq!(seq.current_step, 0);
     }
 
@@ -2966,7 +3709,7 @@ mod tests {
             assert!(evs.iter().any(is_note_on), "start fires step 0");
             ticks_until_note_on(&mut seq, 8000).expect("second occurrence fires")
         };
-        let base  = second_fire(0);
+        let base = second_fire(0);
         let early = second_fire(-12);
         assert_eq!(base - early, 120,
             "wrapped step 0 fires 120 ticks into the previous cycle's last step (base {base}, early {early})");
@@ -2975,11 +3718,21 @@ mod tests {
     // ── P10 C4: seamless switching + chaining ────────────────────────────────
 
     fn set_pattern_cmd(idx: i64) -> NodeCommand {
-        NodeCommand { target_id: 0, type_id: Sequencer::CMD_SET_PATTERN, arg0: idx, arg1: 0.0 }
+        NodeCommand {
+            target_id: 0,
+            type_id: Sequencer::CMD_SET_PATTERN,
+            arg0: idx,
+            arg1: 0.0,
+        }
     }
 
     fn chain_push_cmd(idx: i64) -> NodeCommand {
-        NodeCommand { target_id: 0, type_id: Sequencer::CMD_CHAIN_PUSH, arg0: idx, arg1: 0.0 }
+        NodeCommand {
+            target_id: 0,
+            type_id: Sequencer::CMD_CHAIN_PUSH,
+            arg0: idx,
+            arg1: 0.0,
+        }
     }
 
     /// Drive whole pattern cycles (16-step default) and return active_pattern
@@ -3014,11 +3767,17 @@ mod tests {
         run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
         drive_steps(&mut seq, 3);
         run_seq_with_cmds(&mut seq, &[set_pattern_cmd(1)]);
-        assert_eq!(seq.active_pattern, 0, "playing: switch waits for the boundary");
+        assert_eq!(
+            seq.active_pattern, 0,
+            "playing: switch waits for the boundary"
+        );
         assert_eq!(seq.cued_pattern, Some(1));
         let actives = drive_wraps(&mut seq, 1);
         assert_eq!(actives, vec![1], "switch lands at the cycle boundary");
-        assert_eq!(seq.current_step, 0, "entry at the new pattern's window start");
+        assert_eq!(
+            seq.current_step, 0,
+            "entry at the new pattern's window start"
+        );
     }
 
     #[test]
@@ -3036,12 +3795,19 @@ mod tests {
     fn chain_advances_on_boundary() {
         let mut seq = Sequencer::new();
         seq.activate(44100.0, 64);
-        run_seq_with_cmds(&mut seq, &[chain_push_cmd(0), chain_push_cmd(1), chain_push_cmd(2)]);
+        run_seq_with_cmds(
+            &mut seq,
+            &[chain_push_cmd(0), chain_push_cmd(1), chain_push_cmd(2)],
+        );
         run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
         // Patterns 1/2 are empty (length 64) — cycles get long after the
         // first switch, so keep the count modest: 0 -> 1 -> 2 -> 0 wraps.
         let actives = drive_wraps(&mut seq, 4);
-        assert_eq!(actives, vec![0, 1, 2, 0], "chain visits its entries in order, then wraps");
+        assert_eq!(
+            actives,
+            vec![0, 1, 2, 0],
+            "chain visits its entries in order, then wraps"
+        );
     }
 
     #[test]
@@ -3053,7 +3819,10 @@ mod tests {
         run_seq_with_cmds(&mut seq, &[set_pattern_cmd(3)]);
         let actives = drive_wraps(&mut seq, 2);
         assert_eq!(actives[0], 3, "explicit cue wins the first boundary");
-        assert_eq!(actives[1], 1, "chain resumes (unadvanced) at the next boundary");
+        assert_eq!(
+            actives[1], 1,
+            "chain resumes (unadvanced) at the next boundary"
+        );
     }
 
     #[test]
@@ -3089,10 +3858,15 @@ mod tests {
         let mut dst = Sequencer::new();
         dst.activate(44100.0, 64);
         dst.deserialize(&blob);
-        assert_eq!(dst.patterns.len(), Sequencer::PATTERN_BANK_SIZE,
-            "bank invariant holds against oversized blobs");
-        assert!(dst.active_pattern < Sequencer::PATTERN_BANK_SIZE,
-            "active index clamped into the bank");
+        assert_eq!(
+            dst.patterns.len(),
+            Sequencer::PATTERN_BANK_SIZE,
+            "bank invariant holds against oversized blobs"
+        );
+        assert!(
+            dst.active_pattern < Sequencer::PATTERN_BANK_SIZE,
+            "active index clamped into the bank"
+        );
     }
 
     #[test]
@@ -3101,7 +3875,11 @@ mod tests {
         seq.activate(44100.0, 64);
         let cmds: Vec<NodeCommand> = (0..10).map(|i| chain_push_cmd(i % 4)).collect();
         run_seq_with_cmds(&mut seq, &cmds);
-        assert_eq!(seq.chain.len(), Sequencer::CHAIN_CAP, "pushes beyond the cap are ignored");
+        assert_eq!(
+            seq.chain.len(),
+            Sequencer::CHAIN_CAP,
+            "pushes beyond the cap are ignored"
+        );
     }
 
     // ── P10 C5: state-bus surface ────────────────────────────────────────────
@@ -3111,11 +3889,10 @@ mod tests {
         let mut seq = Sequencer::new();
         seq.set_node_id(42);
         seq.activate(44100.0, 64);
-        run_seq_with_cmds(&mut seq, &[
-            set_speed_cmd(2.0),
-            chain_push_cmd(1),
-            chain_push_cmd(2),
-        ]);
+        run_seq_with_cmds(
+            &mut seq,
+            &[set_speed_cmd(2.0), chain_push_cmd(1), chain_push_cmd(2)],
+        );
         run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
         run_seq_with_cmds(&mut seq, &[set_pattern_cmd(1)]); // playing -> cued
 
@@ -3131,7 +3908,10 @@ mod tests {
         assert!(matches!(get("active_pattern"), StateBusValue::Int(0)));
         assert!(matches!(get("cued_pattern"), StateBusValue::Int(1)));
         assert!(matches!(get("current_page"), StateBusValue::Int(0)));
-        assert!(matches!(get("page_count"), StateBusValue::Int(2)), "16 steps = 2 pages");
+        assert!(
+            matches!(get("page_count"), StateBusValue::Int(2)),
+            "16 steps = 2 pages"
+        );
         assert!(matches!(get("page_loop_start"), StateBusValue::Int(0)));
         assert!(matches!(get("page_loop_end"), StateBusValue::Int(1)));
         assert!(matches!(get("speed_mult"), StateBusValue::Float(v) if v == 2.0));
@@ -3143,7 +3923,10 @@ mod tests {
         seq2.activate(44100.0, 64);
         let mut state2 = Vec::new();
         seq2.published_state(&mut state2);
-        let cued = state2.iter().find(|(k, _)| k == "/node/7/state/cued_pattern").unwrap();
+        let cued = state2
+            .iter()
+            .find(|(k, _)| k == "/node/7/state/cued_pattern")
+            .unwrap();
         assert!(matches!(cued.1, StateBusValue::Int(-1)));
     }
 
@@ -3170,8 +3953,11 @@ mod tests {
         };
         assert_eq!(bits.len(), 32, "full active pattern, not one page");
         let page1: Vec<char> = bits.chars().skip(8).take(8).collect();
-        assert_eq!(page1.iter().collect::<String>(), "01000001",
-            "page-1 slice matches steps 8-15");
+        assert_eq!(
+            page1.iter().collect::<String>(),
+            "01000001",
+            "page-1 slice matches steps 8-15"
+        );
     }
 
     #[test]
@@ -3188,8 +3974,11 @@ mod tests {
         let mut dst = Sequencer::new();
         dst.activate(44100.0, 64);
         dst.deserialize(&blob);
-        assert_eq!(dst.patterns[0].page_loop, (0, 1),
-            "invalid window resets to the full span of the loaded length");
+        assert_eq!(
+            dst.patterns[0].page_loop,
+            (0, 1),
+            "invalid window resets to the full span of the loaded length"
+        );
 
         // Reversed window sanitized the same way.
         let mut src2 = Sequencer::new();
@@ -3201,5 +3990,396 @@ mod tests {
         dst2.activate(44100.0, 64);
         dst2.deserialize(&blob2);
         assert_eq!(dst2.patterns[0].page_loop, (0, 1));
+    }
+
+    // ── TK1 C1: p-lock command family ───────────────────────────────────────
+
+    #[test]
+    fn set_lock_target_then_step_lock_stores_lock() {
+        let mut seq = Sequencer::new();
+        run_seq_with_cmds(
+            &mut seq,
+            &[
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_LOCK_TARGET,
+                    arg0: 20,
+                    arg1: 1.0,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LOCK,
+                    arg0: 3,
+                    arg1: 0.42,
+                },
+            ],
+        );
+        let step = &seq.patterns[0].steps[3];
+        assert_eq!(step.param_locks.len(), 1);
+        assert_eq!(step.param_locks[0].node_id, 20);
+        assert_eq!(step.param_locks[0].param_id, 1);
+        assert!((step.param_locks[0].value - 0.42).abs() < 0.0001);
+    }
+
+    #[test]
+    fn step_lock_without_target_drops_and_counts() {
+        let mut seq = Sequencer::new();
+        assert_eq!(seq.lock_dropped, 0);
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_SET_STEP_LOCK,
+                arg0: 0,
+                arg1: 0.5,
+            }],
+        );
+        assert_eq!(seq.lock_dropped, 1);
+        let step = &seq.patterns[0].steps[0];
+        assert!(step.param_locks.is_empty());
+    }
+
+    #[test]
+    fn step_lock_updates_in_place_when_same_target() {
+        let mut seq = Sequencer::new();
+        run_seq_with_cmds(
+            &mut seq,
+            &[
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_LOCK_TARGET,
+                    arg0: 20,
+                    arg1: 1.0,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LOCK,
+                    arg0: 0,
+                    arg1: 0.1,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LOCK,
+                    arg0: 0,
+                    arg1: 0.9,
+                },
+            ],
+        );
+        let step = &seq.patterns[0].steps[0];
+        assert_eq!(step.param_locks.len(), 1);
+        assert!((step.param_locks[0].value - 0.9).abs() < 0.0001);
+    }
+
+    #[test]
+    fn step_lock_overflow_at_cap_drops_and_counts() {
+        let mut seq = Sequencer::new();
+        // Fill step 0 to LOCK_CAP_PER_STEP with unique param_ids.
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_SET_LOCK_TARGET,
+                arg0: 20,
+                arg1: 0.0,
+            }],
+        );
+        for i in 0..(Sequencer::LOCK_CAP_PER_STEP as u32) {
+            run_seq_with_cmds(
+                &mut seq,
+                &[NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_LOCK_TARGET,
+                    arg0: 20,
+                    arg1: (100 + i) as f64,
+                }],
+            );
+            run_seq_with_cmds(
+                &mut seq,
+                &[NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LOCK,
+                    arg0: 0,
+                    arg1: 0.1 + i as f64 * 0.01,
+                }],
+            );
+        }
+        assert_eq!(
+            seq.patterns[0].steps[0].param_locks.len(),
+            Sequencer::LOCK_CAP_PER_STEP
+        );
+        // One more should overflow.
+        let before = seq.lock_dropped;
+        run_seq_with_cmds(
+            &mut seq,
+            &[
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_LOCK_TARGET,
+                    arg0: 20,
+                    arg1: 200.0,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LOCK,
+                    arg0: 0,
+                    arg1: 0.99,
+                },
+            ],
+        );
+        assert_eq!(seq.lock_dropped, before + 1);
+        assert_eq!(
+            seq.patterns[0].steps[0].param_locks.len(),
+            Sequencer::LOCK_CAP_PER_STEP
+        );
+    }
+
+    #[test]
+    fn clear_step_lock_all_lanes_with_minus_one() {
+        let mut seq = Sequencer::new();
+        run_seq_with_cmds(
+            &mut seq,
+            &[
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_LOCK_TARGET,
+                    arg0: 20,
+                    arg1: 1.0,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LOCK,
+                    arg0: 0,
+                    arg1: 0.3,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_LOCK_TARGET,
+                    arg0: 20,
+                    arg1: 2.0,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LOCK,
+                    arg0: 0,
+                    arg1: 0.7,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_CLEAR_STEP_LOCK,
+                    arg0: 0,
+                    arg1: -1.0,
+                },
+            ],
+        );
+        assert!(seq.patterns[0].steps[0].param_locks.is_empty());
+    }
+
+    #[test]
+    fn clear_step_lock_target_lane_only() {
+        let mut seq = Sequencer::new();
+        run_seq_with_cmds(
+            &mut seq,
+            &[
+                // Lock A: node 20, param 1
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_LOCK_TARGET,
+                    arg0: 20,
+                    arg1: 1.0,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LOCK,
+                    arg0: 0,
+                    arg1: 0.3,
+                },
+                // Lock B: node 20, param 2
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_LOCK_TARGET,
+                    arg0: 20,
+                    arg1: 2.0,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LOCK,
+                    arg0: 0,
+                    arg1: 0.7,
+                },
+                // Clear only param 1 lane
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_CLEAR_STEP_LOCK,
+                    arg0: 0,
+                    arg1: 1.0,
+                },
+            ],
+        );
+        let step = &seq.patterns[0].steps[0];
+        assert_eq!(step.param_locks.len(), 1);
+        assert_eq!(step.param_locks[0].param_id, 2);
+        assert!((step.param_locks[0].value - 0.7).abs() < 0.0001);
+    }
+
+    #[test]
+    fn step_lock_beyond_length_preserved_inert() {
+        let mut seq = Sequencer::new();
+        seq.patterns[0].length = 8;
+        // Lock on step 16 (beyond length=8, within STEP_CAPACITY).
+        run_seq_with_cmds(
+            &mut seq,
+            &[
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_LOCK_TARGET,
+                    arg0: 20,
+                    arg1: 1.0,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LOCK,
+                    arg0: 16,
+                    arg1: 0.42,
+                },
+            ],
+        );
+        let step = &seq.patterns[0].steps[16];
+        assert_eq!(step.param_locks.len(), 1);
+        // Extend length — lock must survive.
+        seq.patterns[0].length = 17;
+        let step2 = &seq.patterns[0].steps[16];
+        assert_eq!(step2.param_locks.len(), 1);
+    }
+
+    #[test]
+    fn set_step_velocity_and_length_commands() {
+        let mut seq = Sequencer::new();
+        run_seq_with_cmds(
+            &mut seq,
+            &[
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_VELOCITY,
+                    arg0: 2,
+                    arg1: 0.5,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LENGTH,
+                    arg0: 2,
+                    arg1: 0.25,
+                },
+            ],
+        );
+        let step = &seq.patterns[0].steps[2];
+        assert_eq!(step.velocity, 32767); // 0.5 * 65535 = 32767.5 → 32767
+        assert!((step.length - 0.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn authored_lock_fires_param_lock_event_at_step() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        // Author a lock on step 0 (node 20, param 1, value 0.42).
+        run_seq_with_cmds(
+            &mut seq,
+            &[
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_LOCK_TARGET,
+                    arg0: 20,
+                    arg1: 1.0,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LOCK,
+                    arg0: 0,
+                    arg1: 0.42,
+                },
+            ],
+        );
+        // Activate step 0 so it fires.
+        seq.set_step(0, 60, 32768, true);
+        let events = run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        let locks: Vec<_> = events
+            .iter()
+            .filter_map(|e| {
+                if let Event::ParamLock(pl) = e {
+                    Some((pl.node_id, pl.param_id, pl.value))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(locks.len(), 1, "authored lock must emit ParamLock event");
+        assert_eq!(locks[0], (20, 1, 0.42));
+    }
+
+    #[test]
+    fn authored_lock_roundtrips_v3_serializer() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(
+            &mut seq,
+            &[
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_LOCK_TARGET,
+                    arg0: 20,
+                    arg1: 1.0,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LOCK,
+                    arg0: 2,
+                    arg1: 0.42,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_LOCK_TARGET,
+                    arg0: 20,
+                    arg1: 2.0,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LOCK,
+                    arg0: 2,
+                    arg1: 0.77,
+                },
+            ],
+        );
+        let blob = seq.serialize();
+        let mut restored = Sequencer::new();
+        restored.activate(44100.0, 64);
+        restored.deserialize(&blob);
+        let step = &restored.patterns[0].steps[2];
+        assert_eq!(step.param_locks.len(), 2);
+        assert_eq!(step.param_locks[0].node_id, 20);
+        assert_eq!(step.param_locks[0].param_id, 1);
+        assert!((step.param_locks[0].value - 0.42).abs() < 0.0001);
+        assert_eq!(step.param_locks[1].node_id, 20);
+        assert_eq!(step.param_locks[1].param_id, 2);
+        assert!((step.param_locks[1].value - 0.77).abs() < 0.0001);
+    }
+
+    #[test]
+    fn locks_publish_only_when_dirty() {
+        let mut seq = Sequencer::new();
+        seq.set_node_id(200);
+        seq.activate(44100.0, 64);
+        // First publish after deserialize sets dirty.
+        seq.locks_dirty.set(true);
+        let mut state = Vec::new();
+        seq.published_state(&mut state);
+        let lock_entry = state.iter().find(|(k, _)| k.ends_with("/state/locks"));
+        // Dirty was true, so locks is published (even if empty).
+        assert!(lock_entry.is_some());
+        assert!(matches!(lock_entry.unwrap(), (_, StateBusValue::Text(s)) if s.is_empty()));
+
+        // Second publish without setting dirty again — locks should NOT be included.
+        let mut state2 = Vec::new();
+        seq.published_state(&mut state2);
+        let lock_entry2 = state2.iter().find(|(k, _)| k.ends_with("/state/locks"));
+        assert!(lock_entry2.is_none(), "locks must not publish when clean");
     }
 }
