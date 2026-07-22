@@ -251,9 +251,12 @@ leader sequence.
 
 **Param pages (left hand):** number row `1`–`6` selects the selected
 track's param page **in the order the `Rule` declares its `page_groups`**
-(there is no platform-canonical page order today — ADR-032 §8's
-convention and the Antiphon implementation already differ, so Theotokos
-follows each Rule's own declaration, never a hardcoded list);
+(for *engine-local* pages there is no platform-canonical order — Theotokos
+follows each Rule's own declaration, never a hardcoded list). *(Amended
+2026-07-21, TK1 review m9: **composite** track pages use the shared
+crate's `CANONICAL_PAGE_ORDER` — SRC, AMP, FLTR, FX, TRIG, MOD, then
+customs alphabetical — defined once so Antiphon and Theotokos agree by
+construction; the engine-local fallback keeps declaration order.)*;
 page select rebinds A/B (and C on FX pages) to page defaults. Slots and
 bindings shown in the mode line at all times — **you never wonder what a
 key will do** (the legibility lesson from sessions s1/s2).
@@ -461,9 +464,9 @@ can re-cut the next phase.
 ## Amendment log
 
 **2026-07-21 (late) — TK1 spec drafted** (`design/phases/tk1-theotokos.md`,
-8 commits + session #2). Decisions taken in the spec, pending user
-ratification: **D1** OQ-T13 → extract composite `Rule` assembly to a new
-GPL platform crate `paraclete-view-assembly` (Antiphon keeps a thin
+8 commits + session #2). Decisions taken in the spec, **ratified by the
+user 2026-07-21**: **D1** OQ-T13 → extract composite `Rule` assembly to a
+new GPL platform crate `paraclete-view-assembly` (Antiphon keeps a thin
 L2→protocol mapping; wire unchanged); **D2** mutes → sequencer `mute` bank
 param (trig-gate; click-free; MixNode gain route rejected — no smoothing,
 ambiguous shared param name); **D3** OQ-T8 → two-command lock pair
@@ -475,6 +478,19 @@ standing defect-filing directive; fix is TK1 C0. OQ-T9 decided yes;
 OQ-T6 resolved by session #1. OQ table updated. Also caught: design.md
 §3.2's `x`-clear and `,`-leader rows are superseded by the two-row
 invariant grid (clear → `:` line; leader → `\`).
+**Pre-implementation design review (subagent), same day:** no blockers;
+7 majors + 12 minors folded into the spec — mute bus-mirror/persistence
+is explicit C4 work (`publish_bank_state` + v3 trailing field, not "free");
+paste is complete (new CMD 36/37 velocity/length, stale-lane clear,
+cross-track generator remap); clear-lane sends the target+clear pair
+(M3); step-focus is both-modes, jog→lock PERF-only (M4); test-driver gains
+`set_lock_target`/`set_step_lock`/`clear_step_lock` actions (M5); 8-track
+fixture gains chain nodes (M6); shared `assemble` takes a thin `NodeInfo`
+input preserving `display_name` (M7); §3.3 amended — composite pages use
+`CANONICAL_PAGE_ORDER`, engine-local keeps declaration order (m9);
+`clap_plugin` added to engine discovery (m10). Known behavior change:
+shared post-mix reverb leaves per-track composites (m4b) — call out at
+session #2.
 
 **2026-07-21 (session #1) — TK0 complete, usable sign-off.**  Session notes
 in `design/sessions/theotokos-1.md`; phase report in

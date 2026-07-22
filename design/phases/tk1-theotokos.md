@@ -19,6 +19,13 @@
 > cross-crate extraction, modal state machine); C8 is the user session.
 > Chord grammar remains HYPOTHESIS-grade per ADR-036 — do not extend beyond
 > this spec without a session.
+> **Review:** pre-implementation subagent design review held 2026-07-21
+> (same gate as TK0). No blockers; findings M1–M7 + m1–m12 folded inline
+> (mute publish/persistence, paste completeness, clear-lane pairing, mode
+> scoping, test-driver actions, fixture chains, display-name source, lock
+> mirror precision, `&self` publish mechanics, wire deltas, capacity
+> asymmetry, §3.3 amendment, `clap_plugin` discovery, mute scenario, fifth
+> stale test). D1–D4 ratified by the user 2026-07-21.
 
 ---
 
@@ -26,7 +33,7 @@
 
 | Anchor | Resolution (source) |
 |---|---|
-| Mutation plane | ADR-019 commands + sequencer CMD 16–32 + clock CMD 16/17 + **new lock CMD 33–35 (C1)**. Nothing else. (ADR-036.3) |
+| Mutation plane | ADR-019 commands + sequencer CMD 16–32 + clock CMD 16/17 + **new sequencer CMD 33–37 (C1)**. Nothing else. (ADR-036.3) |
 | Reads | Shared `StateBusHandle` + startup cap-doc cache + startup topology snapshot via the **existing** `NodeConfigurator::all_edges()` (configurator.rs:376). No JSON, no sockets, no new runtime accessor. (ADR-036.3) |
 | Views | Composite `Rule` pages assembled by a **shared crate** both Antiphon and Theotokos consume (C2, OQ-T13). Engine-local Rules remain the fallback. (ADR-036.4 scope note) |
 | Tracks | **Edge-derived** (C3): sequencer→generator from event edges, engine→chain from audio edges. ≤8. Never the positional zip (TK0 POC), never the stale AGENTS.md table. |
@@ -36,12 +43,12 @@
 
 ---
 
-## Decisions taken in this spec (user ratifies before C1 lands)
+## Decisions taken in this spec (**ratified by the user 2026-07-21**)
 
 | # | Question | Decision | Alternatives rejected |
 |---|---|---|---|
 | **D1** | OQ-T13 — composite assembly home | **New GPL platform crate `paraclete-view-assembly`** (deps: `paraclete-node-api` only). Antiphon keeps a thin L2→protocol mapping; wire format unchanged. | L2 (`paraclete-node-api`) — assembly is an app-level concern (tracks/chains are not node concepts); freezing it into the LGPL boundary raises the cost of every later change. Reimplementing in Theotokos — drift risk (design.md). |
-| **D2** | Mute mechanism | **Sequencer `mute` bank param** (trig-gate): fire paths skip note-on + lock emission while muted; already-sounding notes decay naturally; reverb tails ring. Click-free by construction (no audio-rate gain step); serializes with the project bank; Antiphon clients get it free (CMD_SET_PARAM). | MixNode per-input gain ride — `ParameterBank::set` applies instantly with no dezipper (audible click), all N params share the name `"input_gain"` (name-based resolution ambiguous), and it hard-cuts tails. Trig-gating is also the reference behavior (session #1 pulled mutes in for *performance*; gating trigs is the groovebox semantic). |
+| **D2** | Mute mechanism | **Sequencer `mute` bank param** (trig-gate): fire paths skip note-on + lock emission while muted; already-sounding notes decay naturally; reverb tails ring. Click-free by construction (no audio-rate gain step); Antiphon clients get it free (CMD_SET_PARAM). Bus mirroring + v3 persistence are explicit C4 work (review M1 — the sequencer never calls `publish_bank_state` today). | MixNode per-input gain ride — `ParameterBank::set` applies instantly with no dezipper (audible click), all N params share the name `"input_gain"` (name-based resolution ambiguous), and it hard-cuts tails. Trig-gating is also the reference behavior (session #1 pulled mutes in for *performance*; gating trigs is the groovebox semantic). |
 | **D3** | OQ-T8 — lock command shape | **Two-command pair + clear** (C1): `CMD_SET_LOCK_TARGET` (33) carries `(node_id, param_id)` at full width; `CMD_SET_STEP_LOCK` (34) carries `(step, value)` with full f64 precision; `CMD_CLEAR_STEP_LOCK` (35). No bit-truncation of node/param ids anywhere. | Single packed command — a lock is step+node+param+value ≈ 102 bits; any one-command packing truncates a u32 id (a frozen-format hardcoded-limit violation, guardrail 6). Value-quantization schemes lose precision or need bit-punning conventions the codebase doesn't have. |
 | **D4** | OQ-T2 — leader key | **`\`** — `,` is step 14 on the now-invariant step grid; double-tap-Space conflicts with transport muscle memory. HYPOTHESIS, session #2. | `,` (grid collision), double-tap-Space. |
 
@@ -52,7 +59,7 @@
 | Commit | Crate(s) | Deliverable |
 |---|---|---|
 | **C0** | `paraclete-theotokos` | **Pre-flight:** BUG-034 page-window stride fix; deprecate `[`/`]` (keep `-`/`=`); publish `/script/theotokos/selected` (OQ-T9 → yes). |
-| **C1** | `paraclete-nodes` | **OQ-T8:** p-lock command family (CMD 33/34/35) + dirty-gated lock state publish + overflow counter. |
+| **C1** | `paraclete-nodes`, `tools/test-driver` | **OQ-T8:** p-lock command family (CMD 33/34/35) + step-field commands (CMD 36/37, for paste) + dirty-gated lock state publish + overflow counter + new test-driver actions. |
 | **C2** | `paraclete-view-assembly` (new), `paraclete-antiphon`, `paraclete-app` | **OQ-T13:** extract composite assembly to the shared crate; edge-derived chains replace placeholder wiring; Antiphon wire format unchanged. |
 | **C3** | `paraclete-theotokos`, `paraclete-app` | **Composite track pages** in PERF mode + edge-derived track map. |
 | **C4** | `paraclete-nodes`, `paraclete-theotokos` | **Mutes:** sequencer `mute` param + Shift+track-key toggle + dimmed render. |
@@ -78,20 +85,28 @@ standing defect-filing directive):
 
 **Fix:** one `GRID_STEPS: usize = 16` constant shared by `action` and `model`
 (render already strides 16). Toggle offset = `page_window * GRID_STEPS + col`;
-`page_count = pattern_length.div_ceil(GRID_STEPS)`. Update the four `lib.rs`
-tests encoding the stale semantics (`bracket_*`, `toggle_step_includes_page_window_offset`).
+`page_count = pattern_length.div_ceil(GRID_STEPS)`. Update the **five** tests
+encoding the stale semantics: the four `lib.rs` tests (`bracket_*`,
+`toggle_step_includes_page_window_offset`) **and** `action.rs:89-96`
+(`toggle_step_offset_includes_page_window`, review m12).
 
 ### 0.2 Deprecate bracket page-nav (session #1 finding)
 
 Remove `[`/`]`/`{`/`}` from `map_seq`; `-`/`=` are the only page-window keys.
-Update `input.rs` tests.
+Update `input.rs` tests **and the AGENTS.md keyboard table** (the
+"`[] or -= = page window`" line → `-`/`=` only).
 
 ### 0.3 Publish `/script/theotokos/selected` (OQ-T9 → decided yes)
 
 On `SelectTrack` (and once at startup): write
 `/script/theotokos/selected` = `StateBusValue::Int(active track's sequencer
-node id)` via the shared `StateBusHandle` (in-process, not sandboxed —
-design.md §2.2). Other surfaces may follow; no surface is required to.
+node id)` (`Int` is `i64`, state_bus.rs:6-11; direct in-process write
+precedent: main.rs:455-462). Other surfaces may follow; no surface is
+required to. **Mechanics (review m6):** `handle_keys` holds an immutable
+bus borrow across its whole loop — collect bus writes during the loop and
+apply them after `drop(bus_ref)`; the startup publish happens from
+`main.rs` after `TheotokosApp::new` (the bus handle is in scope there), not
+inside `new`.
 **Non-goal:** the legacy `/script/selected_track` path (BUG-033) stays
 parked — that is a tui/profile concern, not Theotokos's.
 
@@ -105,36 +120,45 @@ parked — that is a tui/profile concern, not Theotokos's.
 
 ---
 
-## Commit 1 — p-lock command family (OQ-T8, D3)
+## Commit 1 — p-lock + step-field command family (OQ-T8, D3)
 
 The sequencer stores per-step locks (`StepParamLock { node_id, param_id,
 value }`, sequencer.rs:130) and emits them as `ParamLockEvent` on all four
 fire paths; engines consume them via the per-cycle `node_locks` pattern.
 **The only missing piece is an authoring path** — locks are written today
-only by the v3 deserializer and tests. This commit adds it.
+only by the v1/v2/v3 deserializers and tests. This commit adds it, plus the
+two step-field commands (velocity, length) that C7's paste needs (review M2).
 
 ### 1.1 Constants (`sequencer.rs`)
 
 ```rust
-pub const CMD_SET_LOCK_TARGET: u32 = 33;
-pub const CMD_SET_STEP_LOCK:   u32 = 34;
-pub const CMD_CLEAR_STEP_LOCK: u32 = 35;
+pub const CMD_SET_LOCK_TARGET:   u32 = 33;
+pub const CMD_SET_STEP_LOCK:     u32 = 34;
+pub const CMD_CLEAR_STEP_LOCK:   u32 = 35;
+pub const CMD_SET_STEP_VELOCITY: u32 = 36;
+pub const CMD_SET_STEP_LENGTH:   u32 = 37;
 const LOCK_CAP_PER_STEP: usize = 8;
 ```
 
-Antiphon's `node_cmd` gate admits type_id ≥ 16 — all three pass it, so
-tablet-side lock authoring is possible later with no protocol change.
+Antiphon's `node_cmd` gate admits type_id ≥ 16 (server.rs:144-149) — all
+five pass it, so tablet-side authoring is possible later with no protocol
+change.
 
 ### 1.2 Wire semantics
 
 | Command | arg0 | arg1 | Effect |
 |---|---|---|---|
-| `CMD_SET_LOCK_TARGET` | `node_id` (i64 carrying full u32) | `param_id` as f64 (u32 exact, < 2⁵³) | Sets `lock_target: Option<(u32, u32)>`. Idempotent. Surfaces **always** send this paired immediately before 34. |
+| `CMD_SET_LOCK_TARGET` | `node_id` (i64 carrying full u32) | `param_id` as f64 (u32 exact, < 2⁵³) | Sets `lock_target: Option<(u32, u32)>`. Idempotent. Surfaces **always** send this paired immediately before 34 (and before a lane-targeted 35 — review M3). |
 | `CMD_SET_STEP_LOCK` | step index (0–63) | value (f64, full precision) | Requires `lock_target`; else drop + bump `lock_dropped`. Step has a lock for the target → **update in place**; else push if `param_locks.len() < LOCK_CAP_PER_STEP`; else drop + bump `lock_dropped`. Sets `locks_dirty` on any change. |
 | `CMD_CLEAR_STEP_LOCK` | step index | `param_id` as f64, **−1.0 = all** | arg1 = −1.0 → clear every lock on the step; otherwise clear only the `(lock_target.node_id, param_id)` lane. Sets `locks_dirty` only when something was removed. |
+| `CMD_SET_STEP_VELOCITY` | step index | velocity (0.0–1.0) | Sets `Step.velocity` (CMD 17 does not carry it — sequencer.rs:520-531). |
+| `CMD_SET_STEP_LENGTH` | step index | length (same unit/scale as the v3 step record's f32) | Sets `Step.length` (no authoring path exists today). |
 
-Out-of-range step (`≥ STEP_CAPACITY` or `≥ pattern.length`) → drop silently
-(executor drop-safe idiom).
+Out-of-range step → drop at **`≥ STEP_CAPACITY` only** (review m8): locks
+and fields on steps beyond the current `pattern.length` are inert but
+preserved — matching `read_step_record`'s acceptance of all 64 capacity
+steps and `pattern_is_used` — so a later `CMD_SET_LENGTH` up never loses
+authored data.
 
 ### 1.3 Real-time rules
 
@@ -154,13 +178,17 @@ by CMD 34/35 and `deserialize`; cleared after publish). Grammar:
 
 ```
 locks := (entry (";" entry)*)?
-entry := "s" step ":" node_id ":" param_id "=" value   // value: {:.3}
+entry := "s" step ":" node_id ":" param_id "=" value   // value: {:.6}
 ```
 
-Entries ordered by step, then insertion. Built with `core::fmt::Write` into
-a reused `String` scratch (no `format!` chain); cloned into the bus value
-only on dirty cycles — zero per-cycle cost when idle, strictly cheaper than
-the existing per-cycle `/state/steps` publish.
+Entries ordered by step, then insertion. **`{:.6}` not `{:.3}`** (review m1):
+fine jog steps are `range/128/8` ≈ 0.000125 on [0,1] params; 3-decimal
+rounding would swallow sub-0.0005 adjustments and accumulate drift, since
+C5 re-parses the mirror as each jog's base. **Mechanics (review m2):**
+`published_state` takes `&self` — `locks_dirty` is a `Cell<bool>`; build a
+fresh `String` on dirty cycles only (one bounded alloc per edit gesture,
+strictly cheaper than the existing per-cycle `steps_bitfield()` alloc —
+sequencer.rs:1057). No reused scratch buffer needed.
 
 ### 1.5 Tests (named)
 
@@ -169,19 +197,27 @@ the existing per-cycle `/state/steps` publish.
 - `step_lock_updates_in_place_when_same_target`
 - `step_lock_overflow_at_cap_drops_and_counts`
 - `clear_step_lock_all_lanes_with_minus_one` / `clear_step_lock_target_lane_only`
+- `step_lock_beyond_length_preserved_inert` (drop at capacity only, m8)
+- `set_step_velocity_and_length_commands`
 - `authored_lock_fires_param_lock_event_at_step` (process-level; mirrors the
   existing deserializer-lock fire test)
 - `authored_lock_roundtrips_v3_serializer`
 - `locks_publish_only_when_dirty`
 - existing condition/timing/serializer/fire tests stay green
 
-### 1.6 Test-driver scenario
+### 1.6 Test-driver actions + scenario
 
-`tools/test-driver/tests/plock_authoring.yaml`: 4-on-the-floor kick; author
-a much-shorter `decay` lock on step 2 via the 33+34 pair; assert windowed
-RMS around step 2 is below the step-0 window (`peak_lt`-family assertion).
-This is the headless proof that the same command vocabulary Theotokos emits
-moves audio. Baseline-fingerprint it (ADR-035).
+`tools/test-driver` gains three scenario actions (its `dispatch_action`
+vocabulary is closed today): `set_lock_target`, `set_step_lock`,
+`clear_step_lock` (same argument shape as the commands). C1's crate list
+includes `tools/test-driver` (review M5).
+
+Scenario `tools/test-driver/tests/plock_authoring.yaml`: 4-on-the-floor
+kick; author a much-shorter `decay` lock on step 2 via the 33+34 pair;
+assert windowed RMS around step 2 is below the step-0 window
+(`peak_lt`-family assertion). This is the headless proof that the same
+command vocabulary Theotokos emits moves audio. Baseline-fingerprint it
+(ADR-035).
 
 ---
 
@@ -199,12 +235,20 @@ moves audio. Baseline-fingerprint it (ADR-035).
 ```rust
 pub struct TrackChain { pub engine_node_id: u32, pub chain_ids: Vec<u32> }
 
+/// Thin per-node view input both consumers can build (review M7+m3):
+/// the app builds it from instrument labels + cap-docs; Antiphon already
+/// holds the equivalent in `NodeSummary`/`ParamSummary`.
+pub struct NodeInfo {
+    pub display_name: Option<String>,   // instrument-file label, if any
+    pub params: Vec<(u32, String)>,     // (param_id, name)
+}
+
 pub struct CompositeView {
     pub engine_node_id: u32,
     pub engine_name: String,
     pub display_name: String,
     pub pages: Vec<CompositePage>,
-    pub chain: Vec<u32>,            // engine + chain_ids, signal order
+    pub chain: Vec<u32>,            // rule-bearing nodes only, engine first (today's wire)
     pub routes: Vec<CompositeRoute>,
 }
 pub struct CompositePage {
@@ -234,19 +278,25 @@ pub fn assemble(
     rules: &HashMap<u32, Rule>,
     chains: &[TrackChain],
     track_id: u32,
-    caps: &HashMap<u32, CapabilityDocument>,
+    nodes: &HashMap<u32, NodeInfo>,
 ) -> Option<CompositeView>;
 ```
 
 Semantics are exactly today's `ViewRegistry::assemble` + `merge_page`
-(antiphon/src/view.rs), with three deliberate changes:
+(antiphon/src/view.rs), with four deliberate changes:
 
-1. Param-name lookup uses cap-docs (`HashMap<u32, CapabilityDocument>`)
-   instead of protocol `NodeSummary` — both consumers have cap-docs.
+1. Param-name + display-name lookup goes through `NodeInfo` (review M7+m3):
+   `NodeSummary` is protocol-shaped and Antiphon never sees cap-docs, while
+   `NodeSummary.name` carries the instrument-file label the cap-doc lacks.
+   `NodeInfo` is the intersection both sides already have. Wire content is
+   preserved exactly, including `display_name`.
 2. `affordance` is the `AffordanceHint` value; JSON-string conversion moves
    to Antiphon's mapping layer.
 3. Routes carry no `value` field (today hardcoded `0.0`); Antiphon adds its
    placeholder at mapping time. Live route values remain a W-track concern.
+4. `chain` lists **rule-bearing chain nodes only, engine first** — exactly
+   today's `chain_meta.nodes` (review m4a); viewless chain nodes stay
+   invisible, matching the current wire.
 
 ### 2.3 Antiphon becomes a thin mapper
 
@@ -262,13 +312,22 @@ Replace the placeholder ("first filter/distortion/reverb found in the node
 list", main.rs:796-829) with topology-derived chains:
 
 - Use the **existing** `conf.all_edges()` (configurator.rs:376 — no runtime
-  change). `EdgeView` carries no port type; derive audio vs event edges from
-  the cap-doc port lists of both endpoints (`PortType`).
-- **Chains:** for each engine (type_tag discovery as today), BFS downstream
-  along audio edges in signal order, collecting nodes whose cap-doc has
-  `view.is_some()`, stopping before `mix`/`audio_output` type_tags.
+  change; valid after `build_executor()` — the graph is retained).
+  `EdgeView` carries no port type; derive audio vs event edges from the
+  cap-doc port lists of both endpoints (`PortType`).
+- **Chains:** for each engine (type_tag discovery as today **plus
+  `clap_plugin`** — review m10: CLAP-based tracks currently get no
+  composite view), BFS downstream along audio edges in signal order,
+  collecting nodes whose cap-doc has `view.is_some()`, stopping before
+  `mix`/`audio_output` type_tags.
 - **Sequencer→engine pairs** (also feeds C3's track map): follow event
   edges from each sequencer to the first node with an audio output.
+- **Known behavior change (review m4b):** edge-derived chains stop at the
+  mix, so the **shared post-mix reverb leaves the per-track composite** on
+  the stock instrument (today's placeholder slaps the first-found reverb
+  onto every track). This is the more correct model (reverb is a master
+  FX, not per-track), but it is user-visible on the web FX page — call it
+  out in the phase report and at session #2.
 
 Snapshot semantics are unchanged from today (built once at startup; no
 rebuild on `apply_patch` — the standalone TK-track graph is static
@@ -281,7 +340,10 @@ post-load; documented limitation).
 - `assemble_envelope_group_indices_offset_across_nodes`
 - `assemble_missing_engine_rule_returns_none`
 - `assemble_param_carries_owning_node_id`
+- `assemble_display_name_prefers_instrument_label` (M7)
+- `chain_lists_rule_bearing_nodes_only` (m4a)
 - `edge_derived_chain_follows_signal_order` (app-side fixture graph)
+- `clap_plugin_engine_gets_composite_view` (m10)
 - `viewmeta_wire_unchanged_after_extraction`
 
 ---
@@ -299,7 +361,10 @@ pub composite: Vec<CompositeView>,   // one per track, same order as tracks
 ```
 
 and `seq_ids`/`gen_ids` are filled from the edge-derived pairs (the
-positional zip is deleted).
+positional zip is deleted). Like the Antiphon registry (C2), the
+`composite` views and cap-doc cache are a **startup snapshot** — valid
+after `build_executor()` (`all_edges()`/`get_node_cap_doc` remain
+readable), never rebuilt on `apply_patch` (same documented limitation).
 
 ### 3.2 PERF mode consumes composite pages
 
@@ -327,12 +392,24 @@ positional zip is deleted).
 ### 4.1 Sequencer `mute` param (`paraclete-nodes`)
 
 - New declared bank param `"mute"` (stepped, min 0, max 1, default 0) on
-  `Sequencer`. The bank handles `CMD_SET_PARAM`/`CMD_BUMP_PARAM` for free;
-  `publish_bank_state` mirrors `/node/{id}/param/mute` for free; project
-  bank serialization persists it for free.
+  `Sequencer`. The bank handles `CMD_SET_PARAM`/`CMD_BUMP_PARAM` for free.
+  **Two things are NOT free (review M1) and are part of this commit:**
+  1. **Bus mirroring:** `Sequencer::published_state` never calls
+     `publish_bank_state` today (contrast analog_engine.rs:333) — add it,
+     so `/node/{id}/param/mute` exists for the UI toggle read. The
+     OnceLock path cache rebuilds per `activate()`, so the new path is
+     cached from first publish (no per-cycle `format!`).
+  2. **Persistence:** the v3 blob has no bank-param generality. Append
+     `mute` as a trailing track-level field (the format tolerates
+     trailing bytes, sequencer.rs:1116-1118) and re-apply it in
+     `deserialize_v3` via `bank.set` after `activate()` (the established
+     activate-then-deserialize ordering; unlike swing there is no
+     per-pattern mirror, so no conduit machinery).
 - All four fire paths skip **note-on and `ParamLockEvent` emission** while
-  `mute >= 0.5`. Note-offs for already-fired notes are unaffected (natural
-  decay; shared reverb tails ring — the documented trig-gate semantic).
+  `mute >= 0.5`. Note-offs for already-fired notes are unaffected (they
+  emit from the gate countdown and `global_stop`, independent of the
+  note-on paths — verified in review), so voices decay naturally and
+  shared reverb tails ring: the documented trig-gate semantic.
 - Playhead/step publish continues while muted (the track keeps moving —
   the performer sees the pattern it will rejoin).
 
@@ -352,9 +429,19 @@ positional zip is deleted).
 - `muted_sequencer_skips_note_and_lock_emission`
 - `muted_sequencer_still_publishes_playhead`
 - `unmute_resumes_at_next_step`
+- `mute_publishes_bank_state_path` (M1)
+- `mute_roundtrips_v3_serializer` (M1)
 - `keymap_shift_track_toggles_mute` (input, both modes)
 - `mute_toggle_reads_bus_and_flips_value`
 - `render_muted_track_dims_label_with_m_marker` (TestBackend)
+
+### 4.4 Test-driver scenario (review m11)
+
+`tools/test-driver/tests/mute_gates_track.yaml`: 4-on-the-floor kick;
+`set_param` `mute` 1.0 on the kick sequencer (the driver's existing
+set_param action needs no extension); assert `peak_lt` over the muted
+window; `set_param` `mute` 0.0; assert `peak_gte` after. Backs exit
+criterion 2's "audibly gates".
 
 ---
 
@@ -367,7 +454,11 @@ positional zip is deleted).
 - `Enter` toggles **step focus** on the active track's `last_step`;
   focused step renders `Reversed`. `Enter` again or `Esc` releases
   (`Esc` gains its first real semantics: cancel/release — global).
-- Focus is per-track; switching tracks keeps each track's focus.
+  Focus is per-track; switching tracks keeps each track's focus.
+- **Mode scoping (review M4):** `Enter`/focus is meaningful in **both**
+  modes (SEQ: mark a step; PERF: edit it — the natural SEQ→PERF flow),
+  but jog→lock routing exists only in **PERF**, the only mode with jog
+  keys. SEQ never routes jogs anywhere (it has none).
 
 ### 5.2 Jog→lock routing
 
@@ -395,16 +486,22 @@ most-recently-jogged slot's `(node_id, param_id)`; default slot A.
 ### 5.4 Clear gestures
 
 - `Backspace` with focus → `CMD_CLEAR_STEP_LOCK` arg1 = −1.0 (all lanes).
-- `Shift+Backspace` with focus → arg1 = slot A's param (target lane only).
+- `Shift+Backspace` with focus → the **pair** (review M3):
+  `CMD_SET_LOCK_TARGET` with slot A's `(node_id, param_id)` immediately
+  followed by `CMD_CLEAR_STEP_LOCK` (arg1 = slot A's param_id). The pair
+  is required because slots routinely live on different nodes after C3 —
+  lane identity is `(lock_target.node_id, param_id)`, and param ids are
+  global name-hashes that collide across nodes.
 
 ### 5.5 Tests (named)
 
 - `enter_focuses_last_toggled_step`; `esc_releases_focus`
+- `enter_focuses_in_seq_jog_edits_in_perf` (M4 mode scoping)
 - `jog_while_focused_emits_target_then_lock_pair`
 - `jog_lock_value_starts_from_existing_lock`
 - `jog_lock_value_starts_from_live_when_no_lock`
 - `jog_without_focus_still_bumps_param` (no regression)
-- `backspace_clears_all_lanes`; `shift_backspace_clears_target_lane`
+- `backspace_clears_all_lanes`; `shift_backspace_emits_target_then_clear_pair` (M3)
 - `render_lock_states_distinguishable` (TestBackend)
 
 ---
@@ -468,16 +565,32 @@ executes.
 ### 7.2 Yank / paste
 
 - `y` yanks the active track's current pattern (all `Step` fields — active,
-  note, velocity, condition, timing, **and locks** — into a Model-side
-  copy buffer).
+  note, **velocity, length**, condition, timing, **and locks** — into a
+  Model-side copy buffer).
 - `Y` (Shift+y — `P` is taken by Shift+track-8 mute) pastes over the active
-  track's current pattern: per step, emit `CMD_SET_STEP` (17) +
-  `CMD_SET_STEP_TIMING` (25) + `CMD_SET_STEP_CONDITION` (26) + the lock
-  pairs (33+34) — one drained batch, ≤ ~70 commands for 16 steps. Clamps to
-  `min(src_len, dst_len)`; does not touch length/speed.
-- Cross-track paste works (yank T1, select T3, paste). Paste is
-  destructive-by-design (overwrites); **no confirm, no undo** — HYPOTHESIS,
-  session #2 judges.
+  track's current pattern. Per pasted step, emit in order
+  (review M2 — CMD 17 alone is lossy: it sets note+active only, preserves
+  condition/timing/locks, and never touches velocity):
+  1. `CMD_CLEAR_STEP_LOCK` arg1 = −1.0 (clear stale destination lanes);
+  2. `CMD_SET_STEP` (17) — note + active;
+  3. `CMD_SET_STEP_VELOCITY` (36) + `CMD_SET_STEP_LENGTH` (37);
+  4. `CMD_SET_STEP_TIMING` (25) + `CMD_SET_STEP_CONDITION` (26);
+  5. the lock pairs (33+34) for each yanked lock.
+  One drained batch, ≤ ~90 commands for 16 steps. Clamps to
+  `min(src_len, dst_len)`; does not touch pattern length/speed.
+- **Cross-track lock remap:** locks carry the *source* engine's `node_id`,
+  and the destination engine drops foreign locks at its
+  `pl.node_id == self.node_id` gate. On cross-track paste, remap
+  generator-targeted locks source-generator → destination-generator (the
+  edge-derived pair from C3 gives both ids); locks targeting chain nodes
+  are **dropped** with an echo note (chains differ across tracks; remapping
+  them is guesswork). Same-track paste keeps all locks verbatim.
+- **Audio-thread batch note (review m5):** the executor's per-node
+  `pending_cmds` Vec starts at capacity 16 — a ~90-command paste would
+  grow it on the audio thread (one-time, first paste). Bump the initial
+  capacity to 128 in `executor.rs` (startup allocation, one line).
+- Paste is destructive-by-design (overwrites); **no confirm, no undo** —
+  HYPOTHESIS, session #2 judges.
 
 ### 7.3 Slot-rebinding leader (`\`, D4)
 
@@ -497,9 +610,13 @@ executes.
 ### 7.5 Eight-track stress
 
 - New dev fixture `instrument-8track.yaml` (repo root, loadable via the
-  app's existing instrument-path mechanism): sequencers 10–17 → voices
-  20,21,22,23,24,25,26,27 per the AGENTS.md aspirational graph (23–26 =
-  Samplers; `gen-samples` output required, as for the default instrument).
+  app's existing instrument-path mechanism) realizing the AGENTS.md
+  aspirational graph: sequencers 10–17 → voices 20,21,22,23,24,25,26,27
+  (23–26 = Samplers; `gen-samples` output required, as for the default
+  instrument), **and chain nodes** (review M6): each voice → its
+  `DistortionNode` (30–37) → its `FilterNode` (40–47) → mix input.
+  Without chain nodes, C3's composite-page smoke ("PERF FLTR page binds
+  the chain node's params") has nothing to bind.
 - Discovery must yield 8 tracks with keys `q`–`p` mapped 0–7; a synthetic
   9-track config clamps to 8.
 
@@ -509,7 +626,9 @@ executes.
 - `render_shows_active_and_cued_pattern_markers` (TestBackend)
 - `yank_then_paste_emits_full_step_command_batch`
 - `paste_clamps_to_shorter_pattern`
-- `paste_includes_condition_timing_and_lock_commands`
+- `paste_clears_stale_lock_lanes_before_writing`
+- `paste_includes_velocity_length_condition_timing_commands`
+- `cross_track_paste_remaps_generator_locks_drops_chain_locks`
 - `leader_rebind_b3_binds_third_page_param`; `leader_esc_cancels_chord`
 - `flash_colors_value_within_window` (render)
 - `eight_track_fixture_discovers_eight_tracks`
@@ -571,6 +690,6 @@ TK3).
   smoothing, no `published_state`, `view: None` on the cap-doc despite an
   existing `ViewPlugin` impl. D2 routes around all of this; a proper
   MixNode pass is P11 scope.
-- **`x`-as-clear from design.md §3.2 is superseded** — `x` is step 11 on
-  the invariant grid; clear moves to the `:` line (`clear`) and locks to
-  `Backspace`.
+- **`x`-as-clear from design.md §3.2 is superseded** — `x` is step 10 on
+  the invariant grid (1-based; `,` is step 14); clear moves to the `:` line
+  (`clear`) and locks to `Backspace`.
