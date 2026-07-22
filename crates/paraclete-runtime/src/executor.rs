@@ -77,10 +77,9 @@ pub struct NodeExecutor {
 
     /// Pre-allocated aggregate buffer for SPSC transfer.
     /// Filled each cycle by extending from each slot's `state_bufs` entry.
-    /// `mem::take`'d into `StateBusUpdate` before pushing; leaves a zero-capacity
-    /// Vec that grows back to stable size within a few cycles and then never
-    /// reallocates again. One SPSC-ownership-transfer allocation per cycle is
-    /// unavoidable with the current protocol; a return channel would eliminate it.
+    /// When non-empty, swapped onto the SPSC; the main thread drains entries and
+    /// returns the allocation via `state_buf_return_consumer` for zero-cost reuse
+    /// (BUG-006). If the return channel is empty, grows from scratch — best-effort.
     agg_state_buf: Vec<(String, StateBusValue)>,
 
     /// DAW-provided transport override for the next `process()` call.
@@ -130,6 +129,11 @@ pub struct NodeExecutor {
     /// Aggregate debug buffer for SPSC transfer. Cleared, filled from
     /// per-node buffers, then `mem::take`'d into the SPSC push.
     agg_debug_buf: Vec<DebugEvent>,
+
+    /// Return channel for agg_state_buf Vec reuse (BUG-006).
+    /// The configurator drains entries and pushes the emptied Vec back;
+    /// the executor pops it before state collection and reuses the allocation.
+    state_buf_return_consumer: rtrb::Consumer<Vec<(String, StateBusValue)>>,
 }
 
 struct NodeSlot {
@@ -184,6 +188,7 @@ impl NodeExecutor {
         raw_back_edges: Vec<LoopBackEdge>,
         counters: Arc<RuntimeCounters>,
         debug_event_producer: rtrb::Producer<DebugEvent>,
+        state_buf_return_consumer: rtrb::Consumer<Vec<(String, StateBusValue)>>,
     ) -> Self {
         let node_id_to_slot: HashMap<u32, usize> = nodes
             .iter()
@@ -267,6 +272,7 @@ impl NodeExecutor {
             debug_log_enabled: AtomicBool::new(false),
             debug_bufs: (0..n).map(|_| Vec::with_capacity(64)).collect(),
             agg_debug_buf: Vec::with_capacity(256),
+            state_buf_return_consumer,
         }
     }
 
@@ -661,6 +667,10 @@ impl NodeExecutor {
 
         // Collect published state into pre-allocated per-slot buffers. Vec::clear()
         // retains capacity so per-slot buffers never reallocate after the first cycle.
+        // Try to reuse the agg buffer from the return channel before collecting (BUG-006).
+        if let Ok(returned) = self.state_buf_return_consumer.pop() {
+            self.agg_state_buf = returned;
+        }
         self.agg_state_buf.clear();
         for (slot_idx, slot) in self.nodes.iter().enumerate() {
             self.state_bufs[slot_idx].clear();

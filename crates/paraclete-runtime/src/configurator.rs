@@ -23,6 +23,7 @@ const RING_CAPACITY: usize = 256;
 const STATE_BUS_RING_CAPACITY: usize = 256;
 const NODE_CMD_RING_CAPACITY: usize = 512;
 const DEBUG_EVENT_RING_CAPACITY: usize = 1024;
+const STATE_BUF_RETURN_CAPACITY: usize = 4;
 
 /// Error returned by `NodeConfigurator::connect()`.
 #[derive(Debug)]
@@ -168,6 +169,12 @@ pub struct NodeConfigurator {
     state_bus_consumer: rtrb::Consumer<StateBusUpdate>,
     state_bus_producer_pending: Option<rtrb::Producer<StateBusUpdate>>,
 
+    /// Return channel for agg_state_buf Vec reuse (BUG-006). The configurator
+    /// drains entries from StateBusUpdate, clears the underlying Vec, and pushes
+    /// it back via this producer so the executor can reuse the allocation.
+    state_buf_return_producer: rtrb::Producer<Vec<(String, StateBusValue)>>,
+    state_buf_return_consumer_pending: Option<rtrb::Consumer<Vec<(String, StateBusValue)>>>,
+
     /// NodeCommand SPSC producer — messages sent to the executor each cycle.
     node_cmd_producer: rtrb::Producer<NodeCommand>,
     node_cmd_consumer_pending: Option<rtrb::Consumer<NodeCommand>>,
@@ -213,6 +220,8 @@ impl NodeConfigurator {
         let (cmd_prod, cmd_cons) = rtrb::RingBuffer::<NodeCommand>::new(NODE_CMD_RING_CAPACITY);
         let (debug_prod, debug_cons) =
             rtrb::RingBuffer::<DebugEvent>::new(DEBUG_EVENT_RING_CAPACITY);
+        let (return_prod, return_cons) =
+            rtrb::RingBuffer::<Vec<(String, StateBusValue)>>::new(STATE_BUF_RETURN_CAPACITY);
         Self {
             graph: RuntimeGraph::new(),
             id_to_index: HashMap::new(),
@@ -224,6 +233,8 @@ impl NodeConfigurator {
             state_bus: Rc::new(RefCell::new(StateBusHandle::new())),
             state_bus_consumer: consumer,
             state_bus_producer_pending: Some(producer),
+            state_buf_return_producer: return_prod,
+            state_buf_return_consumer_pending: Some(return_cons),
             node_cmd_producer: cmd_prod,
             node_cmd_consumer_pending: Some(cmd_cons),
             debug_event_consumer: debug_cons,
@@ -652,8 +663,11 @@ impl NodeConfigurator {
     /// Call from the main loop between audio cycles.
     pub fn process_main_thread(&mut self) {
         let mut bus = self.state_bus.borrow_mut();
-        while let Ok(update) = self.state_bus_consumer.pop() {
-            bus.apply_updates(update.entries);
+        while let Ok(mut update) = self.state_bus_consumer.pop() {
+            for (k, v) in update.entries.drain(..) {
+                bus.update_entry(k, v);
+            }
+            let _ = self.state_buf_return_producer.push(update.entries);
         }
         drop(bus);
         while let Ok(ev) = self.debug_event_consumer.pop() {
@@ -688,7 +702,11 @@ impl NodeConfigurator {
                     "no output handle for device {device_id} ({} led updates dropped; \
                      further drops for this device are silent); registered: {:?}",
                     hw_out.led_updates.len(),
-                    self.output_handles.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+                    self.output_handles
+                        .iter()
+                        .map(|(id, _)| *id)
+                        .collect::<Vec<_>>()
+                );
             }
         }
     }
@@ -784,18 +802,22 @@ impl NodeConfigurator {
             rtrb::RingBuffer::<NodeCommand>::new(NODE_CMD_RING_CAPACITY);
         let (new_debug_prod, new_debug_cons) =
             rtrb::RingBuffer::<DebugEvent>::new(DEBUG_EVENT_RING_CAPACITY);
+        let (new_return_prod, new_return_cons) =
+            rtrb::RingBuffer::<Vec<(String, StateBusValue)>>::new(STATE_BUF_RETURN_CAPACITY);
 
         // Replace configurator-side handles so `send()` and `send_command()` stay live.
         self.sender = new_sender;
         self.node_cmd_producer = new_cmd_prod;
         self.state_bus_consumer = new_sb_cons;
         self.debug_event_consumer = new_debug_cons;
+        self.state_buf_return_producer = new_return_prod;
 
         // Install executor-side ends as pending so `build_executor()` can take them.
         self.pending_receiver = Some(new_receiver);
         self.state_bus_producer_pending = Some(new_sb_prod);
         self.node_cmd_consumer_pending = Some(new_cmd_cons);
         self.debug_event_producer_pending = Some(new_debug_prod);
+        self.state_buf_return_consumer_pending = Some(new_return_cons);
 
         self.build_executor()
     }
@@ -827,6 +849,10 @@ impl NodeConfigurator {
             .expect("build_executor called twice");
         let debug_event_producer = self
             .debug_event_producer_pending
+            .take()
+            .expect("build_executor called twice");
+        let state_buf_return_consumer = self
+            .state_buf_return_consumer_pending
             .take()
             .expect("build_executor called twice");
 
@@ -932,6 +958,7 @@ impl NodeConfigurator {
             back_edges,
             counters,
             debug_event_producer,
+            state_buf_return_consumer,
         )
     }
 }

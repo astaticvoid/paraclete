@@ -114,6 +114,13 @@ impl StateBusHandle {
         }
     }
 
+    /// Insert a single entry that already owns its path String — no per-entry
+    /// allocation (the caller has already allocated the String). Used by the
+    /// configurator's return-channel path (BUG-006) to avoid a second allocation.
+    pub fn update_entry(&mut self, path: String, value: StateBusValue) {
+        self.store.insert(path, value);
+    }
+
     /// Iterate every path currently on the bus. Additive (W1 Commit 2) — used
     /// by consumers that need a full-scan diff (e.g. the Antiphon state
     /// mirror) rather than a single-path subscription.
