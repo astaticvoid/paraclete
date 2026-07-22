@@ -76,13 +76,15 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
 }
 
 fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
-    let mut rows: Vec<Line> = Vec::with_capacity(data.track_names.len().max(1) * 4);
+    let mut rows: Vec<Line> = Vec::with_capacity(data.track_names.len().max(1) * 5);
     for t in 0..data.track_names.len() {
+        // Upper step row (steps 1-8): two lines tall for square cells.
         rows.push(render_track_row(t, data, 0));
-        rows.push(Line::from(""));
+        rows.push(render_track_row(t, data, 0));
+        // Lower step row (steps 9-16): two lines tall.
+        rows.push(render_track_row(t, data, PAGE_SIZE));
         rows.push(render_track_row(t, data, PAGE_SIZE));
         if t + 1 < data.track_names.len() {
-            rows.push(Line::from(""));
             rows.push(Line::from(""));
         }
     }
@@ -121,11 +123,11 @@ fn render_track_row(track_idx: usize, data: &RenderData, row_off: usize) -> Line
         let is_active = st.steps.get(step).copied().unwrap_or(false);
 
         let (glyph, color) = if step == st.current_step {
-            (" ▓▓▓ ", Color::Yellow)
+            (" ████ ", Color::Yellow)
         } else if is_active {
-            (" ███ ", Color::Cyan)
+            (" ████ ", Color::Cyan)
         } else {
-            (" ░░░ ", Color::DarkGray)
+            (" ░░░░ ", Color::DarkGray)
         };
 
         spans.push(Span::styled(glyph, Style::default().fg(color)));
