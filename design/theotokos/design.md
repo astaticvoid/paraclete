@@ -425,14 +425,23 @@ Prove posture and feel, nothing else.
   save/reload *(dependency: P11 scope — flagged, may defer)*;
   §5.3(b)+(c) live visualization; numpad-less fallback layer (OQ-T3);
   ramp/acceleration retune from session telemetry.
+- **Key remapping (`design/adr/ADR-037-theotokos-key-remapping.md`,
+  proposed 2026-07-22):** runtime-remappable `Keymap` struct (HashMap-backed,
+  mode-specific + global bindings, fall-through to hardcoded defaults);
+  `:`-line verbs (`:bind`, `:unbind`, `:reset-bindings`, `:save-bindings`,
+  `:load-bindings`); YAML persistence (`serde_yml`, `~/.config/paraclete/keymap.yaml`
+  + local override). Pulled forward from TK3 — the mechanism is a
+  performance customization and doesn't need Ordo profiles or WT convergence.
+  Full spec in `design/phases/tk2-theotokos.md` (owned by design agent).
 - **Session #3** → verdicts on performance ergonomics.
 
 ### TK3 — Breadth & convergence
 
-- MIX mode; chain view; macro support from `Rule`; keymap config file
-  (Ordo-adjacent, plain-data keymap); **WT convergence decision** (does WT
-  proceed as specced, fold into Theotokos, or stay deferred — user decision,
-  informed by three sessions of evidence).
+- MIX mode; chain view; macro support from `Rule`; keymap **Ordo layout
+  profiles + convergence editor** (mechanism lands TK2; TK3 adds profile
+  switching, guided remap wizard, and WT integration); **WT convergence
+  decision** (does WT proceed as specced, fold into Theotokos, or stay
+  deferred — user decision, informed by three sessions of evidence).
 - **Session #4.**
 
 Explicitly **not** one-shot: every phase gate is a session; every session
@@ -462,6 +471,15 @@ can re-cut the next phase.
 ---
 
 ## Amendment log
+
+**2026-07-22 — key remapping moved to TK2 (ADR-037 proposed).** Decision:
+the `Keymap` mechanism (runtime-rebindable HashMap, `:`-line verbs, YAML
+persistence) lands in TK2 rather than TK3. Rationale: key remapping is a
+performance customization (different keyboards, different muscle memory);
+it needs only the `:` line (TK1 C6) + file I/O, not Ordo profiles or WT
+convergence. TK3's "keymap config" narrows to Ordo layout profile
+integration + guided remap wizard + WT editor convergence. Phase stub
+`design/phases/tk2-theotokos.md` created; full spec owned by design agent.
 
 **2026-07-21 (late) — TK1 spec drafted** (`design/phases/tk1-theotokos.md`,
 8 commits + session #2). Decisions taken in the spec, **ratified by the
