@@ -81,7 +81,7 @@ fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
         // Upper step row (steps 1-8): two lines tall for square cells.
         rows.push(render_track_row(t, data, 0));
         rows.push(render_track_row(t, data, 0));
-        // Lower step row (steps 9-16): two lines tall.
+        rows.push(Line::from(""));
         rows.push(render_track_row(t, data, PAGE_SIZE));
         rows.push(render_track_row(t, data, PAGE_SIZE));
         if t + 1 < data.track_names.len() {
@@ -305,6 +305,28 @@ mod tests {
             }, 0.42)),
             debug_event: None,
         };
+        terminal.draw(|f| render(f, &data)).unwrap();
+    }
+
+    #[test]
+    fn grid_structure_4_tracks_23_rows() {
+        let st = StepState { pattern_length: 16, page_count: 2, steps: vec![false; 16], current_step: 0 };
+        let data = RenderData {
+            mode: Mode::Seq,
+            active_track: 0,
+            track_names: vec!["Kick".into(), "Snare".into(), "Hihat".into(), "Bass".into()],
+            bpm: 140.0,
+            playing: true,
+            page_window: 0,
+            step_state: st.clone(),
+            step_states: vec![st.clone(), st.clone(), st.clone(), st],
+            slot_a: None, slot_a_value: 0.0, slot_b: None, slot_b_value: 0.0,
+            page_groups: vec![], perf_page: 0,
+            envelope: None,
+            debug_event: None,
+        };
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| render(f, &data)).unwrap();
     }
 }
