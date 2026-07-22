@@ -63,7 +63,7 @@
 | **C2** | `paraclete-view-assembly` (new), `paraclete-antiphon`, `paraclete-app` | **OQ-T13:** extract composite assembly to the shared crate; edge-derived chains replace placeholder wiring; Antiphon wire format unchanged. |
 | **C3** | `paraclete-theotokos`, `paraclete-app` | **Composite track pages** in PERF mode + edge-derived track map. |
 | **C4** | `paraclete-nodes`, `paraclete-theotokos` | **Mutes:** sequencer `mute` param + Shift+track-key toggle + dimmed render. |
-| **C5** | `paraclete-theotokos` | **P-lock UI:** step focus, jog→lock routing, lock display, clear gestures. |
+| **C5** | `paraclete-theotokos` | **P-lock UI:** step focus, jog→lock routing, lock display, clear gestures. **DONE 2026-07-22.** |
 | **C6** | `paraclete-theotokos` | **`:` command line:** echo area, generated fuzzy index, v1 verbs. |
 | **C7** | `paraclete-theotokos`, app fixture | **Pattern select + cue, yank/paste, slot-rebinding leader, yellow-flash, 8-track stress fixture.** |
 | **C8** | — | **Usability session #2** (no code): findings in `design/sessions/theotokos-2.md`, per-hypothesis verdicts, `tk1-report.md`, roadmap + design.md marks updated in the same commit. |

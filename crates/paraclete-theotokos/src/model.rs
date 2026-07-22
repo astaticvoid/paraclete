@@ -65,6 +65,8 @@ pub struct Model {
     pub perf_page: usize,
     pub slot_a: Option<SlotBinding>,
     pub slot_b: Option<SlotBinding>,
+    pub step_focus: Vec<Option<usize>>,
+    pub last_step: Vec<Option<usize>>,
 }
 
 impl Model {
@@ -87,7 +89,10 @@ impl Model {
                     .unwrap_or_else(|| format!("Trk{}", i + 1)),
             })
             .collect();
-        let page_windows: Vec<usize> = vec![0; tracks.len()];
+        let track_count = tracks.len();
+        let page_windows: Vec<usize> = vec![0; track_count];
+        let step_focus: Vec<Option<usize>> = vec![None; track_count];
+        let last_step: Vec<Option<usize>> = vec![None; track_count];
         let mut model = Self {
             mode: Mode::Seq,
             active_track: 0,
@@ -99,6 +104,8 @@ impl Model {
             perf_page: 0,
             slot_a: None,
             slot_b: None,
+            step_focus,
+            last_step,
         };
         model.bind_page();
         model
@@ -307,6 +314,77 @@ impl Model {
             .and_then(|c| c.view.as_ref())
             .map(|r| r.page_groups.iter().map(|g| g.to_string()).collect())
             .unwrap_or_default()
+    }
+
+    pub fn read_lock_value(
+        &self,
+        bus: &StateBusHandle,
+        sequencer_id: u32,
+        step: usize,
+        node_id: u32,
+        param_id: u32,
+    ) -> Option<f64> {
+        let locks_text = bus
+            .read(&format!("/node/{}/state/locks", sequencer_id))
+            .and_then(|v| match v {
+                StateBusValue::Text(s) => Some(s.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        Self::parse_lock_value(&locks_text, step, node_id, param_id)
+    }
+
+    pub fn parse_lock_value(
+        locks_text: &str,
+        step: usize,
+        node_id: u32,
+        param_id: u32,
+    ) -> Option<f64> {
+        for entry in locks_text.split(';') {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = entry.splitn(4, [':', '=']).collect();
+            if parts.len() != 4 {
+                continue;
+            }
+            let entry_step: usize = parts[0].strip_prefix('s').and_then(|s| s.parse().ok())?;
+            let entry_nid: u32 = parts[1].parse().ok()?;
+            let entry_pid: u32 = parts[2].parse().ok()?;
+            if entry_step == step && entry_nid == node_id && entry_pid == param_id {
+                return parts[3].parse::<f64>().ok();
+            }
+        }
+        None
+    }
+
+    pub fn read_step_locks(&self, bus: &StateBusHandle, track_idx: usize) -> Vec<usize> {
+        let seq_id = self.tracks[track_idx].sequencer_id;
+        let locks_text = bus
+            .read(&format!("/node/{}/state/locks", seq_id))
+            .and_then(|v| match v {
+                StateBusValue::Text(s) => Some(s.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let mut steps: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for entry in locks_text.split(';') {
+            let entry = entry.trim();
+            if entry.is_empty() {
+                continue;
+            }
+            if let Some(rest) = entry.strip_prefix('s') {
+                if let Some(colon) = rest.find(':') {
+                    if let Ok(s) = rest[..colon].parse::<usize>() {
+                        steps.insert(s);
+                    }
+                }
+            }
+        }
+        let mut sorted: Vec<usize> = steps.into_iter().collect();
+        sorted.sort_unstable();
+        sorted
     }
 
     pub fn envelope_for_active_track(&self) -> Option<EnvelopeData> {

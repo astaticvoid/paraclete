@@ -16,7 +16,9 @@ use paraclete_view_assembly::CompositeView;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
-use crate::action::{Action, Outcome};
+use crate::action::{
+    Action, Outcome, CMD_CLEAR_STEP_LOCK, CMD_SET_LOCK_TARGET, CMD_SET_STEP_LOCK, GRID_STEPS,
+};
 use crate::model::{Dir, JogTracker, Model, Slot, Tuning};
 
 pub type BusHandle = Rc<RefCell<StateBusHandle>>;
@@ -151,6 +153,30 @@ impl TheotokosApp {
             (e, val)
         });
 
+        let step_focuses = self.model.step_focus.clone();
+        let step_locks: Vec<Vec<usize>> = (0..self.model.tracks.len())
+            .map(|t| self.model.read_step_locks(bus, t))
+            .collect();
+
+        let mut slot_a_locked = false;
+        let mut slot_b_locked = false;
+        if let Some(focus) = step_focuses.get(self.model.active_track).copied().flatten() {
+            if let Some(ref s) = self.model.slot_a {
+                let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
+                slot_a_locked = self
+                    .model
+                    .read_lock_value(bus, seq_id, focus, s.node_id, s.param_id)
+                    .is_some();
+            }
+            if let Some(ref s) = self.model.slot_b {
+                let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
+                slot_b_locked = self
+                    .model
+                    .read_lock_value(bus, seq_id, focus, s.node_id, s.param_id)
+                    .is_some();
+            }
+        }
+
         let render_data = render::RenderData {
             mode: self.model.mode,
             active_track: self.model.active_track,
@@ -168,6 +194,10 @@ impl TheotokosApp {
             perf_page: self.model.perf_page,
             envelope,
             debug_event: self.last_debug_event.take(),
+            step_focuses,
+            step_locks,
+            slot_a_locked,
+            slot_b_locked,
         };
 
         drop(bus_ref);
@@ -231,37 +261,87 @@ impl TheotokosApp {
                     dirty = true;
                 }
                 Action::Jog { slot, dir, mag } => {
-                    let binding = match slot {
-                        Slot::A => &self.model.slot_a,
-                        Slot::B => &self.model.slot_b,
-                        Slot::C => continue,
-                    };
-                    if let Some(ref b) = binding {
-                        let tracker = match slot {
-                            Slot::A => &mut self.jog_a,
-                            Slot::B => &mut self.jog_b,
+                    let track = self.model.active_track;
+                    if let Some(step) = self.model.step_focus[track] {
+                        let binding = match slot {
+                            Slot::A => &self.model.slot_a,
+                            Slot::B => &self.model.slot_b,
                             Slot::C => continue,
                         };
-                        let held = match tracker.repeat(now, tick_ms) {
-                            Some(h) => h,
-                            None => {
-                                tracker.press(now, tick_ms);
-                                0
-                            }
+                        if let Some(ref b) = binding {
+                            let tracker = match slot {
+                                Slot::A => &mut self.jog_a,
+                                Slot::B => &mut self.jog_b,
+                                Slot::C => continue,
+                            };
+                            let held = match tracker.repeat(now, tick_ms) {
+                                Some(h) => h,
+                                None => {
+                                    tracker.press(now, tick_ms);
+                                    0
+                                }
+                            };
+                            let range = b.max - b.min;
+                            let delta = self.tuning.jog_step(range, held, mag);
+                            let signed = match dir {
+                                Dir::Next => delta,
+                                Dir::Prev => -delta,
+                            };
+                            let seq_id = self.model.tracks[track].sequencer_id;
+                            let current = self
+                                .model
+                                .read_lock_value(state, seq_id, step, b.node_id, b.param_id)
+                                .unwrap_or_else(|| {
+                                    self.model.read_param_value(state, b.node_id, b.param_id)
+                                });
+                            let new_value = (current + signed).clamp(b.min, b.max);
+                            self.pending.push(NodeCommand {
+                                target_id: seq_id,
+                                type_id: CMD_SET_LOCK_TARGET,
+                                arg0: b.node_id as i64,
+                                arg1: b.param_id as f64,
+                            });
+                            self.pending.push(NodeCommand {
+                                target_id: seq_id,
+                                type_id: CMD_SET_STEP_LOCK,
+                                arg0: step as i64,
+                                arg1: new_value,
+                            });
+                            dirty = true;
+                        }
+                    } else {
+                        let binding = match slot {
+                            Slot::A => &self.model.slot_a,
+                            Slot::B => &self.model.slot_b,
+                            Slot::C => continue,
                         };
-                        let range = b.max - b.min;
-                        let delta = self.tuning.jog_step(range, held, mag);
-                        let signed = match dir {
-                            Dir::Next => delta,
-                            Dir::Prev => -delta,
-                        };
-                        self.pending.push(NodeCommand {
-                            target_id: b.node_id,
-                            type_id: paraclete_node_api::CMD_BUMP_PARAM,
-                            arg0: b.param_id as i64,
-                            arg1: signed,
-                        });
-                        dirty = true;
+                        if let Some(ref b) = binding {
+                            let tracker = match slot {
+                                Slot::A => &mut self.jog_a,
+                                Slot::B => &mut self.jog_b,
+                                Slot::C => continue,
+                            };
+                            let held = match tracker.repeat(now, tick_ms) {
+                                Some(h) => h,
+                                None => {
+                                    tracker.press(now, tick_ms);
+                                    0
+                                }
+                            };
+                            let range = b.max - b.min;
+                            let delta = self.tuning.jog_step(range, held, mag);
+                            let signed = match dir {
+                                Dir::Next => delta,
+                                Dir::Prev => -delta,
+                            };
+                            self.pending.push(NodeCommand {
+                                target_id: b.node_id,
+                                type_id: paraclete_node_api::CMD_BUMP_PARAM,
+                                arg0: b.param_id as i64,
+                                arg1: signed,
+                            });
+                            dirty = true;
+                        }
                     }
                 }
                 Action::PlayToggle => {
@@ -272,9 +352,11 @@ impl TheotokosApp {
                         _ => {}
                     }
                 }
-                Action::ToggleStep { .. } => {
+                Action::ToggleStep { col } => {
                     let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
                     let pw = self.model.page_windows[self.model.active_track];
+                    let global_step = pw * GRID_STEPS + col;
+                    self.model.last_step[self.model.active_track] = Some(global_step);
                     let outcome = action.execute(self.model.clock_id, seq_id, pw, playing);
                     match outcome {
                         Outcome::Command(cmd) => self.pending.push(cmd),
@@ -282,6 +364,53 @@ impl TheotokosApp {
                     }
                 }
                 Action::Noop => {}
+                Action::FocusStep => {
+                    let track = self.model.active_track;
+                    if self.model.step_focus[track].is_some() {
+                        self.model.step_focus[track] = None;
+                    } else if let Some(ls) = self.model.last_step[track] {
+                        self.model.step_focus[track] = Some(ls);
+                    }
+                    dirty = true;
+                }
+                Action::ReleaseFocus => {
+                    self.model.step_focus[self.model.active_track] = None;
+                    dirty = true;
+                }
+                Action::ClearAllLocks => {
+                    let track = self.model.active_track;
+                    if let Some(step) = self.model.step_focus[track] {
+                        let seq_id = self.model.tracks[track].sequencer_id;
+                        self.pending.push(NodeCommand {
+                            target_id: seq_id,
+                            type_id: CMD_CLEAR_STEP_LOCK,
+                            arg0: step as i64,
+                            arg1: -1.0,
+                        });
+                        dirty = true;
+                    }
+                }
+                Action::ClearSlotLocks => {
+                    let track = self.model.active_track;
+                    if let Some(step) = self.model.step_focus[track] {
+                        let seq_id = self.model.tracks[track].sequencer_id;
+                        if let Some(ref slot) = self.model.slot_a {
+                            self.pending.push(NodeCommand {
+                                target_id: seq_id,
+                                type_id: CMD_SET_LOCK_TARGET,
+                                arg0: slot.node_id as i64,
+                                arg1: slot.param_id as f64,
+                            });
+                            self.pending.push(NodeCommand {
+                                target_id: seq_id,
+                                type_id: CMD_CLEAR_STEP_LOCK,
+                                arg0: step as i64,
+                                arg1: slot.param_id as f64,
+                            });
+                            dirty = true;
+                        }
+                    }
+                }
                 Action::ToggleMute(i) => {
                     if i < self.model.tracks.len() {
                         let seq_id = self.model.tracks[i].sequencer_id;
@@ -356,8 +485,10 @@ fn pop_keyboard_flags() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::Mode;
+    use crate::model::SlotBinding;
     use crossterm::event::{KeyCode, KeyModifiers};
-    use paraclete_node_api::{CapabilityDocument, ParamDescriptor, ParamUnit};
+    use paraclete_node_api::{CapabilityDocument, ParamDescriptor, ParamUnit, StateBusValue};
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -613,5 +744,297 @@ mod tests {
         app.handle_keys(&bus, &[shift_key('q')]);
         let cmd = &app.pending[0];
         assert!((cmd.arg1 - 0.0).abs() < 0.001, "must flip 1.0 → 0.0");
+    }
+
+    // ── C5: p-lock UI tests ──
+
+    fn enter_key() -> KeyEvent {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+    }
+
+    fn esc_key() -> KeyEvent {
+        KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)
+    }
+
+    fn backspace_key() -> KeyEvent {
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)
+    }
+
+    fn shift_backspace_key() -> KeyEvent {
+        KeyEvent::new(KeyCode::Backspace, KeyModifiers::SHIFT)
+    }
+
+    fn setup_bus_with_params(bus: &BusHandle, seq_id: u32, gen_id: u32, steps_active: bool) {
+        let mut b = bus.borrow_mut();
+        let steps: String = (0..16)
+            .map(|_| if steps_active { '1' } else { '0' })
+            .collect();
+        b.write("/transport/playing", StateBusValue::Bool(true));
+        b.write("/transport/bpm", StateBusValue::Float(120.0));
+        b.write(
+            &format!("/node/{}/state/current_step", seq_id),
+            StateBusValue::Int(0),
+        );
+        b.write(
+            &format!("/node/{}/state/pattern_length", seq_id),
+            StateBusValue::Int(16),
+        );
+        b.write(
+            &format!("/node/{}/state/steps", seq_id),
+            StateBusValue::Text(steps),
+        );
+        b.write(
+            &format!("/node/{}/param/decay", gen_id),
+            StateBusValue::Float(0.5),
+        );
+    }
+
+    fn setup_slots(app: &mut TheotokosApp) {
+        app.model.slot_a = Some(SlotBinding {
+            node_id: 100,
+            param_id: ParamDescriptor::id_for_name("decay"),
+            param_name: "decay".into(),
+            min: 0.0,
+            max: 1.0,
+        });
+        app.model.slot_b = Some(SlotBinding {
+            node_id: 100,
+            param_id: ParamDescriptor::id_for_name("tune"),
+            param_name: "tune".into(),
+            min: 0.0,
+            max: 1.0,
+        });
+    }
+
+    #[test]
+    fn enter_focuses_last_toggled_step() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.model.last_step[0] = Some(3);
+        app.handle_keys(&bus, &[enter_key()]);
+        assert_eq!(
+            app.model.step_focus[0],
+            Some(3),
+            "Enter must focus last_step"
+        );
+
+        app.handle_keys(&bus, &[enter_key()]);
+        assert_eq!(
+            app.model.step_focus[0], None,
+            "second Enter must release focus"
+        );
+    }
+
+    #[test]
+    fn esc_releases_focus() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.model.step_focus[0] = Some(5);
+        app.handle_keys(&bus, &[esc_key()]);
+        assert_eq!(app.model.step_focus[0], None, "Esc must release focus");
+    }
+
+    #[test]
+    fn enter_focuses_in_seq_jog_edits_in_perf() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+        setup_slots(&mut app);
+        app.model.last_step[0] = Some(2);
+        app.handle_keys(&bus, &[enter_key()]);
+        assert!(
+            app.model.step_focus[0].is_some(),
+            "Enter must focus in SEQ mode"
+        );
+
+        app.model.mode = Mode::Perf;
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        app.handle_keys(&bus, &[up]);
+        assert!(
+            !app.pending.is_empty(),
+            "jog while focused in PERF must emit lock commands"
+        );
+        // Verify the emitted commands are lock pairs, not bump_param
+        assert_eq!(app.pending[0].type_id, CMD_SET_LOCK_TARGET);
+        assert_eq!(app.pending[1].type_id, CMD_SET_STEP_LOCK);
+    }
+
+    #[test]
+    fn jog_while_focused_emits_target_then_lock_pair() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+        setup_slots(&mut app);
+
+        app.model.mode = Mode::Perf;
+        app.model.step_focus[0] = Some(4);
+
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        app.handle_keys(&bus, &[up]);
+
+        assert_eq!(app.pending.len(), 2, "must emit pair: target + lock");
+        assert_eq!(
+            app.pending[0].type_id, CMD_SET_LOCK_TARGET,
+            "first cmd must be CMD_SET_LOCK_TARGET"
+        );
+        assert_eq!(
+            app.pending[1].type_id, CMD_SET_STEP_LOCK,
+            "second cmd must be CMD_SET_STEP_LOCK"
+        );
+        assert_eq!(app.pending[0].target_id, 200, "target must be sequencer");
+        assert_eq!(app.pending[1].target_id, 200, "target must be sequencer");
+        assert_eq!(app.pending[1].arg0, 4, "step arg must be focused step");
+    }
+
+    #[test]
+    fn jog_lock_value_starts_from_existing_lock() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+        setup_slots(&mut app);
+        // Pre-populate a lock for step 2, node 100 (generator), param decay
+        {
+            let mut b = bus.borrow_mut();
+            let decay_id = ParamDescriptor::id_for_name("decay");
+            b.write(
+                "/node/200/state/locks",
+                StateBusValue::Text(format!("s2:100:{}:0.300000", decay_id)),
+            );
+        }
+
+        app.model.mode = Mode::Perf;
+        app.model.step_focus[0] = Some(2);
+
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        app.handle_keys(&bus, &[up]);
+
+        // The new value should be based on 0.3 + jog delta, not 0.5 + delta
+        assert_eq!(app.pending.len(), 2);
+        // Verify arg1 is based on the lock value (0.3 + delta)
+        assert!(
+            app.pending[1].arg1 > 0.3 && app.pending[1].arg1 < 0.32,
+            "lock value must start from existing lock 0.3, got {}",
+            app.pending[1].arg1
+        );
+    }
+
+    #[test]
+    fn jog_lock_value_starts_from_live_when_no_lock() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+        setup_slots(&mut app);
+        // No lock set — should fall back to live bus value (0.5)
+
+        app.model.mode = Mode::Perf;
+        app.model.step_focus[0] = Some(3);
+
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        app.handle_keys(&bus, &[up]);
+
+        assert_eq!(app.pending.len(), 2);
+        assert!(
+            app.pending[1].arg1 > 0.5 && app.pending[1].arg1 < 0.52,
+            "lock value must start from live bus 0.5, got {}",
+            app.pending[1].arg1
+        );
+    }
+
+    #[test]
+    fn jog_without_focus_still_bumps_param() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+        setup_slots(&mut app);
+
+        app.model.mode = Mode::Perf;
+        // No focus set
+
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        app.handle_keys(&bus, &[up]);
+
+        assert_eq!(app.pending.len(), 1);
+        assert_eq!(
+            app.pending[0].type_id,
+            paraclete_node_api::CMD_BUMP_PARAM,
+            "without focus, jog must emit CMD_BUMP_PARAM"
+        );
+    }
+
+    #[test]
+    fn backspace_clears_all_lanes() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.model.step_focus[0] = Some(3);
+        app.handle_keys(&bus, &[backspace_key()]);
+
+        assert_eq!(app.pending.len(), 1);
+        assert_eq!(app.pending[0].type_id, CMD_CLEAR_STEP_LOCK);
+        assert_eq!(app.pending[0].target_id, 200);
+        assert_eq!(app.pending[0].arg0, 3);
+        assert_eq!(app.pending[0].arg1, -1.0, "arg1=-1.0 clears all lanes");
+    }
+
+    #[test]
+    fn shift_backspace_emits_target_then_clear_pair() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+        setup_slots(&mut app);
+        app.model.step_focus[0] = Some(5);
+        app.handle_keys(&bus, &[shift_backspace_key()]);
+
+        assert_eq!(app.pending.len(), 2, "Shift+Backspace emits pair");
+        assert_eq!(app.pending[0].type_id, CMD_SET_LOCK_TARGET);
+        assert_eq!(app.pending[1].type_id, CMD_CLEAR_STEP_LOCK);
+        assert_eq!(
+            app.pending[1].arg1, app.pending[0].arg1,
+            "clear arg1 must match target arg1 (param_id)"
+        );
+    }
+
+    #[test]
+    fn parse_lock_value_finds_exact_match() {
+        let locks = "s2:100:500:0.300;s3:100:500:0.700;s0:200:600:0.100";
+        assert_eq!(Model::parse_lock_value(locks, 2, 100, 500), Some(0.3));
+        assert_eq!(Model::parse_lock_value(locks, 3, 100, 500), Some(0.7));
+        assert_eq!(Model::parse_lock_value(locks, 0, 200, 600), Some(0.1));
+    }
+
+    #[test]
+    fn parse_lock_value_returns_none_for_mismatch() {
+        let locks = "s2:100:500:0.300";
+        assert_eq!(Model::parse_lock_value(locks, 2, 100, 999), None);
+        assert_eq!(Model::parse_lock_value(locks, 9, 100, 500), None);
+        assert_eq!(Model::parse_lock_value("", 2, 100, 500), None);
+    }
+
+    #[test]
+    fn backspace_noop_when_not_focused() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[backspace_key()]);
+        assert!(app.pending.is_empty(), "Backspace without focus is no-op");
+    }
+
+    #[test]
+    fn enter_without_last_step_does_not_focus() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[enter_key()]);
+        assert_eq!(
+            app.model.step_focus[0], None,
+            "Enter without last_step must not set focus"
+        );
     }
 }

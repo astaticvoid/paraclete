@@ -1,6 +1,6 @@
 use ratatui::{
     layout::{Constraint, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Gauge, Paragraph},
     Frame,
@@ -27,6 +27,10 @@ pub struct RenderData {
     pub perf_page: usize,
     pub envelope: Option<(EnvelopeData, f64)>,
     pub debug_event: Option<String>,
+    pub step_focuses: Vec<Option<usize>>,
+    pub step_locks: Vec<Vec<usize>>,
+    pub slot_a_locked: bool,
+    pub slot_b_locked: bool,
 }
 
 pub fn render(frame: &mut Frame, data: &RenderData) {
@@ -78,11 +82,17 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
 fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
     let mut rows: Vec<Line> = Vec::with_capacity(data.track_names.len().max(1) * 5);
     for t in 0..data.track_names.len() {
-        rows.push(render_track_row(t, data, 0, true)); // upper top   (label)
-        rows.push(render_track_row(t, data, 0, false)); // upper bot   (no label)
+        let focus = data.step_focuses.get(t).copied().flatten();
+        let locks: std::collections::HashSet<usize> = data
+            .step_locks
+            .get(t)
+            .map(|v| v.iter().copied().collect())
+            .unwrap_or_default();
+        rows.push(render_track_row(t, data, 0, true, focus, &locks));
+        rows.push(render_track_row(t, data, 0, false, focus, &locks));
         rows.push(Line::from(""));
-        rows.push(render_track_row(t, data, PAGE_SIZE, false)); // lower top
-        rows.push(render_track_row(t, data, PAGE_SIZE, false)); // lower bot
+        rows.push(render_track_row(t, data, PAGE_SIZE, false, focus, &locks));
+        rows.push(render_track_row(t, data, PAGE_SIZE, false, focus, &locks));
         if t + 1 < data.track_names.len() {
             rows.push(Line::from(""));
         }
@@ -96,12 +106,14 @@ fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
     frame.render_widget(para, area);
 }
 
-fn render_track_row(
+fn render_track_row<'a>(
     track_idx: usize,
-    data: &RenderData,
+    data: &'a RenderData,
     row_off: usize,
     show_label: bool,
-) -> Line<'_> {
+    focus: Option<usize>,
+    locks: &std::collections::HashSet<usize>,
+) -> Line<'a> {
     let st = data.step_states.get(track_idx).unwrap_or(&data.step_state);
     let window = data.page_window * PAGE_SIZE * 2 + row_off;
     let mut spans: Vec<Span> = Vec::with_capacity(PAGE_SIZE + 2);
@@ -124,15 +136,27 @@ fn render_track_row(
         let step = window + col;
         let is_active = st.steps.get(step).copied().unwrap_or(false);
 
-        let (glyph, color) = if step == st.current_step {
-            (" ████ ", Color::Yellow)
+        let is_locked = locks.contains(&step);
+        let focused = focus == Some(step);
+
+        let (glyph, color, modifier) = if focused {
+            (" ████ ", Color::Yellow, Modifier::REVERSED)
+        } else if step == st.current_step {
+            (" ████ ", Color::Yellow, Modifier::empty())
+        } else if is_active && is_locked {
+            (" ████ ", Color::Green, Modifier::empty())
         } else if is_active {
-            (" ████ ", Color::Cyan)
+            (" ████ ", Color::Cyan, Modifier::empty())
+        } else if is_locked {
+            (" ████ ", Color::White, Modifier::empty())
         } else {
-            (" ░░░░ ", Color::DarkGray)
+            (" ░░░░ ", Color::DarkGray, Modifier::empty())
         };
 
-        spans.push(Span::styled(glyph, Style::default().fg(color)));
+        spans.push(Span::styled(
+            glyph,
+            Style::default().fg(color).add_modifier(modifier),
+        ));
         spans.push(Span::raw(" "));
     }
 
@@ -200,6 +224,10 @@ fn render_mode_line(frame: &mut Frame, area: Rect, data: &RenderData) {
         Span::raw(" "),
     ];
 
+    if let Some(sf) = data.step_focuses.get(data.active_track).copied().flatten() {
+        spans.push(Span::raw(format!("F:s{} ", sf)));
+    }
+
     if data.mode == Mode::Seq {
         let page_info = format!(
             "P{}/{}",
@@ -208,12 +236,14 @@ fn render_mode_line(frame: &mut Frame, area: Rect, data: &RenderData) {
         );
         spans.push(Span::raw(page_info));
     } else {
+        let a_lock = if data.slot_a_locked { "L" } else { "" };
         let a_text = match &data.slot_a {
-            Some(s) => format!(" A:{}={:.3}", s.param_name, data.slot_a_value),
+            Some(s) => format!(" A:{}={:.3}{}", s.param_name, data.slot_a_value, a_lock),
             None => " A:--".to_string(),
         };
+        let b_lock = if data.slot_b_locked { "L" } else { "" };
         let b_text = match &data.slot_b {
-            Some(s) => format!(" B:{}={:.3}", s.param_name, data.slot_b_value),
+            Some(s) => format!(" B:{}={:.3}{}", s.param_name, data.slot_b_value, b_lock),
             None => " B:--".to_string(),
         };
         spans.push(Span::raw(format!("{} {}", a_text, b_text)));
@@ -255,6 +285,10 @@ mod tests {
             perf_page: 0,
             envelope: None,
             debug_event: None,
+            step_focuses: vec![None; 2],
+            step_locks: vec![vec![]; 2],
+            slot_a_locked: false,
+            slot_b_locked: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
     }
@@ -302,6 +336,10 @@ mod tests {
                 0.42,
             )),
             debug_event: None,
+            step_focuses: vec![None; 1],
+            step_locks: vec![vec![]; 1],
+            slot_a_locked: false,
+            slot_b_locked: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
     }
@@ -331,6 +369,10 @@ mod tests {
             perf_page: 0,
             envelope: None,
             debug_event: None,
+            step_focuses: vec![None; 4],
+            step_locks: vec![vec![]; 4],
+            slot_a_locked: false,
+            slot_b_locked: false,
         };
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();

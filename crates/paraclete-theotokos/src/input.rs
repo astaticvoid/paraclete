@@ -52,7 +52,15 @@ fn map_global(ev: &KeyEvent) -> Option<Action> {
             Some(Action::CycleMode(dir))
         }
         KeyCode::Char(' ') => Some(Action::PlayToggle),
-        KeyCode::Esc => Some(Action::Noop),
+        KeyCode::Esc => Some(Action::ReleaseFocus),
+        KeyCode::Enter => Some(Action::FocusStep),
+        KeyCode::Backspace => {
+            if ev.modifiers.contains(KeyModifiers::SHIFT) {
+                Some(Action::ClearSlotLocks)
+            } else {
+                Some(Action::ClearAllLocks)
+            }
+        }
         _ => {
             if let Some(col) = step_col(ev.code) {
                 return Some(Action::ToggleStep { col });

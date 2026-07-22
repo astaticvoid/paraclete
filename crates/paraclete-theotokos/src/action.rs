@@ -5,6 +5,10 @@ pub const CMD_CLOCK_START: u32 = 16;
 pub const CMD_CLOCK_STOP: u32 = 17;
 pub const CMD_TOGGLE_STEP: u32 = 16;
 pub const GRID_STEPS: usize = 16;
+/// TK1 C5: lock command family (mirrors Sequencer constants).
+pub const CMD_SET_LOCK_TARGET: u32 = 33;
+pub const CMD_SET_STEP_LOCK: u32 = 34;
+pub const CMD_CLEAR_STEP_LOCK: u32 = 35;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Action {
@@ -17,6 +21,10 @@ pub enum Action {
     SelectParamPage(usize),
     Jog { slot: Slot, dir: Dir, mag: Mag },
     ToggleMute(usize),
+    FocusStep,
+    ReleaseFocus,
+    ClearAllLocks,
+    ClearSlotLocks,
     Noop,
 }
 
@@ -36,7 +44,11 @@ impl Action {
             | Action::SelectTrack(_)
             | Action::PageWindow(_)
             | Action::SelectParamPage(_)
-            | Action::Jog { .. } => Outcome::StateOnly,
+            | Action::Jog { .. }
+            | Action::FocusStep
+            | Action::ReleaseFocus
+            | Action::ClearAllLocks
+            | Action::ClearSlotLocks => Outcome::StateOnly,
             Action::PlayToggle => {
                 if playing {
                     Outcome::Command(NodeCommand {
