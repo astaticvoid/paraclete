@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use paraclete_antiphon::protocol::{NodeSummary, ParamSummary, TransportSummary};
-use paraclete_antiphon::view::{TrackChain, ViewRegistry};
+use paraclete_antiphon::view::ViewRegistry;
 use paraclete_antiphon::{AntiphonConfig, AntiphonHandle, AntiphonServer};
 use paraclete_app::builder::{build_from_instrument, load_instrument_definition, InstrumentIds};
 use paraclete_app::instrument::InstrumentDefinition;
@@ -26,6 +26,7 @@ use paraclete_runtime::NodeConfigurator;
 use paraclete_scripting::ScriptingEngine;
 use paraclete_theotokos::{TheotokosApp, TheotokosConfig};
 use paraclete_tui::{TuiApp, TuiConfig};
+use paraclete_view_assembly::{NodeInfo, TrackChain};
 
 const BLOCK_SIZE: usize = 512;
 
@@ -770,59 +771,124 @@ fn collect_node_summaries(conf: &NodeConfigurator, ids: &InstrumentIds) -> Vec<N
 }
 
 fn build_view_registry(conf: &NodeConfigurator, summaries: &[NodeSummary]) -> ViewRegistry {
+    use paraclete_node_api::{CapabilityDocument, PortType};
+
     let mut rules: HashMap<u32, paraclete_node_api::Rule> = HashMap::new();
 
+    // Build NodeInfo from cap-docs + instrument labels.
+    let mut node_infos: HashMap<u32, NodeInfo> = HashMap::new();
     for s in summaries {
         if let Some(doc) = conf.get_node_cap_doc(s.id) {
-            if let Some(rule) = doc.view {
+            if let Some(rule) = doc.view.clone() {
                 rules.insert(s.id, rule);
             }
+            let params: Vec<(u32, String)> = doc
+                .params
+                .iter()
+                .map(|p| (p.id, p.name.to_string()))
+                .collect();
+            node_infos.insert(
+                s.id,
+                NodeInfo {
+                    display_name: if s.name != doc.name.as_ref() {
+                        Some(s.name.clone())
+                    } else {
+                        None
+                    },
+                    params,
+                },
+            );
         }
     }
 
+    // Edge-derived chains: follow audio edges from each engine to the first
+    // mix/audio_output, collecting rule-bearing chain nodes.  Also derive
+    // sequencer→engine event-edge pairs for the track map.
+    let edges: Vec<(u32, u32)> = conf.all_edges().map(|e| (e.src_node, e.dst_node)).collect();
+
+    // Build a quick lookup: node_id -> cap_doc (for port-type checks).
+    let caps: HashMap<u32, CapabilityDocument> = summaries
+        .iter()
+        .filter_map(|s| conf.get_node_cap_doc(s.id).map(|d| (s.id, d)))
+        .collect();
+
+    fn is_audio_in(caps: &HashMap<u32, CapabilityDocument>, nid: u32) -> bool {
+        caps.get(&nid)
+            .map(|d| {
+                d.ports.iter().any(|p| {
+                    p.port_type == PortType::Audio
+                        && p.direction == paraclete_node_api::PortDirection::Input
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    fn is_audio_out(caps: &HashMap<u32, CapabilityDocument>, nid: u32) -> bool {
+        caps.get(&nid)
+            .map(|d| {
+                d.ports.iter().any(|p| {
+                    p.port_type == PortType::Audio
+                        && p.direction == paraclete_node_api::PortDirection::Output
+                })
+            })
+            .unwrap_or(false)
+    }
+
+    // TK1 C2: include clap_plugin engines.
+    let engine_type_tags: &[&str] = &[
+        "analog_engine:kick",
+        "analog_engine:snare",
+        "analog_engine:hihat",
+        "fm_engine:kick",
+        "fm_engine:bell",
+        "fm_engine:bass",
+        "sampler",
+        "clap_plugin",
+    ];
     let engine_ids: Vec<u32> = summaries
         .iter()
-        .filter(|s| {
-            s.type_tag == "analog_engine:kick"
-                || s.type_tag == "analog_engine:snare"
-                || s.type_tag == "analog_engine:hihat"
-                || s.type_tag == "fm_engine:kick"
-                || s.type_tag == "fm_engine:bell"
-                || s.type_tag == "fm_engine:bass"
-                || s.type_tag == "sampler"
-        })
+        .filter(|s| engine_type_tags.contains(&s.type_tag.as_str()))
         .map(|s| s.id)
         .collect();
 
-    // Per-track chains: engine → shared effects
-    // Use the first filter/distortion/reverb found in the node list
-    let first_filter = summaries
+    // Deduplicate with any node that has audio output and a view Rule
+    // (covers engines whose type_tag isn't in the explicit list, including
+    // clap_plugin — review m10).
+    let mut engine_set: std::collections::BTreeSet<u32> = engine_ids.into_iter().collect();
+    for (nid, _rule) in &rules {
+        if is_audio_out(&caps, *nid) {
+            engine_set.insert(*nid);
+        }
+    }
+    let engine_ids: Vec<u32> = engine_set.into_iter().collect();
+
+    // Audio-edge traversal: follow audio out → audio in edges from each engine,
+    // stopping before mix/audio_output.  This is a BFS over the small graph.
+    let mix_ids: std::collections::HashSet<u32> = summaries
         .iter()
-        .find(|s| s.type_tag == "filter")
+        .filter(|s| s.type_tag == "mix" || s.type_tag == "audio_output")
         .map(|s| s.id)
-        .unwrap_or(0);
-    let first_dist = summaries
-        .iter()
-        .find(|s| s.type_tag == "distortion")
-        .map(|s| s.id)
-        .unwrap_or(0);
-    let reverb = summaries
-        .iter()
-        .find(|s| s.type_tag == "reverb")
-        .map(|s| s.id)
-        .unwrap_or(0);
+        .collect();
 
     let mut chains: Vec<TrackChain> = Vec::new();
     for &engine_id in &engine_ids {
         let mut chain_ids = Vec::new();
-        if first_dist != 0 {
-            chain_ids.push(first_dist);
-        }
-        if first_filter != 0 {
-            chain_ids.push(first_filter);
-        }
-        if reverb != 0 {
-            chain_ids.push(reverb);
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(engine_id);
+        let mut frontier: Vec<u32> = vec![engine_id];
+        while let Some(current) = frontier.pop() {
+            for &(src, tgt) in &edges {
+                if src == current && !visited.contains(&tgt) && !mix_ids.contains(&tgt) {
+                    if is_audio_out(&caps, src) && is_audio_in(&caps, tgt) {
+                        visited.insert(tgt);
+                        // Only include chain nodes that have a view Rule.
+                        if rules.contains_key(&tgt) {
+                            chain_ids.push(tgt);
+                        }
+                        frontier.push(tgt);
+                    }
+                }
+            }
         }
         chains.push(TrackChain {
             engine_node_id: engine_id,
@@ -830,7 +896,11 @@ fn build_view_registry(conf: &NodeConfigurator, summaries: &[NodeSummary]) -> Vi
         });
     }
 
-    ViewRegistry { rules, chains }
+    ViewRegistry {
+        rules,
+        chains,
+        node_infos,
+    }
 }
 
 fn build_constants(

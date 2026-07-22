@@ -26,6 +26,7 @@ paraclete-theotokos    = { path = "../paraclete-theotokos" }
 paraclete-clap-host   = { path = "../paraclete-clap-host" }
 paraclete-graph-nodes = { workspace = true }
 paraclete-antiphon    = { workspace = true }
+paraclete-view-assembly = { workspace = true }
 fastrand  = { workspace = true }
 log       = { workspace = true }
 env_logger = { workspace = true }

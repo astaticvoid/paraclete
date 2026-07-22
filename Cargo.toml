@@ -19,6 +19,7 @@ members = [
     "crates/paraclete-clap-host",
     "crates/paraclete-graph-nodes",
     "crates/paraclete-antiphon",
+    "crates/paraclete-view-assembly",
     "tools/gen-samples",
     "tools/lpx-debug",
     "tools/test-driver",
@@ -39,7 +40,8 @@ paraclete-scripting   = { path = "crates/paraclete-scripting" }
 paraclete-clap        = { path = "crates/paraclete-clap" }
 paraclete-clap-host   = { path = "crates/paraclete-clap-host" }
 paraclete-graph-nodes = { path = "crates/paraclete-graph-nodes" }
-paraclete-antiphon    = { path = "crates/paraclete-antiphon" }
+paraclete-antiphon      = { path = "crates/paraclete-antiphon" }
+paraclete-view-assembly = { path = "crates/paraclete-view-assembly" }
 clap-sys            = "0.5"
 libloading          = "0.8"
 tungstenite         = "0.21"

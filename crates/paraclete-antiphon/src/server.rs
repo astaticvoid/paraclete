@@ -168,7 +168,7 @@ pub fn route_frame(msg: ClientMsg, session: &SessionInfo) -> FrameAction {
         ClientMsg::Hello { .. } => FrameAction::Drop("duplicate hello"),
         ClientMsg::PadPres { .. } => FrameAction::Drop("pad_pres is W1+"),
         ClientMsg::GetViewMeta { track_id, nonce } => {
-            match session.view_registry.assemble(track_id, nonce, &session.nodes) {
+            match session.view_registry.assemble(track_id, nonce) {
                 Some(msg) => FrameAction::ViewMeta(msg),
                 None => FrameAction::Drop("get_view_meta: unknown track"),
             }
@@ -410,6 +410,7 @@ mod tests {
             view_registry: ViewRegistry {
                 rules: HashMap::new(),
                 chains: Vec::new(),
+                node_infos: HashMap::new(),
             },
         }
     }
@@ -554,7 +555,7 @@ mod tests {
                 playing: false,
                 bpm: 120.0,
             },
-            view_registry: ViewRegistry { rules: HashMap::new(), chains: Vec::new() },
+            view_registry: ViewRegistry { rules: HashMap::new(), chains: Vec::new(), node_infos: HashMap::new() },
         };
         // A sane per-detent delta passes through unclamped…
         let FrameAction::Command(cmd) = route_frame(
@@ -633,6 +634,7 @@ mod semantic_tests {
             view_registry: ViewRegistry {
                 rules: HashMap::new(),
                 chains: Vec::new(),
+                node_infos: HashMap::new(),
             },
         }
     }

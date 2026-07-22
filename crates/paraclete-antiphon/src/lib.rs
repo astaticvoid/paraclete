@@ -412,6 +412,7 @@ mod tests {
             crate::view::ViewRegistry {
                 rules: HashMap::new(),
                 chains: Vec::new(),
+                node_infos: HashMap::new(),
             },
         )
         .expect("spawn");

@@ -8,8 +8,9 @@ authors.workspace      = true
 rust-version.workspace = true
 
 [dependencies]
-paraclete-node-api = { workspace = true }
-tungstenite        = { workspace = true }
+paraclete-node-api       = { workspace = true }
+paraclete-view-assembly  = { workspace = true }
+tungstenite              = { workspace = true }
 tiny_http          = { workspace = true }
 serde              = { workspace = true }
 serde_json         = { workspace = true }

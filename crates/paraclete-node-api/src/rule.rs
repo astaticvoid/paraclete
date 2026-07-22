@@ -91,7 +91,7 @@ pub enum MacroCurve {
 // ── AffordanceHint ─────────────────────────────────────────────────────────────
 
 /// What to draw beside a parameter value in the contextual window.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 pub enum AffordanceHint {
     None,

@@ -1,0 +1,11 @@
+[package]
+name         = "paraclete-view-assembly"
+description  = "Composite track-rule assembly shared by Antiphon and Theotokos (TK1 C2, ADR-036)."
+license      = "GPL-3.0-or-later"
+version.workspace      = true
+edition.workspace      = true
+authors.workspace      = true
+rust-version.workspace = true
+
+[dependencies]
+paraclete-node-api = { workspace = true }
