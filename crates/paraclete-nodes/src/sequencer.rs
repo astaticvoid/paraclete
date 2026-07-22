@@ -848,14 +848,16 @@ impl Sequencer {
                         }
                         self.emit_note_on_at(self.current_step, note_off, output);
                         for lock in &self.patterns[pat].steps[self.current_step].param_locks {
-                            output.events_out.push(TimedEvent::new(
-                                note_off,
-                                Event::ParamLock(ParamLockEvent {
-                                    node_id: lock.node_id,
-                                    param_id: lock.param_id,
-                                    value: lock.value,
-                                }),
-                            ));
+                            if !self.is_muted() {
+                                output.events_out.push(TimedEvent::new(
+                                    note_off,
+                                    Event::ParamLock(ParamLockEvent {
+                                        node_id: lock.node_id,
+                                        param_id: lock.param_id,
+                                        value: lock.value,
+                                    }),
+                                ));
+                            }
                         }
                     }
                 }
@@ -898,14 +900,16 @@ impl Sequencer {
                     let note_off = sample_offset + self.step_sample_offset(wstart, spb);
                     self.emit_note_on_at(wstart, note_off, output);
                     for lock in &self.patterns[pat].steps[wstart].param_locks {
-                        output.events_out.push(TimedEvent::new(
-                            note_off,
-                            Event::ParamLock(ParamLockEvent {
-                                node_id: lock.node_id,
-                                param_id: lock.param_id,
-                                value: lock.value,
-                            }),
-                        ));
+                        if !self.is_muted() {
+                            output.events_out.push(TimedEvent::new(
+                                note_off,
+                                Event::ParamLock(ParamLockEvent {
+                                    node_id: lock.node_id,
+                                    param_id: lock.param_id,
+                                    value: lock.value,
+                                }),
+                            ));
+                        }
                     }
                 }
             }
@@ -956,14 +960,16 @@ impl Sequencer {
                         }
                         self.emit_note_on_at(next, sample_offset, output);
                         for lock in &self.patterns[pat].steps[next].param_locks {
-                            output.events_out.push(TimedEvent::new(
-                                sample_offset,
-                                Event::ParamLock(ParamLockEvent {
-                                    node_id: lock.node_id,
-                                    param_id: lock.param_id,
-                                    value: lock.value,
-                                }),
-                            ));
+                            if !self.is_muted() {
+                                output.events_out.push(TimedEvent::new(
+                                    sample_offset,
+                                    Event::ParamLock(ParamLockEvent {
+                                        node_id: lock.node_id,
+                                        param_id: lock.param_id,
+                                        value: lock.value,
+                                    }),
+                                ));
+                            }
                         }
                     }
                     self.early_fired = Some(next);
@@ -1022,21 +1028,30 @@ impl Sequencer {
                     let note_off = sample_offset + self.step_sample_offset(self.current_step, spb);
                     self.emit_note_on_at(self.current_step, note_off, output);
                     for lock in &self.patterns[pat].steps[self.current_step].param_locks {
-                        output.events_out.push(TimedEvent::new(
-                            note_off,
-                            Event::ParamLock(ParamLockEvent {
-                                node_id: lock.node_id,
-                                param_id: lock.param_id,
-                                value: lock.value,
-                            }),
-                        ));
+                        if !self.is_muted() {
+                            output.events_out.push(TimedEvent::new(
+                                note_off,
+                                Event::ParamLock(ParamLockEvent {
+                                    node_id: lock.node_id,
+                                    param_id: lock.param_id,
+                                    value: lock.value,
+                                }),
+                            ));
+                        }
                     }
                 }
             }
         }
     }
 
+    fn is_muted(&self) -> bool {
+        self.bank.get(ParamDescriptor::id_for_name("mute")) >= 0.5
+    }
+
     fn emit_note_on_at(&mut self, step_idx: usize, sample_offset: u32, output: &mut ProcessOutput) {
+        if self.is_muted() {
+            return;
+        }
         let pat = self.active_index();
         let step = &self.patterns[pat].steps[step_idx];
         self.active_note = step.note;
@@ -1154,6 +1169,16 @@ impl Node for Sequencer {
                     max: 0.5,
                     default: 0.0,
                     stepped: false,
+                    unit: ParamUnit::Generic,
+                    display: None,
+                },
+                ParamDescriptor {
+                    id: ParamDescriptor::id_for_name("mute"),
+                    name: "mute".into(),
+                    min: 0.0,
+                    max: 1.0,
+                    default: 0.0,
+                    stepped: true,
                     unit: ParamUnit::Generic,
                     display: None,
                 },
@@ -1322,6 +1347,7 @@ impl Node for Sequencer {
                 StateBusValue::Text(self.track_name.clone()),
             ));
         }
+        paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
     }
 
     fn serialize(&self) -> Vec<u8> {
@@ -1377,6 +1403,8 @@ impl Node for Sequencer {
             let record_len = (buf.len() - len_pos - 4) as u32;
             buf[len_pos..len_pos + 4].copy_from_slice(&record_len.to_le_bytes());
         }
+        let mute = self.bank.get(ParamDescriptor::id_for_name("mute"));
+        buf.push(if mute >= 0.5 { 1u8 } else { 0u8 });
         buf
     }
 
@@ -1591,6 +1619,11 @@ impl Sequencer {
         self.patterns = patterns;
         // TK1 C1: loaded locks must be published on the next cycle.
         self.locks_dirty.set(true);
+        if r.cur < r.data.len() {
+            let mute_val = if r.data[r.cur] != 0 { 1.0 } else { 0.0 };
+            self.bank
+                .set(ParamDescriptor::id_for_name("mute"), mute_val);
+        }
         // Deterministic period machinery for the loaded speed (P10 C3).
         self.reset_period();
         // Mirror the loaded swing into the bank conduit (P10 C2: the pattern
@@ -4381,5 +4414,99 @@ mod tests {
         seq.published_state(&mut state2);
         let lock_entry2 = state2.iter().find(|(k, _)| k.ends_with("/state/locks"));
         assert!(lock_entry2.is_none(), "locks must not publish when clean");
+    }
+
+    // ── TK1 C4: mute tests ────────────────────────────────────────────────
+
+    #[test]
+    fn muted_sequencer_skips_note_and_lock_emission() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.set_step(0, 60, 32768, true);
+        let mute_id = ParamDescriptor::id_for_name("mute");
+        seq.bank.set(mute_id, 1.0);
+        let events = run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        let notes: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, Event::Midi2(_)))
+            .collect();
+        assert!(notes.is_empty(), "muted seq must not emit note-on");
+
+        run_seq_with_cmds(
+            &mut seq,
+            &[
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_LOCK_TARGET,
+                    arg0: 20,
+                    arg1: 1.0,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LOCK,
+                    arg0: 0,
+                    arg1: 0.42,
+                },
+            ],
+        );
+        let ticks_per_step = TICKS_PER_BEAT / 4;
+        for t in 1..=ticks_per_step {
+            run_seq(&mut seq, &[transport_tick(t, true, false, false, false)]);
+        }
+        let events2 = run_seq(&mut seq, &[transport_tick(0, true, false, false, false)]);
+        let locks: Vec<_> = events2
+            .iter()
+            .filter(|e| matches!(e, Event::ParamLock(_)))
+            .collect();
+        assert!(locks.is_empty(), "muted seq must not emit param-locks");
+    }
+
+    #[test]
+    fn muted_sequencer_still_publishes_playhead() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        let mute_id = ParamDescriptor::id_for_name("mute");
+        seq.bank.set(mute_id, 1.0);
+        seq.set_step(0, 60, 32768, true);
+        let ticks_per_step = TICKS_PER_BEAT / 4;
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        for t in 1..=ticks_per_step {
+            run_seq(&mut seq, &[transport_tick(t, true, false, false, false)]);
+        }
+        let mut state = Vec::new();
+        seq.published_state(&mut state);
+        let current = state
+            .iter()
+            .find(|(k, _)| k.ends_with("/state/current_step"));
+        assert!(matches!(current, Some((_, StateBusValue::Int(s))) if *s >= 1));
+    }
+
+    #[test]
+
+    #[test]
+    fn mute_publishes_bank_state_path() {
+        let mut seq = Sequencer::new();
+        seq.set_node_id(200);
+        seq.activate(44100.0, 64);
+        let mut state = Vec::new();
+        seq.published_state(&mut state);
+        let mute = state.iter().find(|(k, _)| k == "/node/200/param/mute");
+        assert!(
+            mute.is_some(),
+            "mute param must be published via publish_bank_state"
+        );
+    }
+
+    #[test]
+    fn mute_roundtrips_v3_serializer() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        let mute_id = ParamDescriptor::id_for_name("mute");
+        seq.bank.set(mute_id, 1.0);
+        let blob = seq.serialize();
+        let mut restored = Sequencer::new();
+        restored.activate(44100.0, 64);
+        restored.deserialize(&blob);
+        assert_eq!(restored.bank.get(mute_id), 1.0);
     }
 }

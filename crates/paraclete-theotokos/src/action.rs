@@ -16,6 +16,7 @@ pub enum Action {
     PageWindow(Dir),
     SelectParamPage(usize),
     Jog { slot: Slot, dir: Dir, mag: Mag },
+    ToggleMute(usize),
     Noop,
 }
 
@@ -63,6 +64,7 @@ impl Action {
                 })
             }
             Action::Noop => Outcome::Noop,
+            Action::ToggleMute(_) => Outcome::StateOnly,
         }
     }
 }

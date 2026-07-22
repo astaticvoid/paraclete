@@ -282,6 +282,27 @@ impl TheotokosApp {
                     }
                 }
                 Action::Noop => {}
+                Action::ToggleMute(i) => {
+                    if i < self.model.tracks.len() {
+                        let seq_id = self.model.tracks[i].sequencer_id;
+                        let current = state
+                            .read(&format!("/node/{}/param/mute", seq_id))
+                            .and_then(|v| match v {
+                                paraclete_node_api::StateBusValue::Float(f) => Some(f),
+                                _ => None,
+                            })
+                            .unwrap_or(&0.0);
+                        let new_mute = if *current >= 0.5 { 0.0 } else { 1.0 };
+                        let mute_id = paraclete_node_api::ParamDescriptor::id_for_name("mute");
+                        self.pending.push(paraclete_node_api::NodeCommand {
+                            target_id: seq_id,
+                            type_id: paraclete_node_api::CMD_SET_PARAM,
+                            arg0: mute_id as i64,
+                            arg1: new_mute,
+                        });
+                        dirty = true;
+                    }
+                }
             }
         }
         drop(bus_ref);
@@ -547,5 +568,50 @@ mod tests {
             Some(paraclete_node_api::StateBusValue::Int(201)),
             "SelectTrack(w) must publish seq id 201"
         );
+    }
+
+    fn shift_key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)
+    }
+
+    #[test]
+    fn keymap_shift_track_toggles_mute() {
+        let bus = test_bus();
+        let mut app = test_app(
+            1,
+            vec![200, 201],
+            vec![100, 101],
+            vec!["T1".into(), "T2".into()],
+        );
+        {
+            let mut b = bus.borrow_mut();
+            b.write(
+                "/node/201/param/mute".into(),
+                paraclete_node_api::StateBusValue::Float(0.0),
+            );
+        }
+        app.handle_keys(&bus, &[shift_key('w')]);
+        let cmd = &app.pending[0];
+        assert_eq!(cmd.target_id, 201, "Shift+w targets track 1's sequencer");
+        assert_eq!(cmd.type_id, paraclete_node_api::CMD_SET_PARAM);
+        let mute_id = paraclete_node_api::ParamDescriptor::id_for_name("mute");
+        assert_eq!(cmd.arg0, mute_id as i64);
+        assert!((cmd.arg1 - 1.0).abs() < 0.001, "must set mute to 1.0");
+    }
+
+    #[test]
+    fn mute_toggle_reads_bus_and_flips_value() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        {
+            let mut b = bus.borrow_mut();
+            b.write(
+                "/node/200/param/mute".into(),
+                paraclete_node_api::StateBusValue::Float(1.0),
+            );
+        }
+        app.handle_keys(&bus, &[shift_key('q')]);
+        let cmd = &app.pending[0];
+        assert!((cmd.arg1 - 0.0).abs() < 0.001, "must flip 1.0 → 0.0");
     }
 }

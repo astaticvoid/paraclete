@@ -57,6 +57,11 @@ fn map_global(ev: &KeyEvent) -> Option<Action> {
             if let Some(col) = step_col(ev.code) {
                 return Some(Action::ToggleStep { col });
             }
+            if ev.modifiers.contains(KeyModifiers::SHIFT) {
+                if let Some(i) = track_idx(ev.code) {
+                    return Some(Action::ToggleMute(i));
+                }
+            }
             track_idx(ev.code).map(Action::SelectTrack)
         }
     }
