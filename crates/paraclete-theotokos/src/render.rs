@@ -76,11 +76,12 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
 }
 
 fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
-    let mut rows: Vec<Line> = Vec::with_capacity(data.track_names.len().max(1) * 3);
+    let mut rows: Vec<Line> = Vec::with_capacity(data.track_names.len().max(1) * 4);
     for t in 0..data.track_names.len() {
         rows.push(render_track_row(t, data, 0));
         rows.push(render_track_row(t, data, PAGE_SIZE));
         if t + 1 < data.track_names.len() {
+            rows.push(Line::from(""));
             rows.push(Line::from(""));
         }
     }
@@ -119,14 +120,15 @@ fn render_track_row(track_idx: usize, data: &RenderData, row_off: usize) -> Line
         let is_active = st.steps.get(step).copied().unwrap_or(false);
 
         let (glyph, color) = if step == st.current_step {
-            (" ▓", Color::Yellow)
+            (" ▓▓▓ ", Color::Yellow)
         } else if is_active {
-            (" █", Color::Cyan)
+            (" ███ ", Color::Cyan)
         } else {
-            (" ░", Color::DarkGray)
+            (" ░░░ ", Color::DarkGray)
         };
 
         spans.push(Span::styled(glyph, Style::default().fg(color)));
+        spans.push(Span::raw(" "));
     }
 
     Line::from(spans)
