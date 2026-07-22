@@ -90,7 +90,29 @@ post-capture artifact scans `discontinuity_lt`/`dc_offset_lt`/`dropout_lt_ms`
 clock but capture time runs ~25% slower in debug builds — leave margin in
 artifact windows around action times.
 
-## Keyboard controls (terminal emulator)
+## Keyboard controls (Theotokos is default)
+
+**Theotokos runs by default.** `cargo run` starts the keyboard-first modal
+performance terminal (16-step grid, arrow-key param jog, ADR-019 command plane).
+The legacy Launchpad-emulator grid requires `--emulator`. To run without any
+terminal UI: `--no-tui` (headless — use for debugging and test-driver).
+
+```
+SEQ mode:          asdfjkl;zxcvm,./ = 16-step grid     [] or -= = page window
+PERF mode:         1-6 = param pages    arrows = jog A/B    Shift+arrow = fine
+Global (all modes): qweruiop = tracks   Space = play/stop  Tab = cycle modes
+```
+
+**Headless debugging (use for all automated testing):**
+```bash
+cargo run -- --no-tui --no-emulator --no-antiphon
+```
+**PipeWire recovery:** if audio is lost after Paraclete exits, run:
+```bash
+target/release/paraclete --recover
+```
+
+### Legacy Launchpad emulator (`--emulator`)
 
 When no Launchpad is connected, the 8x8 grid is keyboard-driven:
 

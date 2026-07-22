@@ -82,7 +82,11 @@ fn main() {
 
     let no_tui = args.iter().any(|a| a == "--no-tui");
     let mut no_emulator = args.iter().any(|a| a == "--no-emulator");
-    let theotokos = args.iter().any(|a| a == "--theotokos");
+    let emulator = args.iter().any(|a| a == "--emulator");
+    // Theotokos is the default keyboard-first surface (always, unless
+    // --no-tui for headless or --emulator for the legacy Launchpad grid).
+    // Kept --theotokos as an explicit no-op for compatibility.
+    let theotokos = !no_tui && !emulator;
     if theotokos {
         no_emulator = true;
     }
@@ -279,6 +283,10 @@ fn main() {
     let bus_handle = conf.state_bus_handle();
     let executor = conf.build_executor();
 
+    // Recover from any previous PipeWire stranding before opening ALSA.
+    #[cfg(target_os = "linux")]
+    recover_audio_sink();
+
     let _audio = match AudioBackend::start(executor) {
         Ok(b) => {
             eprintln!("[paraclete] audio running — Esc or Ctrl-C to stop");
@@ -364,7 +372,7 @@ fn main() {
     type CrosstermTerminal = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>;
     let mut tui_opt: Option<(TuiApp, CrosstermTerminal)> = None;
     let mut theotokos_opt: Option<(TheotokosApp, CrosstermTerminal)> = None;
-    if theotokos && !no_tui {
+    if theotokos {
         match setup_terminal() {
             Ok(terminal) => {
                 let gen_names: Vec<String> = ids
@@ -393,7 +401,7 @@ fn main() {
             }
             Err(e) => eprintln!("[paraclete] Theotokos terminal setup failed: {e}"),
         }
-    } else if paraclete_app::tui_enabled(no_tui) {
+    } else if emulator && !no_tui {
         let tui_config = TuiConfig {
             clock_id: ids.clock,
             seq_ids: ids.sequencers.clone(),
@@ -937,9 +945,9 @@ fn recover_audio_sink() {
         return;
     }
 
-    eprintln!("[paraclete] audio sink missing — restarting pipewire-pulse");
+    eprintln!("[paraclete] audio sink missing — restarting pipewire");
     let _ = std::process::Command::new("systemctl")
-        .args(["--user", "restart", "pipewire-pulse"])
+        .args(["--user", "restart", "pipewire", "pipewire-pulse"])
         .output();
 }
 
