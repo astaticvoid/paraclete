@@ -4482,7 +4482,6 @@ mod tests {
     }
 
     #[test]
-
     #[test]
     fn mute_publishes_bank_state_path() {
         let mut seq = Sequencer::new();
@@ -4508,5 +4507,35 @@ mod tests {
         restored.activate(44100.0, 64);
         restored.deserialize(&blob);
         assert_eq!(restored.bank.get(mute_id), 1.0);
+    }
+
+    #[test]
+    fn unmute_resumes_at_next_step() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        let mute_id = ParamDescriptor::id_for_name("mute");
+        seq.bank.set(mute_id, 1.0);
+        seq.set_step(0, 60, 32768, true);
+        seq.set_step(1, 62, 32768, true);
+        seq.set_step(2, 64, 32768, true);
+        let ticks_per_step = TICKS_PER_BEAT / 4;
+
+        // Advance through step 0→1 boundary muted — no note.
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        for t in 1..=ticks_per_step {
+            run_seq(&mut seq, &[transport_tick(t, true, false, false, false)]);
+        }
+
+        // Unmute, then collect ALL events across step 1→2 cycle.
+        seq.bank.set(mute_id, 0.0);
+        let mut all_out = Vec::new();
+        for t in 1..=ticks_per_step {
+            all_out.extend(run_seq(
+                &mut seq,
+                &[transport_tick(t, true, false, false, false)],
+            ));
+        }
+        let has_note_on = all_out.iter().any(|e| matches!(e, Event::Midi2(_)));
+        assert!(has_note_on, "must emit NoteOn after unmute");
     }
 }
