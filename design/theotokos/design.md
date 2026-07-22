@@ -458,6 +458,13 @@ can re-cut the next phase.
 
 ## Amendment log
 
+**2026-07-21 (session #1) — TK0 complete, usable sign-off.**  Session notes
+in `design/sessions/theotokos-1.md`; phase report in
+`design/phases/tk0-report.md` (includes full spec-divergence table).
+`cargo run` now starts Theotokos by default; `--emulator` for legacy grid.
+TK1 scope re-cut: mutes pulled from TK2, `:` command line upgraded from
+stub to full.  Implementation notes for the TK1 planner in the report §end.
+
 **2026-07-21 (evening) — 16-step two-row grid.** User testing on hardware:
 the 8-step page window is too narrow for the default 16-step pattern.
 Lower row `z x c v m , . /` now maps steps 9–16 (each key physically below
