@@ -78,8 +78,8 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
 fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
     let mut rows: Vec<Line> = Vec::with_capacity(data.track_names.len().max(1) * 5);
     for t in 0..data.track_names.len() {
-        rows.push(render_track_row(t, data, 0, true));   // upper top   (label)
-        rows.push(render_track_row(t, data, 0, false));  // upper bot   (no label)
+        rows.push(render_track_row(t, data, 0, true)); // upper top   (label)
+        rows.push(render_track_row(t, data, 0, false)); // upper bot   (no label)
         rows.push(Line::from(""));
         rows.push(render_track_row(t, data, PAGE_SIZE, false)); // lower top
         rows.push(render_track_row(t, data, PAGE_SIZE, false)); // lower bot
@@ -96,7 +96,12 @@ fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
     frame.render_widget(para, area);
 }
 
-fn render_track_row(track_idx: usize, data: &RenderData, row_off: usize, show_label: bool) -> Line<'_> {
+fn render_track_row(
+    track_idx: usize,
+    data: &RenderData,
+    row_off: usize,
+    show_label: bool,
+) -> Line<'_> {
     let st = data.step_states.get(track_idx).unwrap_or(&data.step_state);
     let window = data.page_window * PAGE_SIZE * 2 + row_off;
     let mut spans: Vec<Span> = Vec::with_capacity(PAGE_SIZE + 2);
@@ -135,11 +140,7 @@ fn render_track_row(track_idx: usize, data: &RenderData, row_off: usize, show_la
 }
 
 fn render_perf_window(frame: &mut Frame, area: Rect, data: &RenderData) {
-    let chunks = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(0),
-    ])
-    .split(area);
+    let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(area);
 
     render_page_tabs(frame, chunks[0], data);
     render_envelope_section(frame, chunks[1], data);
@@ -159,23 +160,15 @@ fn render_page_tabs(frame: &mut Frame, area: Rect, data: &RenderData) {
         })
         .collect();
     let line = tabs.join("  ");
-    let para = Paragraph::new(line)
-        .style(Style::default().fg(Color::Yellow));
+    let para = Paragraph::new(line).style(Style::default().fg(Color::Yellow));
     frame.render_widget(para, area);
 }
 
 fn render_envelope_section(frame: &mut Frame, area: Rect, data: &RenderData) {
     if let Some((ref env, val)) = &data.envelope {
-        let chunks = Layout::horizontal([
-            Constraint::Length(14),
-            Constraint::Min(0),
-        ])
-        .split(area);
+        let chunks = Layout::horizontal([Constraint::Length(14), Constraint::Min(0)]).split(area);
 
-        let label_span = Span::styled(
-            format!(" {} ", env.param_name),
-            Style::default(),
-        );
+        let label_span = Span::styled(format!(" {} ", env.param_name), Style::default());
         let label = Paragraph::new(label_span);
         frame.render_widget(label, chunks[0]);
 
@@ -198,7 +191,12 @@ fn render_mode_line(frame: &mut Frame, area: Rect, data: &RenderData) {
     let mut spans = vec![
         Span::styled(format!(" {:4} ", mode_name), mode_style),
         Span::raw(" "),
-        Span::raw(data.track_names.get(data.active_track).map(|s| s.as_str()).unwrap_or("?")),
+        Span::raw(
+            data.track_names
+                .get(data.active_track)
+                .map(|s| s.as_str())
+                .unwrap_or("?"),
+        ),
         Span::raw(" "),
     ];
 
@@ -246,7 +244,7 @@ mod tests {
                 current_step: 3,
                 pattern_length: 16,
                 steps: vec![true; 16],
-                page_count: 2,
+                page_count: 1,
             },
             step_states: vec![],
             slot_a: None,
@@ -292,14 +290,17 @@ mod tests {
             slot_b_value: 0.7,
             page_groups: vec!["SRC".into(), "AMP".into()],
             perf_page: 1,
-            envelope: Some((EnvelopeData {
-                param_id: 1,
-                param_name: "decay".into(),
-                node_id: 20,
-                env_type: "AD".into(),
-                min: 0.0,
-                max: 1.0,
-            }, 0.42)),
+            envelope: Some((
+                EnvelopeData {
+                    param_id: 1,
+                    param_name: "decay".into(),
+                    node_id: 20,
+                    env_type: "AD".into(),
+                    min: 0.0,
+                    max: 1.0,
+                },
+                0.42,
+            )),
             debug_event: None,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
@@ -307,7 +308,12 @@ mod tests {
 
     #[test]
     fn grid_structure_4_tracks_23_rows() {
-        let st = StepState { pattern_length: 16, page_count: 2, steps: vec![false; 16], current_step: 0 };
+        let st = StepState {
+            pattern_length: 16,
+            page_count: 1,
+            steps: vec![false; 16],
+            current_step: 0,
+        };
         let data = RenderData {
             mode: Mode::Seq,
             active_track: 0,
@@ -317,8 +323,12 @@ mod tests {
             page_window: 0,
             step_state: st.clone(),
             step_states: vec![st.clone(), st.clone(), st.clone(), st],
-            slot_a: None, slot_a_value: 0.0, slot_b: None, slot_b_value: 0.0,
-            page_groups: vec![], perf_page: 0,
+            slot_a: None,
+            slot_a_value: 0.0,
+            slot_b: None,
+            slot_b_value: 0.0,
+            page_groups: vec![],
+            perf_page: 0,
             envelope: None,
             debug_event: None,
         };

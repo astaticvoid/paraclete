@@ -1,5 +1,6 @@
-use std::collections::HashMap;
+use crate::action::GRID_STEPS;
 use paraclete_node_api::{CapabilityDocument, PageRef, StateBusHandle, StateBusValue};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -111,7 +112,8 @@ impl Model {
 
     pub fn select_perf_page(&mut self, idx: usize) {
         let gen_id = self.tracks[self.active_track].generator_id;
-        let max = self.caps
+        let max = self
+            .caps
             .get(&gen_id)
             .and_then(|c| c.view.as_ref())
             .map(|r| r.page_groups.len())
@@ -141,7 +143,9 @@ impl Model {
         });
     }
 
-    fn resolve_page_params(&self) -> (
+    fn resolve_page_params(
+        &self,
+    ) -> (
         Option<(u32, u32, String, f64, f64)>,
         Option<(u32, u32, String, f64, f64)>,
     ) {
@@ -223,11 +227,7 @@ impl Model {
         }
     }
 
-    pub fn read_step_state(
-        &self,
-        bus: &StateBusHandle,
-        track_idx: usize,
-    ) -> StepState {
+    pub fn read_step_state(&self, bus: &StateBusHandle, track_idx: usize) -> StepState {
         let seq_id = self.tracks[track_idx].sequencer_id;
 
         let current_step = bus
@@ -254,12 +254,9 @@ impl Model {
             })
             .unwrap_or_default();
 
-        let steps: Vec<bool> = steps_text
-            .chars()
-            .map(|c| c == '1')
-            .collect();
+        let steps: Vec<bool> = steps_text.chars().map(|c| c == '1').collect();
 
-        let page_count = pattern_length.div_ceil(8);
+        let page_count = pattern_length.div_ceil(GRID_STEPS);
 
         StepState {
             current_step,

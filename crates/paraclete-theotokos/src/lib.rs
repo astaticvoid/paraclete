@@ -3,10 +3,10 @@ pub mod input;
 pub mod model;
 mod render;
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::Stdout;
 use std::rc::Rc;
-use std::cell::RefCell;
 use std::time::Instant;
 
 use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
@@ -54,7 +54,11 @@ impl TheotokosApp {
             config.caps,
         );
 
-        let frame_ms = if config.fps > 0 { 1000 / config.fps } else { 33 };
+        let frame_ms = if config.fps > 0 {
+            1000 / config.fps
+        } else {
+            33
+        };
 
         Ok(Self {
             model,
@@ -125,18 +129,23 @@ impl TheotokosApp {
             .unwrap_or_default();
         let bpm = self.model.read_bpm(bus);
 
-        let slot_a_value = self.model.slot_a.as_ref()
+        let slot_a_value = self
+            .model
+            .slot_a
+            .as_ref()
             .map(|s| self.model.read_param_value(bus, s.node_id, s.param_id))
             .unwrap_or(0.0);
-        let slot_b_value = self.model.slot_b.as_ref()
+        let slot_b_value = self
+            .model
+            .slot_b
+            .as_ref()
             .map(|s| self.model.read_param_value(bus, s.node_id, s.param_id))
             .unwrap_or(0.0);
 
-        let envelope = self.model.envelope_for_active_track()
-            .map(|e| {
-                let val = self.model.read_param_value(bus, e.node_id, e.param_id);
-                (e, val)
-            });
+        let envelope = self.model.envelope_for_active_track().map(|e| {
+            let val = self.model.read_param_value(bus, e.node_id, e.param_id);
+            (e, val)
+        });
 
         let render_data = render::RenderData {
             mode: self.model.mode,
@@ -170,11 +179,7 @@ impl TheotokosApp {
 
     /// Process key events without rendering — the test seam.
     /// Returns whether a redraw is needed.
-    pub fn handle_keys(
-        &mut self,
-        bus: &BusHandle,
-        key_events: &[KeyEvent],
-    ) -> bool {
+    pub fn handle_keys(&mut self, bus: &BusHandle, key_events: &[KeyEvent]) -> bool {
         let bus_ref = bus.borrow();
         let bus = &*bus_ref;
         let playing = self.model.playing(bus);
@@ -190,8 +195,14 @@ impl TheotokosApp {
 
             match action {
                 Action::Quit => self.quit = true,
-                Action::CycleMode(_) => { self.model.cycle_mode(); dirty = true; }
-                Action::SelectTrack(i) => { self.model.select_track(i); dirty = true; }
+                Action::CycleMode(_) => {
+                    self.model.cycle_mode();
+                    dirty = true;
+                }
+                Action::SelectTrack(i) => {
+                    self.model.select_track(i);
+                    dirty = true;
+                }
                 Action::PageWindow(dir) => {
                     let max_page = self
                         .model
@@ -209,7 +220,10 @@ impl TheotokosApp {
                     }
                     dirty = true;
                 }
-                Action::SelectParamPage(idx) => { self.model.select_perf_page(idx); dirty = true; }
+                Action::SelectParamPage(idx) => {
+                    self.model.select_perf_page(idx);
+                    dirty = true;
+                }
                 Action::Jog { slot, dir, mag } => {
                     let binding = match slot {
                         Slot::A => &self.model.slot_a,
@@ -224,11 +238,17 @@ impl TheotokosApp {
                         };
                         let held = match tracker.repeat(now, tick_ms) {
                             Some(h) => h,
-                            None => { tracker.press(now, tick_ms); 0 }
+                            None => {
+                                tracker.press(now, tick_ms);
+                                0
+                            }
                         };
                         let range = b.max - b.min;
                         let delta = self.tuning.jog_step(range, held, mag);
-                        let signed = match dir { Dir::Next => delta, Dir::Prev => -delta };
+                        let signed = match dir {
+                            Dir::Next => delta,
+                            Dir::Prev => -delta,
+                        };
                         self.pending.push(NodeCommand {
                             target_id: b.node_id,
                             type_id: paraclete_node_api::CMD_BUMP_PARAM,
@@ -311,22 +331,26 @@ mod tests {
 
     fn test_caps() -> HashMap<u32, CapabilityDocument> {
         let mut caps = HashMap::new();
-        caps.insert(1, CapabilityDocument {
-            name: "TestClock".into(),
-            vendor: "test".into(),
-            version: (0, 1, 0),
-            ports: vec![],
-            params: vec![],
-            extensions: vec![],
-            view: None,
-        });
-        caps.insert(100, CapabilityDocument {
-            name: "Engine".into(),
-            vendor: "test".into(),
-            version: (0, 1, 0),
-            ports: vec![],
-            params: vec![
-                ParamDescriptor {
+        caps.insert(
+            1,
+            CapabilityDocument {
+                name: "TestClock".into(),
+                vendor: "test".into(),
+                version: (0, 1, 0),
+                ports: vec![],
+                params: vec![],
+                extensions: vec![],
+                view: None,
+            },
+        );
+        caps.insert(
+            100,
+            CapabilityDocument {
+                name: "Engine".into(),
+                vendor: "test".into(),
+                version: (0, 1, 0),
+                ports: vec![],
+                params: vec![ParamDescriptor {
                     id: ParamDescriptor::id_for_name("decay"),
                     name: "decay".into(),
                     min: 0.0,
@@ -335,24 +359,32 @@ mod tests {
                     stepped: false,
                     unit: ParamUnit::Generic,
                     display: None,
-                },
-            ],
-            extensions: vec![],
-            view: None,
-        });
-        caps.insert(200, CapabilityDocument {
-            name: "Seq".into(),
-            vendor: "test".into(),
-            version: (0, 1, 0),
-            ports: vec![],
-            params: vec![],
-            extensions: vec![],
-            view: None,
-        });
+                }],
+                extensions: vec![],
+                view: None,
+            },
+        );
+        caps.insert(
+            200,
+            CapabilityDocument {
+                name: "Seq".into(),
+                vendor: "test".into(),
+                version: (0, 1, 0),
+                ports: vec![],
+                params: vec![],
+                extensions: vec![],
+                view: None,
+            },
+        );
         caps
     }
 
-    fn test_app(clock_id: u32, seq_ids: Vec<u32>, gen_ids: Vec<u32>, gen_names: Vec<String>) -> TheotokosApp {
+    fn test_app(
+        clock_id: u32,
+        seq_ids: Vec<u32>,
+        gen_ids: Vec<u32>,
+        gen_names: Vec<String>,
+    ) -> TheotokosApp {
         TheotokosApp {
             model: Model::new(clock_id, &seq_ids, &gen_ids, &gen_names, test_caps()),
             pending: Vec::new(),
@@ -377,13 +409,26 @@ mod tests {
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         {
             let mut b = bus.borrow_mut();
-            b.write("/transport/playing".into(), paraclete_node_api::StateBusValue::Bool(true));
-            b.write("/transport/bpm".into(), paraclete_node_api::StateBusValue::Float(140.0));
-            b.write("/node/200/state/current_step".into(), paraclete_node_api::StateBusValue::Int(0));
-            b.write("/node/200/state/pattern_length".into(), paraclete_node_api::StateBusValue::Int(16));
-            b.write("/node/200/state/steps".into(), paraclete_node_api::StateBusValue::Text(
-                "0000000000000000".into()
-            ));
+            b.write(
+                "/transport/playing".into(),
+                paraclete_node_api::StateBusValue::Bool(true),
+            );
+            b.write(
+                "/transport/bpm".into(),
+                paraclete_node_api::StateBusValue::Float(140.0),
+            );
+            b.write(
+                "/node/200/state/current_step".into(),
+                paraclete_node_api::StateBusValue::Int(0),
+            );
+            b.write(
+                "/node/200/state/pattern_length".into(),
+                paraclete_node_api::StateBusValue::Int(32),
+            );
+            b.write(
+                "/node/200/state/steps".into(),
+                paraclete_node_api::StateBusValue::Text("00000000000000000000000000000000".into()),
+            );
         }
 
         assert_eq!(app.model.page_windows[0], 0);
@@ -397,12 +442,21 @@ mod tests {
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         {
             let mut b = bus.borrow_mut();
-            b.write("/transport/playing".into(), paraclete_node_api::StateBusValue::Bool(true));
-            b.write("/node/200/state/pattern_length".into(), paraclete_node_api::StateBusValue::Int(16));
+            b.write(
+                "/transport/playing".into(),
+                paraclete_node_api::StateBusValue::Bool(true),
+            );
+            b.write(
+                "/node/200/state/pattern_length".into(),
+                paraclete_node_api::StateBusValue::Int(16),
+            );
         }
 
         app.handle_keys(&bus, &[kc('[')]);
-        assert_eq!(app.model.page_windows[0], 0, "'[' clamped at zero must stay 0");
+        assert_eq!(
+            app.model.page_windows[0], 0,
+            "'[' clamped at zero must stay 0"
+        );
     }
 
     #[test]
@@ -411,13 +465,22 @@ mod tests {
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         {
             let mut b = bus.borrow_mut();
-            b.write("/transport/playing".into(), paraclete_node_api::StateBusValue::Bool(true));
-            b.write("/node/200/state/pattern_length".into(), paraclete_node_api::StateBusValue::Int(16));
+            b.write(
+                "/transport/playing".into(),
+                paraclete_node_api::StateBusValue::Bool(true),
+            );
+            b.write(
+                "/node/200/state/pattern_length".into(),
+                paraclete_node_api::StateBusValue::Int(16),
+            );
         }
 
         app.model.page_windows[0] = 2;
         app.handle_keys(&bus, &[kc(']')]);
-        assert_eq!(app.model.page_windows[0], 2, "']' must not exceed page count");
+        assert_eq!(
+            app.model.page_windows[0], 2,
+            "']' must not exceed page count"
+        );
     }
 
     #[test]
@@ -426,8 +489,14 @@ mod tests {
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         {
             let mut b = bus.borrow_mut();
-            b.write("/transport/playing".into(), paraclete_node_api::StateBusValue::Bool(true));
-            b.write("/node/200/state/pattern_length".into(), paraclete_node_api::StateBusValue::Int(16));
+            b.write(
+                "/transport/playing".into(),
+                paraclete_node_api::StateBusValue::Bool(true),
+            );
+            b.write(
+                "/node/200/state/pattern_length".into(),
+                paraclete_node_api::StateBusValue::Int(16),
+            );
         }
 
         app.model.page_windows[0] = 1;
@@ -435,6 +504,6 @@ mod tests {
         let cmd = &app.pending[0];
         assert_eq!(cmd.target_id, 200);
         assert_eq!(cmd.type_id, 16);
-        assert_eq!(cmd.arg0, 8);
+        assert_eq!(cmd.arg0, 16);
     }
 }
