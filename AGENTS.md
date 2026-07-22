@@ -304,6 +304,11 @@ Each ~1 ms iteration:
 | 30 | `CMD_SET_PAGE_LOOP` | arg0: start_page, arg1: end_page |
 | 31 | `CMD_CHAIN_PUSH` | arg0: pattern index (volatile, capacity 8) |
 | 32 | `CMD_CHAIN_CLEAR` | — |
+| 33 | `CMD_SET_LOCK_TARGET` | arg0: node_id (i64), arg1: param_id (f64, u32 exact) |
+| 34 | `CMD_SET_STEP_LOCK` | arg0: step, arg1: value (f64) |
+| 35 | `CMD_CLEAR_STEP_LOCK` | arg0: step, arg1: param_id (f64; −1 = all lanes) |
+| 36 | `CMD_SET_STEP_VELOCITY` | arg0: step, arg1: velocity (0.0–1.0) |
+| 37 | `CMD_SET_STEP_LENGTH` | arg0: step, arg1: length (f32 unit) |
 
 ## Web client (Theoria)
 
