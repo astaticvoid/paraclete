@@ -1079,6 +1079,9 @@ Wrong check — device ownership does not mean sink health. A null sink still
 pipewire-pulse. Add to AGENTS.md shutdown checklist and session-close skill.
 **RESOLVED** (2026-07-14): Linux-only shutdown sink check added to AGENTS.md
 (`39867ab`, `190d946`) and the session-close skill gained health checks +
+**UPDATE (2026-07-21):** auto-restart implemented — Paraclete now
+automatically runs `systemctl --user restart pipewire pipewire-pulse` on
+exit when the ALSA sink is missing. No manual recovery needed.
 working-tree reporting (`2225492`).
 
 ---
