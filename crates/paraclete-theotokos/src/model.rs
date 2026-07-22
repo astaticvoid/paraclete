@@ -1,5 +1,6 @@
 use crate::action::GRID_STEPS;
 use paraclete_node_api::{CapabilityDocument, PageRef, StateBusHandle, StateBusValue};
+use paraclete_view_assembly::CompositeView;
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +60,8 @@ pub struct Model {
     pub clock_id: u32,
     pub page_windows: Vec<usize>,
     pub caps: HashMap<u32, CapabilityDocument>,
+    /// TK1 C3: composite views, one per track.
+    pub composite: Vec<CompositeView>,
     pub perf_page: usize,
     pub slot_a: Option<SlotBinding>,
     pub slot_b: Option<SlotBinding>,
@@ -71,6 +74,7 @@ impl Model {
         gen_ids: &[u32],
         gen_names: &[String],
         caps: HashMap<u32, CapabilityDocument>,
+        composite: Vec<CompositeView>,
     ) -> Self {
         let count = seq_ids.len().min(gen_ids.len());
         let tracks: Vec<TrackInfo> = (0..count)
@@ -91,6 +95,7 @@ impl Model {
             clock_id,
             page_windows,
             caps,
+            composite,
             perf_page: 0,
             slot_a: None,
             slot_b: None,
@@ -111,13 +116,18 @@ impl Model {
     }
 
     pub fn select_perf_page(&mut self, idx: usize) {
-        let gen_id = self.tracks[self.active_track].generator_id;
         let max = self
-            .caps
-            .get(&gen_id)
-            .and_then(|c| c.view.as_ref())
-            .map(|r| r.page_groups.len())
-            .unwrap_or(0);
+            .composite
+            .get(self.active_track)
+            .map(|cv| cv.pages.len())
+            .unwrap_or_else(|| {
+                let gen_id = self.tracks[self.active_track].generator_id;
+                self.caps
+                    .get(&gen_id)
+                    .and_then(|c| c.view.as_ref())
+                    .map(|r| r.page_groups.len())
+                    .unwrap_or(0)
+            });
         if idx >= max {
             return;
         }
@@ -149,6 +159,24 @@ impl Model {
         Option<(u32, u32, String, f64, f64)>,
         Option<(u32, u32, String, f64, f64)>,
     ) {
+        // TK1 C3: composite pages first — slot A/B bind from the composite
+        // page's params (which know their owning node_id).
+        if let Some(cv) = self.composite.get(self.active_track) {
+            if let Some(page) = cv.pages.get(self.perf_page) {
+                let a = page
+                    .params
+                    .first()
+                    .map(|p| (p.node_id, p.param_id, p.name.clone(), 0.0, 1.0));
+                let b = page
+                    .params
+                    .get(1)
+                    .map(|p| (p.node_id, p.param_id, p.name.clone(), 0.0, 1.0));
+                if a.is_some() {
+                    return (a, b);
+                }
+            }
+        }
+        // Fallback: engine-local Rule (existing TK0 path).
         let gen_id = self.tracks[self.active_track].generator_id;
         let cap = match self.caps.get(&gen_id) {
             Some(c) => c,
@@ -267,6 +295,12 @@ impl Model {
     }
 
     pub fn page_groups_for_active_track(&self) -> Vec<String> {
+        // TK1 C3: composite page labels first.
+        if let Some(cv) = self.composite.get(self.active_track) {
+            if !cv.pages.is_empty() {
+                return cv.pages.iter().map(|p| p.label.clone()).collect();
+            }
+        }
         let gen_id = self.tracks[self.active_track].generator_id;
         self.caps
             .get(&gen_id)

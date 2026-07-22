@@ -12,6 +12,7 @@ use std::time::Instant;
 use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
 use crossterm::execute;
 use paraclete_node_api::{CapabilityDocument, NodeCommand, StateBusHandle};
+use paraclete_view_assembly::CompositeView;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
@@ -26,6 +27,8 @@ pub struct TheotokosConfig {
     pub gen_ids: Vec<u32>,
     pub gen_names: Vec<String>,
     pub caps: HashMap<u32, CapabilityDocument>,
+    /// TK1 C3: composite views, one per track, same order as tracks.
+    pub composite: Vec<CompositeView>,
     pub fps: u64,
 }
 
@@ -52,6 +55,7 @@ impl TheotokosApp {
             &config.gen_ids,
             &config.gen_names,
             config.caps,
+            config.composite,
         );
 
         let frame_ms = if config.fps > 0 {
@@ -397,7 +401,14 @@ mod tests {
         gen_names: Vec<String>,
     ) -> TheotokosApp {
         TheotokosApp {
-            model: Model::new(clock_id, &seq_ids, &gen_ids, &gen_names, test_caps()),
+            model: Model::new(
+                clock_id,
+                &seq_ids,
+                &gen_ids,
+                &gen_names,
+                test_caps(),
+                vec![], // no composite views in unit tests
+            ),
             pending: Vec::new(),
             quit: false,
             dirty: true,

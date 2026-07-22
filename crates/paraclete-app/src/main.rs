@@ -26,7 +26,7 @@ use paraclete_runtime::NodeConfigurator;
 use paraclete_scripting::ScriptingEngine;
 use paraclete_theotokos::{TheotokosApp, TheotokosConfig};
 use paraclete_tui::{TuiApp, TuiConfig};
-use paraclete_view_assembly::{NodeInfo, TrackChain};
+use paraclete_view_assembly::{CompositeView, NodeInfo, TrackChain};
 
 const BLOCK_SIZE: usize = 512;
 
@@ -221,8 +221,10 @@ fn main() {
     // after save so runtime surface/gateway nodes stay out of project files.
     let mut consumer_theoria: Option<ScriptEventConsumer> = None;
     let mut antiphon: Option<AntiphonHandle> = None;
+    // Built early so both Antiphon and Theotokos can use them.
+    let summaries = collect_node_summaries(&conf, &ids);
+    let view_registry = build_view_registry(&conf, &summaries);
     if !no_antiphon {
-        let summaries = collect_node_summaries(&conf, &ids);
         let static_source = theoria_static_source(theoria_dir_override.clone());
         let config = AntiphonConfig {
             port: antiphon_port,
@@ -240,12 +242,7 @@ fn main() {
             playing: true,
             bpm: def.bpm,
         };
-        match AntiphonServer::spawn(
-            config,
-            summaries.clone(),
-            transport,
-            build_view_registry(&conf, &summaries),
-        ) {
+        match AntiphonServer::spawn(config, summaries.clone(), transport, view_registry.clone()) {
             Ok((node, handle)) => {
                 conf.add_surface(ID_THEORIA, Box::new(node));
                 let (gw, cons) = ScriptingGatewayNode::new(ID_THEORIA, 256);
@@ -371,24 +368,52 @@ fn main() {
     let mut tui_opt: Option<(TuiApp, CrosstermTerminal)> = None;
     let mut theotokos_opt: Option<(TheotokosApp, CrosstermTerminal)> = None;
     if theotokos {
+        // TK1 C3: build composite views + edge-derived track map.
+        let composite: Vec<CompositeView> = (0..ids.sequencers.len())
+            .filter_map(|t| {
+                paraclete_view_assembly::assemble(
+                    &view_registry.rules,
+                    &view_registry.chains,
+                    t as u32,
+                    &view_registry.node_infos,
+                )
+            })
+            .collect();
+
+        // Edge-derived seq→gen pairs: follow event edges from each sequencer
+        // to the first downstream node with an audio output.
+        let edges: Vec<(u32, u32)> = conf.all_edges().map(|e| (e.src_node, e.dst_node)).collect();
+        let gen_ids: Vec<u32> = ids
+            .sequencers
+            .iter()
+            .map(|&seq_id| {
+                edges
+                    .iter()
+                    .find(|(s, _)| *s == seq_id)
+                    .map(|(_, t)| *t)
+                    .unwrap_or(0)
+            })
+            .collect();
+        let seq_ids = ids.sequencers.clone();
+        let gen_names: Vec<String> = gen_ids
+            .iter()
+            .map(|id| {
+                cap_docs
+                    .get(id)
+                    .map(|d| d.name.to_string())
+                    .unwrap_or_else(|| format!("Node{}", id))
+            })
+            .collect();
+
         match setup_terminal() {
             Ok(terminal) => {
-                let gen_names: Vec<String> = ids
-                    .generators
-                    .iter()
-                    .map(|id| {
-                        cap_docs
-                            .get(id)
-                            .map(|d| d.name.to_string())
-                            .unwrap_or_else(|| format!("Node{}", id))
-                    })
-                    .collect();
                 match TheotokosApp::new(TheotokosConfig {
                     clock_id: ids.clock,
-                    seq_ids: ids.sequencers.clone(),
-                    gen_ids: ids.generators.clone(),
+                    seq_ids,
+                    gen_ids,
                     gen_names,
                     caps: cap_docs.clone(),
+                    composite,
                     fps: 30,
                 }) {
                     Ok(app) => {

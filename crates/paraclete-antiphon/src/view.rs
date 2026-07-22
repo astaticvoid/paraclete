@@ -14,6 +14,7 @@ use crate::protocol::{
     ViewMetaParam, ViewMetaRouting,
 };
 
+#[derive(Clone)]
 pub struct ViewRegistry {
     pub rules: HashMap<u32, Rule>,
     pub chains: Vec<TrackChain>,
