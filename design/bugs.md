@@ -4,12 +4,13 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ---
 
-## Status (2026-07-21)
+## Status (2026-07-22)
 
-**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), BUG-034 (Theotokos page-window stride inconsistency — fix scheduled as TK1 C0).
-**Fixed, hardware-verified:** BUG-012 (output ring buffer + FTZ/DAZ `0f3d17b`, `BufferSize::Default` decision `c3c56db` — verified 2026-07-21 on the session-#3 ALSA box at 48 kHz × 1024-sample period: 550 buffers, 0 dropouts, 0 lock misses, 0 state-bus overflows).
-**Trigger-based (fix when named trigger fires):** BUG-003, BUG-006.
-**Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, INFRA-001, INFRA-002, INFRA-003, INFRA-004, INFRA-007.
+**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036).
+**Fixed, code-complete (pending hardware-verification):** BUG-012.
+**Trigger-based (fix when named trigger fires):** BUG-003 (updated — StateBusHandle already moved to L2; remaining violation is NodeExecutor/RuntimeCounters in audio.rs).
+**Resolved in this session:** BUG-034 (Theotokos page-window stride), BUG-006 (agg_state_buf return-channel SPSC).
+**Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, 032, 033, INFRA-001, INFRA-002, INFRA-003, INFRA-004, INFRA-006, INFRA-007, INFRA-009.
 **Debug harness:** ADR-033 interactive mode **shipped 2026-07-13 (`92b8795`)** —
 the harness-gated audit items below are now reachable without hardware (see the
 2026-07-13 entry at the bottom).
@@ -48,11 +49,18 @@ configurator already overrides with hardware values at connect time.
 
 ### BUG-003 — paraclete-hal depends on paraclete-runtime — L0→L1 layer violation
 
+**Update (2026-07-22):** The `StateBusHandle` relocation described below is **already done**
+— `StateBusHandle` lives in `paraclete-node-api` (L2) and all consumers import it from
+there. The remaining L0→L1 dependency is `NodeExecutor` + `RuntimeCounters` imported by
+`paraclete-hal/src/audio.rs:7` — these are deep L1 types that cannot trivially move to L2.
+The core issue (hal→runtime dep) persists but through different types than originally
+diagnosed.
+
 **Severity:** Low (functional, architecturally wrong)  
 **Phase found:** P4  
-**Description:** `paraclete-hal` (L0 HAL) imports `paraclete-runtime` (L1 Runtime) for `StateBusHandle`. The five-layer model requires L0 to only depend on L2 (node-api), not L1.  
-**Location:** `crates/paraclete-hal/Cargo.toml`  
-**Fix direction:** Move `StateBusHandle` to `paraclete-node-api` (L2) so L0 can depend on L2 directly. Blocked until `StateBusHandle` is suitable for LGPL3 publication.
+**Description:** `paraclete-hal` (L0 HAL) imports `paraclete-runtime` (L1 Runtime) for `NodeExecutor` and `RuntimeCounters`. The five-layer model requires L0 to only depend on L2 (node-api), not L1.  
+**Location:** `crates/paraclete-hal/Cargo.toml`, `crates/paraclete-hal/src/audio.rs:7`  
+**Fix direction:** Extract a `NodeExecutor` trait/interface to L2 that `audio.rs` can depend on instead of the concrete L1 type. `RuntimeCounters` (4 AtomicU64s) could similarly be defined in L2 with the concrete implementation in L1.
 
 ---
 
@@ -78,6 +86,17 @@ configurator already overrides with hardware values at connect time.
 ---
 
 ### BUG-006 — agg_state_buf loses capacity on every send via mem::take()
+
+**FIXED (2026-07-22):** Second `rtrb` SPSC added in reverse direction (main→audio). The
+configurator's `process_main_thread()` drains entries individually via
+`StateBusHandle::update_entry()`, clears the `Vec` (retaining capacity), and pushes it
+back through the return channel. The executor pops from `state_buf_return_consumer` at
+the top of state collection and reuses the allocation — `agg_state_buf` never reallocates
+after the first warm-up cycle. `StateBusUpdate::entries` field is reused in-place via
+`Vec::drain(..)`. The original `StateBusHandle::apply_updates()` method is preserved for
+other callers. Capacity 4 return channel; best-effort (if the ring is full the Vec is
+dropped as before — recoverable). The executor's `mem::take()` still fires on the
+ownership-transfer path but the returned Vec is always reused next cycle.
 
 **Severity:** Low — one reallocation per audio callback after every state bus send  
 **Phase found:** P7  
@@ -1253,3 +1272,9 @@ render.rs:101}`; tests in `lib.rs:374-439`
 **Fix direction:** One shared `GRID_STEPS = 16` constant for the toggle
 offset and `page_count` (render already strides 16); update the four stale
 tests. Scheduled as TK1 C0 (`design/phases/tk1-theotokos.md` §0.1).
+
+**FIXED (2026-07-22):** Replaced `action::PAGE_SIZE` (8) with `action::GRID_STEPS` (16).
+`ToggleStep` offset and `model::read_step_state().page_count` now use `GRID_STEPS`.
+Renderer's private `PAGE_SIZE` (8) stays for display layout (8 cells per half-row).
+5 tests updated: `action.rs` toggle stride, `lib.rs` bracket/page-window + toggle-step
+tests, and `render.rs` test fixtures' `page_count` values.
