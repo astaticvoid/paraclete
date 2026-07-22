@@ -78,12 +78,11 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
 fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
     let mut rows: Vec<Line> = Vec::with_capacity(data.track_names.len().max(1) * 5);
     for t in 0..data.track_names.len() {
-        // Upper step row (steps 1-8): two lines tall for square cells.
-        rows.push(render_track_row(t, data, 0));
-        rows.push(render_track_row(t, data, 0));
+        rows.push(render_track_row(t, data, 0, true));   // upper top   (label)
+        rows.push(render_track_row(t, data, 0, false));  // upper bot   (no label)
         rows.push(Line::from(""));
-        rows.push(render_track_row(t, data, PAGE_SIZE));
-        rows.push(render_track_row(t, data, PAGE_SIZE));
+        rows.push(render_track_row(t, data, PAGE_SIZE, false)); // lower top
+        rows.push(render_track_row(t, data, PAGE_SIZE, false)); // lower bot
         if t + 1 < data.track_names.len() {
             rows.push(Line::from(""));
         }
@@ -97,14 +96,12 @@ fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
     frame.render_widget(para, area);
 }
 
-fn render_track_row(track_idx: usize, data: &RenderData, row_off: usize) -> Line<'_> {
+fn render_track_row(track_idx: usize, data: &RenderData, row_off: usize, show_label: bool) -> Line<'_> {
     let st = data.step_states.get(track_idx).unwrap_or(&data.step_state);
     let window = data.page_window * PAGE_SIZE * 2 + row_off;
     let mut spans: Vec<Span> = Vec::with_capacity(PAGE_SIZE + 2);
 
-    // Only the upper row gets the track label.
-    let is_upper = row_off == 0;
-    let label = if is_upper {
+    let label = if show_label {
         format!("{:>2}:", track_idx + 1)
     } else {
         "   ".to_string()
