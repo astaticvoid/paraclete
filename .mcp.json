@@ -1,0 +1,20 @@
+{
+  "mcpServers": {
+    "serena": {
+      "command": "/home/dv6n/.local/bin/serena-agent",
+      "args": ["start-mcp-server", "--context", "claude-code", "--project-from-cwd"]
+    },
+    "narsil": {
+      "command": "narsil-mcp",
+      "args": ["--repos", ".", "--git", "--call-graph", "--preset", "balanced"]
+    },
+    "context7": {
+      "command": "npx",
+      "args": ["-y", "@upstash/context7-mcp@latest"]
+    },
+    "chrome-devtools": {
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@latest"]
+    }
+  }
+}

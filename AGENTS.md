@@ -385,6 +385,9 @@ names — map accordingly; do not edit those documents.
 ## MCP tool selection
 
 **Serena** (symbol-level code navigation/refactoring — LSP-backed):
+- Requires `rust-analyzer` on `PATH` for Rust symbol resolution — install
+  with `rustup component add rust-analyzer` if Serena's Rust tools return
+  empty/degraded results.
 - Use `find_symbol`, `find_referencing_symbols`, `find_declaration` for
   navigating Rust code at the symbol level.
 - Use `rename_symbol` for cross-file renames (single atomic call).
