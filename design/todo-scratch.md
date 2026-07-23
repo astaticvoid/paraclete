@@ -5,13 +5,15 @@
 
 ## Carryover from 2026-07-23 session
 
-### P11 performance state (drafted 2026-07-23)
+### P11 performance state (ADR-039 ✅ accepted 2026-07-23, R1–R3)
 
-- ADR-039 🟡 proposed + `design/phases/p11-problem.md` — await user
-  ratification (kit model, app-op drain, mute tiers, live record).
-- On ratification: `p11-interfaces.md` phase spec (freeze CMD 39–45,
-  kit UX open questions). Sequencing vs TK2 implementation is a user call
-  (TK2 C0–C9 does not depend on P11; TK3 does).
+- `p11-interfaces.md` phase spec is written **after TK2 + session #2**
+  (R3, house front-load rule): freeze CMD 39–45, kit UX open questions.
+
+### Next up: TK2 implementation
+
+- Start at `design/phases/tk2-theotokos.md` C0 (page-order swap) and
+  proceed commit-by-commit; session #2 = C10.
 
 ### Elektron convergence (ADR-038 ✅ accepted 2026-07-23, D1–D4)
 

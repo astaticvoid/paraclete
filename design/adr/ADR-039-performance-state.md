@@ -2,9 +2,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | 🟡 Proposed (2026-07-23) |
+| **Status** | ✅ Accepted (2026-07-23) |
 | **Author** | Agent (drafted at user request) |
-| **Ratification** | Pending user |
+| **Ratification** | Ratified by user 2026-07-23 (decisions R1–R3 below) |
 | **Scope** | P11: app layer (new), `paraclete-nodes/sequencer.rs`, project file format (ADR-025 revision), serializer v4 |
 | **Related** | ADR-010 (state model), ADR-018 (environment exemption), ADR-019 (semantic plane), ADR-025 (project format), ADR-030 (pattern engine — declared P11 layers on it), ADR-038 (KIT button, REC grammar); `design/phases/p11-problem.md` |
 
@@ -140,7 +140,19 @@ in `p11-interfaces.md`.
   or a state path; live-record erase gesture (hold NO?); count-in/
   metronome (likely P12); per-track kit extraction.
 
-## Implementation note (to be added when ratified)
+## Ratification decisions — 2026-07-23
+
+- **R1** — core model accepted as written (all seven decisions); open UX
+  details (kit naming/count, erase gesture, diff display) go to the
+  `p11-interfaces.md` phase spec.
+- **R2** — kit scope confirmed **whole-instrument** (the Elektron kit
+  shape); per-track extraction remains a listed later refinement.
+- **R3** — sequencing: **TK2 implementation first** (its spec is
+  execution-ready and session #2 is gated on it, ADR-038 D4). The P11
+  phase spec is written after TK2, informed by that session, per the
+  house front-load rule.
+
+## Implementation note (to be added when implemented)
 
 ```text
 ADR-039 implemented across P11 (YYYY-MM-DD).
