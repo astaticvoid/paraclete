@@ -254,6 +254,34 @@ fn render_mode_line(frame: &mut Frame, area: Rect, data: &RenderData) {
     frame.render_widget(para, area);
 }
 
+impl RenderData {
+    pub fn for_test(mode: Mode, track_count: u8) -> Self {
+        let track_count = track_count.max(1) as usize;
+        Self {
+            mode,
+            active_track: 0,
+            track_names: (1..=track_count).map(|i| format!("T{}", i)).collect(),
+            bpm: 120.0,
+            playing: false,
+            page_window: 0,
+            step_state: StepState::default(),
+            step_states: vec![],
+            slot_a: None,
+            slot_a_value: 0.0,
+            slot_b: None,
+            slot_b_value: 0.0,
+            page_groups: vec![],
+            perf_page: 0,
+            envelope: None,
+            debug_event: None,
+            step_focuses: vec![None; track_count],
+            step_locks: vec![vec![]; track_count],
+            slot_a_locked: false,
+            slot_b_locked: false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -486,9 +486,9 @@ fn pop_keyboard_flags() -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::model::Mode;
-    use crate::model::SlotBinding;
     use crossterm::event::{KeyCode, KeyModifiers};
-    use paraclete_node_api::{CapabilityDocument, ParamDescriptor, ParamUnit, StateBusValue};
+    use paraclete_node_api::{CapabilityDocument, ParamDescriptor, ParamUnit, Rule, StateBusValue};
+    use std::borrow::Cow;
     use std::cell::RefCell;
     use std::rc::Rc;
 
@@ -510,6 +510,17 @@ mod tests {
                 view: None,
             },
         );
+        let empty_rule = Rule {
+            name: "Engine".into(),
+            page_groups: Cow::Borrowed(&[]),
+            param_pages: Cow::Borrowed(&[]),
+            macros: Cow::Borrowed(&[]),
+            affordances: Cow::Borrowed(&[]),
+            envelopes: Cow::Borrowed(&[]),
+            routing: Cow::Borrowed(&[]),
+            diagram: None,
+            view_overrides: Cow::Borrowed(&[]),
+        };
         caps.insert(
             100,
             CapabilityDocument {
@@ -517,18 +528,30 @@ mod tests {
                 vendor: "test".into(),
                 version: (0, 1, 0),
                 ports: vec![],
-                params: vec![ParamDescriptor {
-                    id: ParamDescriptor::id_for_name("decay"),
-                    name: "decay".into(),
-                    min: 0.0,
-                    max: 1.0,
-                    default: 0.5,
-                    stepped: false,
-                    unit: ParamUnit::Generic,
-                    display: None,
-                }],
+                params: vec![
+                    ParamDescriptor {
+                        id: ParamDescriptor::id_for_name("decay"),
+                        name: "decay".into(),
+                        min: 0.0,
+                        max: 1.0,
+                        default: 0.5,
+                        stepped: false,
+                        unit: ParamUnit::Generic,
+                        display: None,
+                    },
+                    ParamDescriptor {
+                        id: ParamDescriptor::id_for_name("tune"),
+                        name: "tune".into(),
+                        min: 0.0,
+                        max: 1.0,
+                        default: 0.0,
+                        stepped: false,
+                        unit: ParamUnit::Generic,
+                        display: None,
+                    },
+                ],
                 extensions: vec![],
-                view: None,
+                view: Some(empty_rule),
             },
         );
         caps.insert(
@@ -789,23 +812,6 @@ mod tests {
         );
     }
 
-    fn setup_slots(app: &mut TheotokosApp) {
-        app.model.slot_a = Some(SlotBinding {
-            node_id: 100,
-            param_id: ParamDescriptor::id_for_name("decay"),
-            param_name: "decay".into(),
-            min: 0.0,
-            max: 1.0,
-        });
-        app.model.slot_b = Some(SlotBinding {
-            node_id: 100,
-            param_id: ParamDescriptor::id_for_name("tune"),
-            param_name: "tune".into(),
-            min: 0.0,
-            max: 1.0,
-        });
-    }
-
     #[test]
     fn enter_focuses_last_toggled_step() {
         let bus = test_bus();
@@ -843,7 +849,7 @@ mod tests {
         let bus = test_bus();
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         setup_bus_with_params(&bus, 200, 100, true);
-        setup_slots(&mut app);
+
         app.model.last_step[0] = Some(2);
         app.handle_keys(&bus, &[enter_key()]);
         assert!(
@@ -868,7 +874,6 @@ mod tests {
         let bus = test_bus();
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         setup_bus_with_params(&bus, 200, 100, true);
-        setup_slots(&mut app);
 
         app.model.mode = Mode::Perf;
         app.model.step_focus[0] = Some(4);
@@ -895,7 +900,7 @@ mod tests {
         let bus = test_bus();
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         setup_bus_with_params(&bus, 200, 100, true);
-        setup_slots(&mut app);
+
         // Pre-populate a lock for step 2, node 100 (generator), param decay
         {
             let mut b = bus.borrow_mut();
@@ -927,7 +932,7 @@ mod tests {
         let bus = test_bus();
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         setup_bus_with_params(&bus, 200, 100, true);
-        setup_slots(&mut app);
+
         // No lock set — should fall back to live bus value (0.5)
 
         app.model.mode = Mode::Perf;
@@ -949,7 +954,6 @@ mod tests {
         let bus = test_bus();
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         setup_bus_with_params(&bus, 200, 100, true);
-        setup_slots(&mut app);
 
         app.model.mode = Mode::Perf;
         // No focus set
@@ -986,7 +990,7 @@ mod tests {
         let bus = test_bus();
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         setup_bus_with_params(&bus, 200, 100, true);
-        setup_slots(&mut app);
+
         app.model.step_focus[0] = Some(5);
         app.handle_keys(&bus, &[shift_backspace_key()]);
 
