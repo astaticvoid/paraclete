@@ -1,109 +1,296 @@
-# Paraclete — TK2 Theotokos Specification (Performance Layer)
+# Paraclete — TK2 Theotokos Specification (Elektron Convergence)
 
-> **STUB — created 2026-07-22.** This is a placeholder. The full spec is
-> owned by the **design agent** (see `design/handoff.md` model-tier routing).
-> This stub captures the scope envelope and anchors; the design agent expands
-> it into a full TK1-style implementation blueprint.
+> **FULL SPEC — 2026-07-23.** Supersedes the 2026-07-22 stub and its
+> 2026-07-23 re-cut. Written for implementation **without further design
+> decisions**: every commit names its files, contracts, and tests. Where a
+> value is a tuning knob, the default is stated and marked *(tunable)*.
 >
-> **Design authority:** `design/theotokos/design.md` §4 (TK2 scope),
-> ADR-036, ADR-037 (key remapping, proposed).
-> **Baseline:** TK1 ship (composite pages, p-locks, mutes, `:` line,
-> patterns, session #2 complete).
-> **Exit:** `cargo test --workspace` green; agent smoke on 4+8 track fixtures;
-> **usability session #3**.
+> **Design authority:** ADR-038 (✅ accepted 2026-07-23, D1–D4),
+> `design/theotokos/design.md` Stage 3 + §4 mechanics, ADR-036, ADR-037
+> (key remapping — re-based by ADR-038; ratifies with C8 landing).
+> **Baseline:** TK1 code complete (C0–C7; 60 crate tests green).
+> **Exit:** `cargo test --workspace` green after every commit; agent
+> smoke-run after C7; **usability session #2 after C8 (D4)** — notes in
+> `design/sessions/theotokos-2.md`, report in
+> `design/phases/tk2-report.md`.
+>
+> Third-party marks appear per house naming policy: design prose only,
+> never identifiers or UI strings.
 
 ---
 
-## Scope envelope
+## §1. Decisions frozen by this spec (D5–D14)
 
-| # | Item | Source | Notes |
-|---|------|--------|-------|
-| S1 | **Key remapping mechanism** | ADR-037 (proposed 2026-07-22) | Pulled forward from TK3. See §Key remapping below. |
-| S2 | Numpad-`0` momentary ALT layer | design.md §4 | Mutes, fills. Dependency: P11 mute system (flagged — crude mute via MixNode gain as fallback). |
-| S3 | CHAIN mode | design.md §4 | Pattern bank, cue-blink, chain push/clear, page-loop UI. |
-| S4 | Tap tempo | design.md §4 | Rides the §2.6.1 clock extension; `CMD_BUMP_PARAM` on clock `bpm`. |
-| S5 | Temp save/reload | design.md §4 | Dependency: P11 scope (flagged — may defer). |
-| S6 | Live visualization (env/LFO phase, scope tap) | design.md §5.3(b)+(c) | EnvelopeNode/LfoNode state publish; optional master scope via rtrb SPSC ring. |
-| S7 | Numpad-less fallback layer (OQ-T3) | design.md §4 | `j`/`k`+`u`/`i` or `,`/`.`+`<`/`>` candidates. |
-| S8 | Ramp/acceleration retune | design.md §4 | From session #2 telemetry feedback. |
+ADR-038 ratification fixed D1–D4. This spec fixes the remaining
+implementation-level decisions. None are open; sessions may revise them
+*after* TK2 with evidence.
+
+- **D5 — Live-trig command.** `Sequencer::CMD_TRIG_NOW = 38`.
+  `arg0` = MIDI note (`0` → default `60`, the `Step::empty()` note);
+  `arg1` = velocity `0.0..=1.0` (`0.0` → default `0.5`, matching
+  `Step::empty()`'s `32768/65535`). Handling: `handle_commands` stores a
+  pending live trig (note, velocity); at the start of the next `process`
+  window (sample offset 0) the sequencer emits a note-on via a live
+  variant of `emit_note_on_at` — same Midi2 build, gate length
+  `0.75 × step_period` (the `Step::empty()` length), increments
+  `trig_count`, emits `DebugEventKind::StepFired` with step index `-1`
+  (live marker). Pattern state is untouched. Respects `is_muted()`.
+  Works with transport stopped (process ticks regardless). One pending
+  trig per track per window; a second command in the same window
+  replaces the first.
+- **D6 — Hold semantics.** With kitty release events (already enabled via
+  `REPORT_EVENT_TYPES`, `lib.rs::setup_keyboard_flags`): TRK/PTN/MUTE-
+  chord holds arm on press, disarm on release; every trig pressed while
+  held chords. Without kitty (`supports_keyboard_enhancement()` probe at
+  startup): **sticky one-shot** — press arms the prefix (mode line shows
+  `TRK…`), next trig chords and disarms; pressing the same prefix key
+  again disarms (toggle); `Esc` disarms; any non-trig key disarms and is
+  then processed normally. **No timeout.** FUNC = Shift works identically
+  everywhere (modifier flags are per-event).
+- **D7 — Copy/clear/paste scope.** FUNC+REC = copy the **active track's
+  active pattern lane** (TK1 yank semantics, including the known
+  lossy-via-bus caveat); FUNC+PLAY = clear the active track's pattern
+  (TK1 clear-lane pair: `CMD_CLEAR` + lock clears); FUNC+STOP = paste
+  (TK1 paste semantics: steps, velocity, length, condition, timing,
+  lock remap). Multi-track / whole-pattern operations stay on the `:`
+  line. While TRK or PTN is held, FUNC+transport is a no-op (reserved).
+- **D8 — Encoder bank.** The active param page's params in `Rule` order,
+  first 8, are encoders 1–8. FUNC+top-row key *n* = encoder *n* up;
+  FUNC+bottom-row key *n* = down. Column > param count → no-op + echo
+  `no encoder N on this page`. Magnitudes: FUNC = normal,
+  FUNC+Ctrl = fine (Mag::Fine). Jog step, ramp, and acceleration
+  constants are design.md §4 unchanged *(tunable)*. While a step is
+  focused, encoder jog routes to that step's p-lock (existing TK1
+  step-focus path, CMD 33/34).
+- **D9 — Chord clamps.** PTN+trig col ≥ `PATTERN_BANK_SIZE` (8) → no-op
+  + echo `no pattern N`. TRK+trig col ≥ discovered track count → no-op +
+  echo `no track N`. (Grammar addresses 16 for future banks/tracks;
+  engine bank stays 8 in TK2.)
+- **D10 — No inert state ships.** The engine live-trig command (C1)
+  lands *before* the REC toggle (C6), so REC-off trigs sound from the
+  first build that has them.
+- **D11 — Keymap re-base (resolves ADR-037 OQ-T15/T19).** User bindings
+  are `HashMap<KeyBinding, PanelButton>` — **global, flat; no per-screen
+  bindings**. Screens consume buttons, never raw keys. `:` verbs:
+  `:bind <key> <button>`, `:unbind <key>`, `:list-bindings`,
+  `:reset-bindings`, `:save-bindings`, `:load-bindings`. Button names
+  are the `PanelButton` variant names (`Trig1`…`Trig16`, `Trk`, `Ptn`,
+  `Rec`, `Play`, `Stop`, `Pg1`…`Pg6`, `Kit`, `Settings`, `Sampling`,
+  `Tempo`, `Yes`, `No`, `Up`, `Down`, `Left`, `Right`, `PagePrev`,
+  `PageNext`, `Song`, `Keybd`, `Mute`), case-insensitive.
+- **D12 — Screen model.** `enum Screen { Grid, Param(usize), Tempo,
+  Chain, Settings, Mute }` replaces `Mode`. Plus `grid_rec: bool`
+  (default **true** — TK1 behavior preserved on day one) and a
+  `HeldState` (armed prefix + pressed set). KIT and SAMPLING have **no
+  screens in TK2**: the buttons echo `reserved (kit)` / SAMPLING is
+  hidden entirely unless the cap-doc set declares a sampling capability
+  (none does today). SONG opens the Chain screen. Settings shows bpm,
+  kitty status, track/pattern counts, version — read-only in TK2.
+- **D13 — Numpad and arrows.** Arrows become panel UP/DOWN/LEFT/RIGHT
+  (navigation: encoder cursor on Param, chain lane on Chain, list on
+  Settings). Slot jog moves **exclusively to the numpad**: `7/1` = slot
+  A, `8/2` = B, `9/3` = C, live on Grid and Param screens; slots
+  auto-bind to the active page's first params on page select (existing
+  TK1 behavior, extended to slot C). No numpad → the encoder bank is the
+  jog path. Numpad-`0` ALT layer and fills stay **out of TK2**
+  (OQ-T24 — session #2 decides the cluster's fate first).
+- **D14 — Remap guardrails (resolves ADR-037 OQ-T16/T17/T18).**
+  `Ctrl-C` (quit) and `Shift+;` (`:` line) are **unbindable** — `:bind`
+  on them errors. `:reset-bindings` clears *all* user bindings (full
+  fall-through to defaults). **No auto-save**; only explicit
+  `:save-bindings` writes `~/.config/paraclete/keymap.yaml` (local
+  `./keymap.yaml` still overrides on load). With the leader key retired
+  there is no other chicken-and-egg entry point.
+
+Dropped from the former stub: touch-type split preset (ADR-038 D3), temp
+save/reload (P11 dependency — deferred to TK3 with P11), numpad-less
+fallback layer (the encoder bank *is* keyboard-native), ALT layer (D13).
 
 ---
 
-## Key remapping (S1)
+## §2. Target key table (continuous grid — the only built-in)
 
-### Design anchors
+| Keys | PanelButton | Notes |
+|---|---|---|
+| `q w e r t y u i` | Trig1–8 | top trig row |
+| `a s d f g h j k` | Trig9–16 | bottom trig row |
+| `Shift` (modifier) | FUNC | encoder plane + secondary chords |
+| `Tab` (hold/sticky) | TRK | +trig = select track |
+| `p` (hold/sticky) | PTN | +trig = select pattern |
+| `z` / `x` / `c` | REC / PLAY / STOP | `Space` = PLAY alias; FUNC+z/x/c = copy/clear/paste (D7) |
+| `1`–`6` | Pg1–Pg6 | pages in canonical order TRIG SRC FLTR AMP FX MOD |
+| `7` / `8` / `9` / `0` | KIT / SETTINGS / SAMPLING / TEMPO | KIT+SAMPLING reserved/gated (D12) |
+| `Enter` / `Esc` | YES / NO | YES taps on Tempo screen |
+| arrows | UP/DOWN/LEFT/RIGHT | navigation (D13) |
+| `-` / `=` | PagePrev / PageNext | step-page window |
+| `o` | SONG | opens Chain screen |
+| `m` | MUTE | Mute screen; quick chord TRK-held + FUNC+trig |
+| `v` | KEYBD | echoes `reserved (chromatic)` — OQ-T21, TK3 |
+| numpad `7/1 8/2 9/3` | slot A/B/C jog | D13; `Ctrl` = fine |
+| `Shift+;` | `:` line | unbindable (D14) |
+| `?`, `Backspace`, `Ctrl-C` | help, lock-clears, quit | unchanged from TK1 |
 
-| Anchor | Resolution |
-|--------|-----------|
-| Data model | `Keymap` struct: `HashMap<(Option<Mode>, KeyBinding), Action>`. `None` mode = global (applies in all modes). Fall-through to hardcoded defaults when no binding matches. |
-| `map_key()` integration | `input::map_key()` gains a `&Keymap` parameter. Check user bindings first; fall back to existing hardcoded match arms. Zero overhead for unbound keys (empty HashMap → straight to fallback). |
-| Runtime mutation | Via the `:` command line (TK1 C6 infrastructure). Verbs: `:bind <mode> <key> <action>`, `:bind <key> <action>` (global), `:unbind <mode> <key>`, `:reset-bindings`, `:save-bindings`, `:load-bindings`. |
-| Key name grammar | Human-readable strings: `a`, `;`, `Space`, `Tab`, `Enter`, `Backspace`, `Esc`, `Up`/`Down`/`Left`/`Right`, `Ctrl+k`, `Shift+Up`, `F1`–`F12`. Matching is case-insensitive for modifiers, literal for char keys. |
-| Persistence format | YAML via `serde_yml`. `~/.config/paraclete/keymap.yaml` (global) + `./keymap.yaml` (local override, loaded after global — last write wins per binding). |
-| Action names | Matches `Action` enum variant names exactly: `Quit`, `CycleMode`, `PlayToggle`, `SelectTrack`, `ToggleStep`, `PageWindow`, `SelectParamPage`, `Jog`, `Noop`. Some actions carry parameters (e.g. `Jog { slot: A, dir: Next, mag: Normal }`) — these need a sub-grammar in the `:` line parser. |
-| File load timing | Startup (after `TheotokosApp::new` but before first tick). Reload via `:load-bindings` without restart. |
-| File save timing | `:save-bindings` writes current bindings. Also auto-save on clean exit (quit). |
-| Error handling | Invalid bindings in file → warn on load, skip the entry, continue. `:bind` with unknown action/key → echo error to mode line, no mutation. |
-
-### Integration points
-
-1. **`input.rs`** — `map_key(&Keymap, mode, ev) -> Action`. User bindings checked before hardcoded match arms.
-2. **`lib.rs` / `TheotokosApp`** — owns `Keymap`; loads at startup; exposes `:bind`/`:unbind`/`:save`/`:load` through the `:` command dispatcher.
-3. **`TheotokosConfig`** — optional `keymap_path: Option<PathBuf>`.
-4. **`:` command line** (TK1 C6) — new verb family dispatched from the fuzzy index.
-
-### Non-goals
-
-- No GUI keymap editor (TK3, WT convergence).
-- No Ordo layout profile integration (TK3).
-- No key-*sequence* bindings (chords beyond single-modified-key); the chord grammar is HYPOTHESIS-grade per ADR-036.
-- No display of current bindings in the mode line (`:list-bindings` exists but renders to echo area only).
-- No per-track or per-instrument bindings — the keymap is Theotokos-global.
-
-### Test plan (minimal)
-
-- `keymap_resolves_user_binding_over_default`
-- `keymap_falls_through_to_default_when_unbound`
-- `keymap_global_binding_applied_in_both_modes`
-- `keymap_mode_specific_overrides_global`
-- `bind_without_mode_is_global`
-- `unbound_key_returns_noop_not_crash`
-- `keymap_roundtrips_yaml`
-- `keymap_load_merge_local_overrides_global`
-- `bind_invalid_action_echoes_error`
-- `unknown_key_in_file_warned_and_skipped`
+**Removed TK1 bindings** (delete, don't alias): `qweruiop` track row,
+`Tab` mode cycle, number-row pattern select, `t` tap, `y`/`Y`
+yank/paste, `\` leader + `LeaderState`, Shift+track mute, arrow-key
+slot jog.
 
 ---
 
-## Commit sequence (to be designed by design agent)
+## §3. Commit sequence
 
-Placeholder. Expected structure: one commit per scope item (S1–S8), ordered by dependency chain. Key remapping (S1) depends on TK1 C6 (`:` line) and has no TK2-internal dependencies — can ship first or in parallel with S2/S3.
+Every commit: `cargo test --workspace` green, no new deps, no
+audio-thread I/O. File references are current as of TK1 HEAD.
+
+### C0 — Canonical page order (D2b)
+`paraclete-view-assembly/src/lib.rs:22`: `CANONICAL_PAGE_ORDER` →
+`["TRIG", "SRC", "FLTR", "AMP", "FX", "MOD"]`. Fix every test that
+asserts the old order (view-assembly, antiphon, theotokos). Web client
+needs no change (order arrives via protocol).
+**Tests:** `canonical_order_is_trig_first` (new);
+existing composite-page tests updated.
+
+### C1 — Live-trig engine command (D5)
+`paraclete-nodes/src/sequencer.rs`: `CMD_TRIG_NOW = 38`, pending-trig
+field, live emit at window start. `tools/test-driver`: new `trig_now`
+action mirroring the command.
+**Tests (sequencer):** `trig_now_emits_note_on_next_window`,
+`trig_now_uses_default_note_and_velocity_when_zero`,
+`trig_now_respects_mute`, `trig_now_works_while_stopped`,
+`trig_now_second_command_replaces_pending`,
+`trig_now_does_not_modify_pattern`.
+
+### C2 — Panel model (pure types + mapping)
+`paraclete-theotokos/src/input.rs` rewritten two-tier:
+`enum PanelButton` (§2 list); `fn key_to_button(&Keymap, KeyEvent) ->
+Option<PanelButton>` (user bindings then the §2 table);
+`struct HeldState { kitty: bool, armed: Option<Hold>, pressed: … }`
+with `Hold = Trk | Ptn` and D6 semantics;
+`fn button_to_action(&HeldState, &ScreenState, PanelButton, mods) ->
+Action`. `model.rs`: `Screen` enum + `grid_rec` replace `Mode` (D12);
+`Action` gains `SelectPattern(usize)`, `LiveTrig { col }`,
+`EncoderJog { col, dir, mag }`, `ToggleGridRec`, `OpenScreen(Screen)`,
+`TapTempo`; loses `CycleMode`, `Yank`/`Paste` (renamed
+`CopyLane`/`PasteLane`), `Leader`. Old `map_seq`/`map_perf`/
+`TRACK_KEYS` deleted. **This commit does not touch `lib.rs` wiring** —
+both layers coexist behind the old entry point until C3.
+**Tests (pure, no terminal):**
+`continuous_grid_maps_sixteen_trigs`,
+`trk_hold_plus_trig_selects_track`,
+`ptn_hold_plus_trig_selects_pattern`,
+`sticky_prefix_one_shot_then_disarms`,
+`sticky_prefix_same_key_toggles_off`,
+`sticky_prefix_esc_disarms`,
+`nontrig_key_disarms_and_processes`,
+`func_top_row_is_encoder_up_bottom_row_down`,
+`rec_toggles_grid_recording`,
+`trig_with_grid_rec_off_is_live_trig`,
+`removed_tk1_bindings_are_dead` (t/y/`\`/Tab-cycle/number-patterns).
+
+### C3 — Wiring + render migration
+`lib.rs::handle_keys` consumes the C2 pipeline; release events feed
+`HeldState` (extend `is_press_or_repeat` filtering); kitty probe at
+startup stored on the model. `render.rs`: mode line → **status line**
+(screen name, track, REC ●/○, armed prefix, encoder/slot bindings);
+help overlay regenerated from the §2 table; transport bar gains REC
+indicator. `:` fuzzy index entries for retired verbs updated
+(`mode` verb removed; `pattern`/`track` verbs kept).
+**Tests:** TestBackend: `status_line_shows_rec_state_and_armed_prefix`,
+`help_overlay_lists_panel_buttons`; injection:
+`select_track_via_trk_chord_publishes_selected`,
+`grid_rec_off_trig_key_emits_trig_now_command` (uses C1 constant),
+`pattern_chord_clamps_with_echo` (D9).
+
+### C4 — FUNC transport chords + mute chord
+Copy/clear/paste rewired per D7 onto FUNC+REC/PLAY/STOP (reusing TK1
+`yank_active_pattern`/`paste_pattern`/clear-lane); TRK-held +
+FUNC+trig = mute toggle (existing sequencer `mute` param path); Mute
+screen (`m`): trigs toggle mutes, track states rendered.
+**Tests:** `func_rec_copies_active_lane`, `func_stop_pastes`,
+`func_play_clears_lane_and_locks`,
+`func_transport_noop_while_trk_held`,
+`trk_func_trig_toggles_mute`, `mute_screen_trigs_toggle_mutes`.
+
+### C5 — Encoder bank
+D8 in full: encoder resolution against the active page's composite
+`Rule`, ramp/acceleration (reuse the TK1 jog ramp machinery), fine via
+Ctrl, p-lock routing under step focus, flash generalized from 2 slots
+to 8 encoders + 3 slots, Param screen renders 8 encoder cells (2×4,
+name + bar + value) with cursor (arrows, D13).
+**Tests:** `encoder_col_maps_to_page_param_in_rule_order`,
+`encoder_beyond_param_count_echoes_noop`,
+`encoder_jog_emits_bump_param`, `encoder_fine_scales_step`,
+`encoder_jog_routes_to_lock_when_step_focused`,
+`page_select_rebinds_slots_a_b_c`, render: `param_screen_shows_eight_encoders`.
+
+### C6 — Screens: Tempo, Settings, Chain
+Tempo (`0`): bpm display, YES = tap (ring of 4 taps → `CMD_SET_PARAM`
+on clock `bpm`; 2+ taps required, 4-tap window average *(tunable)*),
+UP/DOWN = ±1 bpm, FUNC+UP/DOWN = ±0.1. Settings (`8`): read-only info
+(D12). Chain (`o`): pattern bank row with active/cued markers (TK1
+render reused), chain lane, YES = `CMD_CHAIN_PUSH` on cursor pattern,
+NO/Backspace = `CMD_CHAIN_CLEAR`, page-loop display. KIT echo;
+SAMPLING hidden (D12).
+**Tests:** `tempo_screen_yes_taps_set_bpm`,
+`tempo_arrows_nudge_bpm`, `chain_screen_yes_pushes_cursor_pattern`,
+`chain_screen_clear_sends_chain_clear`, `kit_button_echoes_reserved`,
+`sampling_hidden_without_capability`.
+
+### C7 — Agent smoke + polish gate
+No new features. Run the app on the 4-track default; fix paper cuts
+found by the smoke script; update `design/bugs.md` per the standing
+defect-filing directive if engine issues surface. Update
+`AGENTS.md`/`README` key documentation to the panel table.
+
+### C8 — Key remapping (ADR-037, re-based per D11/D14)
+`Keymap` struct (flat key→button map), YAML persistence
+(`serde_yml`, already a workspace dep), `:` verbs, unbindable-key
+guard, load order global→local, startup load + `:load-bindings`.
+ADR-037 status flips to accepted with an implementation note.
+**Tests:** `keymap_resolves_user_binding_over_default`,
+`keymap_falls_through_when_unbound`, `keymap_roundtrips_yaml`,
+`local_file_overrides_global`, `bind_unbindable_key_errors`,
+`reset_clears_all_user_bindings`, `unknown_button_name_echoes_error`,
+`bindings_do_not_autosave_on_quit`.
+
+### C9 — Live visualization (independent; may land any time after C3)
+design.md §5.3(b): `EnvelopeNode`/`LfoNode` publish
+`/node/{id}/state/{env_level,lfo_phase}` via `published_state()`;
+Param screen animates envelope/LFO glyphs at ≤30 fps. The §5.3(c)
+scope tap is **deferred to TK3** unless session #2 asks.
+**Tests:** `envelope_node_publishes_level`,
+`lfo_node_publishes_phase`, render smoke for the animated canvas.
+
+### C10 — Usability session #2 (D4; user-paired, no code)
+Held until here per D4 (C1–C8 landed; C9 optional). Hypotheses below.
+Produces `design/sessions/theotokos-2.md` +
+`design/phases/tk2-report.md`; OQ verdicts and any grammar re-cuts
+recorded there. This session also carries the outstanding TK1 C8
+obligations (that session was never run).
 
 ---
 
-## Open questions for the design agent
-
-| # | Question | Context |
-|---|----------|---------|
-| OQ-T15 | Action-with-parameters grammar for `:bind` | How to express `Jog { slot: B, dir: Next, mag: Normal }` as a one-liner? Options: positional args (`:bind Down Jog A Next Normal`), sub-flags (`:bind Down Jog --slot=A --dir=Next`), or by-example (`:bind Down Jog B Next Normal`). |
-| OQ-T16 | Should `reset-bindings` clear ALL or keep a whitelist? | Emacs `global-unset-key` vs `(setq ... nil)`. |
-| OQ-T17 | Auto-save on quit: always, prompt, or opt-in? | Risk: user experiments, quits, loses work vs surprises on next launch. |
-| OQ-T18 | Key name for `\` (backslash) | Currently the leader key (TK1 C7). If remappable, the leader key itself can be rebound — but the `:` line is the only way to rebind it (chicken-and-egg if leader is needed to open `:`). Design agent resolves. |
-| OQ-T19 | Should step/track key arrays (`TRACK_KEYS`, `STEP_KEYS`) also be remappable? | Currently fixed-positional. If a user rebinds step 0 from `a` to `1`, does the step grid compensate (shifting all positions) or does the keymap operate at the Action level (individual `ToggleStep { col: N }` bindings)? |
-
----
-
-## Explicit non-goals (TK2)
-
-Undo (session #3 may re-cut); step-note editing (`CMD_SET_STEP` note entry — later); WT convergence (TK3); slot C bindings (TK2 already scoped for this — confirm); CHAIN mode spec is the design agent's responsibility to define against the P10 engine semantics.
-
-## Hypotheses under test in session #3
+## §4. Hypotheses under test in session #2
 
 | Hypothesis | Source |
-|------------|--------|
-| Runtime key remapping via `:` line is discoverable and usable | S1 |
-| ALT-layer numpad-0 mutes/fills are ergonomic for performance | S2 |
-| Pattern-chain push/clear in CHAIN mode matches session expectations | S3 |
-| Tap tempo on clock BPM is sufficiently responsive | S4 |
-| Live env/LFO phase visualization aids performance editing | S6 |
-| Numpad-less fallback layer is viable on compact keyboards | S7 |
+|---|---|
+| The panel grammar (TRK/PTN holds, REC toggle, FUNC encoder bank) reads as an Elektron-style groovebox workflow on the keyboard | D1 |
+| Sticky-prefix fallback is tolerable on kitty-less terminals | D6 |
+| FUNC+transport copy/clear/paste is discoverable and sufficient (vs. missing `y`/`Y`) | D7 |
+| Encoder bank two-key simultaneity actually replaces slot sweeps; numpad cluster fate | D13/OQ-T24 |
+| Tempo screen + YES-tap beats the retired `t` tap | D12/OQ-T23 |
+| Mute quick-chord (TRK+FUNC+trig) vs. Mute screen — which survives | OQ-T22 |
+| Runtime remapping via `:` line is discoverable | D11 |
+| grid_rec defaulting to ON is right for a programming-first session | D12 |
+
+## §5. Open questions
+
+| # | Question | Status |
+|---|---|---|
+| OQ-T15/T16/T17/T18/T19 | remap grammar, reset scope, autosave, leader escape, positional arrays | **All resolved** — D11/D14 (leader retired; `:` unbindable) |
+| OQ-T20 | live-trig command shape | **Resolved** — D5 |
+| OQ-T21 | KEYBD chromatic grammar | OPEN — TK3 |
+| OQ-T22 | mute chord vs. screen | session #2 |
+| OQ-T23 | tempo/tap grammar | session #2 |
+| OQ-T24 | numpad slot cluster fate | session #2 |
+| OQ-T10/T11/T12 | scope tap placement, temp save/reload (P11), WT convergence | TK3 |

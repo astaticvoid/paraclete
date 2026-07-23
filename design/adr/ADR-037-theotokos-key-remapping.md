@@ -147,6 +147,19 @@ customization the mechanism already supports.
 
 ---
 
+## Amendment — 2026-07-23 (ADR-038)
+
+ADR-038 (Elektron convergence, 🟡 proposed) re-bases this mechanism on its
+two-tier input model: user bindings map **physical keys → `PanelButton`s**
+(trigs included), and the button→action grammar above them stays fixed.
+This resolves OQ-T19 by construction (no positional-shift ambiguity) and
+simplifies OQ-T15 (most bindings name a button, not a parameterized
+action). The `Mode` key in the map becomes the ADR-038 `Screen`/held-state
+context or is dropped in favor of global-only bindings — design agent
+decides in the TK2 spec. (The touch-type split grid was dropped entirely
+at ADR-038 ratification D3 — no shipped preset; users can hand-write it
+under this mechanism.)
+
 ## Implementation note (to be added when ratified)
 
 ```text

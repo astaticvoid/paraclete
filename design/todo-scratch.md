@@ -3,6 +3,17 @@
 > **Minimal, no stale items.** Transient session-to-session carryover.
 > Completed items are removed. Permanent milestones live in `roadmap.md`.
 
+## Carryover from 2026-07-23 session
+
+### Elektron convergence (ADR-038 ✅ accepted 2026-07-23, D1–D4)
+
+- ~~Expand `design/phases/tk2-theotokos.md`~~ — **done 2026-07-23**: full
+  spec, D5–D14 frozen, commits C0–C10 with named tests. Next: implement C0
+  (page-order swap) onward.
+- Session #2 (TK1 C8) HELD until TK2 S0 lands (D4); runs on ADR-038 grammar.
+- `CANONICAL_PAGE_ORDER` reorder (TRIG SRC FLTR AMP FX MOD, D2) touches
+  `paraclete-view-assembly` + Antiphon/web page order — call out at session.
+
 ## Carryover from 2026-07-22 session
 
 ### TK1 deferred (C7 partial)

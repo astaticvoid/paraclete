@@ -177,6 +177,17 @@ WT is editor/parity-first (generic views in the terminal). The gap is a
 
 ## Implementation notes
 
+**2026-07-23 — interaction model superseded in part by ADR-038 (🟡
+proposed).** User-directed Elektron-convergence redesign: decision 5's
+concrete keymap (invariant `qweruiop` track row, home-row split step grid,
+SEQ/PERF modes) is replaced by a virtual front panel — TRK/PTN hold-chords,
+REC grid-recording toggle, continuous two-row trig grid, FUNC(Shift)-layer
+8-encoder bank. The *model-level* commitments here (modal-state machine as
+pure native code, focus-slot floor of two-param simultaneity, semantic-
+plane-only mutation, session-gated chord convergence) stand; the two-param
+floor is now met by the encoder bank. See ADR-038 and `design/theotokos/
+design.md` Stage 3.
+
 **2026-07-21 — accepted.** Ratified by the user; the review amendments
 below were folded pre-ratification. BUG-032 (transport) and BUG-033 (TUI
 stale path) filed at acceptance under the standing defect-filing

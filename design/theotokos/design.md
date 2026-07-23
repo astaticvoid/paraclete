@@ -449,6 +449,77 @@ can re-cut the next phase.
 
 ---
 
+## Stage 3 — 2026-07-23 — Elektron convergence redesign (ADR-038 ✅ accepted 2026-07-23)
+
+**User directive:** converge on an Elektron-level experience — the best
+Elektron-style groovebox workflow achievable on a keyboard (Digitakt as
+design reference; Digitone/Syntakt workflow-compatible). Third-party
+marks are used nominatively for design comparison only; Paraclete is
+unaffiliated (naming policy, ADR-036/ADR-038).
+Deficiency review below; the redesign itself is
+**ADR-038** (`design/adr/ADR-038-theotokos-elektron-convergence.md`),
+which supersedes parts of §3 as marked. §2 (architecture), §4 (parameter
+mechanics), §5 (rendering), §6 (test/iteration protocol) stand unchanged.
+
+### 3.A Usability deficiency review (vs. the Elektron benchmark)
+
+1. **Track select burns a whole row for one function.** `qweruiop` spends
+   8 keys where Elektron spends one held TRK button; it caps tracks at 8,
+   and the `t`/`y` holes make the "row" a hidden split. → TRK hold + trig.
+2. **The split step grid contradicts the 16-trig mental model.** `asdf
+   jkl;`+`zxcv m,./` has a gap mid-pattern and puts steps on punctuation
+   (`;`, `,`, `.`, `/`) that collide with `:`/`?`/leader grammar. → one
+   continuous two-row grid (`q…i` / `a…k`); split dropped entirely at
+   ratification (D3 — hand-writable via ADR-037 remapping; user
+   directive: optional at most, never primary).
+3. **Major modes conflate posture with function.** Tab-cycled SEQ/PERF
+   makes the same number keys mean *pattern* in SEQ but *page* in PERF —
+   a classic mode error — and trigs stop being trigs in PERF. Elektron has
+   no major modes: grid-rec is a toggle, params are always reachable.
+   → REC toggle + screens + hold layers; trigs are trigs everywhere.
+4. **No live-trig path.** You cannot sound a track without programming a
+   step; on hardware, trigs always play. Engine gap — nothing on the
+   semantic plane fires a voice now (OQ-T20).
+5. **2–3 tweakable params vs. 8 always-live encoders.** Focus slots A/B/C
+   plus rebind ceremony vs. Elektron's grab-any-of-8. → FUNC-layer encoder
+   bank (column = encoder, row = direction); slots demoted to optional
+   accelerators (OQ-T24).
+6. **Pattern select caps at 8 and squats on the page keys.** → PTN hold +
+   trig (16 addressable), number row uniformly = pages/screens.
+7. **No FUNC plane.** Secondary functions are scattered (Shift = fine-jog
+   here, mute there; Backspace clears locks) instead of one systematic
+   FUNC+key grammar with the canonical copy/clear/paste on transport.
+8. **No YES/NO grammar** for confirms/menus; `Enter`/`Esc` were ad hoc.
+9. **No homes for KIT/SETTINGS/SAMPLING/TEMPO**; tap tempo squatted on a
+   letter that the continuous grid needs (`t` = trig 5).
+10. **No held-chord infrastructure** in the input layer (stateless
+    per-event match); hold semantics and the kitty-less sticky-prefix
+    degradation need a designed pressed-set model.
+
+### 3.B What replaces §3.1–§3.3
+
+See the ADR-038 panel table for the full binding set. Summary of
+supersessions:
+
+- §3.1 globals: `qweruiop` row, `Tab` mode-cycle, `t` tap, `y` yank →
+  **retired**. `Space` (aliases PLAY), `:`, `Esc` (=NO), `Ctrl-C`, `?` →
+  survive.
+- §3.2 SEQ mode: becomes the default screen with REC-gated trig behavior;
+  step keys move to the continuous grid; number-row patterns → PTN+trig.
+- §3.3 PERF mode: dissolved. Param pages via PG1–PG6 (`1`–`6`, canonical
+  order re-fixed to TRIG SRC FLTR AMP FX MOD); the encoder bank replaces
+  slot-jog as the editing workhorse; the numpad cluster becomes an
+  optional performance accelerator pending session evidence (OQ-T24).
+- §4 mechanics (relative bumps, per-param step, ramp/acceleration,
+  two-param simultaneity floor, p-lock routing via step focus) apply to
+  the encoder bank unchanged.
+
+Chord homes remain HYPOTHESIS-grade per §6; the two-tier model
+(key→PanelButton→Action), hold semantics, and grid-rec toggle are
+DETERMINED (ADR-038 ratified 2026-07-23, decisions D1–D4).
+
+---
+
 ## Open Questions
 
 | # | Question | Status | Where decided |
@@ -467,10 +538,37 @@ can re-cut the next phase.
 | OQ-T10 | Scope tap placement: master only vs per-track | OPEN — default master | TK2 spec |
 | OQ-T11 | Temp save/reload depends on P11 engine scope — ship UI-only or defer | OPEN | TK2 spec |
 | OQ-T12 | WT convergence: proceed / fold / defer | OPEN — user decision with session evidence | TK3 |
+| OQ-T20 | Live-trig command path: REC-off trigs must fire a voice now (audition). CMD 38+ on the sequencer vs. a voice-direct command — nothing on the semantic plane can do this today | OPEN — engine gap, ADR-038 | TK2 spec |
+| OQ-T21 | KEYBD chromatic trig mode: note grammar for melodic engines (trig rows as keyboard octaves?) | OPEN — reserved button `v` | TK3 |
+| OQ-T22 | Mute grammar: `m` MUTE screen vs. TRK+FUNC+trig quick chord vs. both | OPEN — ADR-038 hypothesis is both | session #2 |
+| OQ-T23 | Tempo: TEMPO screen (`0`) + YES-tap vs. a dedicated tap chord; BPM nudge grammar | OPEN | session #2 |
+| OQ-T24 | Numpad focus-slot cluster: keep as optional performance accelerator vs. retire (encoder bank may make it redundant) | OPEN | session #2/#3 |
 
 ---
 
 ## Amendment log
+
+**2026-07-23 (later) — ADR-038 ACCEPTED.** Ratified by the user, decisions
+D1–D4: D1 model + default homes as written (chord homes stay
+session-revisable); D2 both engine extensions pre-approved (live-trig
+command, shape frozen in the TK2 spec; `CANONICAL_PAGE_ORDER` → TRIG SRC
+FLTR AMP FX MOD, Antiphon/web order changes too); D3 touch-type split grid
+dropped entirely (no shipped preset); D4 session #2 held until the TK2 S0
+panel lands. Next artifact: full TK2 spec (TK1-style commit blueprint).
+
+**2026-07-23 — Elektron convergence redesign (Stage 3; ADR-038 proposed).**
+User-directed rethink: converge on Elektron-level experience. Panel-model
+redesign — TRK/PTN hold-chords replace the track row and number-row
+patterns; REC grid-recording toggle + screens replace SEQ/PERF major
+modes; continuous two-row trig grid (`q…i`/`a…k`) replaces the split
+home-row grid (split demoted to optional remap preset per user
+directive); FUNC(Shift)-layer 8-encoder bank replaces slot-jog as the
+editing workhorse; FUNC+REC/PLAY/STOP copy/clear/paste replaces `y`/`Y`;
+`\` leader retired. `CANONICAL_PAGE_ORDER` re-fixed to TRIG SRC FLTR AMP
+FX MOD. New gaps/OQs: OQ-T20 (live-trig command), OQ-T21 (KEYBD
+chromatic), OQ-T22 (mute grammar), OQ-T23 (tempo), OQ-T24 (numpad slot
+fate). TK2 stub re-cut to lead with the convergence work; session #2 now
+tests the new grammar. §3.A deficiency review records the rationale.
 
 **2026-07-22 — key remapping moved to TK2 (ADR-037 proposed).** Decision:
 the `Keymap` mechanism (runtime-rebindable HashMap, `:`-line verbs, YAML

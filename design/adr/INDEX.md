@@ -42,3 +42,5 @@ but cannot resolve them without this index.
 | ADR-034 | `ADR-034-runtime-observability.md` | Runtime observability — live dropout/xrun/drop counters |
 | ADR-035 | `ADR-035-debug-baselines-and-structured-log.md` | Audio regression baselines + structured per-node debug log (🟡 proposed) |
 | ADR-036 | `ADR-036-theotokos-performance-terminal.md` | Theotokos keyboard-first performance terminal (accepted, 2026-07-21) |
+| ADR-037 | `ADR-037-theotokos-key-remapping.md` | Theotokos runtime key remapping in TK2 (🟡 proposed) |
+| ADR-038 | `ADR-038-theotokos-elektron-convergence.md` | Theotokos Elektron convergence — virtual front panel (accepted, 2026-07-23) |

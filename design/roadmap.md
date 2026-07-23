@@ -3,7 +3,22 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-22. **TK1 CODE COMPLETE — C0–C7 shipped** (p-lock
+> **Last updated:** 2026-07-23. **Elektron convergence redesign — ADR-038 ✅
+> ACCEPTED** (ratified same day, D1–D4): Theotokos interaction model rebuilt
+> as a virtual front panel — TRK/PTN hold-chords replace the `qweruiop`
+> track row, REC grid-rec toggle + screens replace SEQ/PERF modes,
+> continuous two-row trig grid (`q…i`/`a…k`) replaces the split home-row
+> grid (split dropped entirely, D3), FUNC(Shift)-layer 8-encoder bank
+> replaces slot-jog. Engine scope pre-approved (D2): live-trig command +
+> `CANONICAL_PAGE_ORDER` → Digitakt order. **Session #2 held until the TK2
+> S0 panel lands (D4)** and tests the new grammar, not the superseded TK1
+> hypotheses (`\` leader, number-row patterns, `y`/`Y`). **Full TK2 spec
+> drafted same day** (`design/phases/tk2-theotokos.md`): decisions D5–D14
+> frozen (live-trig `CMD_TRIG_NOW=38`, sticky-prefix hold fallback,
+> FUNC+transport copy/clear/paste scope, encoder bank, screen model,
+> remap guardrails), commits C0–C9 + session C10, named tests per commit.
+> Next: implement C0 onward.
+> Previous: 2026-07-22. **TK1 CODE COMPLETE — C0–C7 shipped** (p-lock
 > UI, mutes, composite pages, `:` command line, pattern select, yank/paste,
 > `\` leader rebinding, yellow flash, `?` help overlay, suspend-crash fix).
 > **TK1 C8** = usability session #2 (user-paired; no code). **60 Theotokos
@@ -207,7 +222,7 @@ Ordered by nearness to the critical path.
 | **P15** | Effects Palette | Distortion variety, chorus/phaser/flanger, BBD/tape delay, spring/plate | — |
 | **P16** | Macro & Terminal Control | Macro system; TUI as editing surface | — |
 | **W4** | Interface maturity | Ordo layout profiles, multi-client polish, wavetable view, protocol freeze, headless protocol CI driver | Ongoing after W3 |
-| **TK** | Theotokos performance terminal | Keyboard-first modal TUI (home-row steps, numpad focus-slot performance cluster, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **TK0 shipped 2026-07-21** (ADR-036). **TK1 code complete 2026-07-22** (C0–C7: p-locks, mutes, composite pages, `:` line, pattern select, yank/paste, leader rebind, flash, help overlay, suspend-crash fix). C8 = usability session #2 pending. **TK2 stub created** (key remapping, CHAIN mode, ALT layer, tap tempo, live viz, ramp retune). |
+| **TK** | Theotokos performance terminal | Keyboard-first Elektron-class virtual front panel (continuous trig grid, TRK/PTN hold-chords, REC grid-rec toggle, FUNC-layer encoder bank, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **TK0 shipped 2026-07-21** (ADR-036). **TK1 code complete 2026-07-22** (C0–C7: p-locks, mutes, composite pages, `:` line, pattern select, yank/paste, leader rebind, flash, help overlay, suspend-crash fix). **Elektron convergence redesign 2026-07-23 (ADR-038 ✅ accepted, D1–D4)** — TK2 re-cut: S0 virtual front panel, key remapping (ADR-037, re-based), CHAIN + TEMPO screens, live-trig command (OQ-T20), live viz, ramp retune. C8 = usability session #2, held until S0 lands (D4), on the ADR-038 grammar. |
 
 The interface track (Antiphon server + Theoria clients) is specified in
 `design/interface-plan.md` (**accepted July 2026**; ADR-031 authored with W0,
