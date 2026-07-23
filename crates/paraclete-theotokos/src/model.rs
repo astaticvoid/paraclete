@@ -73,6 +73,40 @@ pub struct Model {
     pub cmdline_error: Option<String>,
     /// TK1 C6: fuzzy index built at startup from caps + tracks + static verbs.
     pub fuzzy_index: Vec<FuzzyEntry>,
+    /// TK1 C7: yanked pattern data for paste.
+    pub yank_buffer: Vec<YankedStep>,
+    /// TK1 C7: leader state for \\-prefix key chords (slot rebinding).
+    pub leader: Option<LeaderState>,
+    /// TK1 C7: Instant when each slot value last changed (for yellow flash).
+    pub slot_flash: [Option<std::time::Instant>; 2],
+    /// TK1 C7: previous slot values (to detect change).
+    pub last_slot_values: [f64; 2],
+}
+
+/// TK1 C7: a yanked step for paste.
+#[derive(Clone, Default)]
+pub struct YankedStep {
+    pub active: bool,
+    pub note: i64,
+    pub velocity: f64,
+    pub length: f64,
+    pub timing: i64,
+    pub condition: f64,
+    pub locks: Vec<YankedLock>,
+}
+
+/// TK1 C7: a yanked param lock.
+#[derive(Clone)]
+pub struct YankedLock {
+    pub node_id: u32,
+    pub param_id: u32,
+    pub value: f64,
+}
+
+/// TK1 C7: `\\` leader chord state for slot rebinding.
+#[derive(Clone)]
+pub struct LeaderState {
+    pub slot: Option<Slot>,
 }
 
 /// TK1 C6: a searchable entry in the fuzzy command index.
@@ -140,6 +174,10 @@ impl Model {
             cmdline: None,
             cmdline_error: None,
             fuzzy_index,
+            yank_buffer: Vec::new(),
+            leader: None,
+            slot_flash: [None; 2],
+            last_slot_values: [0.0; 2],
         };
         model.bind_page();
         model
@@ -647,6 +685,54 @@ impl Model {
             _ => Err(format!("?{input}")),
         }
     }
+
+    // ── C7: yank/paste, leader, flash ──
+
+    pub fn set_slot_lead(&mut self, slot: Slot, dig: usize) {
+        let n = dig.saturating_sub(1);
+        let params = self.current_page_params();
+        if n < params.len() {
+            let (node_id, param_id, name) = &params[n];
+            let binding = SlotBinding {
+                node_id: *node_id,
+                param_id: *param_id,
+                param_name: name.clone(),
+                min: 0.0,
+                max: 1.0,
+            };
+            match slot {
+                Slot::A => self.slot_a = Some(binding),
+                Slot::B => self.slot_b = Some(binding),
+                Slot::C => {}
+            }
+        }
+    }
+
+    fn current_page_params(&self) -> Vec<(u32, u32, String)> {
+        let mut out = Vec::new();
+        if let Some(cv) = self.composite.get(self.active_track) {
+            if let Some(page) = cv.pages.get(self.perf_page) {
+                for p in &page.params {
+                    out.push((p.node_id, p.param_id, p.name.clone()));
+                }
+                return out;
+            }
+        }
+        let gen_id = self.tracks[self.active_track].generator_id;
+        if let Some(cap) = self.caps.get(&gen_id) {
+            for p in &cap.params {
+                out.push((gen_id, p.id, p.name.to_string()));
+            }
+        }
+        out
+    }
+
+    pub fn update_flash(&mut self, slot: usize, new_value: f64) {
+        if (new_value - self.last_slot_values[slot]).abs() > 0.0001 {
+            self.slot_flash[slot] = Some(std::time::Instant::now());
+            self.last_slot_values[slot] = new_value;
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -677,6 +763,8 @@ pub struct Tuning {
     pub ramp_dwell_ms: u64,
     pub ramp_accel_factor: f64,
     pub ramp_accel_cap: f64,
+    /// TK1 C7: duration slot values display in Yellow after a change (ms).
+    pub flash_ms: u64,
 }
 
 impl Default for Tuning {
@@ -690,6 +778,7 @@ impl Default for Tuning {
             ramp_dwell_ms: 150,
             ramp_accel_factor: 1.05,
             ramp_accel_cap: 8.0,
+            flash_ms: 400,
         }
     }
 }

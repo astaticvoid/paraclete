@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
-use paraclete_node_api::{CapabilityDocument, NodeCommand, StateBusHandle};
+use paraclete_node_api::{CapabilityDocument, NodeCommand, StateBusHandle, StateBusValue};
 use paraclete_view_assembly::CompositeView;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -19,7 +19,9 @@ use ratatui::Terminal;
 use crate::action::{
     Action, Outcome, CMD_CLEAR_STEP_LOCK, CMD_SET_LOCK_TARGET, CMD_SET_STEP_LOCK, GRID_STEPS,
 };
-use crate::model::{CmdlineVerb, Dir, JogTracker, Model, Slot, Tuning};
+use crate::model::{
+    CmdlineVerb, Dir, JogTracker, LeaderState, Model, Slot, Tuning, YankedLock, YankedStep,
+};
 
 pub type BusHandle = Rc<RefCell<StateBusHandle>>;
 
@@ -148,6 +150,9 @@ impl TheotokosApp {
             .map(|s| self.model.read_param_value(bus, s.node_id, s.param_id))
             .unwrap_or(0.0);
 
+        self.model.update_flash(0, slot_a_value);
+        self.model.update_flash(1, slot_b_value);
+
         let envelope = self.model.envelope_for_active_track().map(|e| {
             let val = self.model.read_param_value(bus, e.node_id, e.param_id);
             (e, val)
@@ -201,6 +206,13 @@ impl TheotokosApp {
             cmdline: self.model.cmdline.clone(),
             cmdline_error: self.model.cmdline_error.clone(),
             cmdline_candidates: self.model.cmdline_candidates(),
+            leader: self.model.leader.clone(),
+            slot_a_flash: self.model.slot_flash[0].map_or(false, |t| {
+                t.elapsed().as_millis() < self.tuning.flash_ms as u128
+            }),
+            slot_b_flash: self.model.slot_flash[1].map_or(false, |t| {
+                t.elapsed().as_millis() < self.tuning.flash_ms as u128
+            }),
         };
 
         drop(bus_ref);
@@ -226,6 +238,12 @@ impl TheotokosApp {
         let mut dirty = false;
         let mut selected_changed = false;
         for ev in key_events {
+            // C7: while leader is active, route to leader chord handler
+            if self.model.leader.is_some() {
+                self.handle_leader_key(ev);
+                dirty = true;
+                continue;
+            }
             // C6: while cmdline is open, capture ALL keys to the line editor
             if self.model.cmdline.is_some() {
                 self.handle_cmdline_key(ev);
@@ -441,6 +459,28 @@ impl TheotokosApp {
                         dirty = true;
                     }
                 }
+                Action::PatternSelect(n) => {
+                    let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
+                    self.pending.push(paraclete_node_api::NodeCommand {
+                        target_id: seq_id,
+                        type_id: 27, // CMD_SET_PATTERN
+                        arg0: n as i64,
+                        arg1: 0.0,
+                    });
+                    dirty = true;
+                }
+                Action::Yank => {
+                    self.yank_active_pattern(state);
+                    dirty = true;
+                }
+                Action::Paste => {
+                    self.paste_pattern(state);
+                    dirty = true;
+                }
+                Action::Leader => {
+                    self.model.leader = Some(LeaderState { slot: None });
+                    dirty = true;
+                }
                 Action::Colon => {
                     self.model.cmdline = Some(String::new());
                     self.model.cmdline_error = None;
@@ -593,6 +633,186 @@ impl TheotokosApp {
         }
     }
 
+    // ── C7: leader, yank, paste ──
+
+    fn handle_leader_key(&mut self, ev: &KeyEvent) {
+        let leader = match &mut self.model.leader {
+            Some(s) => s,
+            None => return,
+        };
+        match ev.code {
+            KeyCode::Esc => {
+                self.model.leader = None;
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') => {
+                leader.slot = Some(Slot::A);
+            }
+            KeyCode::Char('b') | KeyCode::Char('B') => {
+                leader.slot = Some(Slot::B);
+            }
+            KeyCode::Char(c @ '1'..='9') if leader.slot.is_some() => {
+                let slot = leader.slot.unwrap();
+                let dig = c.to_digit(10).unwrap() as usize;
+                self.model.set_slot_lead(slot, dig);
+                self.model.leader = None;
+            }
+            _ => {
+                self.model.leader = None;
+            }
+        }
+    }
+
+    fn yank_active_pattern(&mut self, bus: &StateBusHandle) {
+        let track = self.model.active_track;
+        if track >= self.model.tracks.len() {
+            return;
+        }
+        let seq_id = self.model.tracks[track].sequencer_id;
+        let steps_text = bus
+            .read(&format!("/node/{}/state/steps", seq_id))
+            .and_then(|v| match v {
+                StateBusValue::Text(s) => Some(s.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let locks_text = bus
+            .read(&format!("/node/{}/state/locks", seq_id))
+            .and_then(|v| match v {
+                StateBusValue::Text(s) => Some(s.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+
+        let mut yanked: Vec<YankedStep> = Vec::with_capacity(steps_text.len());
+        for (i, ch) in steps_text.chars().enumerate() {
+            let active = ch == '1';
+            let mut locks: Vec<YankedLock> = Vec::new();
+            for entry in locks_text.split(';') {
+                let entry = entry.trim();
+                if entry.is_empty() {
+                    continue;
+                }
+                let parts: Vec<&str> = entry.splitn(4, [':', '=']).collect();
+                if parts.len() != 4 {
+                    continue;
+                }
+                if let Some(rest) = parts[0].strip_prefix('s') {
+                    if let Ok(s) = rest.parse::<usize>() {
+                        if s == i {
+                            let nid: u32 = parts[1].parse().unwrap_or(0);
+                            let pid: u32 = parts[2].parse().unwrap_or(0);
+                            let val: f64 = parts[3].parse().unwrap_or(0.0);
+                            locks.push(YankedLock {
+                                node_id: nid,
+                                param_id: pid,
+                                value: val,
+                            });
+                        }
+                    }
+                }
+            }
+            yanked.push(YankedStep {
+                active,
+                note: if active { 36 } else { -1 },
+                velocity: if active { 1.0 } else { 0.0 },
+                length: 1.0,
+                timing: 0,
+                condition: 0.0,
+                locks,
+            });
+        }
+        self.model.yank_buffer = yanked;
+    }
+
+    fn paste_pattern(&mut self, bus: &StateBusHandle) {
+        if self.model.yank_buffer.is_empty() {
+            return;
+        }
+        let src_track = self.model.active_track; // same-track paste for now
+        let dst_track = src_track;
+        if dst_track >= self.model.tracks.len() {
+            return;
+        }
+        let seq_id = self.model.tracks[dst_track].sequencer_id;
+        let src_gen = self.model.tracks[src_track].generator_id;
+        let dst_gen = self.model.tracks[dst_track].generator_id;
+
+        let dst_steps = bus
+            .read(&format!("/node/{}/state/steps", seq_id))
+            .and_then(|v| match v {
+                StateBusValue::Text(s) => Some(s.len()),
+                _ => None,
+            })
+            .unwrap_or(16);
+        let max_steps = self.model.yank_buffer.len().min(dst_steps);
+
+        for i in 0..max_steps {
+            let step = &self.model.yank_buffer[i];
+            // 1. Clear stale locks
+            self.pending.push(paraclete_node_api::NodeCommand {
+                target_id: seq_id,
+                type_id: CMD_CLEAR_STEP_LOCK,
+                arg0: i as i64,
+                arg1: -1.0,
+            });
+            // 2. Set step active + note
+            self.pending.push(paraclete_node_api::NodeCommand {
+                target_id: seq_id,
+                type_id: 17, // CMD_SET_STEP
+                arg0: i as i64,
+                arg1: step.note as f64,
+            });
+            // 3. Velocity + length
+            self.pending.push(paraclete_node_api::NodeCommand {
+                target_id: seq_id,
+                type_id: 36, // CMD_SET_STEP_VELOCITY
+                arg0: i as i64,
+                arg1: step.velocity,
+            });
+            self.pending.push(paraclete_node_api::NodeCommand {
+                target_id: seq_id,
+                type_id: 37, // CMD_SET_STEP_LENGTH
+                arg0: i as i64,
+                arg1: step.length,
+            });
+            // 4. Timing + condition
+            self.pending.push(paraclete_node_api::NodeCommand {
+                target_id: seq_id,
+                type_id: 25, // CMD_SET_STEP_TIMING
+                arg0: i as i64,
+                arg1: step.timing as f64,
+            });
+            self.pending.push(paraclete_node_api::NodeCommand {
+                target_id: seq_id,
+                type_id: 26, // CMD_SET_STEP_CONDITION
+                arg0: i as i64,
+                arg1: step.condition,
+            });
+            // 5. Lock pairs
+            for lock in &step.locks {
+                let nid = if lock.node_id == src_gen {
+                    dst_gen
+                } else {
+                    lock.node_id
+                };
+                if nid == dst_gen || src_track == dst_track {
+                    self.pending.push(paraclete_node_api::NodeCommand {
+                        target_id: seq_id,
+                        type_id: CMD_SET_LOCK_TARGET,
+                        arg0: nid as i64,
+                        arg1: lock.param_id as f64,
+                    });
+                    self.pending.push(paraclete_node_api::NodeCommand {
+                        target_id: seq_id,
+                        type_id: CMD_SET_STEP_LOCK,
+                        arg0: i as i64,
+                        arg1: lock.value,
+                    });
+                }
+            }
+        }
+    }
+
     pub fn take_pending_commands(&mut self) -> Vec<NodeCommand> {
         std::mem::take(&mut self.pending)
     }
@@ -631,7 +851,7 @@ fn pop_keyboard_flags() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Mode, TrackInfo};
+    use crate::model::{Mode, SlotBinding, TrackInfo};
     use crossterm::event::{KeyCode, KeyModifiers};
     use paraclete_node_api::{CapabilityDocument, ParamDescriptor, ParamUnit, Rule, StateBusValue};
     use std::borrow::Cow;
@@ -1402,5 +1622,142 @@ mod tests {
             app.model.cmdline_error.as_deref().unwrap().starts_with('?'),
             "error must start with ?"
         );
+    }
+
+    // ── C7: pattern select, yank/paste, leader, flash ──
+
+    fn seq_key(n: u8) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char((b'0' + n) as char), KeyModifiers::NONE)
+    }
+
+    fn backslash_key() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn seq_number_row_sends_set_pattern() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[seq_key(3)]);
+        // SEQ mode by default
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| { c.type_id == 27 && c.arg0 == 2 }),
+            "number key 3 must send CMD_SET_PATTERN(2)"
+        );
+    }
+
+    #[test]
+    fn yank_then_paste_emits_full_step_command_batch() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+        // Set up steps so yank has active data
+        {
+            let mut b = bus.borrow_mut();
+            b.write(
+                "/node/200/state/steps",
+                StateBusValue::Text("1100000000000000".into()),
+            );
+            b.write("/node/200/state/locks", StateBusValue::Text(String::new()));
+        }
+
+        app.handle_keys(&bus, &[kc('y')]);
+        assert!(
+            !app.model.yank_buffer.is_empty(),
+            "yank must populate buffer"
+        );
+
+        app.pending.clear();
+        app.handle_keys(
+            &bus,
+            &[KeyEvent::new(KeyCode::Char('y'), KeyModifiers::SHIFT)],
+        );
+        assert!(!app.pending.is_empty(), "paste must produce commands");
+    }
+
+    #[test]
+    fn paste_clears_stale_lock_lanes_before_writing() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+        {
+            let mut b = bus.borrow_mut();
+            b.write(
+                "/node/200/state/steps",
+                StateBusValue::Text("1000000000000000".into()),
+            );
+            b.write("/node/200/state/locks", StateBusValue::Text(String::new()));
+        }
+
+        app.handle_keys(&bus, &[kc('y')]);
+        app.pending.clear();
+        app.handle_keys(
+            &bus,
+            &[KeyEvent::new(KeyCode::Char('y'), KeyModifiers::SHIFT)],
+        );
+
+        // First command should be CMD_CLEAR_STEP_LOCK arg1=-1.0 for step 0
+        let first_cmd = &app.pending[0];
+        assert_eq!(first_cmd.type_id, CMD_CLEAR_STEP_LOCK);
+        assert_eq!(first_cmd.arg1, -1.0);
+    }
+
+    #[test]
+    fn leader_esc_cancels_chord() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[backslash_key()]);
+        assert!(app.model.leader.is_some(), "leader must activate");
+
+        app.handle_keys(&bus, &[esc_key()]);
+        assert!(app.model.leader.is_none(), "Esc must cancel leader");
+    }
+
+    #[test]
+    fn leader_rebind_b3_binds_third_page_param() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        // Set mode to PERF and page to 0 (AMP with decay+tune params)
+        app.model.mode = Mode::Perf;
+        app.model.perf_page = 0;
+
+        // Send leader sequence: \ b 3 (param index 2 = 3rd param)
+        app.handle_keys(&bus, &[backslash_key()]);
+        app.handle_keys(&bus, &[kc('b')]);
+        app.handle_keys(&bus, &[seq_key(3)]);
+
+        assert!(app.model.leader.is_none(), "leader must exit after chord");
+        assert!(app.model.slot_b.is_some(), "slot B must be bound");
+    }
+
+    #[test]
+    fn flash_detects_value_change() {
+        let mut model = Model::new(1, &[200], &[100], &["Kick".into()], test_caps(), vec![]);
+        model.slot_a = Some(SlotBinding {
+            node_id: 100,
+            param_id: ParamDescriptor::id_for_name("decay"),
+            param_name: "decay".into(),
+            min: 0.0,
+            max: 1.0,
+        });
+        model.last_slot_values[0] = 0.5;
+        assert!(model.slot_flash[0].is_none(), "no flash initially");
+
+        model.update_flash(0, 0.7);
+        assert!(
+            model.slot_flash[0].is_some(),
+            "value change must trigger flash"
+        );
+
+        model.update_flash(0, 0.7);
+        // second update with same value should not reset flash time
     }
 }

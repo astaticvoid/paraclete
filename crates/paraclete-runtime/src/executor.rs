@@ -202,7 +202,7 @@ impl NodeExecutor {
         let slots = nodes
             .into_iter()
             .map(|(id, kind)| {
-                pending_cmds.insert(id, Vec::with_capacity(16));
+                pending_cmds.insert(id, Vec::with_capacity(128));
                 NodeSlot {
                     id,
                     kind,

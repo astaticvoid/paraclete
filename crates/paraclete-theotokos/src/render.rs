@@ -34,6 +34,9 @@ pub struct RenderData {
     pub cmdline: Option<String>,
     pub cmdline_error: Option<String>,
     pub cmdline_candidates: Vec<String>,
+    pub leader: Option<crate::model::LeaderState>,
+    pub slot_a_flash: bool,
+    pub slot_b_flash: bool,
 }
 
 pub fn render(frame: &mut Frame, data: &RenderData) {
@@ -255,6 +258,10 @@ fn render_mode_line(frame: &mut Frame, area: Rect, data: &RenderData) {
         spans.push(Span::raw(format!("F:s{} ", sf)));
     }
 
+    if let Some(ref _leader) = data.leader {
+        spans.push(Span::styled("\\_ ", Style::default().fg(Color::Cyan)));
+    }
+
     if data.mode == Mode::Seq {
         let page_info = format!(
             "P{}/{}",
@@ -264,16 +271,28 @@ fn render_mode_line(frame: &mut Frame, area: Rect, data: &RenderData) {
         spans.push(Span::raw(page_info));
     } else {
         let a_lock = if data.slot_a_locked { "L" } else { "" };
+        let a_color = if data.slot_a_flash {
+            Color::Yellow
+        } else {
+            Color::White
+        };
         let a_text = match &data.slot_a {
             Some(s) => format!(" A:{}={:.3}{}", s.param_name, data.slot_a_value, a_lock),
             None => " A:--".to_string(),
         };
+        spans.push(Span::styled(a_text, Style::default().fg(a_color)));
+        spans.push(Span::raw(" "));
+        let b_color = if data.slot_b_flash {
+            Color::Yellow
+        } else {
+            Color::White
+        };
         let b_lock = if data.slot_b_locked { "L" } else { "" };
         let b_text = match &data.slot_b {
-            Some(s) => format!(" B:{}={:.3}{}", s.param_name, data.slot_b_value, b_lock),
-            None => " B:--".to_string(),
+            Some(s) => format!("B:{}={:.3}{}", s.param_name, data.slot_b_value, b_lock),
+            None => "B:--".to_string(),
         };
-        spans.push(Span::raw(format!("{} {}", a_text, b_text)));
+        spans.push(Span::styled(b_text, Style::default().fg(b_color)));
     }
 
     let line = Line::from(spans);
@@ -308,6 +327,9 @@ impl RenderData {
             cmdline: None,
             cmdline_error: None,
             cmdline_candidates: vec![],
+            leader: None,
+            slot_a_flash: false,
+            slot_b_flash: false,
         }
     }
 }
@@ -350,6 +372,9 @@ mod tests {
             cmdline: None,
             cmdline_error: None,
             cmdline_candidates: vec![],
+            leader: None,
+            slot_a_flash: false,
+            slot_b_flash: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
     }
@@ -404,6 +429,9 @@ mod tests {
             cmdline: None,
             cmdline_error: None,
             cmdline_candidates: vec![],
+            leader: None,
+            slot_a_flash: false,
+            slot_b_flash: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
     }
@@ -440,6 +468,9 @@ mod tests {
             cmdline: None,
             cmdline_error: None,
             cmdline_candidates: vec![],
+            leader: None,
+            slot_a_flash: false,
+            slot_b_flash: false,
         };
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();

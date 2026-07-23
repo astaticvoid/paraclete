@@ -62,6 +62,9 @@ fn map_global(ev: &KeyEvent) -> Option<Action> {
                 Some(Action::ClearAllLocks)
             }
         }
+        KeyCode::Char('y') if ev.modifiers == KeyModifiers::SHIFT => Some(Action::Paste),
+        KeyCode::Char('y') => Some(Action::Yank),
+        KeyCode::Char('\\') => Some(Action::Leader),
         _ => {
             if let Some(col) = step_col(ev.code) {
                 return Some(Action::ToggleStep { col });
@@ -80,6 +83,14 @@ fn map_seq(ev: &KeyEvent) -> Action {
     match ev.code {
         KeyCode::Char('-') => Action::PageWindow(Dir::Prev),
         KeyCode::Char('=') => Action::PageWindow(Dir::Next),
+        KeyCode::Char('1') => Action::PatternSelect(0),
+        KeyCode::Char('2') => Action::PatternSelect(1),
+        KeyCode::Char('3') => Action::PatternSelect(2),
+        KeyCode::Char('4') => Action::PatternSelect(3),
+        KeyCode::Char('5') => Action::PatternSelect(4),
+        KeyCode::Char('6') => Action::PatternSelect(5),
+        KeyCode::Char('7') => Action::PatternSelect(6),
+        KeyCode::Char('8') => Action::PatternSelect(7),
         _ => Action::Noop,
     }
 }

@@ -26,6 +26,10 @@ pub enum Action {
     ClearAllLocks,
     ClearSlotLocks,
     Colon,
+    PatternSelect(u8),
+    Yank,
+    Paste,
+    Leader,
     Noop,
 }
 
@@ -50,7 +54,11 @@ impl Action {
             | Action::ReleaseFocus
             | Action::ClearAllLocks
             | Action::ClearSlotLocks
-            | Action::Colon => Outcome::StateOnly,
+            | Action::Colon
+            | Action::PatternSelect(_)
+            | Action::Yank
+            | Action::Paste
+            | Action::Leader => Outcome::StateOnly,
             Action::PlayToggle => {
                 if playing {
                     Outcome::Command(NodeCommand {
