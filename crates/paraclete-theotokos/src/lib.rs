@@ -9,7 +9,7 @@ use std::io::Stdout;
 use std::rc::Rc;
 use std::time::Instant;
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crossterm::execute;
 use paraclete_node_api::{CapabilityDocument, NodeCommand, StateBusHandle};
 use paraclete_view_assembly::CompositeView;
@@ -471,11 +471,19 @@ impl TheotokosApp {
                 self.model.cmdline = None;
                 self.model.cmdline_error = None;
             }
+            KeyCode::Char('c') if ev.modifiers == KeyModifiers::CONTROL => {
+                self.model.cmdline = None;
+                self.model.cmdline_error = None;
+                self.quit = true;
+            }
             KeyCode::Enter => {
                 let input = std::mem::take(cmdline);
                 self.model.cmdline = None;
+                self.model.cmdline_error = None;
                 match self.model.parse_cmdline(&input) {
-                    Ok(verb) => self.dispatch_cmdline_verb(verb),
+                    Ok(verb) => {
+                        self.dispatch_cmdline_verb(verb);
+                    }
                     Err(msg) => {
                         self.model.cmdline_error = Some(msg);
                         // Re-open cmdline for error feedback
@@ -1246,7 +1254,7 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_ranking_prefers_prefix_over_subsequence() {
+    fn fuzzy_index_contains_params_and_verbs() {
         let caps = test_caps();
         let tracks = vec![TrackInfo {
             sequencer_id: 200,
@@ -1255,11 +1263,75 @@ mod tests {
         }];
         let index = Model::build_fuzzy_index(&caps, &tracks);
         let entries: Vec<String> = index.iter().map(|e| e.text.clone()).collect();
-        // decay should be in the param entries
         assert!(
             entries.contains(&"decay".to_string()),
             "index must contain decay param"
         );
+        assert!(
+            entries.contains(&"bpm".to_string()),
+            "index must contain bpm verb"
+        );
+    }
+
+    #[test]
+    fn stale_error_cleared_on_successful_command() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        // Fail a command
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "badcmd");
+        app.handle_keys(&bus, &[enter_key()]);
+        assert!(
+            app.model.cmdline_error.is_some(),
+            "must have error after bad cmd"
+        );
+
+        // Edit to a valid command and succeed
+        app.handle_keys(&bus, &[backspace_key()]);
+        app.handle_keys(&bus, &[backspace_key()]);
+        app.handle_keys(&bus, &[backspace_key()]);
+        app.handle_keys(&bus, &[backspace_key()]);
+        app.handle_keys(&bus, &[backspace_key()]);
+        app.handle_keys(&bus, &[backspace_key()]);
+        cmdline_type(&mut app, &bus, "bpm 130");
+        app.handle_keys(&bus, &[enter_key()]);
+        assert!(app.model.cmdline.is_none(), "cmdline closed on success");
+        assert!(
+            app.model.cmdline_error.is_none(),
+            "error must be cleared on success"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_during_cmdline_quits_app() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[colon_key()]);
+        app.handle_keys(
+            &bus,
+            &[KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)],
+        );
+        assert!(app.model.cmdline.is_none(), "cmdline must close");
+        assert!(app.should_quit(), "Ctrl+C must set quit flag");
+    }
+
+    #[test]
+    fn empty_cmdline_returns_error() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[colon_key()]);
+        app.handle_keys(&bus, &[enter_key()]);
+        assert!(
+            app.model.cmdline_error.is_some(),
+            "empty cmdline must error"
+        );
+        assert!(app.model.cmdline.is_some(), "cmdline must stay open");
     }
 
     #[test]
