@@ -64,7 +64,7 @@
 | **C3** | `paraclete-theotokos`, `paraclete-app` | **Composite track pages** in PERF mode + edge-derived track map. |
 | **C4** | `paraclete-nodes`, `paraclete-theotokos` | **Mutes:** sequencer `mute` param + Shift+track-key toggle + dimmed render. |
 | **C5** | `paraclete-theotokos` | **P-lock UI:** step focus, jog→lock routing, lock display, clear gestures. **DONE 2026-07-22.** |
-| **C6** | `paraclete-theotokos` | **`:` command line:** echo area, generated fuzzy index, v1 verbs. |
+| **C6** | `paraclete-theotokos` | **`:` command line:** echo area, generated fuzzy index, v1 verbs. **DONE 2026-07-22.** |
 | **C7** | `paraclete-theotokos`, app fixture | **Pattern select + cue, yank/paste, slot-rebinding leader, yellow-flash, 8-track stress fixture.** |
 | **C8** | — | **Usability session #2** (no code): findings in `design/sessions/theotokos-2.md`, per-hypothesis verdicts, `tk1-report.md`, roadmap + design.md marks updated in the same commit. |
 
