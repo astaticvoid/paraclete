@@ -9,7 +9,7 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 **Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036).
 **Fixed, code-complete (pending hardware-verification):** BUG-012.
 **Trigger-based (fix when named trigger fires):** BUG-003 (updated — StateBusHandle already moved to L2; remaining violation is NodeExecutor/RuntimeCounters in audio.rs).
-**Resolved in this session:** BUG-034 (Theotokos page-window stride), BUG-006 (agg_state_buf return-channel SPSC).
+**Resolved in this session:** BUG-034 (Theotokos page-window stride), BUG-006 (agg_state_buf return-channel SPSC), **INFRA-010 (suspend/resume crashes — stream error triggers graceful shutdown, commit `302c513`).**
 **Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, 032, 033, INFRA-001, INFRA-002, INFRA-003, INFRA-004, INFRA-006, INFRA-007, INFRA-009.
 **Debug harness:** ADR-033 interactive mode **shipped 2026-07-13 (`92b8795`)** —
 the harness-gated audit items below are now reachable without hardware (see the
@@ -1278,3 +1278,22 @@ tests. Scheduled as TK1 C0 (`design/phases/tk1-theotokos.md` §0.1).
 Renderer's private `PAGE_SIZE` (8) stays for display layout (8 cells per half-row).
 5 tests updated: `action.rs` toggle stride, `lib.rs` bracket/page-window + toggle-step
 tests, and `render.rs` test fixtures' `page_count` values.
+
+### INFRA-010 — Suspend/resume crashes; audio sink stranded on resume (2026-07-22)
+
+**Severity:** Medium (hardware-dependent).  
+**Phase:** TK1.  
+**Symptom:** Running Paraclete when the computer suspends causes the ALSA
+device to disappear. cpal fires a stream error callback which was only logged.
+The process silently stalled with no audio output, and on resume PipeWire could
+be stranded on `auto_null` (no real alsa_output sink).
+
+**Fix (commit `302c513`):** `AudioBackend::start()` now accepts an
+`Arc<AtomicBool>` (the main loop's `running` flag). The stream error callback
+sets it to `false`, triggering the same graceful shutdown path as Ctrl-C. That
+path calls `recover_audio_sink()` to un-strand PipeWire. No auto-reconnect —
+the user restarts Paraclete manually, but the audio system is left clean.
+
+**Note:** `AudioEngine::start_with_callback()` (the dynamic-topology path used
+by `apply_patch`) still has the old log-only `err_fn` — this path is not on the
+default `cargo run` code path.

@@ -3,7 +3,11 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-22. **TK0 COMPLETE — usable sign-off**
+> **Last updated:** 2026-07-22. **TK1 CODE COMPLETE — C0–C7 shipped** (p-lock
+> UI, mutes, composite pages, `:` command line, pattern select, yank/paste,
+> `\` leader rebinding, yellow flash, `?` help overlay, suspend-crash fix).
+> **TK1 C8** = usability session #2 (user-paired; no code). **60 Theotokos
+> tests, 50 workspace suites green.**
 > (session #1, `design/sessions/theotokos-1.md`; report + spec-divergence
 > table `design/phases/tk0-report.md`). Theotokos is now the default
 > surface (`cargo run`; `--emulator` for legacy). **TK1 spec drafted**
@@ -203,7 +207,7 @@ Ordered by nearness to the critical path.
 | **P15** | Effects Palette | Distortion variety, chorus/phaser/flanger, BBD/tape delay, spring/plate | — |
 | **P16** | Macro & Terminal Control | Macro system; TUI as editing surface | — |
 | **W4** | Interface maturity | Ordo layout profiles, multi-client polish, wavetable view, protocol freeze, headless protocol CI driver | Ongoing after W3 |
-| **TK** | Theotokos performance terminal | Keyboard-first modal TUI (home-row steps, numpad focus-slot performance cluster, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **TK0 shipped 2026-07-21** (ADR-036; usable sign-off, session #1; default surface on `cargo run`). **TK1 spec drafted** (`design/phases/tk1-theotokos.md` — composite pages, p-locks, mutes, `:` line, patterns; D1–D4 ratified). **TK2 stub created** (`design/phases/tk2-theotokos.md` — key remapping mechanism pulled forward from TK3; ADR-037 proposed) |
+| **TK** | Theotokos performance terminal | Keyboard-first modal TUI (home-row steps, numpad focus-slot performance cluster, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **TK0 shipped 2026-07-21** (ADR-036). **TK1 code complete 2026-07-22** (C0–C7: p-locks, mutes, composite pages, `:` line, pattern select, yank/paste, leader rebind, flash, help overlay, suspend-crash fix). C8 = usability session #2 pending. **TK2 stub created** (key remapping, CHAIN mode, ALT layer, tap tempo, live viz, ramp retune). |
 
 The interface track (Antiphon server + Theoria clients) is specified in
 `design/interface-plan.md` (**accepted July 2026**; ADR-031 authored with W0,

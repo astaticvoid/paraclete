@@ -3,6 +3,28 @@
 > **Minimal, no stale items.** Transient session-to-session carryover.
 > Completed items are removed. Permanent milestones live in `roadmap.md`.
 
-## Carryover from last session (2026-07-14)
+## Carryover from 2026-07-22 session
 
-_(none yet)_
+### TK1 deferred (C7 partial)
+
+- `instrument-8track.yaml` fixture (spec §7.5: 8 sequencers → 8 voices → chain
+  nodes → mix; requires `gen-samples` output)
+- 7/14 named C7 tests missing:
+  - `render_shows_active_and_cued_pattern_markers` (TestBackend)
+  - `paste_clamps_to_shorter_pattern`
+  - `paste_includes_velocity_length_condition_timing_commands`
+  - `cross_track_paste_remaps_generator_locks_drops_chain_locks`
+  - `flash_colors_value_within_window` (render)
+  - `eight_track_fixture_discovers_eight_tracks`
+  - `nine_tracks_clamp_to_eight`
+- Yank is lossy: bus doesn't expose per-step note/velocity/length/timing/condition.
+  Only steps bitfield + locks grammar are yanked.
+
+### TK1 remaining
+
+- C8: usability session #2 (user-paired). Produce `design/sessions/theotokos-2.md`
+  and `design/phases/tk1-report.md`.
+
+### Upstream (requires user)
+
+- 27 unpushed commits on `main`. Push when ready.
