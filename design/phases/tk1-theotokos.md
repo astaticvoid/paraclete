@@ -65,7 +65,7 @@
 | **C4** | `paraclete-nodes`, `paraclete-theotokos` | **Mutes:** sequencer `mute` param + Shift+track-key toggle + dimmed render. |
 | **C5** | `paraclete-theotokos` | **P-lock UI:** step focus, jog→lock routing, lock display, clear gestures. **DONE 2026-07-22.** |
 | **C6** | `paraclete-theotokos` | **`:` command line:** echo area, generated fuzzy index, v1 verbs. **DONE 2026-07-22.** |
-| **C7** | `paraclete-theotokos`, app fixture | **Pattern select + cue, yank/paste, slot-rebinding leader, yellow-flash, 8-track stress fixture.** |
+| **C7** | `paraclete-theotokos`, `paraclete-runtime` | **Pattern select + cue, yank/paste, \\ leader rebinding, yellow-flash, 8-track stress fixture.** **PARTIAL 2026-07-22.** Shipped: pattern select (1-8 in SEQ), yank/paste (CMD batch order per spec, cross-track lock remap), \\ leader rebinding, yellow flash, executor capacity bump 16→128. Deferred: `instrument-8track.yaml` fixture, 7/14 named tests (paste clamps, velocity+length, cross-track remap, render markers, flash render, 8track discovery, 9track clamp). Yank is lossy — bus doesn't expose per-step note/velocity/length/timing/condition. |
 | **C8** | — | **Usability session #2** (no code): findings in `design/sessions/theotokos-2.md`, per-hypothesis verdicts, `tk1-report.md`, roadmap + design.md marks updated in the same commit. |
 
 ---
