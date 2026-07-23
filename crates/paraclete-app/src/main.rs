@@ -282,7 +282,12 @@ fn main() {
     #[cfg(target_os = "linux")]
     recover_audio_sink();
 
-    let _audio = match AudioBackend::start(executor) {
+    // Shared shutdown flag — set by Ctrl-C and also by stream errors so
+    // a device disconnect (e.g. suspend) triggers a clean exit path that
+    // runs recover_audio_sink() at shutdown.
+    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+
+    let _audio = match AudioBackend::start(executor, Arc::clone(&running)) {
         Ok(b) => {
             eprintln!("[paraclete] audio running — Esc or Ctrl-C to stop");
             b
@@ -356,7 +361,6 @@ fn main() {
     let auto_context = def.macros.is_empty() && !track_encoder_params.is_empty();
 
     // ── 11. Graceful shutdown signal ──────────────────────────────────────────
-    let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
     let r = std::sync::Arc::clone(&running);
     ctrlc::set_handler(move || {
         r.store(false, std::sync::atomic::Ordering::SeqCst);

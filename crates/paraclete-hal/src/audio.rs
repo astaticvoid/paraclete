@@ -19,11 +19,7 @@ mod lrt {
 
     extern "C" {
         fn pthread_self() -> usize;
-        fn pthread_setschedparam(
-            thread: usize,
-            policy: i32,
-            param: *const SchedParam,
-        ) -> i32;
+        fn pthread_setschedparam(thread: usize, policy: i32, param: *const SchedParam) -> i32;
     }
 
     static CB_ONCE: AtomicBool = AtomicBool::new(false);
@@ -35,7 +31,10 @@ mod lrt {
         let param = SchedParam { sched_priority: 50 };
         let ret = unsafe { pthread_setschedparam(pthread_self(), SCHED_FIFO, &param) };
         if ret != 0 {
-            log::warn!("SCHED_FIFO: denied (errno={}). Audio runs without RT scheduling.", ret);
+            log::warn!(
+                "SCHED_FIFO: denied (errno={}). Audio runs without RT scheduling.",
+                ret
+            );
         } else {
             log::info!("SCHED_FIFO prio=50 (audio thread)");
         }
@@ -81,17 +80,14 @@ impl AudioBackend {
     /// clock advances by a full block — acceptable transient for
     /// non-power-of-two device buffers; the long-run cadence is correct on
     /// the common path).
-    pub fn start(mut executor: NodeExecutor) -> Result<Self, AudioError> {
+    pub fn start(mut executor: NodeExecutor, running: Arc<AtomicBool>) -> Result<Self, AudioError> {
         let host = cpal::default_host();
 
         let device = host
             .default_output_device()
             .ok_or(AudioError::NoOutputDevice)?;
 
-        log::info!(
-            "audio device: {}",
-            device.name().unwrap_or_default()
-        );
+        log::info!("audio device: {}", device.name().unwrap_or_default());
 
         let supported = device
             .default_output_config()
@@ -120,7 +116,11 @@ impl AudioBackend {
             buffer_size: BufferSize::Default,
         };
 
-        let err_fn = |err| log::error!("audio stream error: {err}");
+        let r = Arc::clone(&running);
+        let err_fn = move |err| {
+            log::error!("audio stream error: {err}");
+            r.store(false, Ordering::SeqCst);
+        };
 
         // Pre-allocate a work buffer and output ring for the callback.
         // Allocated on the main thread before the stream starts; never
@@ -298,13 +298,11 @@ impl AudioBackend {
                                     block_samples,
                                 );
                             } else {
-                                c.dropout_no_executor
-                                    .fetch_add(1, Ordering::Relaxed);
+                                c.dropout_no_executor.fetch_add(1, Ordering::Relaxed);
                                 data.fill(0.0);
                             }
                         } else {
-                            c.dropout_lock_miss
-                                .fetch_add(1, Ordering::Relaxed);
+                            c.dropout_lock_miss.fetch_add(1, Ordering::Relaxed);
                             data.fill(0.0);
                         }
                     },
@@ -342,13 +340,11 @@ impl AudioBackend {
                                     block_samples,
                                 );
                             } else {
-                                c.dropout_no_executor
-                                    .fetch_add(1, Ordering::Relaxed);
+                                c.dropout_no_executor.fetch_add(1, Ordering::Relaxed);
                                 f32_buf.fill(0.0);
                             }
                         } else {
-                            c.dropout_lock_miss
-                                .fetch_add(1, Ordering::Relaxed);
+                            c.dropout_lock_miss.fetch_add(1, Ordering::Relaxed);
                             f32_buf.fill(0.0);
                         }
                         for (dst, &src) in data.iter_mut().zip(f32_buf.iter()) {
@@ -389,13 +385,11 @@ impl AudioBackend {
                                     block_samples,
                                 );
                             } else {
-                                c.dropout_no_executor
-                                    .fetch_add(1, Ordering::Relaxed);
+                                c.dropout_no_executor.fetch_add(1, Ordering::Relaxed);
                                 f32_buf.fill(0.0);
                             }
                         } else {
-                            c.dropout_lock_miss
-                                .fetch_add(1, Ordering::Relaxed);
+                            c.dropout_lock_miss.fetch_add(1, Ordering::Relaxed);
                             f32_buf.fill(0.0);
                         }
                         for (dst, &src) in data.iter_mut().zip(f32_buf.iter()) {
@@ -602,13 +596,10 @@ impl AudioEngine {
     ///
     /// Timeout: 500 ms — panics if exceeded (indicates a hung audio thread).
     pub fn wait_paused(&self) {
-        let deadline =
-            std::time::Instant::now() + std::time::Duration::from_millis(500);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
         while !self.is_paused.load(Ordering::Acquire) {
             if std::time::Instant::now() > deadline {
-                panic!(
-                    "AudioEngine::wait_paused: audio thread did not pause within 500 ms"
-                );
+                panic!("AudioEngine::wait_paused: audio thread did not pause within 500 ms");
             }
             std::thread::yield_now();
         }
