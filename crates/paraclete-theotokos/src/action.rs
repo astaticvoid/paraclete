@@ -30,6 +30,7 @@ pub enum Action {
     Yank,
     Paste,
     Leader,
+    ToggleHelp,
     Noop,
 }
 
@@ -58,7 +59,8 @@ impl Action {
             | Action::PatternSelect(_)
             | Action::Yank
             | Action::Paste
-            | Action::Leader => Outcome::StateOnly,
+            | Action::Leader
+            | Action::ToggleHelp => Outcome::StateOnly,
             Action::PlayToggle => {
                 if playing {
                     Outcome::Command(NodeCommand {

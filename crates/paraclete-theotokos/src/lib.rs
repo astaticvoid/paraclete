@@ -213,6 +213,7 @@ impl TheotokosApp {
             slot_b_flash: self.model.slot_flash[1].map_or(false, |t| {
                 t.elapsed().as_millis() < self.tuning.flash_ms as u128
             }),
+            help_visible: self.model.help_visible,
         };
 
         drop(bus_ref);
@@ -479,6 +480,10 @@ impl TheotokosApp {
                 }
                 Action::Leader => {
                     self.model.leader = Some(LeaderState { slot: None });
+                    dirty = true;
+                }
+                Action::ToggleHelp => {
+                    self.model.help_visible = !self.model.help_visible;
                     dirty = true;
                 }
                 Action::Colon => {

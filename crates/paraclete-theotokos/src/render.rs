@@ -37,6 +37,7 @@ pub struct RenderData {
     pub leader: Option<crate::model::LeaderState>,
     pub slot_a_flash: bool,
     pub slot_b_flash: bool,
+    pub help_visible: bool,
 }
 
 pub fn render(frame: &mut Frame, data: &RenderData) {
@@ -50,9 +51,13 @@ pub fn render(frame: &mut Frame, data: &RenderData) {
     .split(area);
 
     render_transport(frame, chunks[0], data);
-    match data.mode {
-        Mode::Seq => render_seq_grid(frame, chunks[1], data),
-        Mode::Perf => render_perf_window(frame, chunks[1], data),
+    if data.help_visible {
+        render_help(frame, chunks[1], data);
+    } else {
+        match data.mode {
+            Mode::Seq => render_seq_grid(frame, chunks[1], data),
+            Mode::Perf => render_perf_window(frame, chunks[1], data),
+        }
     }
     render_echo_area(frame, chunks[2], data);
     render_mode_line(frame, chunks[3], data);
@@ -213,6 +218,110 @@ fn render_envelope_section(frame: &mut Frame, area: Rect, data: &RenderData) {
     }
 }
 
+fn render_help(frame: &mut Frame, area: Rect, data: &RenderData) {
+    let mut lines: Vec<Line> = Vec::new();
+
+    lines.push(Line::styled(
+        format!(
+            " MODE: {}  (? = close)",
+            if data.mode == Mode::Seq {
+                "SEQ"
+            } else {
+                "PERF"
+            }
+        ),
+        Style::default().fg(Color::Yellow),
+    ));
+    lines.push(Line::from(""));
+
+    // Global keys (all modes)
+    lines.push(Line::styled(
+        "── GLOBAL ──",
+        Style::default().fg(Color::Cyan),
+    ));
+    for (key, desc) in &[
+        ("q..p", "select track 1-8"),
+        ("a;/z/", "toggle step (16 keys, 2 rows)"),
+        ("Space", "play / stop"),
+        ("Tab", "cycle mode (SEQ ↔ PERF)"),
+        ("Shift+q..p", "mute / unmute track"),
+        ("Shift+;", "open command line"),
+        ("Enter", "focus / release step"),
+        ("Esc", "release focus / cancel"),
+        ("Backspace", "clear all locks on focused step"),
+        ("y / Y", "yank / paste pattern"),
+        ("\\", "leader (slot rebind: \\a3, \\b5)"),
+        ("?", "toggle help"),
+        ("Ctrl-C", "quit"),
+    ] {
+        lines.push(Line::styled(
+            format!("  {:12}  {}", key, desc),
+            Style::default().fg(Color::White),
+        ));
+    }
+    lines.push(Line::from(""));
+
+    if data.mode == Mode::Seq {
+        lines.push(Line::styled(
+            "── SEQ MODE ──",
+            Style::default().fg(Color::Cyan),
+        ));
+        for (key, desc) in &[
+            ("- / =", "page window prev / next"),
+            ("1..8", "select pattern 1-8"),
+        ] {
+            lines.push(Line::styled(
+                format!("  {:12}  {}", key, desc),
+                Style::default().fg(Color::White),
+            ));
+        }
+    } else {
+        lines.push(Line::styled(
+            "── PERF MODE ──",
+            Style::default().fg(Color::Cyan),
+        ));
+        for (key, desc) in &[
+            ("1..6", "select param page"),
+            ("↑ / ↓", "jog slot A (coarse)"),
+            ("← / →", "jog slot B (coarse)"),
+            ("Shift+Arrows", "fine jog (smaller steps)"),
+        ] {
+            lines.push(Line::styled(
+                format!("  {:12}  {}", key, desc),
+                Style::default().fg(Color::White),
+            ));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::styled(
+        "── COMMAND LINE ──",
+        Style::default().fg(Color::Cyan),
+    ));
+    for (verb, desc) in &[
+        ("set <p> <v>", "set param to value"),
+        ("bpm <n>", "set tempo (20-300)"),
+        ("track <n>", "select track"),
+        ("pattern <n>", "select pattern"),
+        ("mute <n>", "mute track"),
+        ("unmute <n>", "unmute track"),
+        ("clear", "clear current pattern"),
+        ("lock-clear", "clear locks on focused step"),
+        ("mode seq", "switch to SEQ mode"),
+        ("mode perf", "switch to PERF mode"),
+    ] {
+        lines.push(Line::styled(
+            format!("  :{:12}  {}", verb, desc),
+            Style::default().fg(Color::White),
+        ));
+    }
+
+    let para = Paragraph::new(lines)
+        .block(Block::default().borders(Borders::NONE))
+        .scroll((0, 0));
+    frame.render_widget(para, area);
+}
+
 fn render_echo_area(frame: &mut Frame, area: Rect, data: &RenderData) {
     if let Some(ref err) = data.cmdline_error {
         let err_span = Span::styled(format!(" {} ", err), Style::default().fg(Color::Red));
@@ -330,6 +439,7 @@ impl RenderData {
             leader: None,
             slot_a_flash: false,
             slot_b_flash: false,
+            help_visible: false,
         }
     }
 }

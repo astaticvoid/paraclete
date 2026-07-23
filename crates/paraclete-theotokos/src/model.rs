@@ -81,6 +81,8 @@ pub struct Model {
     pub slot_flash: [Option<std::time::Instant>; 2],
     /// TK1 C7: previous slot values (to detect change).
     pub last_slot_values: [f64; 2],
+    /// Visibility toggle for help overlay (shows mode-specific key bindings).
+    pub help_visible: bool,
 }
 
 /// TK1 C7: a yanked step for paste.
@@ -178,6 +180,7 @@ impl Model {
             leader: None,
             slot_flash: [None; 2],
             last_slot_values: [0.0; 2],
+            help_visible: false,
         };
         model.bind_page();
         model

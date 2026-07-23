@@ -65,6 +65,7 @@ fn map_global(ev: &KeyEvent) -> Option<Action> {
         KeyCode::Char('y') if ev.modifiers == KeyModifiers::SHIFT => Some(Action::Paste),
         KeyCode::Char('y') => Some(Action::Yank),
         KeyCode::Char('\\') => Some(Action::Leader),
+        KeyCode::Char('?') => Some(Action::ToggleHelp),
         _ => {
             if let Some(col) = step_col(ev.code) {
                 return Some(Action::ToggleStep { col });
