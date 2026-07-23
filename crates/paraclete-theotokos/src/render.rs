@@ -45,6 +45,7 @@ pub fn render(frame: &mut Frame, data: &RenderData) {
     let chunks = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(0),
+        Constraint::Length(2),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
@@ -59,8 +60,32 @@ pub fn render(frame: &mut Frame, data: &RenderData) {
             Mode::Perf => render_perf_window(frame, chunks[1], data),
         }
     }
-    render_echo_area(frame, chunks[2], data);
-    render_mode_line(frame, chunks[3], data);
+    render_legend(frame, chunks[2], data);
+    render_echo_area(frame, chunks[3], data);
+    render_mode_line(frame, chunks[4], data);
+}
+
+/// Compact mode-scoped key legend, always on screen (not gated behind `?`).
+/// TK1 C8 usability finding: current-mode keys must stay visible while
+/// learning the layout — a toggle-only overlay hides the grid you're
+/// trying to use the keys on.
+fn render_legend(frame: &mut Frame, area: Rect, data: &RenderData) {
+    let (line1, line2) = match data.mode {
+        Mode::Seq => (
+            "q..p:track  a;/z/:step  Space:play  Tab:mode  -/=:page  1-8:pattern",
+            "Enter:focus  Esc:cancel  Bksp:clr-lock  y/Y:yank/paste  \\:leader  ::cmd  ?:help  ^C:quit",
+        ),
+        Mode::Perf => (
+            "q..p:track  Space:play  Tab:mode  1-6:page  ↑↓:jog A  ←→:jog B",
+            "Shift+Arrows:fine  Shift+q..p:mute  \\:leader  ::cmd  ?:help  ^C:quit",
+        ),
+    };
+    let lines = vec![
+        Line::styled(line1, Style::default().fg(Color::DarkGray)),
+        Line::styled(line2, Style::default().fg(Color::DarkGray)),
+    ];
+    let para = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
+    frame.render_widget(para, area);
 }
 
 fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
@@ -485,6 +510,7 @@ mod tests {
             leader: None,
             slot_a_flash: false,
             slot_b_flash: false,
+            help_visible: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
     }
@@ -542,6 +568,7 @@ mod tests {
             leader: None,
             slot_a_flash: false,
             slot_b_flash: false,
+            help_visible: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
     }
@@ -581,6 +608,7 @@ mod tests {
             leader: None,
             slot_a_flash: false,
             slot_b_flash: false,
+            help_visible: false,
         };
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
