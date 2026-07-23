@@ -53,6 +53,7 @@ fn map_global(ev: &KeyEvent) -> Option<Action> {
         }
         KeyCode::Char(' ') => Some(Action::PlayToggle),
         KeyCode::Esc => Some(Action::ReleaseFocus),
+        KeyCode::Char(';') if ev.modifiers == KeyModifiers::SHIFT => Some(Action::Colon),
         KeyCode::Enter => Some(Action::FocusStep),
         KeyCode::Backspace => {
             if ev.modifiers.contains(KeyModifiers::SHIFT) {

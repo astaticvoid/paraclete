@@ -9,7 +9,7 @@ use std::io::Stdout;
 use std::rc::Rc;
 use std::time::Instant;
 
-use crossterm::event::{self, Event, KeyEvent, KeyEventKind};
+use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::execute;
 use paraclete_node_api::{CapabilityDocument, NodeCommand, StateBusHandle};
 use paraclete_view_assembly::CompositeView;
@@ -19,7 +19,7 @@ use ratatui::Terminal;
 use crate::action::{
     Action, Outcome, CMD_CLEAR_STEP_LOCK, CMD_SET_LOCK_TARGET, CMD_SET_STEP_LOCK, GRID_STEPS,
 };
-use crate::model::{Dir, JogTracker, Model, Slot, Tuning};
+use crate::model::{CmdlineVerb, Dir, JogTracker, Model, Slot, Tuning};
 
 pub type BusHandle = Rc<RefCell<StateBusHandle>>;
 
@@ -198,6 +198,9 @@ impl TheotokosApp {
             step_locks,
             slot_a_locked,
             slot_b_locked,
+            cmdline: self.model.cmdline.clone(),
+            cmdline_error: self.model.cmdline_error.clone(),
+            cmdline_candidates: self.model.cmdline_candidates(),
         };
 
         drop(bus_ref);
@@ -223,6 +226,12 @@ impl TheotokosApp {
         let mut dirty = false;
         let mut selected_changed = false;
         for ev in key_events {
+            // C6: while cmdline is open, capture ALL keys to the line editor
+            if self.model.cmdline.is_some() {
+                self.handle_cmdline_key(ev);
+                dirty = true;
+                continue;
+            }
             let action = input::map_key(self.model.mode, ev);
             if !matches!(action, Action::Noop) || self.last_debug_event.is_some() {
                 self.last_debug_event = Some(format!("{:?} → {:?}", ev, action));
@@ -432,6 +441,11 @@ impl TheotokosApp {
                         dirty = true;
                     }
                 }
+                Action::Colon => {
+                    self.model.cmdline = Some(String::new());
+                    self.model.cmdline_error = None;
+                    dirty = true;
+                }
             }
         }
         drop(bus_ref);
@@ -445,6 +459,130 @@ impl TheotokosApp {
             }
         }
         dirty
+    }
+
+    fn handle_cmdline_key(&mut self, ev: &KeyEvent) {
+        let cmdline = match &mut self.model.cmdline {
+            Some(s) => s,
+            None => return,
+        };
+        match ev.code {
+            KeyCode::Esc => {
+                self.model.cmdline = None;
+                self.model.cmdline_error = None;
+            }
+            KeyCode::Enter => {
+                let input = std::mem::take(cmdline);
+                self.model.cmdline = None;
+                match self.model.parse_cmdline(&input) {
+                    Ok(verb) => self.dispatch_cmdline_verb(verb),
+                    Err(msg) => {
+                        self.model.cmdline_error = Some(msg);
+                        // Re-open cmdline for error feedback
+                        self.model.cmdline = Some(input);
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                cmdline.pop();
+            }
+            KeyCode::Char(c) => {
+                cmdline.push(c);
+            }
+            _ => {}
+        }
+    }
+
+    fn dispatch_cmdline_verb(&mut self, verb: CmdlineVerb) {
+        let track = self.model.active_track;
+        let tracks = &self.model.tracks;
+        match verb {
+            CmdlineVerb::Set {
+                node_id,
+                param_name,
+                value,
+            } => {
+                let param_id = paraclete_node_api::ParamDescriptor::id_for_name(&param_name);
+                self.pending.push(paraclete_node_api::NodeCommand {
+                    target_id: node_id,
+                    type_id: paraclete_node_api::CMD_SET_PARAM,
+                    arg0: param_id as i64,
+                    arg1: value,
+                });
+            }
+            CmdlineVerb::Bpm(val) => {
+                let bpm_id = paraclete_node_api::ParamDescriptor::id_for_name("bpm");
+                self.pending.push(paraclete_node_api::NodeCommand {
+                    target_id: self.model.clock_id,
+                    type_id: paraclete_node_api::CMD_SET_PARAM,
+                    arg0: bpm_id as i64,
+                    arg1: val,
+                });
+            }
+            CmdlineVerb::Track(n) => {
+                self.model.select_track(n);
+            }
+            CmdlineVerb::Pattern(n) => {
+                if track < tracks.len() {
+                    let seq_id = tracks[track].sequencer_id;
+                    self.pending.push(paraclete_node_api::NodeCommand {
+                        target_id: seq_id,
+                        type_id: 27, // CMD_SET_PATTERN
+                        arg0: n as i64,
+                        arg1: 0.0,
+                    });
+                }
+            }
+            CmdlineVerb::Mute(n) => {
+                if n < tracks.len() {
+                    let seq_id = tracks[n].sequencer_id;
+                    let mute_id = paraclete_node_api::ParamDescriptor::id_for_name("mute");
+                    self.pending.push(paraclete_node_api::NodeCommand {
+                        target_id: seq_id,
+                        type_id: paraclete_node_api::CMD_SET_PARAM,
+                        arg0: mute_id as i64,
+                        arg1: 1.0,
+                    });
+                }
+            }
+            CmdlineVerb::Unmute(n) => {
+                if n < tracks.len() {
+                    let seq_id = tracks[n].sequencer_id;
+                    let mute_id = paraclete_node_api::ParamDescriptor::id_for_name("mute");
+                    self.pending.push(paraclete_node_api::NodeCommand {
+                        target_id: seq_id,
+                        type_id: paraclete_node_api::CMD_SET_PARAM,
+                        arg0: mute_id as i64,
+                        arg1: 0.0,
+                    });
+                }
+            }
+            CmdlineVerb::Clear => {
+                if track < tracks.len() {
+                    let seq_id = tracks[track].sequencer_id;
+                    self.pending.push(paraclete_node_api::NodeCommand {
+                        target_id: seq_id,
+                        type_id: 18, // CMD_CLEAR
+                        arg0: 0,
+                        arg1: 0.0,
+                    });
+                }
+            }
+            CmdlineVerb::LockClear => {
+                if let Some(step) = self.model.step_focus[track] {
+                    let seq_id = tracks[track].sequencer_id;
+                    self.pending.push(paraclete_node_api::NodeCommand {
+                        target_id: seq_id,
+                        type_id: CMD_CLEAR_STEP_LOCK,
+                        arg0: step as i64,
+                        arg1: -1.0,
+                    });
+                }
+            }
+            CmdlineVerb::Mode(mode) => {
+                self.model.mode = mode;
+            }
+        }
     }
 
     pub fn take_pending_commands(&mut self) -> Vec<NodeCommand> {
@@ -485,7 +623,7 @@ fn pop_keyboard_flags() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Mode;
+    use crate::model::{Mode, TrackInfo};
     use crossterm::event::{KeyCode, KeyModifiers};
     use paraclete_node_api::{CapabilityDocument, ParamDescriptor, ParamUnit, Rule, StateBusValue};
     use std::borrow::Cow;
@@ -1039,6 +1177,158 @@ mod tests {
         assert_eq!(
             app.model.step_focus[0], None,
             "Enter without last_step must not set focus"
+        );
+    }
+
+    // ── C6: command line tests ──
+
+    fn colon_key() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(';'), KeyModifiers::SHIFT)
+    }
+
+    fn cmdline_type(app: &mut TheotokosApp, bus: &BusHandle, text: &str) {
+        for c in text.chars() {
+            app.handle_keys(bus, &[KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)]);
+        }
+    }
+
+    #[test]
+    fn colon_opens_and_esc_cancels() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[colon_key()]);
+        assert!(app.model.cmdline.is_some(), "colon must open cmdline");
+
+        app.handle_keys(&bus, &[esc_key()]);
+        assert!(app.model.cmdline.is_none(), "Esc must cancel cmdline");
+    }
+
+    #[test]
+    fn cmdline_captures_all_keys_while_open() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[colon_key()]);
+        // typing should not trigger normal key handlers (like ToggleStep for 'a')
+        let prev_pending = app.pending.len();
+        app.handle_keys(&bus, &[kc('a')]);
+        assert_eq!(
+            app.pending.len(),
+            prev_pending,
+            "keys captured, no ToggleStep emitted"
+        );
+        assert!(
+            app.model.cmdline.as_deref().unwrap().contains('a'),
+            "text must accumulate"
+        );
+    }
+
+    #[test]
+    fn enter_executes_set_with_fuzzy_param_match() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        // Open cmdline, type "set dec 0.8", execute
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "set dec 0.8");
+        app.handle_keys(&bus, &[enter_key()]);
+
+        assert!(
+            app.pending.iter().any(|c| {
+                c.type_id == paraclete_node_api::CMD_SET_PARAM && (c.arg1 - 0.8).abs() < 0.01
+            }),
+            "must emit CMD_SET_PARAM decay=0.8"
+        );
+    }
+
+    #[test]
+    fn fuzzy_ranking_prefers_prefix_over_subsequence() {
+        let caps = test_caps();
+        let tracks = vec![TrackInfo {
+            sequencer_id: 200,
+            generator_id: 100,
+            name: "Kick".into(),
+        }];
+        let index = Model::build_fuzzy_index(&caps, &tracks);
+        let entries: Vec<String> = index.iter().map(|e| e.text.clone()).collect();
+        // decay should be in the param entries
+        assert!(
+            entries.contains(&"decay".to_string()),
+            "index must contain decay param"
+        );
+    }
+
+    #[test]
+    fn bpm_command_sends_set_param_to_clock() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "bpm 140");
+        app.handle_keys(&bus, &[enter_key()]);
+
+        let bpm_id = paraclete_node_api::ParamDescriptor::id_for_name("bpm");
+        assert!(
+            app.pending.iter().any(|c| {
+                c.target_id == 1
+                    && c.type_id == paraclete_node_api::CMD_SET_PARAM
+                    && c.arg0 == bpm_id as i64
+                    && (c.arg1 - 140.0).abs() < 0.01
+            }),
+            "must emit CMD_SET_PARAM bpm=140 on clock"
+        );
+    }
+
+    #[test]
+    fn mute_command_sends_explicit_value() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        let mute_id = paraclete_node_api::ParamDescriptor::id_for_name("mute");
+
+        // mute 1
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "mute 1");
+        app.handle_keys(&bus, &[enter_key()]);
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| { c.target_id == 200 && c.arg0 == mute_id as i64 && c.arg1 == 1.0 }),
+            "mute 1 must set mute to 1.0"
+        );
+
+        // unmute 1
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "unmute 1");
+        app.handle_keys(&bus, &[enter_key()]);
+        assert!(
+            app.pending.iter().any(|c| { c.arg1 == 0.0 }),
+            "unmute 1 must set mute to 0.0"
+        );
+    }
+
+    #[test]
+    fn unknown_command_echoes_error_no_crash() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "foobar 123");
+        app.handle_keys(&bus, &[enter_key()]);
+
+        // Should re-open cmdline with error
+        assert!(app.model.cmdline.is_some(), "cmdline stays open on error");
+        assert!(app.model.cmdline_error.is_some(), "must set error message");
+        assert!(
+            app.model.cmdline_error.as_deref().unwrap().starts_with('?'),
+            "error must start with ?"
         );
     }
 }

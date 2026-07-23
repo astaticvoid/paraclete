@@ -31,6 +31,9 @@ pub struct RenderData {
     pub step_locks: Vec<Vec<usize>>,
     pub slot_a_locked: bool,
     pub slot_b_locked: bool,
+    pub cmdline: Option<String>,
+    pub cmdline_error: Option<String>,
+    pub cmdline_candidates: Vec<String>,
 }
 
 pub fn render(frame: &mut Frame, data: &RenderData) {
@@ -38,6 +41,7 @@ pub fn render(frame: &mut Frame, data: &RenderData) {
     let chunks = Layout::vertical([
         Constraint::Length(2),
         Constraint::Min(0),
+        Constraint::Length(1),
         Constraint::Length(1),
     ])
     .split(area);
@@ -47,7 +51,8 @@ pub fn render(frame: &mut Frame, data: &RenderData) {
         Mode::Seq => render_seq_grid(frame, chunks[1], data),
         Mode::Perf => render_perf_window(frame, chunks[1], data),
     }
-    render_mode_line(frame, chunks[2], data);
+    render_echo_area(frame, chunks[2], data);
+    render_mode_line(frame, chunks[3], data);
 }
 
 fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
@@ -205,6 +210,28 @@ fn render_envelope_section(frame: &mut Frame, area: Rect, data: &RenderData) {
     }
 }
 
+fn render_echo_area(frame: &mut Frame, area: Rect, data: &RenderData) {
+    if let Some(ref err) = data.cmdline_error {
+        let err_span = Span::styled(format!(" {} ", err), Style::default().fg(Color::Red));
+        let para = Paragraph::new(err_span);
+        frame.render_widget(para, area);
+        return;
+    }
+    let text = match &data.cmdline {
+        Some(t) => {
+            let candidates = if data.cmdline_candidates.is_empty() {
+                String::new()
+            } else {
+                format!("  ─ {}", data.cmdline_candidates.join("  "))
+            };
+            format!(" :{} {}", t, candidates)
+        }
+        None => String::new(),
+    };
+    let para = Paragraph::new(text).style(Style::default().fg(Color::Yellow));
+    frame.render_widget(para, area);
+}
+
 fn render_mode_line(frame: &mut Frame, area: Rect, data: &RenderData) {
     let mode_style = Style::default().fg(Color::Yellow);
     let mode_name = match data.mode {
@@ -278,6 +305,9 @@ impl RenderData {
             step_locks: vec![vec![]; track_count],
             slot_a_locked: false,
             slot_b_locked: false,
+            cmdline: None,
+            cmdline_error: None,
+            cmdline_candidates: vec![],
         }
     }
 }
@@ -317,6 +347,9 @@ mod tests {
             step_locks: vec![vec![]; 2],
             slot_a_locked: false,
             slot_b_locked: false,
+            cmdline: None,
+            cmdline_error: None,
+            cmdline_candidates: vec![],
         };
         terminal.draw(|f| render(f, &data)).unwrap();
     }
@@ -368,6 +401,9 @@ mod tests {
             step_locks: vec![vec![]; 1],
             slot_a_locked: false,
             slot_b_locked: false,
+            cmdline: None,
+            cmdline_error: None,
+            cmdline_candidates: vec![],
         };
         terminal.draw(|f| render(f, &data)).unwrap();
     }
@@ -401,6 +437,9 @@ mod tests {
             step_locks: vec![vec![]; 4],
             slot_a_locked: false,
             slot_b_locked: false,
+            cmdline: None,
+            cmdline_error: None,
+            cmdline_candidates: vec![],
         };
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();

@@ -25,6 +25,7 @@ pub enum Action {
     ReleaseFocus,
     ClearAllLocks,
     ClearSlotLocks,
+    Colon,
     Noop,
 }
 
@@ -48,7 +49,8 @@ impl Action {
             | Action::FocusStep
             | Action::ReleaseFocus
             | Action::ClearAllLocks
-            | Action::ClearSlotLocks => Outcome::StateOnly,
+            | Action::ClearSlotLocks
+            | Action::Colon => Outcome::StateOnly,
             Action::PlayToggle => {
                 if playing {
                     Outcome::Command(NodeCommand {

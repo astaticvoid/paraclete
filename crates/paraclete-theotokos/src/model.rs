@@ -67,6 +67,36 @@ pub struct Model {
     pub slot_b: Option<SlotBinding>,
     pub step_focus: Vec<Option<usize>>,
     pub last_step: Vec<Option<usize>>,
+    /// TK1 C6: command line editor state (None = closed).
+    pub cmdline: Option<String>,
+    /// TK1 C6: error message from last command execution (shown in red).
+    pub cmdline_error: Option<String>,
+    /// TK1 C6: fuzzy index built at startup from caps + tracks + static verbs.
+    pub fuzzy_index: Vec<FuzzyEntry>,
+}
+
+/// TK1 C6: a searchable entry in the fuzzy command index.
+#[derive(Clone)]
+pub struct FuzzyEntry {
+    pub text: String,
+    pub category: String,
+}
+
+/// TK1 C6: parsed command from the `:` line.
+pub enum CmdlineVerb {
+    Set {
+        node_id: u32,
+        param_name: String,
+        value: f64,
+    },
+    Bpm(f64),
+    Track(usize),
+    Pattern(usize),
+    Mute(usize),
+    Unmute(usize),
+    Clear,
+    LockClear,
+    Mode(Mode),
 }
 
 impl Model {
@@ -93,6 +123,7 @@ impl Model {
         let page_windows: Vec<usize> = vec![0; track_count];
         let step_focus: Vec<Option<usize>> = vec![None; track_count];
         let last_step: Vec<Option<usize>> = vec![None; track_count];
+        let fuzzy_index = Self::build_fuzzy_index(&caps, &tracks);
         let mut model = Self {
             mode: Mode::Seq,
             active_track: 0,
@@ -106,6 +137,9 @@ impl Model {
             slot_b: None,
             step_focus,
             last_step,
+            cmdline: None,
+            cmdline_error: None,
+            fuzzy_index,
         };
         model.bind_page();
         model
@@ -405,6 +439,213 @@ impl Model {
             min: param.min,
             max: param.max,
         })
+    }
+
+    // ── C6: command line ──
+
+    pub fn build_fuzzy_index(
+        caps: &HashMap<u32, CapabilityDocument>,
+        tracks: &[TrackInfo],
+    ) -> Vec<FuzzyEntry> {
+        let mut entries = Vec::new();
+        // static verbs
+        for verb in &[
+            "set",
+            "bpm",
+            "track",
+            "pattern",
+            "mute",
+            "unmute",
+            "clear",
+            "lock-clear",
+            "mode",
+        ] {
+            entries.push(FuzzyEntry {
+                text: verb.to_string(),
+                category: "verb".into(),
+            });
+        }
+        // param names from all cap-docs
+        for cap in caps.values() {
+            for p in &cap.params {
+                entries.push(FuzzyEntry {
+                    text: p.name.to_string(),
+                    category: "param".into(),
+                });
+            }
+        }
+        // track names
+        for t in tracks {
+            entries.push(FuzzyEntry {
+                text: t.name.to_string(),
+                category: "track".into(),
+            });
+        }
+        entries
+    }
+
+    /// Returns top candidates matching `query` using subsequence fuzzy match.
+    pub fn cmdline_candidates(&self) -> Vec<String> {
+        let query = match &self.cmdline {
+            Some(s) if !s.is_empty() => s,
+            _ => return vec![],
+        };
+        let lower = query.to_lowercase();
+        let mut scored: Vec<(&FuzzyEntry, usize)> = self
+            .fuzzy_index
+            .iter()
+            .filter_map(|e| {
+                let text = e.text.to_lowercase();
+                let score = Self::fuzzy_score(&lower, &text)?;
+                Some((e, score))
+            })
+            .collect();
+        scored.sort_by_key(|(e, s)| (*s, e.text.len()));
+        scored.dedup_by_key(|(e, _)| &e.text);
+        scored
+            .into_iter()
+            .take(5)
+            .map(|(e, _)| e.text.clone())
+            .collect()
+    }
+
+    fn fuzzy_score(query: &str, target: &str) -> Option<usize> {
+        let mut qi = query.chars();
+        let mut qc = qi.next()?;
+        let mut score = 0usize;
+        for (i, tc) in target.char_indices() {
+            if tc.to_ascii_lowercase() == qc {
+                // first char match = prefix bonus
+                if i == 0 && score == 0 {
+                    score = 0;
+                }
+                qc = match qi.next() {
+                    Some(c) => c,
+                    None => return Some(score),
+                };
+            }
+            score = score.saturating_add(1);
+        }
+        if qi.next().is_some() {
+            None // not all query chars consumed
+        } else {
+            Some(score)
+        }
+    }
+
+    pub fn parse_cmdline(&self, input: &str) -> Result<CmdlineVerb, String> {
+        let input = input.trim();
+        if input.is_empty() {
+            return Err("empty command".into());
+        }
+        let (verb, rest) = match input.split_once(char::is_whitespace) {
+            Some((v, r)) => (v, r.trim()),
+            None => (input, ""),
+        };
+        match verb {
+            "set" => {
+                let (name, val) = rest
+                    .rsplit_once(char::is_whitespace)
+                    .ok_or_else(|| "set <param> <value>".to_string())?;
+                let value: f64 = val.parse().map_err(|_| format!("invalid value: {val}"))?;
+                let lname = name.to_lowercase();
+                let best = self
+                    .fuzzy_index
+                    .iter()
+                    .filter(|e| e.category == "param")
+                    .filter_map(|e| {
+                        let score = Self::fuzzy_score(&lname, &e.text.to_lowercase())?;
+                        Some((e, score))
+                    })
+                    .min_by_key(|(_, s)| *s)
+                    .ok_or_else(|| format!("unknown param: {name}"))?;
+                // Find the node that has this param on the active track
+                let track = &self.tracks[self.active_track];
+                let mut node_id = track.generator_id;
+                let mut found = self.caps.get(&node_id).is_some_and(|c| {
+                    c.params
+                        .iter()
+                        .any(|p| p.name.to_string().to_lowercase() == best.0.text.to_lowercase())
+                });
+                // Also check composite chain nodes
+                if !found {
+                    if let Some(cv) = self.composite.get(self.active_track) {
+                        for page in &cv.pages {
+                            for cp in &page.params {
+                                let cap = self.caps.get(&cp.node_id);
+                                if cap.is_some_and(|c| c.params.iter().any(|p| p.id == cp.param_id))
+                                {
+                                    node_id = cp.node_id;
+                                    found = true;
+                                    break;
+                                }
+                            }
+                            if found {
+                                break;
+                            }
+                        }
+                    }
+                }
+                if !found {
+                    return Err(format!("param {} not found on active track", best.0.text));
+                }
+                Ok(CmdlineVerb::Set {
+                    node_id,
+                    param_name: best.0.text.clone(),
+                    value: value.clamp(0.0, 1.0),
+                })
+            }
+            "bpm" => {
+                let val: f64 = rest.parse().map_err(|_| "bpm <number>".to_string())?;
+                Ok(CmdlineVerb::Bpm(val.clamp(20.0, 300.0)))
+            }
+            "track" => {
+                let n: usize = rest
+                    .parse::<usize>()
+                    .map_err(|_| "track <number>".to_string())?;
+                if n < 1 || n > self.tracks.len() {
+                    return Err(format!(
+                        "track {} out of range (1-{})",
+                        n,
+                        self.tracks.len()
+                    ));
+                }
+                Ok(CmdlineVerb::Track(n - 1))
+            }
+            "pattern" => {
+                let n: usize = rest.parse().map_err(|_| "pattern <number>".to_string())?;
+                if n < 1 {
+                    return Err("pattern <number>".into());
+                }
+                Ok(CmdlineVerb::Pattern(n - 1))
+            }
+            "mute" => {
+                let n: usize = rest
+                    .parse()
+                    .map_err(|_| "mute <track number>".to_string())?;
+                if n < 1 || n > self.tracks.len() {
+                    return Err(format!("track {} out of range", n));
+                }
+                Ok(CmdlineVerb::Mute(n - 1))
+            }
+            "unmute" => {
+                let n: usize = rest
+                    .parse()
+                    .map_err(|_| "unmute <track number>".to_string())?;
+                if n < 1 || n > self.tracks.len() {
+                    return Err(format!("track {} out of range", n));
+                }
+                Ok(CmdlineVerb::Unmute(n - 1))
+            }
+            "clear" => Ok(CmdlineVerb::Clear),
+            "lock-clear" => Ok(CmdlineVerb::LockClear),
+            "mode" => match rest {
+                "seq" => Ok(CmdlineVerb::Mode(Mode::Seq)),
+                "perf" => Ok(CmdlineVerb::Mode(Mode::Perf)),
+                other => Err(format!("unknown mode: {other} (seq or perf)")),
+            },
+            _ => Err(format!("?{input}")),
+        }
     }
 }
 
