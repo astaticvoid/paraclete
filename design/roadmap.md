@@ -215,7 +215,7 @@ Ordered by nearness to the critical path.
 | **W2** | Theoria editor | Cap-doc-driven parameter pages for every engine; chain view; view-plugin API (ADR-032) → **paired session #3** | **In progress** — Commits 0–6 shipped (types, node impls, protocol, web rail, param pages, kick vertical slice, chain view); Commit 7 (§7.1 exit criteria + s3.md) next — session #3 held 2026-07-14 went to ALSA bring-up; formal pass pending |
 | **WT** | Theoria/term | Terminal client over in-process Antiphon transport; parameter pages + grid in the terminal | After W2, parallel W3 |
 | **W3** | Sequencer deep views | 64-step pattern view, cue/chain, hold-step p-lock overlay, condition/timing editors | Hard dependency on P10 C2–C5 |
-| **P11** | Live Performance | Mute system, temp save/reload, Perform Kit, live record | — (W3 mute view follows) |
+| **P11** | Live Performance | Mute system (global/pattern/prepared tiers), temp save/reload, kit model + Perform mode, live record | **Problem statement + ADR-039 drafted 2026-07-23** (`p11-problem.md`; ADR-039 🟡 proposed — kits as app-owned param snapshots, app-op drain, sequencer CMD 39–45 reserved). Phase spec when next to start. (W3 mute view follows) |
 | **P12** | Groove & Generation | Retrig, Euclidean, controlled randomness, generative fills | — |
 | **P13** | Analog Voice | Full subtractive mono voice — **Pro-One as primary reference** (dual osc + hard sync + poly-mod routing, self-oscillating 4-pole, two envs, glide, arp); Model D / MS-20 as secondary character references only. Paraphonic allocation, **per-voice-expression-aware (OQ-15)**. ZDF ladder is C1 (audio-model review). | — |
 | **P14** | FM Voice | Four-operator melodic FM, macro-first | — |
