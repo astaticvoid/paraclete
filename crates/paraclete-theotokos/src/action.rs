@@ -19,6 +19,10 @@ pub const PATTERN_BANK_SIZE: usize = 8;
 /// locks survive; FUNC+PLAY (TK2 C4) pairs this with `CMD_CLEAR_STEP_LOCK`
 /// per step.
 pub const CMD_CLEAR: u32 = 18;
+/// P10 C4 (mirrors `Sequencer::CMD_CHAIN_PUSH`/`CMD_CHAIN_CLEAR`, TK2 C6
+/// Chain screen).
+pub const CMD_CHAIN_PUSH: u32 = 31;
+pub const CMD_CHAIN_CLEAR: u32 = 32;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Action {
@@ -70,6 +74,19 @@ pub enum Action {
     /// that page cycles its sub-page (pages over 8 params split rather
     /// than truncating; §0 A1 hypothesis — session).
     NextSubPage,
+
+    // ── TK2 C6: Tempo/Chain screens (D12) ──
+    /// Tempo screen: UP/DOWN nudge bpm by the given signed delta (±1,
+    /// FUNC+UP/DOWN = ±0.1).
+    NudgeBpm(f64),
+    /// Chain screen: YES pushes the cursor pattern onto the volatile chain.
+    ChainPush,
+    /// Chain screen: NO/Backspace clears the chain.
+    ChainClear,
+    /// Chain screen: LEFT/RIGHT move the pattern-bank cursor.
+    MoveChainCursor(Dir),
+    /// D12: KIT echoes `reserved (kit)` — no screen exists for it in TK2.
+    Echo(&'static str),
 }
 
 #[derive(Debug)]
@@ -107,7 +124,12 @@ impl Action {
             | Action::CopyLane
             | Action::ClearLane
             | Action::PasteLane
-            | Action::NextSubPage => Outcome::StateOnly,
+            | Action::NextSubPage
+            | Action::NudgeBpm(_)
+            | Action::ChainPush
+            | Action::ChainClear
+            | Action::MoveChainCursor(_)
+            | Action::Echo(_) => Outcome::StateOnly,
             Action::PlayToggle => {
                 if playing {
                     Outcome::Command(NodeCommand {

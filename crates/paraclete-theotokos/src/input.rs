@@ -428,6 +428,33 @@ pub fn button_to_action(
         PanelButton::Mute => Action::OpenScreen(Screen::Mute),
         PanelButton::Tempo => Action::OpenScreen(Screen::Tempo),
         PanelButton::Settings => Action::OpenScreen(Screen::Settings),
+        // TK2 C6 (D12): Tempo screen — YES taps, UP/DOWN nudge bpm (FUNC
+        // = fine, ±0.1; bare = ±1).
+        PanelButton::Yes if matches!(screen.screen, Screen::Tempo) => Action::TapTempo,
+        PanelButton::Up if matches!(screen.screen, Screen::Tempo) => {
+            Action::NudgeBpm(if mods.func { 0.1 } else { 1.0 })
+        }
+        PanelButton::Down if matches!(screen.screen, Screen::Tempo) => {
+            Action::NudgeBpm(if mods.func { -0.1 } else { -1.0 })
+        }
+        // TK2 C6 (D12): Chain screen — YES pushes the cursor pattern,
+        // NO clears (Backspace also clears — handled one layer up in
+        // `lib.rs`, since Backspace bypasses the button system entirely),
+        // LEFT/RIGHT move the bank-row cursor (D13).
+        PanelButton::Yes if matches!(screen.screen, Screen::Chain) => Action::ChainPush,
+        PanelButton::No if matches!(screen.screen, Screen::Chain) => Action::ChainClear,
+        PanelButton::Left if matches!(screen.screen, Screen::Chain) => {
+            Action::MoveChainCursor(Dir::Prev)
+        }
+        PanelButton::Right if matches!(screen.screen, Screen::Chain) => {
+            Action::MoveChainCursor(Dir::Next)
+        }
+        // D12: KIT has no screen in TK2 — echoes reserved.
+        PanelButton::Kit => Action::Echo("reserved (kit)"),
+        // D12: SAMPLING is hidden entirely unless some capability
+        // declares it (none does today) — a plain no-op, not even an
+        // echo (unlike KIT).
+        PanelButton::Sampling => Action::Noop,
         _ => Action::Noop,
     }
 }

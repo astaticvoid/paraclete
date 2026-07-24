@@ -69,6 +69,18 @@ pub struct RenderData {
     /// TK2 C5 (D8/D13): which encoder cell the arrow-key cursor highlights.
     pub encoder_cursor: usize,
     pub encoder_flash: Vec<bool>,
+    /// TK2 C6 (D12): whether kitty keyboard-enhancement is active — shown
+    /// on the Settings screen.
+    pub kitty: bool,
+    pub pattern_bank_size: usize,
+    /// TK2 C6 (D12): Chain screen state — active/cued pattern (bank-row
+    /// markers), how many patterns are queued, the page-loop window, and
+    /// which bank slot the cursor points at.
+    pub active_pattern: usize,
+    pub cued_pattern: Option<usize>,
+    pub chain_len: usize,
+    pub page_loop: (u8, u8),
+    pub chain_cursor: usize,
 }
 
 pub fn render(frame: &mut Frame, data: &RenderData) {
@@ -90,9 +102,9 @@ pub fn render(frame: &mut Frame, data: &RenderData) {
             Screen::Grid => render_seq_grid(frame, chunks[1], data),
             Screen::Param(_) => render_perf_window(frame, chunks[1], data),
             Screen::Mute => render_mute_screen(frame, chunks[1], data),
-            Screen::Tempo | Screen::Chain | Screen::Settings => {
-                render_screen_placeholder(frame, chunks[1], data)
-            }
+            Screen::Tempo => render_tempo_screen(frame, chunks[1], data),
+            Screen::Settings => render_settings_screen(frame, chunks[1], data),
+            Screen::Chain => render_chain_screen(frame, chunks[1], data),
         }
     }
     render_legend(frame, chunks[2], data);
@@ -100,13 +112,70 @@ pub fn render(frame: &mut Frame, data: &RenderData) {
     render_status_line(frame, chunks[4], data);
 }
 
-/// TK2 C6 builds these screens properly; until then, name the screen so
-/// it's at least legible that a button press landed somewhere real.
-fn render_screen_placeholder(frame: &mut Frame, area: Rect, data: &RenderData) {
-    let name = screen_name(data.screen);
-    let para = Paragraph::new(format!(" {name} (not yet implemented)"))
-        .style(Style::default().fg(Color::DarkGray));
+/// TK2 C6 (D12): bpm display; YES-tap and UP/DOWN nudge live in the
+/// status line/legend (armed prefix has no meaning here, so the big
+/// number is the whole screen).
+fn render_tempo_screen(frame: &mut Frame, area: Rect, data: &RenderData) {
+    let para = Paragraph::new(format!(" {:.1} BPM", data.bpm))
+        .style(Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD));
     frame.render_widget(para, area);
+}
+
+/// TK2 C6 (D12): "shows bpm, kitty status, track/pattern counts, version
+/// — read-only in TK2."
+fn render_settings_screen(frame: &mut Frame, area: Rect, data: &RenderData) {
+    let lines = vec![
+        Line::raw(format!(" bpm: {:.1}", data.bpm)),
+        Line::raw(format!(
+            " kitty keyboard protocol: {}",
+            if data.kitty { "yes" } else { "no (sticky fallback)" }
+        )),
+        Line::raw(format!(" tracks: {}", data.track_names.len())),
+        Line::raw(format!(" pattern bank size: {}", data.pattern_bank_size)),
+        Line::raw(format!(" version: {}", env!("CARGO_PKG_VERSION"))),
+    ];
+    let para = Paragraph::new(lines).style(Style::default().fg(Color::White));
+    frame.render_widget(para, area);
+}
+
+/// TK2 C6 (D12): pattern bank row (active/cued markers, cursor), chain
+/// length, page-loop window.
+fn render_chain_screen(frame: &mut Frame, area: Rect, data: &RenderData) {
+    let chunks = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
+
+    let mut spans: Vec<Span> = Vec::with_capacity(data.pattern_bank_size);
+    for i in 0..data.pattern_bank_size {
+        let is_active = i == data.active_pattern;
+        let is_cued = data.cued_pattern == Some(i);
+        let is_cursor = i == data.chain_cursor;
+        let label = format!("P{}", i + 1);
+        let text = if is_cursor {
+            format!("[{label}]")
+        } else {
+            format!(" {label} ")
+        };
+        let color = if is_active {
+            Color::Green
+        } else if is_cued {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
+        spans.push(Span::styled(text, Style::default().fg(color)));
+        spans.push(Span::raw(" "));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), chunks[0]);
+
+    let info = format!(
+        " Chain: {} pattern(s) queued   Loop: page {}-{}",
+        data.chain_len,
+        data.page_loop.0 + 1,
+        data.page_loop.1 + 1
+    );
+    frame.render_widget(
+        Paragraph::new(info).style(Style::default().fg(Color::DarkGray)),
+        chunks[1],
+    );
 }
 
 /// TK2 C4 (D12): "trigs toggle mutes, track states rendered" — one line
@@ -612,6 +681,13 @@ impl RenderData {
             encoder_cells: vec![None; 8],
             encoder_cursor: 0,
             encoder_flash: vec![false; 8],
+            kitty: false,
+            pattern_bank_size: 8,
+            active_pattern: 0,
+            cued_pattern: None,
+            chain_len: 0,
+            page_loop: (0, 0),
+            chain_cursor: 0,
             help_visible: false,
         }
     }
@@ -669,6 +745,13 @@ mod tests {
             encoder_cells: vec![None; 8],
             encoder_cursor: 0,
             encoder_flash: vec![false; 8],
+            kitty: false,
+            pattern_bank_size: 8,
+            active_pattern: 0,
+            cued_pattern: None,
+            chain_len: 0,
+            page_loop: (0, 0),
+            chain_cursor: 0,
             help_visible: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
@@ -738,6 +821,13 @@ mod tests {
             encoder_cells: vec![None; 8],
             encoder_cursor: 0,
             encoder_flash: vec![false; 8],
+            kitty: false,
+            pattern_bank_size: 8,
+            active_pattern: 0,
+            cued_pattern: None,
+            chain_len: 0,
+            page_loop: (0, 0),
+            chain_cursor: 0,
             help_visible: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
@@ -789,6 +879,13 @@ mod tests {
             encoder_cells: vec![None; 8],
             encoder_cursor: 0,
             encoder_flash: vec![false; 8],
+            kitty: false,
+            pattern_bank_size: 8,
+            active_pattern: 0,
+            cued_pattern: None,
+            chain_len: 0,
+            page_loop: (0, 0),
+            chain_cursor: 0,
             help_visible: false,
         };
         let backend = ratatui::backend::TestBackend::new(80, 24);

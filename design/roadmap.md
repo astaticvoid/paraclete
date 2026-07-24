@@ -3,7 +3,34 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-23 (later still). **TK2 C5 shipped** — encoder
+> **Last updated:** 2026-07-24. **TK2 C6 shipped** — Tempo/Settings/Chain
+> screens (D12): Tempo (`0`) — YES taps a ring of up to 4 timestamps,
+> deriving bpm from the window average once 2+ taps exist (`CMD_SET_PARAM`
+> on the clock, engine-side `.clamp(20,300)`); UP/DOWN nudge ±1, FUNC+UP/
+> DOWN ±0.1. Settings (`8`, read-only): bpm, kitty status, track count,
+> pattern-bank size, crate version. Chain (`o`, opens via SONG): pattern-
+> bank row with active/cued/cursor markers, chain length + page-loop line
+> (all read from the engine's published state), YES pushes the cursor
+> pattern (`CMD_CHAIN_PUSH`), NO **and** Backspace clear it
+> (`CMD_CHAIN_CLEAR` — Backspace's existing screen-independent bypass,
+> committed in C3, is now screen-aware), LEFT/RIGHT move the cursor. KIT
+> echoes `reserved (kit)`; SAMPLING stays a silent no-op (no cap-doc
+> declares it yet — explicitly disclosed, not a gap). 6 tests named in
+> spec. Hostile review found **2 majors**: `cmdline_error` (the shared
+> echo/error slot used by D9's clamp echoes, `:` line parse errors, and
+> now KIT's reserved message) never cleared on any subsequent unrelated
+> action — a stray KIT tap could pin "reserved (kit)" over the screen
+> indefinitely, silently masking a later, more relevant echo — fixed with
+> a clear-before-dispatch on every non-`Noop` action. And
+> `tempo_screen_yes_taps_set_bpm` only checked that *a* `CMD_SET_PARAM`
+> fired, never inspecting the computed bpm — a broken averaging
+> computation would have passed silently — fixed to assert the exact
+> clamped value the real 50ms tap gap must produce. Engine command/
+> state-path fidelity (`CMD_CHAIN_PUSH`/`CLEAR`, the 5 published-state
+> paths Chain reads) verified byte-for-byte against `sequencer.rs`. 81
+> crate tests, full workspace green. Next: TK2 C7 (agent smoke + polish
+> gate — no new features).
+> Previous: 2026-07-23 (later still). **TK2 C5 shipped** — encoder
 > bank (D8): FUNC+top/bottom-row trig resolves against the active page's
 > params in Rule order (composite page first, engine `Rule` fallback),
 > up to 8 encoders; fine via FUNC+Ctrl; under step focus, jog routes to

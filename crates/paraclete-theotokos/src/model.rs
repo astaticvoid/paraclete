@@ -79,6 +79,9 @@ pub struct Model {
     /// page cycles this (§0 A1 hypothesis — session; `Action::NextSubPage`).
     /// Reset to 0 whenever a different page opens.
     pub sub_page: usize,
+    /// TK2 C6 (D12): which pattern (0-7) the Chain screen's bank-row
+    /// cursor points at — YES pushes this one onto the chain.
+    pub chain_cursor: usize,
     pub step_focus: Vec<Option<usize>>,
     pub last_step: Vec<Option<usize>>,
     /// TK1 C6: command line editor state (None = closed).
@@ -187,6 +190,7 @@ impl Model {
             slot_c: None,
             encoder_cursor: 0,
             sub_page: 0,
+            chain_cursor: 0,
             step_focus,
             last_step,
             cmdline: None,

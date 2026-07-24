@@ -17,8 +17,9 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::action::{
-    Action, Outcome, CMD_CLEAR, CMD_CLEAR_STEP_LOCK, CMD_SET_LOCK_TARGET, CMD_SET_PATTERN,
-    CMD_SET_STEP_LOCK, CMD_TRIG_NOW, GRID_STEPS, PATTERN_BANK_SIZE,
+    Action, Outcome, CMD_CHAIN_CLEAR, CMD_CHAIN_PUSH, CMD_CLEAR, CMD_CLEAR_STEP_LOCK,
+    CMD_SET_LOCK_TARGET, CMD_SET_PATTERN, CMD_SET_STEP_LOCK, CMD_TRIG_NOW, GRID_STEPS,
+    PATTERN_BANK_SIZE,
 };
 use crate::input::{button_to_action, key_to_button, HeldState, Keymap, Mods};
 use crate::model::{
@@ -54,6 +55,9 @@ pub struct TheotokosApp {
     /// TK2 C5 (D8): one ramp/acceleration tracker per encoder column,
     /// reusing the TK1 jog ramp machinery (`Tuning::jog_step`).
     encoder_trackers: [JogTracker; 8],
+    /// TK2 C6 (D12): a ring of up to 4 tap-tempo timestamps (Tempo
+    /// screen, YES). Oldest dropped once full.
+    tap_times: Vec<Instant>,
     last_debug_event: Option<String>,
     /// TK2 C3 (D11): flat user keymap. Empty by default; C8 adds YAML
     /// load/save and the `:bind` verb family.
@@ -97,6 +101,7 @@ impl TheotokosApp {
             jog_b: JogTracker::new(),
             jog_c: JogTracker::new(),
             encoder_trackers: std::array::from_fn(|_| JogTracker::new()),
+            tap_times: Vec::new(),
             last_debug_event: None,
             keymap: Keymap::default(),
             held: HeldState::new(kitty),
@@ -205,6 +210,31 @@ impl TheotokosApp {
             })
             .collect();
 
+        // TK2 C6 (D12): Chain screen state, read from the active track's
+        // published sequencer state.
+        let active_seq_id = self.model.tracks[self.model.active_track].sequencer_id;
+        let read_int = |path: String| -> Option<i64> {
+            match bus.read(&path) {
+                Some(paraclete_node_api::StateBusValue::Int(i)) => Some(*i),
+                _ => None,
+            }
+        };
+        let active_pattern =
+            read_int(format!("/node/{active_seq_id}/state/active_pattern")).unwrap_or(0) as usize;
+        let cued_pattern_raw =
+            read_int(format!("/node/{active_seq_id}/state/cued_pattern")).unwrap_or(-1);
+        let cued_pattern = if cued_pattern_raw >= 0 {
+            Some(cued_pattern_raw as usize)
+        } else {
+            None
+        };
+        let chain_len =
+            read_int(format!("/node/{active_seq_id}/state/chain_len")).unwrap_or(0) as usize;
+        let page_loop = (
+            read_int(format!("/node/{active_seq_id}/state/page_loop_start")).unwrap_or(0) as u8,
+            read_int(format!("/node/{active_seq_id}/state/page_loop_end")).unwrap_or(0) as u8,
+        );
+
         // TK2 C5 (D8/§0 A11): the active page's params in Rule order,
         // restricted to the current sub-page's 8-wide window (pages with
         // more than 8 params split into sub-pages instead of silently
@@ -312,6 +342,13 @@ impl TheotokosApp {
             encoder_cells,
             encoder_cursor: self.model.encoder_cursor,
             encoder_flash,
+            kitty: self.held.kitty,
+            pattern_bank_size: PATTERN_BANK_SIZE,
+            active_pattern,
+            cued_pattern,
+            chain_len,
+            page_loop,
+            chain_cursor: self.model.chain_cursor,
         };
 
         drop(bus_ref);
@@ -362,7 +399,13 @@ impl TheotokosApp {
             } else if ev.code == KeyCode::Char('?') {
                 Some(Action::ToggleHelp)
             } else if ev.code == KeyCode::Backspace {
-                Some(if ev.modifiers.contains(KeyModifiers::SHIFT) {
+                // D12: on the Chain screen, Backspace clears the chain
+                // (the same gesture as NO) instead of its usual
+                // lock-clear meaning — still a direct/unbindable key
+                // (§2), just screen-dependent.
+                Some(if matches!(self.model.screen, Screen::Chain) {
+                    Action::ChainClear
+                } else if ev.modifiers.contains(KeyModifiers::SHIFT) {
                     Action::ClearSlotLocks
                 } else {
                     Action::ClearAllLocks
@@ -444,6 +487,18 @@ impl TheotokosApp {
 
             if !matches!(action, Action::Noop) || self.last_debug_event.is_some() {
                 self.last_debug_event = Some(format!("{:?} → {:?}", ev, action));
+            }
+
+            // Clear any stale echo (a D9 out-of-range clamp, KIT's
+            // "reserved" message, ...) once a genuinely different action
+            // fires, so it can't persist indefinitely and mask a later,
+            // more relevant one — e.g. a stray KIT press pinning "reserved
+            // (kit)" over the screen forever (post-C6 hostile review). The
+            // arms below that need a fresh echo (out-of-range
+            // SelectTrack/SelectPattern, Action::Echo itself) re-set it
+            // after this clear, in the same dispatch.
+            if !matches!(action, Action::Noop) {
+                self.model.cmdline_error = None;
             }
 
             match action {
@@ -800,8 +855,77 @@ impl TheotokosApp {
                     }
                     dirty = true;
                 }
-                // TK2 C6 territory — no dispatch yet.
-                Action::TapTempo => {}
+                // TK2 C6 (D12): a ring of up to 4 taps; 2+ taps required
+                // before a bpm is derived (a single tap has no interval to
+                // measure). Averaging the whole window (not just the last
+                // gap) smooths out one uneven tap.
+                Action::TapTempo => {
+                    self.tap_times.push(now);
+                    if self.tap_times.len() > 4 {
+                        self.tap_times.remove(0);
+                    }
+                    if self.tap_times.len() >= 2 {
+                        let intervals: Vec<f64> = self
+                            .tap_times
+                            .windows(2)
+                            .map(|w| w[1].duration_since(w[0]).as_secs_f64())
+                            .collect();
+                        let avg = intervals.iter().sum::<f64>() / intervals.len() as f64;
+                        if avg > 0.0 {
+                            let bpm = (60.0 / avg).clamp(20.0, 300.0);
+                            let bpm_id = paraclete_node_api::ParamDescriptor::id_for_name("bpm");
+                            self.pending.push(NodeCommand {
+                                target_id: self.model.clock_id,
+                                type_id: paraclete_node_api::CMD_SET_PARAM,
+                                arg0: bpm_id as i64,
+                                arg1: bpm,
+                            });
+                        }
+                    }
+                    dirty = true;
+                }
+                Action::NudgeBpm(delta) => {
+                    let current = self.model.read_bpm(state);
+                    let bpm_id = paraclete_node_api::ParamDescriptor::id_for_name("bpm");
+                    self.pending.push(NodeCommand {
+                        target_id: self.model.clock_id,
+                        type_id: paraclete_node_api::CMD_SET_PARAM,
+                        arg0: bpm_id as i64,
+                        arg1: (current + delta).max(1.0),
+                    });
+                    dirty = true;
+                }
+                Action::ChainPush => {
+                    let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
+                    self.pending.push(NodeCommand {
+                        target_id: seq_id,
+                        type_id: CMD_CHAIN_PUSH,
+                        arg0: self.model.chain_cursor as i64,
+                        arg1: 0.0,
+                    });
+                    dirty = true;
+                }
+                Action::ChainClear => {
+                    let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
+                    self.pending.push(NodeCommand {
+                        target_id: seq_id,
+                        type_id: CMD_CHAIN_CLEAR,
+                        arg0: 0,
+                        arg1: 0.0,
+                    });
+                    dirty = true;
+                }
+                Action::MoveChainCursor(dir) => {
+                    self.model.chain_cursor = match dir {
+                        Dir::Prev => (self.model.chain_cursor + PATTERN_BANK_SIZE - 1) % PATTERN_BANK_SIZE,
+                        Dir::Next => (self.model.chain_cursor + 1) % PATTERN_BANK_SIZE,
+                    };
+                    dirty = true;
+                }
+                Action::Echo(msg) => {
+                    self.model.cmdline_error = Some(msg.to_string());
+                    dirty = true;
+                }
             }
         }
         drop(bus_ref);
@@ -1269,6 +1393,7 @@ mod tests {
             jog_b: JogTracker::new(),
             jog_c: JogTracker::new(),
             encoder_trackers: std::array::from_fn(|_| JogTracker::new()),
+            tap_times: Vec::new(),
             last_debug_event: None,
             keymap: Keymap::default(),
             held: HeldState::new(false),
@@ -1690,6 +1815,7 @@ mod tests {
             jog_b: JogTracker::new(),
             jog_c: JogTracker::new(),
             encoder_trackers: std::array::from_fn(|_| JogTracker::new()),
+            tap_times: Vec::new(),
             last_debug_event: None,
             keymap: Keymap::default(),
             held: HeldState::new(false),
@@ -1881,6 +2007,7 @@ mod tests {
             jog_b: JogTracker::new(),
             jog_c: JogTracker::new(),
             encoder_trackers: std::array::from_fn(|_| JogTracker::new()),
+            tap_times: Vec::new(),
             last_debug_event: None,
             keymap: Keymap::default(),
             held: HeldState::new(false),
@@ -1905,6 +2032,152 @@ mod tests {
                 .iter()
                 .any(|c| c.type_id == paraclete_node_api::CMD_BUMP_PARAM && c.arg0 == 1008),
             "encoder col 0 on sub-page 1 must target the param at slot 8"
+        );
+    }
+
+    // ── TK2 C6: Tempo/Settings/Chain screens (D12) ──
+
+    fn up_key() -> KeyEvent {
+        KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)
+    }
+
+    fn func_up_key() -> KeyEvent {
+        KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT)
+    }
+
+    #[test]
+    fn tempo_screen_yes_taps_set_bpm() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.screen = Screen::Tempo;
+
+        // A single tap has no interval to measure yet.
+        app.handle_keys(&bus, &[enter_key()]);
+        assert!(
+            app.pending.is_empty(),
+            "one tap alone must not set a bpm (2+ taps required)"
+        );
+
+        // A 50ms gap is 1200bpm pre-clamp (60 / 0.05s) — comfortably past
+        // the 300bpm ceiling even allowing generous scheduler slop (the
+        // gap would need to stretch past ~200ms before the clamp stopped
+        // saturating), so asserting the exact clamped value is safe, not
+        // flaky, and — unlike just checking "a command was sent" — would
+        // actually catch a broken averaging computation (review finding,
+        // post-C6 hostile review: the original assertion never inspected
+        // arg1 at all).
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        app.handle_keys(&bus, &[enter_key()]);
+        let bpm_id = ParamDescriptor::id_for_name("bpm");
+        let cmd = app
+            .pending
+            .iter()
+            .find(|c| c.target_id == 1 && c.type_id == paraclete_node_api::CMD_SET_PARAM
+                && c.arg0 == bpm_id as i64)
+            .expect("a second tap must derive and send a bpm");
+        assert!(
+            (cmd.arg1 - 300.0).abs() < 0.01,
+            "a ~50ms tap gap must clamp to the 300bpm ceiling, got {}",
+            cmd.arg1
+        );
+    }
+
+    #[test]
+    fn tempo_arrows_nudge_bpm() {
+        let bus = test_bus();
+        {
+            let mut b = bus.borrow_mut();
+            b.write("/transport/bpm", StateBusValue::Float(120.0));
+        }
+        let bpm_id = ParamDescriptor::id_for_name("bpm");
+
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.screen = Screen::Tempo;
+        app.handle_keys(&bus, &[up_key()]);
+        let coarse = app
+            .pending
+            .iter()
+            .find(|c| c.arg0 == bpm_id as i64)
+            .expect("UP must nudge bpm");
+        assert!((coarse.arg1 - 121.0).abs() < 0.01, "bare UP must be +1");
+
+        let mut app_fine = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app_fine.model.screen = Screen::Tempo;
+        app_fine.handle_keys(&bus, &[func_up_key()]);
+        let fine = app_fine
+            .pending
+            .iter()
+            .find(|c| c.arg0 == bpm_id as i64)
+            .expect("FUNC+UP must nudge bpm");
+        assert!((fine.arg1 - 120.1).abs() < 0.01, "FUNC+UP must be +0.1");
+    }
+
+    #[test]
+    fn chain_screen_yes_pushes_cursor_pattern() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.screen = Screen::Chain;
+        app.model.chain_cursor = 3;
+
+        app.handle_keys(&bus, &[enter_key()]);
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.target_id == 200 && c.type_id == CMD_CHAIN_PUSH && c.arg0 == 3),
+            "YES on the Chain screen must push the cursor pattern (3)"
+        );
+    }
+
+    #[test]
+    fn chain_screen_clear_sends_chain_clear() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.screen = Screen::Chain;
+
+        app.handle_keys(&bus, &[esc_key()]);
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.target_id == 200 && c.type_id == CMD_CHAIN_CLEAR),
+            "NO on the Chain screen must clear the chain"
+        );
+
+        app.pending.clear();
+        app.handle_keys(&bus, &[backspace_key()]);
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.target_id == 200 && c.type_id == CMD_CHAIN_CLEAR),
+            "Backspace on the Chain screen must also clear the chain (D12)"
+        );
+    }
+
+    #[test]
+    fn kit_button_echoes_reserved() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.handle_keys(&bus, &[kc('7')]);
+        assert_eq!(app.model.cmdline_error.as_deref(), Some("reserved (kit)"));
+    }
+
+    #[test]
+    fn sampling_hidden_without_capability() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        let screen_before = app.model.screen;
+
+        app.handle_keys(&bus, &[kc('9')]);
+        assert!(
+            app.pending.is_empty(),
+            "SAMPLING must not emit any command"
+        );
+        assert!(
+            app.model.cmdline_error.is_none(),
+            "SAMPLING must not even echo (unlike KIT) — it's hidden entirely"
+        );
+        assert_eq!(
+            app.model.screen, screen_before,
+            "SAMPLING must not navigate anywhere"
         );
     }
 
