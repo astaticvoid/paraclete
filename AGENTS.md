@@ -382,6 +382,56 @@ stale is an incomplete session.
 `Hardware*` was renamed to `Surface*` in July 2026. Historical docs use old
 names — map accordingly; do not edit those documents.
 
+## Design-process learnings (2026-07-23 hostile-review cycle)
+
+Extracted from the ADR-038…043 review cycle (9 blockers found *after*
+ratification; full reports summarized in `roadmap.md`). These are standing
+process rules for design work in this repo:
+
+1. **Hostile review comes BEFORE ratification, not after.** ADR-036 did it
+   right (pre-ratification subagent review, findings folded, then ratified);
+   the 038–043 batch ratified first and needed a normative amendments layer
+   to repair. An ADR is not ratification-ready until an adversarial pass has
+   line-verified its code claims.
+2. **Verify dependency *behavior*, not existence.** The highest-value finding
+   class was "the doc cites a real mechanism that doesn't behave as cited":
+   crossterm never delivers lowercase+SHIFT; rtrb has no overwrite-oldest or
+   non-consuming tail read; derived `Clone` on nested Vecs allocates;
+   `publish_bank_state` mirrors only banks that publish. If a design leans on
+   a library or idiom, read its source for the exact behavior claimed.
+3. **"Zero engine changes" / "free by construction" / "already enabled" are
+   red-flag phrases.** Every such claim in this cycle was refuted under
+   review. Cost-free claims require file:line proof or must be softened.
+4. **Input tests must feed events in the shape the real source emits.**
+   BUG-035/036 were guarded by tests injecting synthetic events no terminal
+   produces (lowercase char + SHIFT). For any event-driven boundary (keys,
+   MIDI, protocol), derive test fixtures from the transport's documented
+   encoding, not from what the match arm happens to accept.
+5. **Before asserting "X needs no change", grep for duplicated constants.**
+   TK2 C0's "web needs no change" missed `PageNav.tsx`'s private copy of the
+   page order. Shared-crate constants do not prevent drift in consumers that
+   hardcode their own.
+6. **Per-commit compilability is part of spec review.** TK2's C2 as first
+   written deleted types that later commits still referenced — a spec whose
+   commit sequence cannot build green at every step fails the "less capable
+   model implements without ambiguity" bar.
+7. **Amending an execution-ready spec: normative §0, not a rewrite.** Fold
+   post-ratification findings as a dated amendments section that explicitly
+   wins over conflicting body text, and tag each amended decision in place
+   (`*(amended — §0 An)*`). Keeps the append-only spirit while leaving one
+   authoritative reading order.
+8. **Split hostile review by domain across parallel fresh-context subagents.**
+   Independent reviewers with no authorship attachment out-perform a fork of
+   the authoring session; grade findings B/M/m with file:line evidence for
+   both the doc claim and the code reality, and report verified-clean counts
+   so coverage is visible.
+9. **Declared-but-unenforced contracts rot silently.** `Rule` slot numbers
+   were fiction (the merge ignores them) and `param_pages` refs are never
+   validated against cap-docs (BUG-037). When a data contract has a consumer
+   that ignores half of it, either enforce it (assertion) or mark the field
+   as advisory in the contract's doc — never design new features against the
+   unenforced half without checking.
+
 ## MCP tool selection
 
 **Serena** (symbol-level code navigation/refactoring — LSP-backed):
