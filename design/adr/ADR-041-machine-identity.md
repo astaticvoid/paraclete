@@ -93,6 +93,41 @@ startup contract.
 - **Open (phase spec):** exact declick constant; whether variant names
   surface in the `:` fuzzy index; per-step machine locks (revisit).
 
+## Post-ratification hostile review — 2026-07-23 (amendments user-approved)
+
+Findings 1 B / 10 M / 4 m across ADR-041/042/043; this ADR's amendments:
+
+1. **Decision 2 amended — the flat union is insufficient** (review B1).
+   `ParameterBank` holds one min/max/default per id, but the real
+   machines conflict on shared names (FM `decay` 0.01–2.0 vs 0.05–8.0
+   vs 0.05–4.0; `feedback` 0–1 vs 0–0.5; analog `tone` 200–8k vs
+   1k–18k; three different defaults). Amended model: **widest-envelope
+   storage** in the bank, plus **per-machine descriptor overlays
+   (min/max/default, and an `identity` flag) carried in
+   `MachineVariant`** — surfaces display/clamp against the active
+   overlay; inactive values are never clamped; union docs dedup by id.
+   Lossless cross-machine kits hold under this model, not the flat one.
+2. **Decision on placement amended — machine-select lives on the TRIG
+   page**, not "SRC slot 1" (reviews M2/M8): both engines' SRC slots
+   are occupied, FmVoice's pages are exactly 8 wide, and track identity
+   belongs with track settings. Prerequisite commit: `merge_page`
+   currently **ignores declared slots** (sequential counter) — slot
+   honoring in `paraclete-view-assembly` is required before any slot
+   convention is real.
+3. **Decision 3 extended to the actual wire** (review M4): clients get
+   `view_meta` built from the pre-merged `CompositeView`, not `Rule`;
+   the extension must carry per-variant pre-merged pages per track and
+   populate `stepped`/`options` (currently hardwired `None`) so the
+   machine encoder can label variants. Spec'd with the implementing
+   phase.
+4. **Decision 6's validation site corrected** (review M10): the
+   sequencer stores opaque `(node_id, param_id)` locks and cannot know
+   a foreign node's params — machine-lock rejection lives **surface/
+   app-side**, keyed on the overlay `identity` flag (which scene-assign
+   rejection also uses). The performer sees an echo-area rejection.
+5. Validation debt (review m15 → BUG-037): a debug-build assertion that
+   every page/variant param ref resolves in the union doc.
+
 ## Implementation note (to be added when implemented)
 
 ```text

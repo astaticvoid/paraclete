@@ -84,6 +84,10 @@ One chord while the pattern plays; the next pattern can play it sliced.
   interpolates assigned params between scene A and B each main-loop
   tick and emits `CMD_SET_PARAM` (nodes' own smoothing declicks).
   Instrument-wide, engine-agnostic, surface-agnostic.
+  *(Amended 2026-07-23, review:* the morph emits **only while the
+  crossfader is moving** — parked crossfader emits nothing, encoders
+  stay free; chunked apply with retry on ring-full. See ADR-040 review
+  note 1.)*
 - Theotokos bindings (HYPOTHESIS): scenes armed from the KIT screen;
   crossfader on a held-ramp key pair (candidates: `,`/`.` — free in the
   continuous grid) with numpad `4/6` as alternates; snap-back on
@@ -116,7 +120,7 @@ frozen now — requirement 6).
 
 | # | Question | Status | Where decided |
 |---|---|---|---|
-| OQ-A1 | Recorder ring length (RAM budget per recorder; candidate 16 bars @ 48k stereo ≈ 30 MB at 120 BPM) | OPEN | AN1 spec |
+| OQ-A1 | Recorder buffer length (RAM budget per recorder; 16 bars @ 120 BPM, 48k stereo f32 ≈ 12.3 MB — figure corrected at the 2026-07-23 review; mechanism respecced to a plain audio-thread circular buffer + bounded transfer ring, ADR-040 review note 2) | OPEN | AN1 spec |
 | OQ-A2 | RAM captures on project save: freeze to files, keep volatile, or ask | OPEN | AN0 spec |
 | OQ-A3 | Threshold-arm pre-roll length | OPEN *(tunable)* | AN1 spec |
 | OQ-A4 | Crossfader snap-back vs latch; curve shaping | OPEN | session |

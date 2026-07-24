@@ -19,13 +19,97 @@
 
 ---
 
+## §0. Hostile-review amendments (2026-07-23) — NORMATIVE
+
+> Post-ratification hostile review (three subagents, findings graded
+> B/M/m; reports summarized in the roadmap). **Where this section
+> conflicts with any D/C text below, this section wins.** BUG-035/036
+> filed under the standing defect directive.
+
+- **A1 (B) Key normalization.** crossterm never delivers `Shift+letter`
+  as lowercase+SHIFT: legacy input sends the uppercase char (+SHIFT);
+  kitty alternate-keys sends uppercase with SHIFT *cleared*; shifted
+  punctuation/digits arrive as the shifted symbol with **no** SHIFT
+  flag. `key_to_button` MUST case-fold `Char(c)` and infer FUNC from
+  case for letters. **FUNC+digit chords are dropped entirely**
+  (layout-dependent symbols): sub-page overflow is now *press the
+  active PG key again* to toggle sub-page 2 *(HYPOTHESIS — session)*.
+  C2 tests must feed `Char('Q')+SHIFT` and `Char('Q')`-no-SHIFT
+  variants, never synthetic lowercase+SHIFT (the BUG-035 false-pass
+  class).
+- **A2 (B) Kitty flags.** `REPORT_EVENT_TYPES` alone yields **no
+  release events for text keys** (Tab, `p`, all trigs). C3 must push
+  `DISAMBIGUATE_ESCAPE_CODES | REPORT_EVENT_TYPES |
+  REPORT_ALL_KEYS_AS_ESCAPE_CODES`. D6's "already enabled" is wrong.
+- **A3 (B) Live-trig gate (D5).** Gate close is transport-tick-driven
+  today; a stopped clock emits no ticks — the specced note would ring
+  forever. The live variant uses a **sample-counted gate** decremented
+  in `process()` by buffer length, independent of transport; and emits
+  `emit_note_off` first when `gate_open` (a live trig over a sounding
+  step must not orphan its note-off).
+- **A4 (B) C2 restructure.** C2 is **additive only** (new types beside
+  old; no deletions) — deleting `Mode`/`map_seq`/actions breaks
+  `lib.rs`/`render.rs` compilation. All deletions move to C3 with the
+  wiring flip.
+- **A5 (B) Numpad slots (D13).** Numpad digits are indistinguishable
+  from the number row without `DISAMBIGUATE_ESCAPE_CODES` +
+  `KeyEventState::KEYPAD`. Slot jog is **gated on the kitty probe +
+  KEYPAD flag**; on terminals without it, slots are unavailable (the
+  encoder bank is the jog path) — never ambiguous with KIT/SETTINGS/
+  SAMPLING/PG keys.
+- **A6 (B) The `:` binding (D14).** Legacy terminals deliver typing `:`
+  as `Char(':')` with no SHIFT — the TK1 arm (`Char(';')+SHIFT`) may be
+  dead on real terminals (BUG-036). Bind the `:` line on **`Char(':')`
+  any-modifiers** (keep the legacy `';'+SHIFT` arm as an alias); the
+  D14 unbindable entry is `Char(':')`.
+- **A7 (M) §4.4 floor reconciliation** (user-approved 2026-07-23): one
+  shared held modifier is permitted for the encoder bank; the
+  modifier-free two-slot floor is carried by the numpad slots while
+  they exist. OQ-T24 (numpad retirement) is **conditional on session
+  evidence that held-FUNC sweeps are acceptable**. Recorded in
+  `design/theotokos/design.md` amendment log.
+- **A8 (M) C4 clear.** There is no "TK1 clear-lane pair": engine
+  `CMD_CLEAR` clears steps only, locks survive. FUNC+PLAY emits
+  `CMD_CLEAR` **plus `CMD_CLEAR_STEP_LOCK` per step** of the pattern
+  length.
+- **A9 (M) Sticky-prefix flap.** OS auto-repeat streams Press events;
+  same-prefix re-press while armed is a **no-op** (not a toggle).
+  Disarm only via Esc, a completed chord, or a non-trig key.
+- **A10 (M) Chord precedence.** While TRK is held/armed: plain trig =
+  select track; FUNC+trig = mute toggle. Encoder jog resolves **only
+  with no armed prefix**. Sticky TRK explicitly supports the FUNC+trig
+  mute chord before disarming.
+- **A11 (M) Pages over 8 params.** The composite merge can exceed 8
+  params per page (multi-node FX pages do today). The view layer splits
+  pages at 8 into sub-pages reached via the A1 gesture; C5's render
+  must show a sub-page indicator.
+- **A12 (M) `Space` alias is transport-only.** FUNC+Space is a no-op;
+  destructive clear requires the `x` home (and Shift+Space typically
+  arrives as plain `Char(' ')` anyway — A1).
+- **A13 (m)** `t` was never a shipped binding (design-only) — dropped
+  from the removed-bindings lists; the C2 dead-bindings test is
+  respecced as "old TK1 *actions* are unmapped; the keys resolve to
+  their new buttons".
+- **A14 (m)** MUTE is not a hold — strike it from the D6/ADR-038 hold
+  lists (it is a screen + the TRK-held chord).
+- **A15 (m)** FUNC is the fixed Shift modifier, **not** a `PanelButton`
+  variant, and is unbindable (D11/D14 clarified).
+- **A16 (m)** "Trigs are always trigs" is qualified: on Grid and Param
+  screens; holds and the Mute screen retarget them deliberately.
+- **A17 (C0 field report)** C0's "web needs no change" was wrong —
+  `PageNav.tsx` carried its own hardcoded page order (fixed in
+  `040a45f`). Lesson recorded: grep for duplicated constants before
+  asserting "no change needed".
+
+---
+
 ## §1. Decisions frozen by this spec (D5–D14)
 
 ADR-038 ratification fixed D1–D4. This spec fixes the remaining
 implementation-level decisions. None are open; sessions may revise them
 *after* TK2 with evidence.
 
-- **D5 — Live-trig command.** `Sequencer::CMD_TRIG_NOW = 38`.
+- **D5 — Live-trig command** *(amended — §0 A3)*.** `Sequencer::CMD_TRIG_NOW = 38`.
   `arg0` = MIDI note (`0` → default `60`, the `Step::empty()` note);
   `arg1` = velocity `0.0..=1.0` (`0.0` → default `0.5`, matching
   `Step::empty()`'s `32768/65535`). Handling: `handle_commands` stores a
@@ -38,7 +122,7 @@ implementation-level decisions. None are open; sessions may revise them
   Works with transport stopped (process ticks regardless). One pending
   trig per track per window; a second command in the same window
   replaces the first.
-- **D6 — Hold semantics.** With kitty release events (already enabled via
+- **D6 — Hold semantics** *(amended — §0 A2/A9/A10)*.** With kitty release events (already enabled via
   `REPORT_EVENT_TYPES`, `lib.rs::setup_keyboard_flags`): TRK/PTN/MUTE-
   chord holds arm on press, disarm on release; every trig pressed while
   held chords. Without kitty (`supports_keyboard_enhancement()` probe at
@@ -86,7 +170,7 @@ implementation-level decisions. None are open; sessions may revise them
   hidden entirely unless the cap-doc set declares a sampling capability
   (none does today). SONG opens the Chain screen. Settings shows bpm,
   kitty status, track/pattern counts, version — read-only in TK2.
-- **D13 — Numpad and arrows.** Arrows become panel UP/DOWN/LEFT/RIGHT
+- **D13 — Numpad and arrows** *(amended — §0 A5)*.** Arrows become panel UP/DOWN/LEFT/RIGHT
   (navigation: encoder cursor on Param, chain lane on Chain, list on
   Settings). Slot jog moves **exclusively to the numpad**: `7/1` = slot
   A, `8/2` = B, `9/3` = C, live on Grid and Param screens; slots
@@ -94,7 +178,7 @@ implementation-level decisions. None are open; sessions may revise them
   TK1 behavior, extended to slot C). No numpad → the encoder bank is the
   jog path. Numpad-`0` ALT layer and fills stay **out of TK2**
   (OQ-T24 — session #2 decides the cluster's fate first).
-- **D14 — Remap guardrails (resolves ADR-037 OQ-T16/T17/T18).**
+- **D14 — Remap guardrails** *(amended — §0 A6/A15; resolves ADR-037 OQ-T16/T17/T18)*.**
   `Ctrl-C` (quit) and `Shift+;` (`:` line) are **unbindable** — `:bind`
   on them errors. `:reset-bindings` clears *all* user bindings (full
   fall-through to defaults). **No auto-save**; only explicit
@@ -160,7 +244,7 @@ action mirroring the command.
 `trig_now_second_command_replaces_pending`,
 `trig_now_does_not_modify_pattern`.
 
-### C2 — Panel model (pure types + mapping)
+### C2 — Panel model (pure types + mapping) *(amended — §0 A1/A4/A13: additive only, deletions move to C3)*
 `paraclete-theotokos/src/input.rs` rewritten two-tier:
 `enum PanelButton` (§2 list); `fn key_to_button(&Keymap, KeyEvent) ->
 Option<PanelButton>` (user bindings then the §2 table);
@@ -201,7 +285,7 @@ indicator. `:` fuzzy index entries for retired verbs updated
 `grid_rec_off_trig_key_emits_trig_now_command` (uses C1 constant),
 `pattern_chord_clamps_with_echo` (D9).
 
-### C4 — FUNC transport chords + mute chord
+### C4 — FUNC transport chords + mute chord *(amended — §0 A8/A10/A12)*
 Copy/clear/paste rewired per D7 onto FUNC+REC/PLAY/STOP (reusing TK1
 `yank_active_pattern`/`paste_pattern`/clear-lane); TRK-held +
 FUNC+trig = mute toggle (existing sequencer `mute` param path); Mute

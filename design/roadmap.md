@@ -3,7 +3,21 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-23. **Elektron convergence redesign — ADR-038 ✅
+> **Last updated:** 2026-07-23 (late). **Hostile review cycle complete** —
+> three subagents attacked every design ratified this session (ADR-038…043,
+> TK2 spec, P11/AN docs): **9 blockers, 21 majors, 14 minors; 46 code
+> claims verified clean**. All findings folded: TK2 spec gained a normative
+> §0 amendments section (key normalization, kitty flag set, live-trig
+> gate, `:` binding, C2 restructure, numpad gating); ADRs 039–043 carry
+> user-approved amendment sections (kit membership flag + retracted
+> "zero engine changes"; motion-gated scene morph; variant descriptor
+> overlays + machine-select on TRIG; lock-aware LFO base + name-hash
+> dests; SYN-as-SRC-sub-pages + gated-voice dependency). §4.4
+> modifier-floor amended (design.md log). BUG-035/036/037 filed (two
+> latent TK1 input bugs with false-passing tests; FmEngine Rule drift).
+> TK2 C0 shipped (`040a45f`, includes a PageNav fix the spec missed).
+> Next: TK2 C1 per the amended spec.
+> Previous: 2026-07-23. **Elektron convergence redesign — ADR-038 ✅
 > ACCEPTED** (ratified same day, D1–D4): Theotokos interaction model rebuilt
 > as a virtual front panel — TRK/PTN hold-chords replace the `qweruiop`
 > track row, REC grid-rec toggle + screens replace SEQ/PERF modes,

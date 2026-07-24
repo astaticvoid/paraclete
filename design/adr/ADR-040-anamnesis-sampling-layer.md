@@ -139,6 +139,37 @@ never show the screen).
 - **R3** — AN scheduling is decided at TK2 exit, informed by session #2
   (the deferred-decision text stands).
 
+## Post-ratification hostile review — 2026-07-23 (amendments user-approved)
+
+Findings folded (shared review with ADR-039):
+
+1. **Scene morph precedence (user-approved):** the crossfader morph
+   emits **only while the crossfader is moving** — assigned params are
+   morph-owned during motion; a parked crossfader emits nothing, so
+   encoders stay free. This reconciles the absolute-`CMD_SET_PARAM`
+   morph with the Theotokos §4 relative-only doctrine (both docs now
+   reference this rule). Morph traffic is budgeted: chunked apply,
+   retry on ring-full (512-slot ring, one drain per audio block).
+2. **Recorder mechanism respecced** (review M7): rtrb SPSC is
+   consume-forward with fail-on-full — an always-on ring read only at
+   capture is not expressible in it. The recorder owns a **plain
+   circular buffer on the audio thread** (pre-allocated, overwrite-
+   oldest); on capture, the marked region is copied out through a
+   bounded rtrb *transfer* ring over subsequent blocks; the app
+   assembles on the main thread.
+3. **Sampling capability gate** is *derived* (presence of input/recorder
+   nodes), delivered via config/bus — "the app declares a cap-doc" named
+   a mechanism that doesn't exist (cap-docs are node-produced only).
+4. **`SwapSample` requires a new `Node`-trait delivery hook**: the
+   config plane currently routes nothing into nodes (the dead
+   `ConfigMessage::SetParam` stub is the cautionary precedent); the Arc
+   return path follows the `state_buf_return` pairing idiom. AN0-spec
+   scope.
+5. **`SampleData` channel format is an AN0 decision**: the sampler is
+   mono-lane today; stereo capture needs a defined stereo/downmix
+   story. OQ-A1's RAM figure corrected (16 bars @ 120 BPM 48k stereo
+   ≈ 12.3 MB, not 30 MB).
+
 ## Implementation note (to be added when implemented)
 
 ```text

@@ -103,6 +103,33 @@ MOD page is the groovebox path.
   bank, ADR-041, so indices stay stable by construction; confirm in
   spec).
 
+## Post-ratification hostile review — 2026-07-23 (amendments user-approved)
+
+1. **Decision 3 disambiguated** (review M5): engines render p-locked
+   steps from `node_locks`, not the bank — "base" in the formula is the
+   **`get_param()` result**: `effective = clamp(lock_value_or_base +
+   depth × range × lfo(t))`. The LFO breathes on top of a locked step's
+   value; locks never defeat the LFO nor vice versa.
+2. **`lfo_dest` storage amended** (review M6): declaration-order indices
+   are not stable and nothing addresses params by index — dest is
+   stored as the target param's **name-hash id**, with the stepped
+   encoder's display index derived at build from an explicit,
+   append-only dest table per engine. OQ-M4's "stable by construction"
+   is deleted. `lfo_*` params are excluded from the dest set (review
+   m14 — no self-modulation).
+3. **Composite alignment** (review M3): each node's MOD contribution is
+   **padded to 8-slot alignment** so a second node's LFO never
+   straddles a sub-page boundary (depends on the ADR-041 slot-honoring
+   prerequisite).
+4. **Control-rate structure named** (review m13): per-block application
+   at host block size (512) aliases a 64 Hz LFO; the **64-sample
+   sub-block loop is new required engine structure**, spec'd with its
+   interaction with event-split spans in the implementing phase.
+5. **Dest display labels are surface-derived** from the known param-name
+   list (review M11): `ParamDisplayAdapter::Dynamic` panics on clone
+   along the mainline cap-doc path, and the wire never carries options —
+   descriptor-side dynamic display is not usable as specced.
+
 ## Implementation note (to be added when implemented)
 
 ```text

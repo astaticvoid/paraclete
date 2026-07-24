@@ -793,7 +793,7 @@ harness (`design/review/adr-latent-issues.md`):
 | Item | Finding | Result |
 |---|---|---|
 | #1 (ADR-025 deserialize ordering) | Both load paths deserialize AFTER activate (`register()` activates at add_node; v2 load documents the order; rebuild_executor does NOT re-activate) | **Implementation correct** — ADR-025's "deserialize before activate" claim is a dead letter; code follows AGENTS.md |
-| #2 (ADR-025 hot-reload data race) | `load_project`/`save_project` run only at startup, before `build_executor()` — no audio thread exists yet | **Unreachable today** — becomes live when P11 temp save/reload ships; ADR-025's "engine need not be stopped" claim must be qualified before then |
+| #2 (ADR-025 hot-reload data race) | `load_project`/`save_project` run only at startup, before `build_executor()` — no audio thread exists yet | **Unreachable today** — and P11 no longer arms it: ADR-039 (2026-07-23) keeps temp save/reload RAM-only, off the serializer. Trigger re-pointed at any *future* live project-save path; ADR-025's "engine need not be stopped" claim still needs qualification before such a path ships |
 | #4 (ADR-029 failed patch strands graph) | Confirmed real | **BUG-029, fixed** |
 | #5 (ADR-029 cap_doc_cache stale) | `remove_node` evicts the cache | **Clean** — but exposed BUG-030 (destroy-then-error on devices), fixed |
 | #8 (event sort) | — | Already resolved as BUG-026 |
@@ -1297,3 +1297,95 @@ the user restarts Paraclete manually, but the audio system is left clean.
 **Note:** `AudioEngine::start_with_callback()` (the dynamic-topology path used
 by `apply_patch`) still has the old log-only `err_fn` — this path is not on the
 default `cargo run` code path.
+
+### BUG-035 — Theotokos Shift+track mute matches an event real terminals never send
+
+**Filed:** 2026-07-23 (hostile design review, surface report finding 1).
+**Symptom:** Shift+`q`…`p` mute toggle (TK1 C4) is unreachable on real
+terminals: `input.rs` matches `Char('w') + SHIFT`, but crossterm legacy
+input delivers Shift+letter as the *uppercase* char (`Char('W')+SHIFT`),
+and kitty alternate-keys mode delivers `Char('W')` with SHIFT cleared.
+**Why tests pass:** `lib.rs::keymap_shift_track_toggles_mute` injects a
+synthetic lowercase+SHIFT event no terminal produces (false pass).
+**Location:** `crates/paraclete-theotokos/src/input.rs:73-77`; test
+`lib.rs:1098-1125`.
+**Fix direction:** case-fold `Char(c)` in the key layer (infer SHIFT from
+case); superseded functionally by the TK2 panel rework (mute moves to
+TRK+FUNC+trig) — the normalization rule is TK2 C2 scope; test variants
+must feed uppercase+SHIFT and uppercase-no-SHIFT.
+
+### BUG-036 — Theotokos `:` command line bound to `Char(';')+SHIFT`, which legacy terminals do not emit
+
+**Filed:** 2026-07-23 (hostile design review, surface report finding 6).
+**Symptom:** the `:` line (TK1 C6) is bound at `input.rs:56` to
+`Char(';')` with SHIFT; crossterm legacy parsing delivers typing `:` as
+`Char(':')` with no SHIFT (SHIFT is inferred only for uppercase letters).
+No `Char(':')` arm exists. On affected terminals the entire `:` verb
+family is dead — and TK2 D14 made `:` the sole unbindable escape hatch.
+**Caveat:** verify on the hardware terminal used in sessions (the `:`
+line was exercised in TK1; the delivering event shape there is unknown).
+**Location:** `crates/paraclete-theotokos/src/input.rs:56`; test
+`lib.rs:1418-1420` (synthetic event, false pass).
+**Fix direction:** accept both `Char(':')` (any modifiers) and the legacy
+`Char(';')+SHIFT` arm; TK2 D14's unbindable entry is `Char(':')`.
+
+### BUG-037 — FmEngine `to_rule` declares one machine-invariant page set that mismatches its machines' docs
+
+**Filed:** 2026-07-23 (hostile design review, engine report finding 15).
+**Symptom:** `FmEngine::to_rule` references `ratio`/`index`/`attack` for
+all three machines, but FmKick's cap-doc declares none of them, and
+FmKick's `punch` appears on no page; the composite assembly silently
+degrades unmatched refs to `param_{id}` placeholders. No layer validates
+`param_pages` against declared params.
+**Location:** `crates/paraclete-nodes/src/fm_engine.rs:287-294` (vs doc
+at `fm_engine.rs:106-112`); degradation at
+`crates/paraclete-view-assembly/src/lib.rs:216-224`.
+**Fix direction:** per-machine page declarations (becomes structural
+under ADR-041 variants); add a debug-build assertion that every page
+param ref resolves in the cap-doc (engine report amendment 15).
+
+### BUG-035 — Theotokos Shift+track mute matches an event real terminals never send
+
+**Filed:** 2026-07-23 (hostile design review, surface report finding 1).
+**Symptom:** Shift+`q`…`p` mute toggle (TK1 C4) is unreachable on real
+terminals: `input.rs` matches `Char('w') + SHIFT`, but crossterm legacy
+input delivers Shift+letter as the *uppercase* char (`Char('W')+SHIFT`),
+and kitty alternate-keys mode delivers `Char('W')` with SHIFT cleared.
+**Why tests pass:** `lib.rs::keymap_shift_track_toggles_mute` injects a
+synthetic lowercase+SHIFT event no terminal produces (false pass).
+**Location:** `crates/paraclete-theotokos/src/input.rs:73-77`; test
+`lib.rs:1098-1125`.
+**Fix direction:** case-fold `Char(c)` in the key layer (infer SHIFT from
+case); superseded functionally by the TK2 panel rework (mute moves to
+TRK+FUNC+trig) — the normalization rule is TK2 C2 scope; test variants
+must feed uppercase+SHIFT and uppercase-no-SHIFT.
+
+### BUG-036 — Theotokos `:` command line bound to `Char(';')+SHIFT`, which legacy terminals do not emit
+
+**Filed:** 2026-07-23 (hostile design review, surface report finding 6).
+**Symptom:** the `:` line (TK1 C6) is bound at `input.rs:56` to
+`Char(';')` with SHIFT; crossterm legacy parsing delivers typing `:` as
+`Char(':')` with no SHIFT (SHIFT is inferred only for uppercase letters).
+No `Char(':')` arm exists. On affected terminals the entire `:` verb
+family is dead — and TK2 D14 made `:` the sole unbindable escape hatch.
+**Caveat:** verify on the hardware terminal used in sessions (the `:`
+line was exercised in TK1; the delivering event shape there is unknown).
+**Location:** `crates/paraclete-theotokos/src/input.rs:56`; test
+`lib.rs:1418-1420` (synthetic event, false pass).
+**Fix direction:** accept both `Char(':')` (any modifiers) and the legacy
+`Char(';')+SHIFT` arm; TK2 D14's unbindable entry is `Char(':')`.
+
+### BUG-037 — FmEngine `to_rule` declares one machine-invariant page set that mismatches its machines' docs
+
+**Filed:** 2026-07-23 (hostile design review, engine report finding 15).
+**Symptom:** `FmEngine::to_rule` references `ratio`/`index`/`attack` for
+all three machines, but FmKick's cap-doc declares none of them, and
+FmKick's `punch` appears on no page; the composite assembly silently
+degrades unmatched refs to `param_{id}` placeholders. No layer validates
+`param_pages` against declared params.
+**Location:** `crates/paraclete-nodes/src/fm_engine.rs:287-294` (vs doc
+at `fm_engine.rs:106-112`); degradation at
+`crates/paraclete-view-assembly/src/lib.rs:216-224`.
+**Fix direction:** per-machine page declarations (becomes structural
+under ADR-041 variants); add a debug-build assertion that every page
+param ref resolves in the cap-doc (engine report amendment 15).

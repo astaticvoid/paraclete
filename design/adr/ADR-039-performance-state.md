@@ -152,6 +152,45 @@ in `p11-interfaces.md`.
   phase spec is written after TK2, informed by that session, per the
   house front-load rule.
 
+## Post-ratification hostile review — 2026-07-23 (amendments user-approved)
+
+Findings 2 B / 5 M / 6 m; the two-tier model stands, four decisions
+amended:
+
+1. **Decision 1's "zero engine changes" is retracted** (review B1). Kit
+   membership is **opt-in via a ParamDescriptor flag** — sound params
+   only; sequencer/clock structural params (`mute`, `swing`,
+   `pattern_length`, `ticks_per_step`, `bpm`) are excluded, because
+   replaying `mute` violates decision 6's persistent-global-mute rule
+   and replaying `swing` writes through into the active pattern's data.
+   Named P11 engine work: `MixNode` gains `published_state()` bank
+   publication, and the CLAP host must expose hosted-plugin params to
+   the bus (or a main-thread param query) — without these, kits cannot
+   capture mixer levels or any machine-crate sound.
+2. **Decision 7's timing premise qualified** (review B2). The Keystep
+   HAL stamps all events at sample offset 0 and drains at block start —
+   "the engine sees the true sample offset" is false today.
+   Arrival-time→intra-block-offset timestamping in the HAL MIDI path is
+   named P11 scope; requirement 4's "sample-accurate" holds only after
+   it lands. Keystep wiring is app-side (no YAML device references
+   exist); the YAML convention is a phase-spec decision.
+3. **Decision 4's "no audio-thread allocation" needs an explicit
+   `copy_into` routine** (review M3): derived `Clone` on nested
+   `Vec<Step>` allocates. The shadow reserves `LOCK_CAP_PER_STEP` and a
+   new declared `CV_LOCK_CAP` per step; capacity `debug_assert!`s per
+   the executor idiom.
+4. **Batch atomicity is bounded, not absolute** (review M4): the 512-slot
+   command ring can drain mid-batch across two blocks. Accepted skew:
+   deliver prepared-mute/temp-save batches ≥ 1 block before the musical
+   boundary; a batch-fence commit marker is a phase-spec option (new
+   OQ). Kit apply chunks with retry-on-`Err` — send_command results are
+   **not** discarded (`.ok()` is the anti-pattern); command budget per
+   drain window stated in the phase spec. Decision 6's "defer flag in
+   arg0" cannot ride `CMD_SET_PARAM` (arg0 is the param id) — deferred
+   mutes get dedicated commands from the 39–45 family, all tiers.
+
+bugs.md dormant #2 re-pointed (temp save no longer arms it).
+
 ## Implementation note (to be added when implemented)
 
 ```text

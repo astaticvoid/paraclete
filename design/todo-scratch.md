@@ -25,8 +25,12 @@
 
 ### Next up: TK2 implementation
 
-- Start at `design/phases/tk2-theotokos.md` C0 (page-order swap) and
-  proceed commit-by-commit; session #2 = C10.
+- C0 shipped (`040a45f`). Continue at C1, **reading the spec's §0
+  hostile-review amendments first — they are normative over D/C text**
+  (live-trig gate is sample-counted; C2 is additive-only; kitty flags
+  change in C3; `:` binds `Char(':')`).
+- BUG-035/BUG-036 fixes land inside TK2 C2/C3 (key normalization, `:`
+  arm); BUG-037 (FmEngine Rule drift) lands with ADR-041 variants.
 
 ### Elektron convergence (ADR-038 ✅ accepted 2026-07-23, D1–D4)
 

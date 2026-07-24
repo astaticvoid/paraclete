@@ -105,6 +105,30 @@ family; `FmVoice` is the melodic instrument.
   waveform set; AMP page final shape; macro machine set + their SRC
   curations; baseline reference patches.
 
+## Post-ratification hostile review — 2026-07-23 (amendments user-approved)
+
+1. **SYN1/SYN2 are SRC sub-pages 1/2** (slots 0–7 / 8–15) — review M7:
+   non-canonical page groups sort after MOD, the opposite of the
+   intended discipline; sub-paging keeps ADR-038's six page keys intact
+   and rides the TK2 §0 A1 sub-page gesture. Macro machines' curated
+   page is SRC sub-page 1.
+2. **Machine-select moves to the TRIG page** (with ADR-041 review
+   note 2) — resolving review M8's 9-params-into-8-slots arithmetic:
+   every FmVoice page is exactly 8 wide again.
+3. **The gated voice model is a named P14 dependency** (review M9): AMP
+   sustain/release, `env_reset` legato, and `porta` require an
+   `AdsrState` primitive, NoteOff consumption (engines currently
+   discard it), and a mono note stack — a foundational work-package
+   listed as its own commit in the P14 spec, not an AMP-page line item.
+   The sequencer already emits NoteOff with computed gate times, so the
+   upstream exists.
+4. **One normative algorithm example** (review m12) so the frozen SYN1
+   params have fixed meaning ahead of the full routing table: *algo 1
+   "stack":* C←A←B1←B2 serial; feedback on B2; X tap = C output, Y tap
+   = A output (pre-carrier); `harm` shapes C and A oscillators; `mix`
+   crossfades X/Y. All eight algorithms follow this description format
+   in the P14 spec.
+
 ## Implementation note (to be added when implemented)
 
 ```text

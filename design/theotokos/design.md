@@ -548,6 +548,18 @@ DETERMINED (ADR-038 ratified 2026-07-23, decisions D1–D4).
 
 ## Amendment log
 
+**2026-07-23 (post-ratification hostile review) — §4.4 corrected;
+TK2 spec §0 amendments are normative.** Three-subagent hostile review of
+the session's designs (9 B / 21 M / 14 m total; BUG-035/036/037 filed).
+§4.4's "two-handed two-slot sweeps must never require a modifier" is
+amended (user-approved): **one shared held modifier is permitted for the
+FUNC encoder bank; the modifier-free two-slot floor is carried by the
+numpad slots while they exist**, and OQ-T24 (numpad retirement) is
+conditional on session evidence that held-FUNC sweeps are acceptable.
+Binding TK2 corrections live in `design/phases/tk2-theotokos.md` §0
+(key normalization, kitty flag set, live-trig gate, `:` binding, numpad
+gating, chord precedence, sub-page overflow gesture replacing FUNC+digit).
+
 **2026-07-23 (later) — ADR-038 ACCEPTED.** Ratified by the user, decisions
 D1–D4: D1 model + default homes as written (chord homes stay
 session-revisable); D2 both engine extensions pre-approved (live-trig

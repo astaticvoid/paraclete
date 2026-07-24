@@ -172,6 +172,21 @@ way; it is pure and unit-testable as before.
 - **D4** — usability session #2 (TK1 C8) is held until the TK2 S0 panel
   lands; it tests the ADR-038 grammar, not the superseded TK1 chords.
 
+## Post-ratification hostile review — 2026-07-23
+
+Three-subagent review after ratification (surface report: 6 B / 6 M /
+4 m). The panel model survives intact; binding corrections are folded
+into `design/phases/tk2-theotokos.md` **§0 (normative)**. Touching this
+ADR's text: FUNC+PG overflow chords are **dropped** (shifted-digit
+symbols are layout-dependent and carry no SHIFT flag) — overflow is
+re-pressing the active PG key to cycle sub-pages; MUTE is struck from
+the hold-chord list (screen + TRK-held chord only); the `Space` PLAY
+alias is transport-only (FUNC+Space is a no-op — clear requires `x`);
+"trigs are always trigs" is qualified to Grid/Param screens; the `:`
+entry binds `Char(':')` (BUG-036). Latent TK1 defects found by the
+review's method: BUG-035 (Shift+track mute unreachable on real
+terminals), BUG-036 (`:` arm) — filed under the standing directive.
+
 ## Implementation note (to be added when implemented)
 
 ```text
