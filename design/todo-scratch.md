@@ -16,6 +16,14 @@
   at TK2 exit (R3); AN0 independent, AN2 needs P11 kits. Phase spec
   `an0-*.md` written when AN is next to start.
 
+### Engine-depth ADRs (drafted 2026-07-23)
+
+- ADR-041 (machine identity: runtime `machine` param, union bank, Rule
+  variants), ADR-042 (MOD page: per-node LfoBlock), ADR-043 (FmVoice:
+  4-op P14 model) — 🟡 proposed, await user ratification.
+- Implementation unscheduled (design-tier work); ADR-043 depends on
+  041+042. Slotting decided alongside the TK2-exit scheduling pass.
+
 ### Next up: TK2 implementation
 
 - Start at `design/phases/tk2-theotokos.md` C0 (page-order swap) and

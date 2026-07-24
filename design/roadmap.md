@@ -218,7 +218,7 @@ Ordered by nearness to the critical path.
 | **P11** | Live Performance | Mute system (global/pattern/prepared tiers), temp save/reload, kit model + Perform mode, live record | **ADR-039 ✅ accepted 2026-07-23** (R1–R3: model as written, whole-instrument kits, TK2 implementation first) + `p11-problem.md`. Kits = app-owned param snapshots, app-op drain, sequencer CMD 39–45 reserved. Phase spec after TK2/session #2. (W3 mute view follows) |
 | **P12** | Groove & Generation | Retrig, Euclidean, controlled randomness, generative fills | — |
 | **P13** | Analog Voice | Full subtractive mono voice — **Pro-One as primary reference** (dual osc + hard sync + poly-mod routing, self-oscillating 4-pole, two envs, glide, arp); Model D / MS-20 as secondary character references only. Paraphonic allocation, **per-voice-expression-aware (OQ-15)**. ZDF ladder is C1 (audio-model review). | — |
-| **P14** | FM Voice | Four-operator melodic FM, macro-first | — |
+| **P14** | FM Voice | Four-operator melodic FM, macro-first | **Model designed 2026-07-23** — ADR-043 🟡 proposed (4-op PM, 8 algorithms, SYN1/SYN2 page discipline, machine-variant macro tier); depends on ADR-041 (machine identity) + ADR-042 (MOD page), both 🟡 proposed same day. Phase spec when next to start |
 | **P15** | Effects Palette | Distortion variety, chorus/phaser/flanger, BBD/tape delay, spring/plate | — |
 | **P16** | Macro & Terminal Control | Macro system; TUI as editing surface | — |
 | **W4** | Interface maturity | Ordo layout profiles, multi-client polish, wavetable view, protocol freeze, headless protocol CI driver | Ongoing after W3 |
