@@ -8,6 +8,15 @@
 >
 > **Authored:** 2026-07-21. **Status:** problem accepted (user brief);
 > design in progress.
+>
+> **Supersession note (2026-07-23):** the *problem* stands, but the
+> concrete keymap requirements below were revised by the Elektron
+> convergence redesign (ADR-038, accepted; `design.md` Stage 3):
+> requirement 2's home-row split grid and top-row tracks → continuous
+> `q…i`/`a…k` grid + TRK hold-chord; requirement 3's major modes →
+> screens + REC toggle + hold layers; requirement 5's numpad cluster →
+> optional accelerator (OQ-T24). Requirements 1, 4, 6–10 stand
+> unchanged.
 
 ---
 

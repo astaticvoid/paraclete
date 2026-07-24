@@ -139,7 +139,29 @@ serialized today; the v2 loss is conditions/micro-timing/swing, which the
 current control surface barely reaches. Data-safe saves for those arrive
 properly with serializer v3 in P10 C1 — scheduled before session #1 regardless.
 
-**Near-term sequence:**
+## Implementation Order & Design Gates (2026-07-23)
+
+The current execution sequence, with **⛔ gates** where work pauses for
+user design input (ratification, musical judgment, or a paired session).
+Agent-executable stretches need no input between gates.
+
+| Step | Work | Gate before proceeding |
+|---|---|---|
+| 1 | **TK2 C0–C9** (`tk2-theotokos.md` — panel, live-trig, encoder bank, screens, remapping, live viz) | none — spec is execution-ready |
+| 2 | **⛔ Session #2** (TK2 C10, user-paired) | grammar verdicts; OQ-T22/T23/T24 |
+| 3 | **⛔ TK2-exit scheduling pass** (user) | order the parallel tracks: P11 spec → impl; AN0(→AN1); ADR-041+042 implementation. All three are independent of each other |
+| 4a | **P11**: spec (agent, session-informed) → **⛔ spec ratification** (kit UX OQs) → impl → session | two gates |
+| 4b | **AN0–AN1** (pool → capture; R2 transition-trick gate on AN1 exit) → **⛔ sampling session** | AN2 additionally needs P11 KitStore shipped |
+| 4c | **ADR-041 + ADR-042 impl** (machine select, MOD page — mechanical vs the ADRs) | none until P14 |
+| 5 | **P14**: spec — **⛔ user freezes the musical tables** (algorithm routing, ratio set, `harm` waveforms, macro machine set) → impl → **⛔ baseline patches + session** | needs 4c |
+| 6 | **W-track residuals**, any time a session is convened: W2 C7 §7.1 exit pass; BUG-012 hardware verification | ⛔ paired session |
+| 7 | **TK3 / WT convergence decision** (OQ-T12), after three Theotokos sessions | ⛔ user |
+| 8 | P12 (groove/generation), P13 (analog voice — remaining: **⛔ feature-set freeze**, OQ-15 allocator), P15 (effects) | unscheduled; P13 freeze is user judgment |
+
+Standing rule: phase specs are written only when the phase is next to
+start (front-load rule); every session may re-cut the order below it.
+
+**Near-term sequence (historical, W-era — kept for the record):**
 
 | Order | Work | Why |
 |---|---|---|
@@ -173,7 +195,7 @@ Ordered by nearness to the critical path.
 
 | # | Gap | Owner | Next action | Priority |
 |---|---|---|---|---|
-| D1 | **W2 native surface has no spec.** "Theoria native surface" is a paragraph (fixed-input rail + contextual window; reference spike across Digitakt II / Syntakt / Digitone / Hydrasynth). It is the active next milestone. | **user** | **Spec drafted 2026-07-13.** `design/phases/w2-interfaces.md` (7 commits) + `design/adr/ADR-032-theoria-view-plugin-api.md` (proposed). Paired session resolved §6.0–6.7 + OQ-13/OQ-14. Pending user ratification. | **Critical** — blocks the active milestone → **ratify and advance to W2 implementation** |
+| D1 | **W2 native surface has no spec.** "Theoria native surface" is a paragraph (fixed-input rail + contextual window; reference spike across Digitakt II / Syntakt / Digitone / Hydrasynth). It is the active next milestone. | **user** | **✅ Done** — spec + ADR-032 ratified (accepted 2026-07-13); W2 Commits 0–6 shipped. Residual: W2 Commit 7 (§7.1 exit-criteria pass, needs a paired session). *(Row was stale "pending ratification" until 2026-07-23.)* | ~~Critical~~ ✅ Done except C7 exit pass |
 | D2 | **P13 voice model undecided (OQ-13) + drum selection (OQ-14).** Both deferred to "the P13/P12+ spec," which is not drafted. OQ-13 (composed-from-primitives vs monolithic `AnalogVoice`) shapes the mod-matrix API and CLAP export. | **user** | **OQ-13 + OQ-14 resolved 2026-07-13.** OQ-13: compose from primitives → compile to monolith (reversible). OQ-14: machine-as-parameter (stepped param, ADR-019). Voice feature-set freeze, allocator expression-awareness policy, ZDF ladder C1 still open. | High (downstream keystone) — **partially resolved** |
 | D3 | **No ADR owns runtime observability.** ADR-033 covers only the offline/interactive driver. Nothing specs the live `/engine/cpu` counter path or the structured-log channel (see **INFRA-003**, bugs.md). | agent | **✅ Done (2026-07-12).** ADR-034 authored + implemented: `RuntimeCounters` with 4 atomic counters, state-bus `/engine/*` publishing, Antiphon mirror. INFRA-003 resolved; D4 unblocked. | ~~High~~ ✅ Done |
 | D4 | **Trigger-based backlog is un-actionable as written.** It claims "each item has a named trigger," but INFRA-003 shows we cannot *observe* triggers firing — so "quiet" is assumed, not measured. | agent | **✅ Done (2026-07-12).** Backlog flagged blocked-on-INFRA-003 in earlier pass; INFRA-003 now resolved with live counters. Triggers are now observable. | ~~Medium~~ ✅ Done |
@@ -220,7 +242,7 @@ Ordered by nearness to the critical path.
 | **P13** | Analog Voice | Full subtractive mono voice — **Pro-One as primary reference** (dual osc + hard sync + poly-mod routing, self-oscillating 4-pole, two envs, glide, arp); Model D / MS-20 as secondary character references only. Paraphonic allocation, **per-voice-expression-aware (OQ-15)**. ZDF ladder is C1 (audio-model review). | — |
 | **P14** | FM Voice | Four-operator melodic FM, macro-first | **Model ✅ accepted 2026-07-23** — ADR-043 ratified as written (4-op PM, 8 algorithms, SYN1/SYN2 page discipline, machine-variant macro tier); depends on ADR-041 (machine identity) + ADR-042 (MOD page), both ✅ accepted same day. Phase spec when next to start |
 | **P15** | Effects Palette | Distortion variety, chorus/phaser/flanger, BBD/tape delay, spring/plate | — |
-| **P16** | Macro & Terminal Control | Macro system; TUI as editing surface | — |
+| **P16** | Macro & Terminal Control | Macro system; ~~TUI as editing surface~~ (terminal-surface half **superseded 2026-07-23** — delivered/owned by the TK track (ADR-036/038) and the WT convergence decision; P16 narrows to the instrument-wide macro system, which ADR-043's macro tier explicitly defers to) | — |
 | **W4** | Interface maturity | Ordo layout profiles, multi-client polish, wavetable view, protocol freeze, headless protocol CI driver | Ongoing after W3 |
 | **AN** | Anamnesis sampling layer | Capture-to-performance loop: HAL input + recorder rings (retroactive capture, resampling), app-owned sample pool + per-step sample locks, slices/chains, scenes + crossfader morph, pickup-style looping, staged timestretch — AN0–AN3, session-gated | **ADR-040 ✅ accepted 2026-07-23** (R1–R3: model as written; one-gesture transition trick frozen as an AN1 requirement; scheduling decided at TK2 exit) + `design/sampling/{problem,design}.md`. AN2 scenes depend on P11 KitStore |
 | **TK** | Theotokos performance terminal | Keyboard-first Elektron-class virtual front panel (continuous trig grid, TRK/PTN hold-chords, REC grid-rec toggle, FUNC-layer encoder bank, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **TK0 shipped 2026-07-21** (ADR-036). **TK1 code complete 2026-07-22** (C0–C7: p-locks, mutes, composite pages, `:` line, pattern select, yank/paste, leader rebind, flash, help overlay, suspend-crash fix). **Elektron convergence redesign 2026-07-23 (ADR-038 ✅ accepted, D1–D4)** — TK2 re-cut: S0 virtual front panel, key remapping (ADR-037, re-based), CHAIN + TEMPO screens, live-trig command (OQ-T20), live viz, ramp retune. C8 = usability session #2, held until S0 lands (D4), on the ADR-038 grammar. |
@@ -282,7 +304,7 @@ Everything else open is scheduled: BUG-001/008 → P10 C0 (now), BUG-005 → P10
 | `Sequencer::serialize()` drops P5 fields (BUG-005) | **Fixed (P10 C1 shipped)** | Serializer v3 (`6212242`); length-prefixed step + pattern records | Done |
 | BUG-008 / BUG-001 | **Fixed (P10 C0 shipped)** | s0 re-diagnosis: 240-tick step + step-0 fire + drift-only snap; mem::take | Done |
 | Negative micro-timing == zero (BUG-004) | **Fixed (P10 C3)** | Emitted in prev step's early-fire window | Done |
-| Terminal emulator: no RGB, no keyboard encoders | **Accepted permanent** | Web surface supersedes; terminal stays keyboard-grid-only for no-tablet dev | — |
+| Terminal emulator: no RGB, no keyboard encoders | ~~Accepted permanent~~ **SUPERSEDED 2026-07-23** | The "terminal stays keyboard-grid-only" premise is dead: Theotokos (ADR-036/038) made the terminal a first-class performance surface with a FUNC-layer 8-encoder bank. The Launchpad *emulator* itself remains legacy (`--emulator`) with its known audio-thread-input defect | — |
 | No headless input injection for CI | Active | In-process injection API, built with P10 C5 surface tests; protocol-level driver at W4 | P10 C5 |
 | Encoder hardware (EN16/MFT) unpurchased | **De-escalated** | W1 touch encoders are the only relative path (session 0: Digitakt II verified absolute-only, disqualified; BUG-009 filed); buy a true-relative box later for tactile feel | Post-W1 |
 | Hard-coded app node IDs as script/UI contract | Active | W-track binds by discovery (`hello`/`topology` msgs); profiles migrate when it breaks | W2 |
