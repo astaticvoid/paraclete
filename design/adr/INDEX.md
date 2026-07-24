@@ -45,3 +45,4 @@ but cannot resolve them without this index.
 | ADR-037 | `ADR-037-theotokos-key-remapping.md` | Theotokos runtime key remapping in TK2 (🟡 proposed) |
 | ADR-038 | `ADR-038-theotokos-elektron-convergence.md` | Theotokos Elektron convergence — virtual front panel (accepted, 2026-07-23) |
 | ADR-039 | `ADR-039-performance-state.md` | Performance state — kits, temp save, perform mode, mute tiers, live record (accepted, 2026-07-23) |
+| ADR-040 | `ADR-040-anamnesis-sampling-layer.md` | Anamnesis sampling layer — capture, pool, slices, scenes, loops (🟡 proposed) |

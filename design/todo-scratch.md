@@ -10,6 +10,12 @@
 - `p11-interfaces.md` phase spec is written **after TK2 + session #2**
   (R3, house front-load rule): freeze CMD 39–45, kit UX open questions.
 
+### Anamnesis sampling track (drafted 2026-07-23)
+
+- ADR-040 🟡 proposed + `design/sampling/{problem,design}.md` — await user
+  ratification (HAL input, recorder rings, pool + asset plane, scenes).
+- Scheduling decision at TK2 exit (AN0 independent; AN2 needs P11 kits).
+
 ### Next up: TK2 implementation
 
 - Start at `design/phases/tk2-theotokos.md` C0 (page-order swap) and
