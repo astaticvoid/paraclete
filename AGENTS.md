@@ -103,13 +103,10 @@ PERF mode:         1-6 = param pages    arrows = jog A/B    Shift+arrow = fine
 Global (all modes): qweruiop = tracks   Space = play/stop  Tab = cycle modes
 ```
 
+```
 **Headless debugging (use for all automated testing):**
 ```bash
 cargo run -- --no-tui --no-emulator --no-antiphon
-```
-**PipeWire recovery:** if audio is lost after Paraclete exits, run:
-```bash
-target/release/paraclete --recover
 ```
 
 ### Legacy Launchpad emulator (`--emulator`)
@@ -147,22 +144,6 @@ timeout 2 bash -c 'echo >/dev/tcp/127.0.0.1/7274' && echo "up" || echo "down"
 # (emulator will print TUI grid to stdout but app won't crash)
 ```
 
-### Shutting down and verifying audio health
-
-```bash
-# Kill paraclete
-pkill -9 paraclete
-
-# After shutdown, verify pipewire sink is still real hardware.
-# If ONLY auto_null shows, pipewire is stranded — restart it.
-# (Known issue: paraclete can leave pipewire on a null sink after heavy use.)
-# Linux only:
-count=$(pactl list short sinks 2>/dev/null | grep -c alsa_output)
-if [ "$count" -eq 0 ]; then
-    echo "WARNING: no real audio sink — restarting pipewire"
-    systemctl --user restart pipewire pipewire-pulse
-fi
-```
 
 ## Architecture: five-layer model
 

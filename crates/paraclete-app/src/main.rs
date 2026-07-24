@@ -44,12 +44,6 @@ fn main() {
     env_logger::init();
     let args: Vec<String> = std::env::args().collect();
 
-    // ── --recover: fix stranded pipewire-pulse and exit ──────────────────────
-    if args.iter().any(|a| a == "--recover") {
-        recover_audio_sink();
-        return;
-    }
-
     let instrument_path: PathBuf = args
         .iter()
         .find(|a| a.starts_with("--instrument="))
@@ -278,13 +272,8 @@ fn main() {
     let bus_handle = conf.state_bus_handle();
     let executor = conf.build_executor();
 
-    // Recover from any previous PipeWire stranding before opening ALSA.
-    #[cfg(target_os = "linux")]
-    recover_audio_sink();
-
     // Shared shutdown flag — set by Ctrl-C and also by stream errors so
-    // a device disconnect (e.g. suspend) triggers a clean exit path that
-    // runs recover_audio_sink() at shutdown.
+    // a device disconnect (e.g. suspend) triggers a clean exit path.
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
 
     let _audio = match AudioBackend::start(executor, Arc::clone(&running)) {
@@ -601,12 +590,6 @@ fn main() {
         restore_terminal(terminal).ok();
     }
     eprintln!("[paraclete] stopped.");
-
-    // PipeWire may strand on auto_null after Paraclete's direct ALSA access
-    // closes.  Restart only pipewire-pulse (not the full pipewire daemon) —
-    // this re-discovers the ALSA sink without killing other applications.
-    #[cfg(target_os = "linux")]
-    recover_audio_sink();
 }
 
 /// Load CLAP plugin libraries needed by the instrument definition.
@@ -1035,24 +1018,3 @@ fn try_open_keystep(conf: &mut NodeConfigurator) -> Option<u32> {
         Err(_) => None,
     }
 }
-
-#[cfg(target_os = "linux")]
-fn recover_audio_sink() {
-    let sinks = std::process::Command::new("pactl")
-        .args(["list", "short", "sinks"])
-        .output()
-        .map(|o| String::from_utf8_lossy(&o.stdout).to_string())
-        .unwrap_or_default();
-
-    if sinks.contains("alsa_output") {
-        return;
-    }
-
-    eprintln!("[paraclete] audio sink missing — restarting pipewire");
-    let _ = std::process::Command::new("systemctl")
-        .args(["--user", "restart", "pipewire", "pipewire-pulse"])
-        .output();
-}
-
-#[cfg(not(target_os = "linux"))]
-fn recover_audio_sink() {}

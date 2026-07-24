@@ -47,18 +47,7 @@ After killing paraclete (or if it was run this session):
 pgrep paraclete || echo "clean"
 ```
 
-### 3b. Verify audio sink is healthy (Linux only)
-
-```bash
-# If ONLY auto_null shows, pipewire is stranded — restart it.
-count=$(pactl list short sinks 2>/dev/null | grep -c alsa_output)
-if [ "$count" -eq 0 ]; then
-    echo "WARNING: no real audio sink — restarting pipewire"
-    systemctl --user restart pipewire pipewire-pulse
-fi
-```
-
-### 3c. Verify HTTP/WSS ports are released
+### 3b. Verify HTTP/WSS ports are released
 
 ```bash
 timeout 1 bash -c 'echo >/dev/tcp/127.0.0.1/7274' 2>/dev/null && echo "port 7274 still in use" || true

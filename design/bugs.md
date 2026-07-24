@@ -4,13 +4,13 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ---
 
-## Status (2026-07-22)
+## Status (2026-07-23)
 
-**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036).
+**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix).**
 **Fixed, code-complete (pending hardware-verification):** BUG-012.
 **Trigger-based (fix when named trigger fires):** BUG-003 (updated — StateBusHandle already moved to L2; remaining violation is NodeExecutor/RuntimeCounters in audio.rs).
-**Resolved in this session:** BUG-034 (Theotokos page-window stride), BUG-006 (agg_state_buf return-channel SPSC), **INFRA-010 (suspend/resume crashes — stream error triggers graceful shutdown, commit `302c513`).**
-**Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, 032, 033, INFRA-001, INFRA-002, INFRA-003, INFRA-004, INFRA-006, INFRA-007, INFRA-009.
+**Resolved in this session:** INFRA-011 (recovery code removed — pipewire-alsa + wireplumber no-suspend fixes root cause).
+**Resolved below:** BUG-001, 004, 005, 007, 008, 009, 010, 011, 013, 014, 015, 016, 017, 018, 019, 020, 021, 022, 023, 024, 025, 026, 028, 029, 030, 031, 032, 033, INFRA-001, INFRA-002, INFRA-003, INFRA-004, INFRA-006, INFRA-007, INFRA-009, INFRA-010.
 **Debug harness:** ADR-033 interactive mode **shipped 2026-07-13 (`92b8795`)** —
 the harness-gated audit items below are now reachable without hardware (see the
 2026-07-13 entry at the bottom).
@@ -1103,6 +1103,10 @@ automatically runs `systemctl --user restart pipewire pipewire-pulse` on
 exit when the ALSA sink is missing. No manual recovery needed.
 working-tree reporting (`2225492`).
 
+**SUPERSEDED (2026-07-23):** Root cause fixed at system level —
+`pipewire-alsa` installed + wireplumber no-suspend rule. All recovery code
+removed. See INFRA-011.
+
 ---
 
 ### BUG-012 — UPDATE (2026-07-20): all three remaining items addressed; pending hardware verification
@@ -1290,9 +1294,11 @@ be stranded on `auto_null` (no real alsa_output sink).
 
 **Fix (commit `302c513`):** `AudioBackend::start()` now accepts an
 `Arc<AtomicBool>` (the main loop's `running` flag). The stream error callback
-sets it to `false`, triggering the same graceful shutdown path as Ctrl-C. That
-path calls `recover_audio_sink()` to un-strand PipeWire. No auto-reconnect —
-the user restarts Paraclete manually, but the audio system is left clean.
+sets it to `false`, triggering the same graceful shutdown path as Ctrl-C. No
+auto-reconnect — the user restarts Paraclete manually, but the audio system
+is left clean.
+(Recovery code removed 2026-07-23 — system-level pipewire-alsa fix makes it
+unnecessary. See INFRA-011.)
 
 **Note:** `AudioEngine::start_with_callback()` (the dynamic-topology path used
 by `apply_patch`) still has the old log-only `err_fn` — this path is not on the
@@ -1389,3 +1395,45 @@ at `fm_engine.rs:106-112`); degradation at
 **Fix direction:** per-machine page declarations (becomes structural
 under ADR-041 variants); add a debug-build assertion that every page
 param ref resolves in the cap-doc (engine report amendment 15).
+
+
+### INFRA-011 — `recover_audio_sink()` and `--recover` are permanent no-ops after system-level pipewire-alsa fix
+
+**Severity:** Low (deadweight — harmless but unnecessary code)
+**Phase found:** TK2 (2026-07-23)
+**Description:** System-level fix (pipewire-alsa installed + wireplumber
+no-suspend rule for ALSA sinks) eliminates the PipeWire-stranding scenario
+entirely. ALSA apps now route through PipeWire's session manager rather than
+grabbing the hardware directly; PipeWire never releases the device.
+Consequently:
+- `recover_audio_sink()` at main.rs always finds `alsa_output` and returns
+  as no-op
+- Pre-startup call site: never triggers restart
+- Shutdown call site: never triggers restart
+- `--recover` flag: always no-ops
+- Session-close health check (AGENTS.md, SKILL.md): always passes
+- INFRA-007 auto-restart (resolved 2026-07-21): the code path is reached
+  but always no-ops
+
+**System fix applied (2026-07-23):**
+1. `pacman -S pipewire-alsa` — `/etc/alsa/conf.d/99-pipewire-default.conf`
+   sets `pcm.!default` → pipewire, routing all ALSA apps through PipeWire
+2. `~/.config/wireplumber/main.lua.d/51-alsa-no-suspend.lua` —
+   `session.suspend-timeout-seconds = 0` prevents PipeWire from ever
+   releasing the ALSA device
+
+**Cleanup (2026-07-23):**
+- Removed `recover_audio_sink()` fn body and both `#[cfg]` stubs
+  (main.rs:1039-1058)
+- Removed `--recover` flag (main.rs:47-51)
+- Removed pre-startup recovery call (main.rs:281-283)
+- Removed shutdown recovery call (main.rs:604-609)
+- Removed shutdown health check from AGENTS.md §"Shutting down and
+  verifying audio health"
+- Removed `--recover` reference from AGENTS.md §"Legacy Launchpad emulator"
+- Removed step 3b (PipeWire sink check) from session-close SKILL.md
+- Updated INFRA-007 entry (superseded) and INFRA-010 entry (recovery
+  reference removed)
+
+**Unaffected:** INFRA-006 (SCHED_FIFO scheduling — different problem
+space). OutputRing, FTZ/DAZ, rtkit — unrelated.
