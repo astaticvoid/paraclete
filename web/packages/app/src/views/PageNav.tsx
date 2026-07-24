@@ -23,7 +23,7 @@ const PAGE_LABELS: Record<string, string> = {
   CHAIN: "CHAIN",
 };
 
-const PAGE_ORDER = ["GRID", "TRIG", "SRC", "AMP", "FLTR", "FX", "MOD", "CHAIN"];
+const PAGE_ORDER = ["GRID", "TRIG", "SRC", "FLTR", "AMP", "FX", "MOD", "CHAIN"];
 
 export function PageNav({ pages, activePage, onSelect }: PageNavProps) {
   const pageIds = new Set(pages.map((p) => p.id));

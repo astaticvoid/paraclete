@@ -19,7 +19,7 @@ use std::collections::HashMap;
 
 use paraclete_node_api::{AffordanceHint, Rule};
 
-pub const CANONICAL_PAGE_ORDER: [&str; 6] = ["SRC", "AMP", "FLTR", "FX", "TRIG", "MOD"];
+pub const CANONICAL_PAGE_ORDER: [&str; 6] = ["TRIG", "SRC", "FLTR", "AMP", "FX", "MOD"];
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -358,6 +358,11 @@ mod tests {
             diagram: None,
             view_overrides: Cow::Borrowed(&[]),
         }
+    }
+
+    #[test]
+    fn canonical_order_is_trig_first() {
+        assert_eq!(CANONICAL_PAGE_ORDER, ["TRIG", "SRC", "FLTR", "AMP", "FX", "MOD"]);
     }
 
     #[test]
