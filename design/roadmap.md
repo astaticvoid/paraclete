@@ -3,7 +3,34 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-24. **TK2 C6 shipped** — Tempo/Settings/Chain
+> **Last updated:** 2026-07-24 (later still). **TK2 C7 shipped** — agent
+> smoke + polish gate (no new features). Ran the live TUI on the 4-track
+> default via tmux and drove the panel grammar end-to-end; found and fixed
+> two paper cuts invisible to the unit/injection/`TestBackend`-render test
+> suites: (1) `render_perf_window` handed the envelope `Gauge` an
+> unconstrained `Min(0)` area, tiling it across every row instead of
+> rendering one bar — fixed with an explicit `Length(1)` constraint;
+> (2) §2/D12 name no gesture that returns to the Grid screen from Settings/
+> Tempo/Param/Mute — fixed by making `PanelButton::No` fall back to
+> `OpenScreen(Screen::Grid)` everywhere except Chain (which keeps NO's more
+> specific clear-chain meaning, checked first). New regression test
+> `esc_returns_to_grid_from_other_screens` covers both the fallback and the
+> Chain exception. Updated `README.md`/`AGENTS.md` Theotokos key tables
+> from the stale TK1 SEQ/PERF-mode grammar to the TK2 panel grammar.
+> Hostile review of the full diff found the first documentation draft
+> **overclaimed two unshipped D13 features** — arrow-driven encoder-cursor
+> nav on the Param screen and numpad slot A/B/C jog are speced but never
+> wired (`encoder_cursor` never mutates past its `0` init; no
+> `KeyEventState::KEYPAD` handling exists anywhere) — corrected the docs to
+> describe only what's live and filed **BUG-038** in `design/bugs.md` so
+> the gap doesn't get silently reintroduced as "already done." The two
+> live-discovered rendering/navigation bugs were fixed within this same
+> commit (never shipped) and are UI-only, not engine-correctness issues, so
+> no separate `bugs.md` entries were filed for them — judgment call per
+> the standing defect-filing directive's "engine issues" framing. 82 crate
+> tests (1 new), full workspace green. Next: TK2 C8 (key remapping,
+> ADR-037-based).
+> Previous: 2026-07-24. **TK2 C6 shipped** — Tempo/Settings/Chain
 > screens (D12): Tempo (`0`) — YES taps a ring of up to 4 timestamps,
 > deriving bpm from the window average once 2+ taps exist (`CMD_SET_PARAM`
 > on the clock, engine-side `.clamp(20,300)`); UP/DOWN nudge ±1, FUNC+UP/

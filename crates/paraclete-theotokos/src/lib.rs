@@ -1270,7 +1270,7 @@ fn pop_keyboard_flags() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{SlotBinding, TrackInfo};
+    use crate::model::{Screen, SlotBinding, TrackInfo};
     use crossterm::event::{KeyCode, KeyModifiers};
     use paraclete_node_api::{
         CapabilityDocument, PageRef, ParamDescriptor, ParamUnit, Rule, StateBusValue,
@@ -2178,6 +2178,41 @@ mod tests {
         assert_eq!(
             app.model.screen, screen_before,
             "SAMPLING must not navigate anywhere"
+        );
+    }
+
+    /// §2/D12 name no "return to Grid" gesture anywhere — Settings,
+    /// Tempo, Param, and Mute were dead ends with no way back except
+    /// quitting. Found live in the TK2 C7 agent smoke pass; NO doubles as
+    /// the conventional "back" gesture everywhere it isn't already
+    /// claimed (Chain's clear, tested separately, still wins there).
+    #[test]
+    fn esc_returns_to_grid_from_other_screens() {
+        let bus = test_bus();
+        for screen in [
+            Screen::Settings,
+            Screen::Tempo,
+            Screen::Param(0),
+            Screen::Mute,
+        ] {
+            let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+            app.model.screen = screen;
+            app.handle_keys(&bus, &[esc_key()]);
+            assert_eq!(
+                app.model.screen,
+                Screen::Grid,
+                "Esc from {screen:?} must return to Grid"
+            );
+        }
+
+        // Chain keeps its own meaning (clear), not a generic "back".
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.screen = Screen::Chain;
+        app.handle_keys(&bus, &[esc_key()]);
+        assert_eq!(
+            app.model.screen,
+            Screen::Chain,
+            "Esc on Chain must clear, not navigate away"
         );
     }
 

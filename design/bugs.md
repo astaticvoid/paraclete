@@ -6,7 +6,7 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ## Status (2026-07-23)
 
-**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix).**
+**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, BUG-038 (Theotokos: D13 arrow-cursor nav and numpad slot jog speced but never wired).
 **Fixed, code-complete (pending hardware-verification):** BUG-012.
 **Trigger-based (fix when named trigger fires):** BUG-003 (updated — StateBusHandle already moved to L2; remaining violation is NodeExecutor/RuntimeCounters in audio.rs).
 **Resolved in this session:** INFRA-011 (recovery code removed — pipewire-alsa + wireplumber no-suspend fixes root cause).
@@ -1437,3 +1437,34 @@ Consequently:
 
 **Unaffected:** INFRA-006 (SCHED_FIFO scheduling — different problem
 space). OutputRing, FTZ/DAZ, rtkit — unrelated.
+
+---
+
+### BUG-038 — Theotokos: D13 arrow-cursor nav and numpad slot jog were speced but never wired
+
+**Severity:** Low — no crash or wrong output; documented capability is simply
+absent, caught before it reached committed docs
+**Phase found:** TK2 C7 (2026-07-23, hostile review of the C7 diff)
+**Description:** Two pieces of §1 D13 / the C5 spec text ("Param screen
+renders 8 encoder cells ... with cursor (arrows, D13)") never landed:
+1. `Model::encoder_cursor` (model.rs:75) is initialized to `0` and never
+   mutated by any action — `PanelButton::Up/Down/Left/Right` only have
+   arms for `Screen::Tempo` (bpm nudge) and `Screen::Chain` (chain cursor)
+   in `input.rs:434-451`; there is no arm moving the encoder cursor on
+   `Screen::Param`, so the `>` cursor marker in `render_encoder_cell`
+   (render.rs:384) is permanently stuck on encoder 0. Settings has no
+   cursor state at all despite rendering a list.
+2. D13's numpad slot A/B/C jog (`7/1 8/2 9/3`, Ctrl = fine) has no
+   implementation anywhere: no `KeyEventState::KEYPAD` handling, no
+   `PanelButton` variant for slots, in `input.rs` or `lib.rs`. The only
+   remaining slot-jog code is `Action::Jog`'s handler (`lib.rs:532`),
+   which is TK1-era dead code with zero call sites.
+**Location:** `crates/paraclete-theotokos/src/{model.rs:75; input.rs:434-465;
+render.rs:384; lib.rs:532}`
+**Fix direction:** Either wire both as originally speced (arrow-driven
+`encoder_cursor`/Settings-list cursor on the relevant screens; numpad
+KEYPAD-state detection feeding `Action::Jog` or a new slot-jog action), or
+formally descope D13's numpad clause and drop the cursor language from the
+spec if session #2 usability findings don't need it. Tracked so it isn't
+silently reintroduced as "already done" — TK2 C7's README/AGENTS.md pass
+was caught overclaiming this exact gap before it shipped.

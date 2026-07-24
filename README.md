@@ -31,34 +31,54 @@ if connected and are skipped otherwise.
 
 ### Theotokos (keyboard-first performance: `--theotokos`)
 
-`cargo run -- --theotokos` starts the keyboard-first modal performance terminal.
-Home-row steps, top-row tracks, vim-style parameter jog, live terminal graphics.
+`cargo run -- --theotokos` starts the keyboard-first performance terminal.
+Trig-first 16-pad grid, TRK/PTN hold-chords for track/pattern select, an
+8-encoder parameter bank (FUNC+trig to jog), and dedicated Tempo/Settings/
+Chain/Mute screens.
 
-**Global (all modes):**
+**Grid + transport:**
 
 | Key | Action |
 |---|---|
-| `Space` | play / stop |
-| `Tab` / `Shift-Tab` | cycle modes (SEQ ↔ PERF) |
-| `q w e r u i o p` | select track 1–8 |
+| `q w e r t y u i` | Trig 1–8 (top row) |
+| `a s d f g h j k` | Trig 9–16 (bottom row) |
+| `Tab` (hold) + trig | select track |
+| `p` (hold) + trig | select pattern |
+| `z` / `x` / `c` | REC / PLAY / STOP (`Space` = PLAY alias) |
+| `Shift+z` / `Shift+x` / `Shift+c` | copy / clear / paste the active lane |
+| `-` / `=` | previous / next 16-step page window |
+
+**Screens:**
+
+| Key | Action |
+|---|---|
+| `1`–`6` | param pages, canonical order TRIG SRC FLTR AMP FX MOD |
+| `7` / `9` | KIT / SAMPLING (reserved) |
+| `8` | SETTINGS (read-only: bpm, kitty status, track/pattern counts, version) |
+| `0` | TEMPO (`Enter` taps tempo) |
+| `o` | SONG — opens the Chain screen |
+| `m` | MUTE screen |
+| `v` | KEYBD (reserved, chromatic input) |
+| `Esc` | NO — also returns to the Grid screen from any other screen |
+| arrows | navigate the current screen (Tempo: ±bpm; Chain: cursor — no-op elsewhere, see BUG-038) |
+
+**Parameter jog:**
+
+| Key | Action |
+|---|---|
+| `Shift` (FUNC) + top/bottom-row key *n* | jog encoder *n* up / down |
+| `Ctrl` + FUNC jog | fine jog |
+
+Numpad slot A/B/C jog is speced (D13) but not yet wired — see `design/bugs.md` BUG-038.
+
+**Other:**
+
+| Key | Action |
+|---|---|
+| `Shift+;` (`:`) | command line |
+| `?` | help |
+| `Backspace` | clear locks |
 | `Ctrl-C` | quit |
-
-**SEQ mode — pattern editing:**
-
-| Key | Action |
-|---|---|
-| `a s d f j k l ;` | toggle steps 1–8 on the active track |
-| `z x c v m , . /` | toggle steps 9–16 (each key below its home-row counterpart) |
-| `[` / `]`  or `-` / `=` | previous / next 16-step page window (for extended patterns) |
-
-**PERF mode — parameter performance:**
-
-| Key | Action |
-|---|---|
-| `1`–`6` | select param page (SRC / FLTR / AMP / FX / MOD / TRIG) |
-| `j` / `k` | slot A jog down / up |
-| `,` / `.` | slot B jog down / up |
-| `J` / `K` | slot A fine jog (Shift) |
 
 ### Emulator (legacy grid mirror)
 

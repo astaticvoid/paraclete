@@ -455,6 +455,14 @@ pub fn button_to_action(
         // declares it (none does today) — a plain no-op, not even an
         // echo (unlike KIT).
         PanelButton::Sampling => Action::Noop,
+        // §2/D12 name no "return to Grid" gesture anywhere — found live in
+        // the TK2 C7 agent smoke pass: Settings/Tempo/Param/Mute are dead
+        // ends with no specified way back. NO already has a specific
+        // meaning on Chain (clear, above, which wins since it's checked
+        // first); everywhere else it's unclaimed, so it doubles as the
+        // conventional "back" gesture rather than staying a pure no-op.
+        // Flagged for design-log follow-up, not treated as a new feature.
+        PanelButton::No => Action::OpenScreen(Screen::Grid),
         _ => Action::Noop,
     }
 }

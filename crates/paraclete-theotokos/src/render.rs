@@ -350,12 +350,18 @@ fn render_perf_window(frame: &mut Frame, area: Rect, data: &RenderData) {
     let chunks = Layout::vertical([
         Constraint::Length(3),
         Constraint::Length(2),
+        Constraint::Length(1),
         Constraint::Min(0),
     ])
     .split(area);
 
     render_page_tabs(frame, chunks[0], data);
     render_encoder_bank(frame, chunks[1], data);
+    // A single-row bar graph; a leftover Min(0) area handed straight to it
+    // stretches the Gauge widget across every row it's given, rendering
+    // as a tall repeated column instead of one bar (found live in the
+    // TK2 C7 agent smoke pass — pre-existing since TK1, first visible now
+    // that the encoder bank leaves more room below it to expose).
     render_envelope_section(frame, chunks[2], data);
 }
 

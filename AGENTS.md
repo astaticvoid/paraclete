@@ -92,15 +92,23 @@ artifact windows around action times.
 
 ## Keyboard controls (Theotokos is default)
 
-**Theotokos runs by default.** `cargo run` starts the keyboard-first modal
-performance terminal (16-step grid, arrow-key param jog, ADR-019 command plane).
-The legacy Launchpad-emulator grid requires `--emulator`. To run without any
-terminal UI: `--no-tui` (headless — use for debugging and test-driver).
+**Theotokos runs by default.** `cargo run` starts the keyboard-first
+performance terminal: a continuous trig-first grid (TK2 replaced the old
+SEQ/PERF `Mode` split with a `Screen` enum), TRK/PTN hold-chords for
+track/pattern select, an 8-encoder parameter bank, and Tempo/Settings/Chain/
+Mute screens (ADR-019 command plane, ADR-038 panel grammar). The legacy
+Launchpad-emulator grid requires `--emulator`. To run without any terminal
+UI: `--no-tui` (headless — use for debugging and test-driver).
 
 ```
-SEQ mode:          asdfjkl;zxcvm,./ = 16-step grid     -/= = page window
-PERF mode:         1-6 = param pages    arrows = jog A/B    Shift+arrow = fine
-Global (all modes): qweruiop = tracks   Space = play/stop  Tab = cycle modes
+Grid:     qwertyui/asdfghjk = Trig1-16   Tab(hold)+trig = track   p(hold)+trig = pattern
+Trans.:   z/x/c = REC/PLAY/STOP (Space=PLAY)   Shift+z/x/c = copy/clear/paste lane
+Screens:  1-6 = param pages   7/9 = KIT/SAMPLING (reserved)   8 = Settings   0 = Tempo
+          o = Chain   m = Mute   Esc = NO (also: back to Grid)
+          arrows = Tempo ±bpm / Chain cursor (no-op elsewhere)
+Jog:      Shift(FUNC)+trig = encoder n up/down   Ctrl+FUNC = fine
+          (numpad slot A/B/C jog is speced, D13, but not yet wired — BUG-038)
+Other:    Shift+; = : line   ? = help   Backspace = clear locks   Ctrl-C = quit
 ```
 
 ```
