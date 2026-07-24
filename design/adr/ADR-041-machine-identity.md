@@ -2,9 +2,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | 🟡 Proposed (2026-07-23) |
+| **Status** | ✅ Accepted (2026-07-23) |
 | **Author** | Agent (drafted at user request) |
-| **Ratification** | Pending user |
+| **Ratification** | Ratified by user 2026-07-23, as written (no amendments) |
 | **Scope** | `paraclete-node-api` (Rule extension), machine-host engines (`AnalogEngine`, `FmEngine`, future `FmVoice`), `paraclete-view-assembly`, surfaces (variant-aware page display), ADR-039 kit apply |
 | **Related** | Roadmap D2/OQ-14 (machine-as-parameter — **decided 2026-07-13, implements here**), ADR-019 (param plane), ADR-032 (view contract — additive extension), ADR-038 (page keys), ADR-039 (kits) |
 
@@ -93,7 +93,7 @@ startup contract.
 - **Open (phase spec):** exact declick constant; whether variant names
   surface in the `:` fuzzy index; per-step machine locks (revisit).
 
-## Implementation note (to be added when ratified)
+## Implementation note (to be added when implemented)
 
 ```text
 ADR-041 implemented in [phase] (YYYY-MM-DD).

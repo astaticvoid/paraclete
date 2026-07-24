@@ -2,9 +2,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | 🟡 Proposed (2026-07-23) |
+| **Status** | ✅ Accepted (2026-07-23) |
 | **Author** | Agent (drafted at user request) |
-| **Ratification** | Pending user |
+| **Ratification** | Ratified by user 2026-07-23, as written (no amendments) |
 | **Scope** | `paraclete-nodes/engine_dsp` (new `LfoBlock`), machine engines + `Sampler` + `FilterNode`, `Rule` MOD pages, `LfoShape` affordance |
 | **Related** | ADR-018 (cellular — dest stays node-local), ADR-019 (params), ADR-032 (`Rule`; closes the §2.6.5 `LfoShape` gap), ADR-038 (MOD page key `6`), CANONICAL_PAGE_ORDER (MOD is declared but empty today) |
 
@@ -103,7 +103,7 @@ MOD page is the groovebox path.
   bank, ADR-041, so indices stay stable by construction; confirm in
   spec).
 
-## Implementation note (to be added when ratified)
+## Implementation note (to be added when implemented)
 
 ```text
 ADR-042 implemented in [phase] (YYYY-MM-DD).

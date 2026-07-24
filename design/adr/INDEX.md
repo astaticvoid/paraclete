@@ -46,6 +46,6 @@ but cannot resolve them without this index.
 | ADR-038 | `ADR-038-theotokos-elektron-convergence.md` | Theotokos Elektron convergence — virtual front panel (accepted, 2026-07-23) |
 | ADR-039 | `ADR-039-performance-state.md` | Performance state — kits, temp save, perform mode, mute tiers, live record (accepted, 2026-07-23) |
 | ADR-040 | `ADR-040-anamnesis-sampling-layer.md` | Anamnesis sampling layer — capture, pool, slices, scenes, loops (accepted, 2026-07-23) |
-| ADR-041 | `ADR-041-machine-identity.md` | Machine identity — runtime machine select, union bank, Rule variants (🟡 proposed) |
-| ADR-042 | `ADR-042-mod-page-lfo-block.md` | MOD page — per-node LFO block, node-local destinations (🟡 proposed) |
-| ADR-043 | `ADR-043-fm-voice.md` | FM voice — four-operator melodic FM, P14 model (🟡 proposed) |
+| ADR-041 | `ADR-041-machine-identity.md` | Machine identity — runtime machine select, union bank, Rule variants (accepted, 2026-07-23) |
+| ADR-042 | `ADR-042-mod-page-lfo-block.md` | MOD page — per-node LFO block, node-local destinations (accepted, 2026-07-23) |
+| ADR-043 | `ADR-043-fm-voice.md` | FM voice — four-operator melodic FM, P14 model (accepted, 2026-07-23) |

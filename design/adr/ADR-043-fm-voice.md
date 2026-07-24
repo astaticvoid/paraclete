@@ -2,9 +2,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | 🟡 Proposed (2026-07-23) |
+| **Status** | ✅ Accepted (2026-07-23) |
 | **Author** | Agent (drafted at user request) |
-| **Ratification** | Pending user |
+| **Ratification** | Ratified by user 2026-07-23, as written (no amendments) |
 | **Scope** | New engine `FmVoice` (L3, `paraclete-nodes`), P14 phase family |
 | **Related** | Roadmap P14 ("four-operator melodic FM, macro-first"), ADR-041 (variant-native machines), ADR-042 (MOD page), ADR-032 (`Rule` pages), P13 (voice-model precedents OQ-13/OQ-15), instrument-vision two-tier (macro-first) principle |
 
@@ -105,7 +105,7 @@ family; `FmVoice` is the melodic instrument.
   waveform set; AMP page final shape; macro machine set + their SRC
   curations; baseline reference patches.
 
-## Implementation note (to be added when ratified)
+## Implementation note (to be added when implemented)
 
 ```text
 ADR-043 implemented across P14 (YYYY-MM-DD).
