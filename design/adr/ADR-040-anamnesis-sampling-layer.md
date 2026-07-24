@@ -2,9 +2,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | 🟡 Proposed (2026-07-23) |
+| **Status** | ✅ Accepted (2026-07-23) |
 | **Author** | Agent (drafted at user request) |
-| **Ratification** | Pending user |
+| **Ratification** | Ratified by user 2026-07-23 (decisions R1–R3 below) |
 | **Scope** | New AN track (AN0–AN3): `paraclete-hal` (input), new nodes (`AudioInputNode`, `RecorderNode`), `Sampler`, app layer (pool, scenes), project format |
 | **Related** | ADR-038 (SAMPLING/KIT screens, capability gate), ADR-039 (KitStore, app-op drain — scenes extend it), ADR-029 (recorder taps are graph edges), ADR-025 (project format), ADR-019/ADR-032 (param plane, `Rule`); `design/sampling/{problem,design}.md` |
 
@@ -129,7 +129,17 @@ never show the screen).
   persistence, pre-roll, crossfader feel, transient slicing, LFO
   designer, cue outs, stretch algorithm).
 
-## Implementation note (to be added when ratified)
+## Ratification decisions — 2026-07-23
+
+- **R1** — core model accepted as written (all seven decisions);
+  OQ-A1–A8 resolve in phase specs and sessions.
+- **R2** — the one-gesture transition trick is a **frozen requirement**:
+  AN1 is not done without the single-chord capture-and-assign guarantee
+  (`FUNC+9` composite). Defaults (2 bars, 16 slices) stay tunable.
+- **R3** — AN scheduling is decided at TK2 exit, informed by session #2
+  (the deferred-decision text stands).
+
+## Implementation note (to be added when implemented)
 
 ```text
 ADR-040 implemented across AN0–AN3 (YYYY-MM-DD …).

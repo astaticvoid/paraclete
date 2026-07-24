@@ -69,7 +69,8 @@ Theoria gets the same via `Rule`/W-track):
 - After capture: preview (YES), trim handles (arrows; coarse/fine via
   FUNC), `assign to track N` (TRK+trig), `save to pool` / discard (NO).
 
-**The one-gesture transition trick (DETERMINED as a requirement):**
+**The one-gesture transition trick (DETERMINED — frozen as an AN1
+requirement at ADR-040 ratification, R2):**
 `FUNC+9` = capture last 2 bars of the master into a RAM slot and assign
 it to the active track's sampler, slice grid 16 *(defaults tunable)*.
 One chord while the pattern plays; the next pattern can play it sliced.
