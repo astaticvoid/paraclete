@@ -290,6 +290,21 @@ pub struct Sequencer {
     /// TK1 C1: set when locks change (CMD 34/35, deserialize); cleared
     /// after /state/locks publish. Interior mutability through Cell.
     locks_dirty: Cell<bool>,
+
+    /// TK2 C1 (D5): a live trig queued by `CMD_TRIG_NOW`, resolved to
+    /// (note, velocity) at command time, fired at the next `process`
+    /// window's sample offset 0. Independent of pattern/transport state.
+    pending_live_trig: Option<(u8, u16)>,
+    /// TK2 C1 (§0 A3): samples remaining before a live-owned open gate
+    /// closes, decremented once per `process()` window by the buffer
+    /// length. `None` when the open gate (if any) belongs to a pattern
+    /// step instead, which closes via the transport-tick path.
+    live_gate_samples_left: Option<u32>,
+    /// TK2 C1 (§0 A3): most recent tempo seen via a `TransportEvent`,
+    /// used to size a live trig's gate in samples even though the gate
+    /// itself closes independent of transport ticks. Default 120 BPM
+    /// before any transport has been observed.
+    last_bpm: f32,
 }
 
 impl Sequencer {
@@ -335,6 +350,13 @@ impl Sequencer {
     pub const CMD_SET_STEP_VELOCITY: u32 = 36;
     /// TK1 C1: arg0 = step index, arg1 = length (f32 unit/scale).
     pub const CMD_SET_STEP_LENGTH: u32 = 37;
+    /// TK2 C1 (D5): live trig, independent of pattern state. arg0 = MIDI
+    /// note (0 → default 60, `Step::empty()`'s note); arg1 = velocity
+    /// 0.0..=1.0 (0.0 → default 0.5, matching `Step::empty()`'s
+    /// 32768/65535). Stored as a pending trig fired at the start of the
+    /// next `process` window (sample offset 0); a second command in the
+    /// same window replaces the pending one.
+    pub const CMD_TRIG_NOW: u32 = 38;
 
     /// Runtime step capacity per pattern (P10: 8 pages × 8 steps). The
     /// serialized format stores counts as plain integers and does not depend
@@ -470,6 +492,9 @@ impl Sequencer {
             lock_target: None,
             lock_dropped: 0,
             locks_dirty: Cell::new(false),
+            pending_live_trig: None,
+            live_gate_samples_left: None,
+            last_bpm: 120.0,
         }
     }
 
@@ -777,6 +802,22 @@ impl Sequencer {
                         steps[idx].length = cmd.arg1 as f32;
                     }
                 }
+                Self::CMD_TRIG_NOW => {
+                    // <= 0 (not just == 0) resolves to the default note: a
+                    // negative arg0 is malformed input, not a request for
+                    // MIDI note 0, so it must not silently become one.
+                    let note = if cmd.arg0 <= 0 {
+                        60
+                    } else {
+                        cmd.arg0.clamp(0, 127) as u8
+                    };
+                    let velocity = if cmd.arg1 <= 0.0 {
+                        32768u16
+                    } else {
+                        ((cmd.arg1.clamp(0.0, 1.0) * 65535.0) as u32).min(65535) as u16
+                    };
+                    self.pending_live_trig = Some((note, velocity));
+                }
                 _ => {}
             }
         }
@@ -789,6 +830,9 @@ impl Sequencer {
         output: &mut ProcessOutput,
     ) {
         let spb = 60.0 * self.sample_rate as f64 / k.bpm.max(1.0);
+        // TK2 C1 (§0 A3): cache the tempo for sizing a live trig's gate
+        // even after the transport stops sending events.
+        self.last_bpm = k.bpm as f32;
         let pat = self.active_index();
 
         if k.flags.sync_pulse {
@@ -843,9 +887,6 @@ impl Sequencer {
                     if should_fire {
                         let note_off =
                             sample_offset + self.step_sample_offset(self.current_step, spb);
-                        if self.gate_open {
-                            self.emit_note_off(sample_offset, output);
-                        }
                         self.emit_note_on_at(self.current_step, note_off, output);
                         for lock in &self.patterns[pat].steps[self.current_step].param_locks {
                             if !self.is_muted() {
@@ -925,11 +966,13 @@ impl Sequencer {
         // with the bar-sync snap silently erasing the accumulated drift.
         self.step_tick += 1;
 
-        if self.gate_open {
+        if self.gate_open && self.live_gate_samples_left.is_none() {
             // Absolute countdown from note-on (its length × the firing
             // step's period): an early-fired note keeps its own gate length
             // across the boundary instead of being cut at the previous
-            // step's gate-close tick.
+            // step's gate-close tick. A live-owned gate (§0 A3) is excluded
+            // here — it closes via its own sample-counted countdown in
+            // `process()`, independent of these transport ticks.
             self.gate_ticks_left = self.gate_ticks_left.saturating_sub(1);
             if self.gate_ticks_left == 0 {
                 self.emit_note_off(sample_offset, output);
@@ -955,9 +998,6 @@ impl Sequencer {
                     // whether or not it fired.
                     let cond = self.patterns[pat].steps[next].condition.clone();
                     if cond.evaluate(&self.cycle_state, &mut self.rng) {
-                        if self.gate_open {
-                            self.emit_note_off(sample_offset, output);
-                        }
                         self.emit_note_on_at(next, sample_offset, output);
                         for lock in &self.patterns[pat].steps[next].param_locks {
                             if !self.is_muted() {
@@ -1052,11 +1092,23 @@ impl Sequencer {
         if self.is_muted() {
             return;
         }
+        // A previous note — pattern-fired or a live trig (TK2 C1) — still
+        // sounding when this step fires must not be orphaned: close it
+        // first. Centralized here so every fire path gets it, not just the
+        // ones that happened to remember (a live trig's gate is real-time
+        // sized and decoupled from step timing, so the overlap this guards
+        // against is no longer a rare edge case).
+        if self.gate_open {
+            self.emit_note_off(sample_offset, output);
+        }
         let pat = self.active_index();
         let step = &self.patterns[pat].steps[step_idx];
         self.active_note = step.note;
         self.gate_open = true;
         self.gate_ticks_left = (step.length * self.step_period as f32).max(1.0) as u32;
+        // A pattern step retakes the gate from any live trig (§0 A3): the
+        // tick-driven countdown above now owns closing it.
+        self.live_gate_samples_left = None;
         self.trig_count = self.trig_count.wrapping_add(1);
         self.last_fired_step = step_idx;
         output.emit_debug(
@@ -1080,6 +1132,41 @@ impl Sequencer {
                 self.current_cv[idx as usize] = val;
             }
         }
+    }
+
+    /// TK2 C1 (D5/§0 A3): sample length of a live trig's gate — 0.75 of a
+    /// step's real-time duration at the last known tempo (`last_bpm`,
+    /// default 120 before any transport has ever been seen). Independent of
+    /// whether the transport is currently running.
+    fn live_gate_length_samples(&self) -> u32 {
+        let samples_per_beat = 60.0 * self.sample_rate as f64 / self.last_bpm.max(1.0) as f64;
+        let step_samples = samples_per_beat * (self.step_period as f64 / TICKS_PER_BEAT as f64);
+        (0.75 * step_samples).round().max(1.0) as u32
+    }
+
+    /// TK2 C1 (D5): fire a live trig queued by `CMD_TRIG_NOW`, at sample
+    /// offset 0 of the window it was received in. Not tied to any step —
+    /// pattern state (including `last_fired_step`) is untouched. Respects
+    /// mute. A step already sounding when the live trig lands must not be
+    /// orphaned: its note-off is emitted first (§0 A3). The gate this opens
+    /// is closed by a sample-counted countdown in `process()`, not the
+    /// transport-tick path (§0 A3) — it must close even while stopped.
+    fn emit_live_trig(&mut self, note: u8, velocity: u16, output: &mut ProcessOutput) {
+        if self.is_muted() {
+            return;
+        }
+        if self.gate_open {
+            self.emit_note_off(0, output);
+        }
+        self.active_note = note;
+        self.gate_open = true;
+        self.live_gate_samples_left = Some(self.live_gate_length_samples());
+        self.trig_count = self.trig_count.wrapping_add(1);
+        output.emit_debug(0, DebugEventKind::StepFired, -1, note as f64);
+        output.events_out.push(TimedEvent::new(
+            0,
+            Event::Midi2(build_note_on(self.group, self.channel, note, velocity)),
+        ));
     }
 
     fn emit_note_off(&mut self, sample_offset: u32, output: &mut ProcessOutput) {
@@ -1210,6 +1297,32 @@ impl Node for Sequencer {
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
         self.handle_commands(input.commands);
+
+        // TK2 C1 (§0 A3): a live-owned gate closes on a sample count,
+        // decremented once per window by the buffer length — independent
+        // of transport ticks, so it still closes with the transport
+        // stopped (no ticks would ever arrive to close it otherwise).
+        // Runs before this window's own live trig (below) so a fresh trig
+        // is not immediately charged for time it hasn't lived yet.
+        if let Some(remaining) = self.live_gate_samples_left {
+            let remaining = remaining.saturating_sub(input.block_size as u32);
+            if remaining == 0 {
+                self.live_gate_samples_left = None;
+                if self.gate_open {
+                    self.emit_note_off(0, output);
+                }
+            } else {
+                self.live_gate_samples_left = Some(remaining);
+            }
+        }
+
+        // TK2 C1 (D5): a queued live trig fires at this window's sample
+        // offset 0, independent of transport (works while stopped) and
+        // ahead of the transport-event loop below.
+        if let Some((note, velocity)) = self.pending_live_trig.take() {
+            self.emit_live_trig(note, velocity, output);
+        }
+
         // Swing is per-pattern (P10 C2, spec 2.3): `Pattern::swing` is the
         // source of truth for emission and serialization. The bank slot is a
         // write-conduit only — a changed bank value means an encoder or
@@ -4482,7 +4595,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn mute_publishes_bank_state_path() {
         let mut seq = Sequencer::new();
         seq.set_node_id(200);
@@ -4537,5 +4649,203 @@ mod tests {
         }
         let has_note_on = all_out.iter().any(|e| matches!(e, Event::Midi2(_)));
         assert!(has_note_on, "must emit NoteOn after unmute");
+    }
+
+    // ── TK2 C1: live-trig engine command (D5, CMD_TRIG_NOW) ──────────────────
+
+    fn trig_now_cmd(note: i64, velocity: f64) -> NodeCommand {
+        NodeCommand {
+            target_id: 0,
+            type_id: Sequencer::CMD_TRIG_NOW,
+            arg0: note,
+            arg1: velocity,
+        }
+    }
+
+    fn run_seq_with_cmds_events(seq: &mut Sequencer, cmds: &[NodeCommand]) -> Vec<Event> {
+        let block = 64usize;
+        let mut audio = AudioBuffer::new(2, block);
+        let mut events_out = EventOutputBuffer::new(256);
+        let transport = TransportInfo::default();
+        let slab = ExtendedEventSlab::empty();
+        let audio_ptr: *mut AudioBuffer = &mut audio as *mut AudioBuffer;
+        let audio_ref: &mut AudioBuffer = unsafe { &mut *audio_ptr };
+        let mut outs = [audio_ref];
+        let input = ProcessInput {
+            audio_inputs: &[],
+            signal_inputs: &[],
+            events: &[],
+            transport: &transport,
+            sample_rate: 44100.0,
+            block_size: block,
+            extended_events: &slab,
+            commands: cmds,
+        };
+        let mut output = ProcessOutput::new(&mut outs, &mut [], &mut events_out);
+        seq.process(&input, &mut output);
+        events_out.as_slice().iter().map(|e| e.event).collect()
+    }
+
+    fn note_on_pitch_velocity(events: &[Event]) -> Option<(u8, u16)> {
+        events.iter().find_map(|e| match e {
+            Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(n))) => {
+                Some((u8::from(n.note_number()), n.velocity()))
+            }
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn trig_now_emits_note_on_next_window() {
+        let mut seq = Sequencer::new();
+        let events = run_seq_with_cmds_events(&mut seq, &[trig_now_cmd(72, 0.9)]);
+        let (note, _) = note_on_pitch_velocity(&events)
+            .expect("CMD_TRIG_NOW must emit a NoteOn in the window it lands");
+        assert_eq!(note, 72);
+    }
+
+    #[test]
+    fn trig_now_uses_default_note_and_velocity_when_zero() {
+        let mut seq = Sequencer::new();
+        let events = run_seq_with_cmds_events(&mut seq, &[trig_now_cmd(0, 0.0)]);
+        let hit = note_on_pitch_velocity(&events);
+        assert_eq!(
+            hit,
+            Some((60, 32768)),
+            "arg0=0/arg1=0.0 must resolve to Step::empty()'s defaults (note 60, velocity 32768/65535)"
+        );
+    }
+
+    #[test]
+    fn trig_now_respects_mute() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.bank.set(ParamDescriptor::id_for_name("mute"), 1.0);
+        let events = run_seq_with_cmds_events(&mut seq, &[trig_now_cmd(64, 0.8)]);
+        assert!(
+            !events.iter().any(is_note_on),
+            "a muted track must not sound a live trig"
+        );
+    }
+
+    #[test]
+    fn trig_now_works_while_stopped() {
+        let mut seq = Sequencer::new();
+        assert!(!seq.playing, "sanity: a fresh sequencer is stopped");
+        let events = run_seq_with_cmds_events(&mut seq, &[trig_now_cmd(50, 0.5)]);
+        assert!(
+            events.iter().any(is_note_on),
+            "live trig must sound even with the transport stopped"
+        );
+
+        // §0 A3: with the transport stopped, no TransportEvents ever arrive
+        // to drive the pattern-step gate-close path — the live trig's gate
+        // must close itself via a sample-counted countdown in `process()`,
+        // or the note rings forever.
+        let mut closed = false;
+        for _ in 0..200 {
+            let more = run_seq_with_cmds_events(&mut seq, &[]);
+            if more.iter().any(|e| {
+                matches!(
+                    e,
+                    Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(_)))
+                )
+            }) {
+                closed = true;
+                break;
+            }
+        }
+        assert!(
+            closed,
+            "a live trig's gate must close on its own even while the transport is stopped (§0 A3)"
+        );
+    }
+
+    #[test]
+    fn trig_now_second_command_replaces_pending() {
+        let mut seq = Sequencer::new();
+        let events =
+            run_seq_with_cmds_events(&mut seq, &[trig_now_cmd(40, 0.5), trig_now_cmd(80, 0.5)]);
+        let notes: Vec<u8> = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(n))) => {
+                    Some(u8::from(n.note_number()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            notes,
+            vec![80],
+            "a second CMD_TRIG_NOW in the same window replaces the first, not stacks"
+        );
+    }
+
+    #[test]
+    fn trig_now_does_not_modify_pattern() {
+        let mut seq = Sequencer::new();
+        let before_bits = seq.steps_bitfield();
+        let before_len = seq.patterns[0].length;
+        run_seq_with_cmds(&mut seq, &[trig_now_cmd(64, 0.5)]);
+        assert_eq!(seq.steps_bitfield(), before_bits);
+        assert_eq!(seq.patterns[0].length, before_len);
+    }
+
+    /// Review finding (post-C1 hostile review): the live gate's close was
+    /// only wired into `process()`'s own sample countdown and the two fire
+    /// paths that already called `emit_note_off` first — not the ordinary
+    /// step-boundary path, which could silently overwrite a still-open live
+    /// gate without ever closing it. Fixed by centralizing the close inside
+    /// `emit_note_on_at`; this reproduces the exact orphan scenario.
+    #[test]
+    fn trig_now_open_gate_is_not_orphaned_by_next_pattern_step() {
+        let mut seq = Sequencer::new();
+        seq.set_step(0, 61, 32768, true);
+        seq.set_step(1, 62, 32768, true);
+
+        let mut all_events: Vec<Event> = Vec::new();
+
+        // Enter the pattern: fires step 0 (note 61).
+        all_events.extend(run_seq(
+            &mut seq,
+            &[transport_tick(0, true, true, false, false)],
+        ));
+
+        // Advance to just short of step 1's boundary (step_period = 240 ticks).
+        for t in 1..=235u32 {
+            all_events.extend(run_seq(
+                &mut seq,
+                &[transport_tick(t, true, false, false, false)],
+            ));
+        }
+
+        // Fire a live trig here: its sample-counted gate easily outlives the
+        // handful of ticks remaining before step 1 fires.
+        all_events.extend(run_seq_with_cmds_events(&mut seq, &[trig_now_cmd(99, 0.7)]));
+
+        // Cross step 1's boundary.
+        for t in 236..=240u32 {
+            all_events.extend(run_seq(
+                &mut seq,
+                &[transport_tick(t, true, false, false, false)],
+            ));
+        }
+
+        let note_offs: Vec<u8> = all_events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(n))) => {
+                    Some(u8::from(n.note_number()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert!(
+            note_offs.contains(&99),
+            "a live trig's still-open gate must be closed (not silently overwritten) \
+             when the next pattern step fires; got note-offs {:?}",
+            note_offs
+        );
     }
 }

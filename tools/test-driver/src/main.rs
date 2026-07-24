@@ -37,6 +37,7 @@ const CMD_CHAIN_CLEAR: u32 = Sequencer::CMD_CHAIN_CLEAR;
 const CMD_SET_LOCK_TARGET: u32 = Sequencer::CMD_SET_LOCK_TARGET;
 const CMD_SET_STEP_LOCK: u32 = Sequencer::CMD_SET_STEP_LOCK;
 const CMD_CLEAR_STEP_LOCK: u32 = Sequencer::CMD_CLEAR_STEP_LOCK;
+const CMD_TRIG_NOW: u32 = Sequencer::CMD_TRIG_NOW;
 
 fn auto_play_command() -> &'static str {
     #[cfg(target_os = "macos")]
@@ -296,6 +297,16 @@ fn dispatch_action(conf: &mut NodeConfigurator, action: &ResolvedActionKind) -> 
             type_id: CMD_CLEAR_STEP_LOCK,
             arg0: *step,
             arg1: *param_id as f64,
+        },
+        ResolvedActionKind::TrigNow {
+            target_id,
+            note,
+            velocity,
+        } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_TRIG_NOW,
+            arg0: *note,
+            arg1: *velocity,
         },
     };
     conf.send_command(cmd)
@@ -795,6 +806,11 @@ fn json_to_action(
         "chain_clear" => A::ChainClear {
             target_id: resolve_json_target(resolver, v)?,
         },
+        "trig_now" => A::TrigNow {
+            target_id: resolve_json_target(resolver, v)?,
+            note: v.get("note").and_then(|x| x.as_i64()).unwrap_or(0),
+            velocity: v.get("velocity").and_then(|x| x.as_f64()).unwrap_or(0.0),
+        },
         _ => return Ok(None),
     };
     Ok(Some(action))
@@ -1117,6 +1133,15 @@ fn resolve_action(
             target_id: resolve_target(resolver, target)?,
             step: *step,
             param_id: param_id.map_or(-1, |p| p as i64),
+        },
+        TimelineAction::TrigNow {
+            target,
+            note,
+            velocity,
+        } => ResolvedActionKind::TrigNow {
+            target_id: resolve_target(resolver, target)?,
+            note: *note,
+            velocity: *velocity,
         },
     })
 }

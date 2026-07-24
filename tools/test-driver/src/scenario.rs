@@ -133,6 +133,13 @@ pub enum TimelineAction {
         step: i64,
         param_id: Option<u32>,
     },
+    TrigNow {
+        target: String,
+        #[serde(default)]
+        note: i64,
+        #[serde(default)]
+        velocity: f64,
+    },
 }
 
 #[derive(Debug)]
@@ -223,6 +230,11 @@ pub enum ResolvedActionKind {
         target_id: u32,
         step: i64,
         param_id: i64,
+    },
+    TrigNow {
+        target_id: u32,
+        note: i64,
+        velocity: f64,
     },
 }
 

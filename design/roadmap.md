@@ -3,7 +3,27 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-23 (late). **Hostile review cycle complete** —
+> **Last updated:** 2026-07-23 (later). **TK2 C1 shipped** — live-trig
+> engine command (`Sequencer::CMD_TRIG_NOW = 38`, D5/§0 A3): resolves
+> note/velocity sentinels, fires a `NoteOn` at the next `process` window's
+> sample offset 0, respects mute, works with the transport stopped. Two
+> rounds of hostile review against the spec found and fixed: (1) a blocker
+> — the live gate never closed while stopped, since the only close path was
+> transport-tick-driven and no ticks arrive when stopped (exactly the
+> failure A3 was written to prevent); fixed with a sample-counted gate
+> decremented once per `process()` window by buffer length, independent of
+> transport, tracked via a new `live_gate_samples_left` field and cached
+> `last_bpm`. (2) a follow-up major found in round two — the ordinary
+> step-boundary fire path called `emit_note_on_at` without first closing an
+> already-open gate (unlike the other three fire paths), so a live trig
+> could be silently orphaned by the next pattern step; fixed by centralizing
+> the close-if-open check inside `emit_note_on_at` itself so every fire path
+> gets it. 7 sequencer tests (6 named in spec + 1 regression for the
+> orphan-gate finding), all workspace tests green (`cargo test --workspace`).
+> `tools/test-driver` gained a matching `trig_now` scenario/interactive
+> action. Next: TK2 C2 (panel model — pure types + key mapping, additive
+> only per §0 A4).
+> Previous: 2026-07-23 (late). **Hostile review cycle complete** —
 > three subagents attacked every design ratified this session (ADR-038…043,
 > TK2 spec, P11/AN docs): **9 blockers, 21 majors, 14 minors; 46 code
 > claims verified clean**. All findings folded: TK2 spec gained a normative
