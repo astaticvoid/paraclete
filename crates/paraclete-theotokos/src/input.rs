@@ -319,6 +319,17 @@ pub struct Mods {
     pub ctrl: bool,
 }
 
+/// TK2 C5 (§0 A11): pressing a Pg key while ALREADY on that page cycles
+/// its sub-page instead of re-opening it (which would just reset back to
+/// sub-page 0) — the §0 A1 hypothesis for reaching params past the first 8.
+fn open_or_cycle_sub_page(screen: &ScreenState, idx: usize) -> Action {
+    if matches!(screen.screen, Screen::Param(p) if p == idx) {
+        Action::NextSubPage
+    } else {
+        Action::OpenScreen(Screen::Param(idx))
+    }
+}
+
 /// TK2 C2 (D6/D8/D12): resolve a `PanelButton` press to an `Action`, given
 /// the current hold-chord state and screen. Pure — no I/O, no engine
 /// state.
@@ -407,12 +418,12 @@ pub fn button_to_action(
         PanelButton::Stop if mods.func => Action::PasteLane,
         PanelButton::PagePrev => Action::PageWindow(Dir::Prev),
         PanelButton::PageNext => Action::PageWindow(Dir::Next),
-        PanelButton::Pg1 => Action::OpenScreen(Screen::Param(0)),
-        PanelButton::Pg2 => Action::OpenScreen(Screen::Param(1)),
-        PanelButton::Pg3 => Action::OpenScreen(Screen::Param(2)),
-        PanelButton::Pg4 => Action::OpenScreen(Screen::Param(3)),
-        PanelButton::Pg5 => Action::OpenScreen(Screen::Param(4)),
-        PanelButton::Pg6 => Action::OpenScreen(Screen::Param(5)),
+        PanelButton::Pg1 => open_or_cycle_sub_page(screen, 0),
+        PanelButton::Pg2 => open_or_cycle_sub_page(screen, 1),
+        PanelButton::Pg3 => open_or_cycle_sub_page(screen, 2),
+        PanelButton::Pg4 => open_or_cycle_sub_page(screen, 3),
+        PanelButton::Pg5 => open_or_cycle_sub_page(screen, 4),
+        PanelButton::Pg6 => open_or_cycle_sub_page(screen, 5),
         PanelButton::Song => Action::OpenScreen(Screen::Chain),
         PanelButton::Mute => Action::OpenScreen(Screen::Mute),
         PanelButton::Tempo => Action::OpenScreen(Screen::Tempo),

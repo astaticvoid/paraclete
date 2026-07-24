@@ -65,6 +65,11 @@ pub enum Action {
     ClearLane,
     /// FUNC+STOP: paste the copied lane.
     PasteLane,
+
+    /// TK2 C5 (§0 A11): the same Pg key pressed again while already on
+    /// that page cycles its sub-page (pages over 8 params split rather
+    /// than truncating; §0 A1 hypothesis — session).
+    NextSubPage,
 }
 
 #[derive(Debug)]
@@ -101,7 +106,8 @@ impl Action {
             // access needed for ClearLane's per-step lock clears).
             | Action::CopyLane
             | Action::ClearLane
-            | Action::PasteLane => Outcome::StateOnly,
+            | Action::PasteLane
+            | Action::NextSubPage => Outcome::StateOnly,
             Action::PlayToggle => {
                 if playing {
                     Outcome::Command(NodeCommand {

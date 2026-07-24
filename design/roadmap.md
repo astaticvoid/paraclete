@@ -3,7 +3,38 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-23 (yet later). **TK2 C4 shipped** — FUNC
+> **Last updated:** 2026-07-23 (later still). **TK2 C5 shipped** — encoder
+> bank (D8): FUNC+top/bottom-row trig resolves against the active page's
+> params in Rule order (composite page first, engine `Rule` fallback),
+> up to 8 encoders; fine via FUNC+Ctrl; under step focus, jog routes to
+> that step's p-lock (CMD 33/34) instead of a live `CMD_BUMP_PARAM`,
+> reusing the TK1 ramp/acceleration machinery via a per-column tracker.
+> `resolve_page_params_n` generalizes the TK1 2-slot resolver; numpad
+> slots extend from 2 to 3 (D13, slot C); flash generalizes from 2 slots
+> to 8 encoders + 3 slots. Param screen renders 8 cells (2×4, name + bar
+> + value); the arrow-key cursor field exists and renders but isn't yet
+> wired to move (disclosed, deferred — arrows still resolve to Noop). 7
+> tests named in spec. Hostile review found **1 blocker**: §0 A11
+> ("pages over 8 params split into sub-pages, C5's render must show a
+> sub-page indicator") was entirely unimplemented — params past the 8th
+> were silently truncated with no signal anything existed beyond them —
+> fixed with real sub-page state (`Model.sub_page`), a slot-range-aware
+> `resolve_encoder_params`, the same-Pg-key-cycles-sub-page gesture (§0
+> A1 hypothesis, new `Action::NextSubPage`), and a `¶N/M` render
+> indicator. **2 majors**: slot C was bound but functionally dead — its
+> `Action::Jog` dispatch arm was a hardcoded `Slot::C => continue` (4
+> places) predating this commit, `update_flash` was never called for
+> index 2, and `RenderData` had no slot-C fields at all, despite the
+> commit describing D13 as "extended to slot C" — fixed (real `jog_c`
+> tracker, flash tracking, and status-line rendering). And the named test
+> `encoder_col_maps_to_page_param_in_rule_order` never actually exercised
+> Rule-order sorting — `test_caps()`'s shared `Rule` has no `page_groups`,
+> so it always hit the plain-declaration-order fallback — fixed with a
+> dedicated capability doc whose Rule assigns slots in the REVERSE of
+> declaration order, proving the sort runs. 3 new regression tests. 75
+> crate tests, full workspace green. Next: TK2 C6 (Tempo/Settings/Chain
+> screens).
+> Previous: 2026-07-23 (yet later). **TK2 C4 shipped** — FUNC
 > transport chords + mute chord (D7/A8/A10/A14/A16): FUNC+REC copies the
 > active lane, FUNC+PLAY clears it (`CMD_CLEAR` + `CMD_CLEAR_STEP_LOCK`
 > per step, §0 A8 — locks don't survive a plain `CMD_CLEAR`), FUNC+STOP

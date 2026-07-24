@@ -65,6 +65,20 @@ pub struct Model {
     pub perf_page: usize,
     pub slot_a: Option<SlotBinding>,
     pub slot_b: Option<SlotBinding>,
+    /// TK2 C5 (D13): numpad slot C — extends the TK1 2-slot jog to 3.
+    pub slot_c: Option<SlotBinding>,
+    /// TK2 C5 (D8/D13): which of the 8 encoder cells the Param screen's
+    /// arrow-key cursor highlights (row-major, 2×4). Field exists and
+    /// renders (a real highlight, not a stub), but arrow-key navigation
+    /// to MOVE it is not yet wired — it always shows cell 0 until a later
+    /// commit adds the Up/Down/Left/Right dispatch (D13).
+    pub encoder_cursor: usize,
+    /// TK2 C5 (§0 A11): which 8-wide slot window of the active page the
+    /// encoder bank shows. Pages with more than 8 params split into
+    /// sub-pages; the same Pg key pressed again while already on that
+    /// page cycles this (§0 A1 hypothesis — session; `Action::NextSubPage`).
+    /// Reset to 0 whenever a different page opens.
+    pub sub_page: usize,
     pub step_focus: Vec<Option<usize>>,
     pub last_step: Vec<Option<usize>>,
     /// TK1 C6: command line editor state (None = closed).
@@ -79,10 +93,13 @@ pub struct Model {
     /// `paste_pattern`) is unchanged, only its TK1 `y`/`Y` key trigger was
     /// retired at the TK2 C3 wiring flip.
     pub yank_buffer: Vec<YankedStep>,
-    /// TK1 C7: Instant when each slot value last changed (for yellow flash).
-    pub slot_flash: [Option<std::time::Instant>; 2],
-    /// TK1 C7: previous slot values (to detect change).
-    pub last_slot_values: [f64; 2],
+    /// TK1 C7, extended TK2 C5 (D8): Instant when each slot/encoder value
+    /// last changed (for yellow flash) — slots A/B/C, then encoders 1-8.
+    pub slot_flash: [Option<std::time::Instant>; 3],
+    /// Previous slot values (to detect change).
+    pub last_slot_values: [f64; 3],
+    pub encoder_flash: [Option<std::time::Instant>; 8],
+    pub last_encoder_values: [f64; 8],
     /// Visibility toggle for help overlay (shows mode-specific key bindings).
     pub help_visible: bool,
 }
@@ -167,14 +184,19 @@ impl Model {
             perf_page: 0,
             slot_a: None,
             slot_b: None,
+            slot_c: None,
+            encoder_cursor: 0,
+            sub_page: 0,
             step_focus,
             last_step,
             cmdline: None,
             cmdline_error: None,
             fuzzy_index,
             yank_buffer: Vec::new(),
-            slot_flash: [None; 2],
-            last_slot_values: [0.0; 2],
+            slot_flash: [None; 3],
+            last_slot_values: [0.0; 3],
+            encoder_flash: [None; 8],
+            last_encoder_values: [0.0; 8],
             help_visible: false,
         };
         model.bind_page();
@@ -209,43 +231,35 @@ impl Model {
     }
 
     fn bind_page(&mut self) {
-        let (a, b) = self.resolve_page_params();
-        self.slot_a = a.map(|(nid, pid, name, min, max)| SlotBinding {
-            node_id: nid,
-            param_id: pid,
-            param_name: name,
-            min,
-            max,
-        });
-        self.slot_b = b.map(|(nid, pid, name, min, max)| SlotBinding {
-            node_id: nid,
-            param_id: pid,
-            param_name: name,
-            min,
-            max,
-        });
+        let params = self.resolve_page_params_n(3);
+        let to_binding = |p: Option<&(u32, u32, String, f64, f64)>| {
+            p.map(|(nid, pid, name, min, max)| SlotBinding {
+                node_id: *nid,
+                param_id: *pid,
+                param_name: name.clone(),
+                min: *min,
+                max: *max,
+            })
+        };
+        self.slot_a = to_binding(params.first());
+        self.slot_b = to_binding(params.get(1));
+        self.slot_c = to_binding(params.get(2));
     }
 
-    fn resolve_page_params(
-        &self,
-    ) -> (
-        Option<(u32, u32, String, f64, f64)>,
-        Option<(u32, u32, String, f64, f64)>,
-    ) {
-        // TK1 C3: composite pages first — slot A/B bind from the composite
-        // page's params (which know their owning node_id).
+    /// TK2 C5 (D8): the active page's params in `Rule` order, up to `n`.
+    /// Generalizes the TK1 2-slot resolver (`bind_page`) so the 8-encoder
+    /// bank can resolve against the same page — composite pages first,
+    /// falling back to the engine-local `Rule` (existing TK0 path).
+    pub fn resolve_page_params_n(&self, n: usize) -> Vec<(u32, u32, String, f64, f64)> {
         if let Some(cv) = self.composite.get(self.active_track) {
             if let Some(page) = cv.pages.get(self.perf_page) {
-                let a = page
-                    .params
-                    .first()
-                    .map(|p| (p.node_id, p.param_id, p.name.clone(), 0.0, 1.0));
-                let b = page
-                    .params
-                    .get(1)
-                    .map(|p| (p.node_id, p.param_id, p.name.clone(), 0.0, 1.0));
-                if a.is_some() {
-                    return (a, b);
+                if !page.params.is_empty() {
+                    return page
+                        .params
+                        .iter()
+                        .take(n)
+                        .map(|p| (p.node_id, p.param_id, p.name.clone(), 0.0, 1.0))
+                        .collect();
                 }
             }
         }
@@ -253,22 +267,21 @@ impl Model {
         let gen_id = self.tracks[self.active_track].generator_id;
         let cap = match self.caps.get(&gen_id) {
             Some(c) => c,
-            None => return (None, None),
+            None => return Vec::new(),
         };
         let rule = match &cap.view {
             Some(r) => r,
-            None => return (None, None),
+            None => return Vec::new(),
         };
         let page = match rule.page_groups.get(self.perf_page) {
             Some(p) => p.as_ref(),
             None => {
-                let fallback_params = &cap.params;
-                let a = fallback_params.first();
-                let b = fallback_params.get(1);
-                return (
-                    a.map(|p| (gen_id, p.id, p.name.to_string(), p.min, p.max)),
-                    b.map(|p| (gen_id, p.id, p.name.to_string(), p.min, p.max)),
-                );
+                return cap
+                    .params
+                    .iter()
+                    .take(n)
+                    .map(|p| (gen_id, p.id, p.name.to_string(), p.min, p.max))
+                    .collect();
             }
         };
 
@@ -278,19 +291,112 @@ impl Model {
             .filter(|(_, pr)| pr.page.as_ref() == page)
             .collect();
         params.sort_by_key(|(_, pr)| pr.slot);
-        let a = params.first().and_then(|(pid, _)| {
-            cap.params
-                .iter()
-                .find(|pd| pd.id == *pid)
-                .map(|pd| (gen_id, pd.id, pd.name.to_string(), pd.min, pd.max))
+        params
+            .iter()
+            .take(n)
+            .filter_map(|(pid, _)| {
+                cap.params
+                    .iter()
+                    .find(|pd| pd.id == *pid)
+                    .map(|pd| (gen_id, pd.id, pd.name.to_string(), pd.min, pd.max))
+            })
+            .collect()
+    }
+
+    /// TK2 C5 (D8/§0 A11): the active page's params in `Rule` order,
+    /// restricted to the current sub-page's 8-wide slot window (slots
+    /// 0-7 = sub-page 1, 8-15 = sub-page 2, ... — `PageRef`/`CompositeParam`
+    /// both carry this `slot` field already). Unlike `resolve_page_params_n`
+    /// (used for the 3 numpad slots, always the page's absolute first
+    /// params), this is what the 8-encoder bank resolves against, so a
+    /// page with more than 8 params splits into sub-pages instead of
+    /// silently truncating.
+    pub fn resolve_encoder_params(&self) -> Vec<(u32, u32, String, f64, f64)> {
+        let lo = (self.sub_page * 8) as u16;
+        let hi = lo + 8;
+        if let Some(cv) = self.composite.get(self.active_track) {
+            if let Some(page) = cv.pages.get(self.perf_page) {
+                if !page.params.is_empty() {
+                    let mut params: Vec<_> = page
+                        .params
+                        .iter()
+                        .filter(|p| (p.slot as u16) >= lo && (p.slot as u16) < hi)
+                        .collect();
+                    params.sort_by_key(|p| p.slot);
+                    return params
+                        .into_iter()
+                        .map(|p| (p.node_id, p.param_id, p.name.clone(), 0.0, 1.0))
+                        .collect();
+                }
+            }
+        }
+        let gen_id = self.tracks[self.active_track].generator_id;
+        let cap = match self.caps.get(&gen_id) {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+        let rule = match &cap.view {
+            Some(r) => r,
+            None => return Vec::new(),
+        };
+        let page = match rule.page_groups.get(self.perf_page) {
+            Some(p) => p.as_ref(),
+            None => {
+                // No Rule pagination — no sub-pages to split into; only
+                // sub-page 0 has content (matches `resolve_page_params_n`'s
+                // same fallback, which has no slot field to filter on).
+                if self.sub_page > 0 {
+                    return Vec::new();
+                }
+                return cap
+                    .params
+                    .iter()
+                    .take(8)
+                    .map(|p| (gen_id, p.id, p.name.to_string(), p.min, p.max))
+                    .collect();
+            }
+        };
+        let mut params: Vec<&(u32, PageRef)> = rule
+            .param_pages
+            .iter()
+            .filter(|(_, pr)| pr.page.as_ref() == page && (pr.slot as u16) >= lo && (pr.slot as u16) < hi)
+            .collect();
+        params.sort_by_key(|(_, pr)| pr.slot);
+        params
+            .iter()
+            .filter_map(|(pid, _)| {
+                cap.params
+                    .iter()
+                    .find(|pd| pd.id == *pid)
+                    .map(|pd| (gen_id, pd.id, pd.name.to_string(), pd.min, pd.max))
+            })
+            .collect()
+    }
+
+    /// TK2 C5 (§0 A11): how many sub-pages the active page has (min 1) —
+    /// drives the same-Pg-key-toggles-sub-page gesture and the render
+    /// indicator.
+    pub fn page_sub_page_count(&self) -> usize {
+        let composite_max = self.composite.get(self.active_track).and_then(|cv| {
+            cv.pages
+                .get(self.perf_page)
+                .and_then(|page| page.params.iter().map(|p| p.slot).max())
         });
-        let b = params.get(1).and_then(|(pid, _)| {
-            cap.params
+        let max_slot = composite_max.or_else(|| {
+            let gen_id = self.tracks[self.active_track].generator_id;
+            let cap = self.caps.get(&gen_id)?;
+            let rule = cap.view.as_ref()?;
+            let page = rule.page_groups.get(self.perf_page)?.as_ref();
+            rule.param_pages
                 .iter()
-                .find(|pd| pd.id == *pid)
-                .map(|pd| (gen_id, pd.id, pd.name.to_string(), pd.min, pd.max))
+                .filter(|(_, pr)| pr.page.as_ref() == page)
+                .map(|(_, pr)| pr.slot)
+                .max()
         });
-        (a, b)
+        match max_slot {
+            Some(s) => (s as usize / 8) + 1,
+            None => 1,
+        }
     }
 
     pub fn playing(&self, bus: &StateBusHandle) -> bool {
@@ -680,6 +786,14 @@ impl Model {
         if (new_value - self.last_slot_values[slot]).abs() > 0.0001 {
             self.slot_flash[slot] = Some(std::time::Instant::now());
             self.last_slot_values[slot] = new_value;
+        }
+    }
+
+    /// TK2 C5 (D8): flash generalized from 2 slots to 8 encoders.
+    pub fn update_encoder_flash(&mut self, col: usize, new_value: f64) {
+        if (new_value - self.last_encoder_values[col]).abs() > 0.0001 {
+            self.encoder_flash[col] = Some(std::time::Instant::now());
+            self.last_encoder_values[col] = new_value;
         }
     }
 }

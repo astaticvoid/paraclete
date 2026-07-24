@@ -10,6 +10,15 @@ use crate::model::{EnvelopeData, Screen, SlotBinding, StepState};
 
 const PAGE_SIZE: usize = 8;
 
+/// TK2 C5 (D8): one of the 8 encoder bank cells on the Param screen.
+#[derive(Clone)]
+pub struct EncoderCell {
+    pub name: String,
+    pub value: f64,
+    pub min: f64,
+    pub max: f64,
+}
+
 pub struct RenderData {
     /// TK2 C3 (D12): replaces `Mode`.
     pub screen: Screen,
@@ -29,8 +38,17 @@ pub struct RenderData {
     pub slot_a_value: f64,
     pub slot_b: Option<SlotBinding>,
     pub slot_b_value: f64,
+    /// TK2 C5 (D13): numpad slot C.
+    pub slot_c: Option<SlotBinding>,
+    pub slot_c_value: f64,
+    pub slot_c_locked: bool,
+    pub slot_c_flash: bool,
     pub page_groups: Vec<String>,
     pub perf_page: usize,
+    /// TK2 C5 (§0 A11): which 8-wide sub-page of the active page is
+    /// showing, and how many exist — the sub-page indicator.
+    pub sub_page: usize,
+    pub sub_page_count: usize,
     pub envelope: Option<(EnvelopeData, f64)>,
     pub debug_event: Option<String>,
     pub step_focuses: Vec<Option<usize>>,
@@ -45,6 +63,12 @@ pub struct RenderData {
     pub slot_a_flash: bool,
     pub slot_b_flash: bool,
     pub help_visible: bool,
+    /// TK2 C5 (D8): the active page's params in `Rule` order, up to 8 —
+    /// `None` past the page's param count.
+    pub encoder_cells: Vec<Option<EncoderCell>>,
+    /// TK2 C5 (D8/D13): which encoder cell the arrow-key cursor highlights.
+    pub encoder_cursor: usize,
+    pub encoder_flash: Vec<bool>,
 }
 
 pub fn render(frame: &mut Frame, data: &RenderData) {
@@ -254,10 +278,54 @@ fn render_track_row<'a>(
 }
 
 fn render_perf_window(frame: &mut Frame, area: Rect, data: &RenderData) {
-    let chunks = Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).split(area);
+    let chunks = Layout::vertical([
+        Constraint::Length(3),
+        Constraint::Length(2),
+        Constraint::Min(0),
+    ])
+    .split(area);
 
     render_page_tabs(frame, chunks[0], data);
-    render_envelope_section(frame, chunks[1], data);
+    render_encoder_bank(frame, chunks[1], data);
+    render_envelope_section(frame, chunks[2], data);
+}
+
+/// TK2 C5 (D8): 8 encoder cells, 2×4, name + bar + value. The cursor
+/// (D13, arrow navigation — wiring deferred, see roadmap) highlights one
+/// cell; a param page with fewer than 8 params shows blank cells past its
+/// count rather than a malformed one.
+fn render_encoder_bank(frame: &mut Frame, area: Rect, data: &RenderData) {
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
+    for (row, row_area) in rows.iter().enumerate() {
+        let cols = Layout::horizontal([Constraint::Ratio(1, 4); 4]).split(*row_area);
+        for (col, cell_area) in cols.iter().enumerate() {
+            let idx = row * 4 + col;
+            render_encoder_cell(frame, *cell_area, data, idx);
+        }
+    }
+}
+
+fn render_encoder_cell(frame: &mut Frame, area: Rect, data: &RenderData, idx: usize) {
+    let cursor = if data.encoder_cursor == idx { ">" } else { " " };
+    let cell = data.encoder_cells.get(idx).and_then(|c| c.as_ref());
+    let line = match cell {
+        Some(c) => {
+            let ratio = ((c.value - c.min) / (c.max - c.min).max(0.001)).clamp(0.0, 1.0);
+            let filled = (ratio * 4.0).round() as usize;
+            let bar = "█".repeat(filled) + &"░".repeat(4 - filled);
+            let flash = data.encoder_flash.get(idx).copied().unwrap_or(false);
+            let color = if flash { Color::Yellow } else { Color::White };
+            Line::styled(
+                format!("{cursor}{} {} {:.2}", c.name, bar, c.value),
+                Style::default().fg(color),
+            )
+        }
+        None => Line::styled(
+            format!("{cursor}--"),
+            Style::default().fg(Color::DarkGray),
+        ),
+    };
+    frame.render_widget(Paragraph::new(line), area);
 }
 
 fn render_page_tabs(frame: &mut Frame, area: Rect, data: &RenderData) {
@@ -273,7 +341,16 @@ fn render_page_tabs(frame: &mut Frame, area: Rect, data: &RenderData) {
             }
         })
         .collect();
-    let line = tabs.join("  ");
+    let mut line = tabs.join("  ");
+    // TK2 C5 (§0 A11): a page over 8 params splits into sub-pages instead
+    // of truncating — shown only when there's more than one to indicate.
+    if data.sub_page_count > 1 {
+        line.push_str(&format!(
+            "   ¶{}/{}",
+            data.sub_page + 1,
+            data.sub_page_count
+        ));
+    }
     let para = Paragraph::new(line).style(Style::default().fg(Color::Yellow));
     frame.render_widget(para, area);
 }
@@ -469,6 +546,19 @@ fn render_status_line(frame: &mut Frame, area: Rect, data: &RenderData) {
                 None => "B:--".to_string(),
             };
             spans.push(Span::styled(b_text, Style::default().fg(b_color)));
+            spans.push(Span::raw(" "));
+            // TK2 C5 (D13): slot C, extending A/B.
+            let c_color = if data.slot_c_flash {
+                Color::Yellow
+            } else {
+                Color::White
+            };
+            let c_lock = if data.slot_c_locked { "L" } else { "" };
+            let c_text = match &data.slot_c {
+                Some(s) => format!("C:{}={:.3}{}", s.param_name, data.slot_c_value, c_lock),
+                None => "C:--".to_string(),
+            };
+            spans.push(Span::styled(c_text, Style::default().fg(c_color)));
         }
         // TK2 C6 builds these screens; until then, no stale slot A/B info
         // next to the "not yet implemented" placeholder (review finding,
@@ -512,7 +602,16 @@ impl RenderData {
             cmdline_error: None,
             cmdline_candidates: vec![],
             slot_a_flash: false,
+            slot_c: None,
+            slot_c_value: 0.0,
+            slot_c_locked: false,
+            slot_c_flash: false,
             slot_b_flash: false,
+            sub_page: 0,
+            sub_page_count: 1,
+            encoder_cells: vec![None; 8],
+            encoder_cursor: 0,
+            encoder_flash: vec![false; 8],
             help_visible: false,
         }
     }
@@ -560,7 +659,16 @@ mod tests {
             cmdline_error: None,
             cmdline_candidates: vec![],
             slot_a_flash: false,
+            slot_c: None,
+            slot_c_value: 0.0,
+            slot_c_locked: false,
+            slot_c_flash: false,
             slot_b_flash: false,
+            sub_page: 0,
+            sub_page_count: 1,
+            encoder_cells: vec![None; 8],
+            encoder_cursor: 0,
+            encoder_flash: vec![false; 8],
             help_visible: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
@@ -620,7 +728,16 @@ mod tests {
             cmdline_error: None,
             cmdline_candidates: vec![],
             slot_a_flash: false,
+            slot_c: None,
+            slot_c_value: 0.0,
+            slot_c_locked: false,
+            slot_c_flash: false,
             slot_b_flash: false,
+            sub_page: 0,
+            sub_page_count: 1,
+            encoder_cells: vec![None; 8],
+            encoder_cursor: 0,
+            encoder_flash: vec![false; 8],
             help_visible: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
@@ -662,7 +779,16 @@ mod tests {
             cmdline_error: None,
             cmdline_candidates: vec![],
             slot_a_flash: false,
+            slot_c: None,
+            slot_c_value: 0.0,
+            slot_c_locked: false,
+            slot_c_flash: false,
             slot_b_flash: false,
+            sub_page: 0,
+            sub_page_count: 1,
+            encoder_cells: vec![None; 8],
+            encoder_cursor: 0,
+            encoder_flash: vec![false; 8],
             help_visible: false,
         };
         let backend = ratatui::backend::TestBackend::new(80, 24);
@@ -715,5 +841,44 @@ mod tests {
                 "help overlay must list panel button/concept {token}; got: {text}"
             );
         }
+    }
+
+    #[test]
+    fn param_screen_shows_eight_encoders() {
+        let backend = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Param(0), 1);
+        data.encoder_cells = vec![
+            Some(EncoderCell {
+                name: "decay".into(),
+                value: 0.5,
+                min: 0.0,
+                max: 1.0,
+            }),
+            Some(EncoderCell {
+                name: "tune".into(),
+                value: 0.25,
+                min: 0.0,
+                max: 1.0,
+            }),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ];
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("decay") && text.contains("tune"),
+            "the Param screen must render all populated encoder cells; got: {text}"
+        );
+        assert!(
+            text.matches("--").count() >= 6,
+            "encoder cells past the page's param count must render blank, not \
+             a malformed cell; got: {text}"
+        );
     }
 }

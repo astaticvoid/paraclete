@@ -48,6 +48,12 @@ pub struct TheotokosApp {
     tuning: Tuning,
     jog_a: JogTracker,
     jog_b: JogTracker,
+    /// TK2 C5 (D13): slot C's own ramp tracker (fixes the TK1 `Slot::C`
+    /// no-op — review finding, post-C5 hostile review).
+    jog_c: JogTracker,
+    /// TK2 C5 (D8): one ramp/acceleration tracker per encoder column,
+    /// reusing the TK1 jog ramp machinery (`Tuning::jog_step`).
+    encoder_trackers: [JogTracker; 8],
     last_debug_event: Option<String>,
     /// TK2 C3 (D11): flat user keymap. Empty by default; C8 adds YAML
     /// load/save and the `:bind` verb family.
@@ -89,6 +95,8 @@ impl TheotokosApp {
             tuning: Tuning::default(),
             jog_a: JogTracker::new(),
             jog_b: JogTracker::new(),
+            jog_c: JogTracker::new(),
+            encoder_trackers: std::array::from_fn(|_| JogTracker::new()),
             last_debug_event: None,
             keymap: Keymap::default(),
             held: HeldState::new(kitty),
@@ -164,9 +172,18 @@ impl TheotokosApp {
             .as_ref()
             .map(|s| self.model.read_param_value(bus, s.node_id, s.param_id))
             .unwrap_or(0.0);
+        let slot_c_value = self
+            .model
+            .slot_c
+            .as_ref()
+            .map(|s| self.model.read_param_value(bus, s.node_id, s.param_id))
+            .unwrap_or(0.0);
 
         self.model.update_flash(0, slot_a_value);
         self.model.update_flash(1, slot_b_value);
+        // TK2 C5 (D13): slot C flashes too — was bound but never tracked
+        // (review finding, post-C5 hostile review).
+        self.model.update_flash(2, slot_c_value);
 
         let envelope = self.model.envelope_for_active_track().map(|e| {
             let val = self.model.read_param_value(bus, e.node_id, e.param_id);
@@ -188,8 +205,40 @@ impl TheotokosApp {
             })
             .collect();
 
+        // TK2 C5 (D8/§0 A11): the active page's params in Rule order,
+        // restricted to the current sub-page's 8-wide window (pages with
+        // more than 8 params split into sub-pages instead of silently
+        // truncating). Resolved fresh each render, matching the jog
+        // dispatch below.
+        let encoder_params = self.model.resolve_encoder_params();
+        let encoder_cells: Vec<Option<render::EncoderCell>> = (0..8)
+            .map(|i| {
+                encoder_params.get(i).map(|(nid, pid, name, min, max)| {
+                    let value = self.model.read_param_value(bus, *nid, *pid);
+                    render::EncoderCell {
+                        name: name.clone(),
+                        value,
+                        min: *min,
+                        max: *max,
+                    }
+                })
+            })
+            .collect();
+        for (i, cell) in encoder_cells.iter().enumerate() {
+            if let Some(c) = cell {
+                self.model.update_encoder_flash(i, c.value);
+            }
+        }
+        let encoder_flash: Vec<bool> = (0..8)
+            .map(|i| {
+                self.model.encoder_flash[i]
+                    .is_some_and(|t| t.elapsed().as_millis() < self.tuning.flash_ms as u128)
+            })
+            .collect();
+
         let mut slot_a_locked = false;
         let mut slot_b_locked = false;
+        let mut slot_c_locked = false;
         if let Some(focus) = step_focuses.get(self.model.active_track).copied().flatten() {
             if let Some(ref s) = self.model.slot_a {
                 let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
@@ -201,6 +250,13 @@ impl TheotokosApp {
             if let Some(ref s) = self.model.slot_b {
                 let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
                 slot_b_locked = self
+                    .model
+                    .read_lock_value(bus, seq_id, focus, s.node_id, s.param_id)
+                    .is_some();
+            }
+            if let Some(ref s) = self.model.slot_c {
+                let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
+                slot_c_locked = self
                     .model
                     .read_lock_value(bus, seq_id, focus, s.node_id, s.param_id)
                     .is_some();
@@ -226,8 +282,12 @@ impl TheotokosApp {
             slot_a_value,
             slot_b: self.model.slot_b.clone(),
             slot_b_value,
+            slot_c: self.model.slot_c.clone(),
+            slot_c_value,
             page_groups: self.model.page_groups_for_active_track(),
             perf_page: self.model.perf_page,
+            sub_page: self.model.sub_page,
+            sub_page_count: self.model.page_sub_page_count(),
             envelope,
             debug_event: self.last_debug_event.take(),
             step_focuses,
@@ -235,6 +295,7 @@ impl TheotokosApp {
             mute_states,
             slot_a_locked,
             slot_b_locked,
+            slot_c_locked,
             cmdline: self.model.cmdline.clone(),
             cmdline_error: self.model.cmdline_error.clone(),
             cmdline_candidates: self.model.cmdline_candidates(),
@@ -244,7 +305,13 @@ impl TheotokosApp {
             slot_b_flash: self.model.slot_flash[1].map_or(false, |t| {
                 t.elapsed().as_millis() < self.tuning.flash_ms as u128
             }),
+            slot_c_flash: self.model.slot_flash[2].map_or(false, |t| {
+                t.elapsed().as_millis() < self.tuning.flash_ms as u128
+            }),
             help_visible: self.model.help_visible,
+            encoder_cells,
+            encoder_cursor: self.model.encoder_cursor,
+            encoder_flash,
         };
 
         drop(bus_ref);
@@ -413,13 +480,13 @@ impl TheotokosApp {
                         let binding = match slot {
                             Slot::A => &self.model.slot_a,
                             Slot::B => &self.model.slot_b,
-                            Slot::C => continue,
+                            Slot::C => &self.model.slot_c,
                         };
                         if let Some(ref b) = binding {
                             let tracker = match slot {
                                 Slot::A => &mut self.jog_a,
                                 Slot::B => &mut self.jog_b,
-                                Slot::C => continue,
+                                Slot::C => &mut self.jog_c,
                             };
                             let held = match tracker.repeat(now, tick_ms) {
                                 Some(h) => h,
@@ -460,13 +527,13 @@ impl TheotokosApp {
                         let binding = match slot {
                             Slot::A => &self.model.slot_a,
                             Slot::B => &self.model.slot_b,
-                            Slot::C => continue,
+                            Slot::C => &self.model.slot_c,
                         };
                         if let Some(ref b) = binding {
                             let tracker = match slot {
                                 Slot::A => &mut self.jog_a,
                                 Slot::B => &mut self.jog_b,
-                                Slot::C => continue,
+                                Slot::C => &mut self.jog_c,
                             };
                             let held = match tracker.repeat(now, tick_ms) {
                                 Some(h) => h,
@@ -625,9 +692,18 @@ impl TheotokosApp {
                 }
                 Action::OpenScreen(screen) => {
                     self.model.screen = screen;
+                    // A different page opening always starts at sub-page 0
+                    // (§0 A11) — `NextSubPage`, below, is the only thing
+                    // that advances it.
+                    self.model.sub_page = 0;
                     if let Screen::Param(idx) = screen {
                         self.model.select_perf_page(idx);
                     }
+                    dirty = true;
+                }
+                Action::NextSubPage => {
+                    let count = self.model.page_sub_page_count().max(1);
+                    self.model.sub_page = (self.model.sub_page + 1) % count;
                     dirty = true;
                 }
                 // TK2 C4 (D7): FUNC+REC/PLAY/STOP copy/clear/paste,
@@ -662,8 +738,70 @@ impl TheotokosApp {
                     self.paste_pattern(state);
                     dirty = true;
                 }
-                // TK2 C5/C6 territory — no dispatch yet.
-                Action::EncoderJog { .. } | Action::TapTempo => {}
+                // TK2 C5 (D8/§0 A11): encoder N = the active sub-page's Nth
+                // param in Rule order. Beyond the sub-page's param count is
+                // a no-op + echo, not a malformed command. Under step
+                // focus, jog routes to that step's p-lock instead of a
+                // live bump — the same TK1 step-focus path `Action::Jog`
+                // uses (CMD 33/34), reusing the ramp/acceleration
+                // machinery (`Tuning::jog_step`) via a per-column tracker.
+                Action::EncoderJog { col, dir, mag } => {
+                    let params = self.model.resolve_encoder_params();
+                    match params.get(col).cloned() {
+                        None => {
+                            self.model.cmdline_error = Some(format!("no encoder {}", col + 1));
+                        }
+                        Some((node_id, param_id, _name, min, max)) => {
+                            let track = self.model.active_track;
+                            let tracker = &mut self.encoder_trackers[col];
+                            let held = match tracker.repeat(now, tick_ms) {
+                                Some(h) => h,
+                                None => {
+                                    tracker.press(now, tick_ms);
+                                    0
+                                }
+                            };
+                            let range = max - min;
+                            let delta = self.tuning.jog_step(range, held, mag);
+                            let signed = match dir {
+                                Dir::Next => delta,
+                                Dir::Prev => -delta,
+                            };
+                            if let Some(step) = self.model.step_focus[track] {
+                                let seq_id = self.model.tracks[track].sequencer_id;
+                                let current = self
+                                    .model
+                                    .read_lock_value(state, seq_id, step, node_id, param_id)
+                                    .unwrap_or_else(|| {
+                                        self.model.read_param_value(state, node_id, param_id)
+                                    });
+                                let new_value = (current + signed).clamp(min, max);
+                                self.pending.push(NodeCommand {
+                                    target_id: seq_id,
+                                    type_id: CMD_SET_LOCK_TARGET,
+                                    arg0: node_id as i64,
+                                    arg1: param_id as f64,
+                                });
+                                self.pending.push(NodeCommand {
+                                    target_id: seq_id,
+                                    type_id: CMD_SET_STEP_LOCK,
+                                    arg0: step as i64,
+                                    arg1: new_value,
+                                });
+                            } else {
+                                self.pending.push(NodeCommand {
+                                    target_id: node_id,
+                                    type_id: paraclete_node_api::CMD_BUMP_PARAM,
+                                    arg0: param_id as i64,
+                                    arg1: signed,
+                                });
+                            }
+                        }
+                    }
+                    dirty = true;
+                }
+                // TK2 C6 territory — no dispatch yet.
+                Action::TapTempo => {}
             }
         }
         drop(bus_ref);
@@ -1010,7 +1148,9 @@ mod tests {
     use super::*;
     use crate::model::{SlotBinding, TrackInfo};
     use crossterm::event::{KeyCode, KeyModifiers};
-    use paraclete_node_api::{CapabilityDocument, ParamDescriptor, ParamUnit, Rule, StateBusValue};
+    use paraclete_node_api::{
+        CapabilityDocument, PageRef, ParamDescriptor, ParamUnit, Rule, StateBusValue,
+    };
     use std::borrow::Cow;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1072,6 +1212,18 @@ mod tests {
                         unit: ParamUnit::Generic,
                         display: None,
                     },
+                    // TK2 C5: a 3rd param so slot C (D13) and encoder-bank
+                    // tests have something past decay/tune to resolve.
+                    ParamDescriptor {
+                        id: ParamDescriptor::id_for_name("width"),
+                        name: "width".into(),
+                        min: 0.0,
+                        max: 1.0,
+                        default: 0.5,
+                        stepped: false,
+                        unit: ParamUnit::Generic,
+                        display: None,
+                    },
                 ],
                 extensions: vec![],
                 view: Some(empty_rule),
@@ -1115,6 +1267,8 @@ mod tests {
             tuning: Tuning::default(),
             jog_a: JogTracker::new(),
             jog_b: JogTracker::new(),
+            jog_c: JogTracker::new(),
+            encoder_trackers: std::array::from_fn(|_| JogTracker::new()),
             last_debug_event: None,
             keymap: Keymap::default(),
             held: HeldState::new(false),
@@ -1421,6 +1575,336 @@ mod tests {
             app.pending.is_empty(),
             "FUNC+Space must not clear the pattern; got {:?}",
             app.pending
+        );
+    }
+
+    // ── TK2 C5: encoder bank (D8) ──
+
+    /// A legacy-terminal FUNC+top-row-trig chord (§0 A1's uppercase+SHIFT
+    /// shape) — resolves to encoder jog (`col < 8` in the top row).
+    fn func_trig(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c.to_ascii_uppercase()), KeyModifiers::SHIFT)
+    }
+
+    /// FUNC+Ctrl+trig: fine magnitude (D8).
+    fn func_fine_trig(c: char) -> KeyEvent {
+        KeyEvent::new(
+            KeyCode::Char(c.to_ascii_uppercase()),
+            KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+        )
+    }
+
+    /// A capability doc with a real, populated `Rule` whose `param_pages`
+    /// slot assignment is the REVERSE of param declaration order — proves
+    /// encoder resolution follows the Rule's `slot` field, not incidental
+    /// `Vec` position. (`test_caps()`'s shared `empty_rule` has no
+    /// `page_groups`, so every test using it hits the plain
+    /// cap.params-declaration-order fallback, never this sort — review
+    /// finding, post-C5 hostile review.)
+    fn rule_ordered_caps() -> HashMap<u32, CapabilityDocument> {
+        let decay_id = ParamDescriptor::id_for_name("decay");
+        let tune_id = ParamDescriptor::id_for_name("tune");
+        let rule = Rule {
+            name: "Engine".into(),
+            page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG")]),
+            param_pages: Cow::Owned(vec![
+                // Declared decay-then-tune below, but Rule order is
+                // tune (slot 0) then decay (slot 1) — the reverse.
+                (tune_id, PageRef {
+                    page: Cow::Borrowed("TRIG"),
+                    slot: 0,
+                }),
+                (decay_id, PageRef {
+                    page: Cow::Borrowed("TRIG"),
+                    slot: 1,
+                }),
+            ]),
+            macros: Cow::Borrowed(&[]),
+            affordances: Cow::Borrowed(&[]),
+            envelopes: Cow::Borrowed(&[]),
+            routing: Cow::Borrowed(&[]),
+            diagram: None,
+            view_overrides: Cow::Borrowed(&[]),
+        };
+        let mut caps = HashMap::new();
+        caps.insert(
+            100,
+            CapabilityDocument {
+                name: "Engine".into(),
+                vendor: "test".into(),
+                version: (0, 1, 0),
+                ports: vec![],
+                params: vec![
+                    ParamDescriptor {
+                        id: decay_id,
+                        name: "decay".into(),
+                        min: 0.0,
+                        max: 1.0,
+                        default: 0.5,
+                        stepped: false,
+                        unit: ParamUnit::Generic,
+                        display: None,
+                    },
+                    ParamDescriptor {
+                        id: tune_id,
+                        name: "tune".into(),
+                        min: 0.0,
+                        max: 1.0,
+                        default: 0.0,
+                        stepped: false,
+                        unit: ParamUnit::Generic,
+                        display: None,
+                    },
+                ],
+                extensions: vec![],
+                view: Some(rule),
+            },
+        );
+        caps.insert(
+            200,
+            CapabilityDocument {
+                name: "Seq".into(),
+                vendor: "test".into(),
+                version: (0, 1, 0),
+                ports: vec![],
+                params: vec![],
+                extensions: vec![],
+                view: None,
+            },
+        );
+        caps
+    }
+
+    #[test]
+    fn encoder_col_maps_to_page_param_in_rule_order() {
+        let bus = test_bus();
+        let mut app = TheotokosApp {
+            model: Model::new(1, &[200], &[100], &["T1".into()], rule_ordered_caps(), vec![]),
+            pending: Vec::new(),
+            quit: false,
+            dirty: true,
+            last_render: Instant::now(),
+            frame_ms: 1000,
+            tuning: Tuning::default(),
+            jog_a: JogTracker::new(),
+            jog_b: JogTracker::new(),
+            jog_c: JogTracker::new(),
+            encoder_trackers: std::array::from_fn(|_| JogTracker::new()),
+            last_debug_event: None,
+            keymap: Keymap::default(),
+            held: HeldState::new(false),
+        };
+        let decay_id = ParamDescriptor::id_for_name("decay");
+        let tune_id = ParamDescriptor::id_for_name("tune");
+
+        // The Rule assigns tune to slot 0 and decay to slot 1 — the
+        // REVERSE of their declaration order — so encoder 1 (col 0, 'q')
+        // must resolve to tune, not decay, proving the slot sort runs.
+        app.handle_keys(&bus, &[func_trig('q')]);
+        assert!(
+            app.pending.iter().any(|c| c.type_id
+                == paraclete_node_api::CMD_BUMP_PARAM
+                && c.arg0 == tune_id as i64),
+            "encoder 1 must target the Rule's slot-0 param (tune), not decay"
+        );
+
+        app.pending.clear();
+        app.handle_keys(&bus, &[func_trig('w')]);
+        assert!(
+            app.pending.iter().any(|c| c.type_id
+                == paraclete_node_api::CMD_BUMP_PARAM
+                && c.arg0 == decay_id as i64),
+            "encoder 2 must target the Rule's slot-1 param (decay)"
+        );
+    }
+
+    #[test]
+    fn encoder_beyond_param_count_echoes_noop() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+
+        // test_caps' page has 3 params (decay/tune/width); encoder 4
+        // (col 3, 'r') is past the count.
+        app.handle_keys(&bus, &[func_trig('r')]);
+        assert!(
+            app.pending.is_empty(),
+            "must not emit a command past the page's param count"
+        );
+        assert_eq!(
+            app.model.cmdline_error.as_deref(),
+            Some("no encoder 4"),
+            "must echo the out-of-range encoder index"
+        );
+    }
+
+    #[test]
+    fn encoder_jog_emits_bump_param() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+
+        app.handle_keys(&bus, &[func_trig('q')]);
+        assert_eq!(app.pending.len(), 1, "without step focus, jog is a bump");
+        assert_eq!(app.pending[0].type_id, paraclete_node_api::CMD_BUMP_PARAM);
+        assert_eq!(app.pending[0].target_id, 100);
+    }
+
+    #[test]
+    fn encoder_fine_scales_step() {
+        let bus = test_bus();
+        let mut app_normal = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app_normal.handle_keys(&bus, &[func_trig('q')]);
+        let normal_delta = app_normal.pending[0].arg1.abs();
+
+        let mut app_fine = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app_fine.handle_keys(&bus, &[func_fine_trig('q')]);
+        let fine_delta = app_fine.pending[0].arg1.abs();
+
+        assert!(
+            fine_delta < normal_delta,
+            "FUNC+Ctrl must scale the step down: fine={fine_delta}, normal={normal_delta}"
+        );
+    }
+
+    #[test]
+    fn encoder_jog_routes_to_lock_when_step_focused() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.step_focus[0] = Some(3);
+
+        app.handle_keys(&bus, &[func_trig('q')]);
+        assert_eq!(app.pending.len(), 2, "focused jog must emit target + lock");
+        assert_eq!(app.pending[0].type_id, CMD_SET_LOCK_TARGET);
+        assert_eq!(app.pending[1].type_id, CMD_SET_STEP_LOCK);
+        assert_eq!(app.pending[1].arg0, 3, "step arg must be the focused step");
+    }
+
+    #[test]
+    fn page_select_rebinds_slots_a_b_c() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+
+        // test_caps' page has 3 params — all three numpad slots (D13,
+        // extended from TK1's 2) bind on construction/page select.
+        assert!(app.model.slot_a.is_some());
+        assert!(app.model.slot_b.is_some());
+        assert!(app.model.slot_c.is_some());
+        let c_before = app.model.slot_c.as_ref().unwrap().param_name.clone();
+        assert_eq!(c_before, "width");
+
+        // Re-selecting the same page (Pg1) re-resolves and rebinds again.
+        app.handle_keys(&bus, &[kc('1')]);
+        assert!(app.model.slot_a.is_some());
+        assert!(app.model.slot_b.is_some());
+        assert!(app.model.slot_c.is_some());
+    }
+
+    /// A capability doc with `n` params spread one-per-slot across a
+    /// single Rule page — enough to force multiple 8-wide sub-pages.
+    fn many_params_caps(n: usize) -> HashMap<u32, CapabilityDocument> {
+        let mut params = Vec::with_capacity(n);
+        let mut param_pages = Vec::with_capacity(n);
+        for i in 0..n {
+            let id = 1000 + i as u32;
+            params.push(ParamDescriptor {
+                id,
+                name: paraclete_node_api::PortName::Dynamic(format!("p{i}")),
+                min: 0.0,
+                max: 1.0,
+                default: 0.0,
+                stepped: false,
+                unit: ParamUnit::Generic,
+                display: None,
+            });
+            param_pages.push((
+                id,
+                PageRef {
+                    page: Cow::Borrowed("TRIG"),
+                    slot: i as u8,
+                },
+            ));
+        }
+        let rule = Rule {
+            name: "Engine".into(),
+            page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG")]),
+            param_pages: Cow::Owned(param_pages),
+            macros: Cow::Borrowed(&[]),
+            affordances: Cow::Borrowed(&[]),
+            envelopes: Cow::Borrowed(&[]),
+            routing: Cow::Borrowed(&[]),
+            diagram: None,
+            view_overrides: Cow::Borrowed(&[]),
+        };
+        let mut caps = HashMap::new();
+        caps.insert(
+            100,
+            CapabilityDocument {
+                name: "Engine".into(),
+                vendor: "test".into(),
+                version: (0, 1, 0),
+                ports: vec![],
+                params,
+                extensions: vec![],
+                view: Some(rule),
+            },
+        );
+        caps.insert(
+            200,
+            CapabilityDocument {
+                name: "Seq".into(),
+                vendor: "test".into(),
+                version: (0, 1, 0),
+                ports: vec![],
+                params: vec![],
+                extensions: vec![],
+                view: None,
+            },
+        );
+        caps
+    }
+
+    /// §0 A11: a page over 8 params must split into sub-pages instead of
+    /// silently truncating — the same Pg key pressed again while already
+    /// on that page cycles it (§0 A1 hypothesis) — post-C5 hostile review
+    /// blocker fix (this behavior was entirely absent before).
+    #[test]
+    fn same_pg_key_cycles_sub_page() {
+        let bus = test_bus();
+        let mut app = TheotokosApp {
+            model: Model::new(1, &[200], &[100], &["T1".into()], many_params_caps(10), vec![]),
+            pending: Vec::new(),
+            quit: false,
+            dirty: true,
+            last_render: Instant::now(),
+            frame_ms: 1000,
+            tuning: Tuning::default(),
+            jog_a: JogTracker::new(),
+            jog_b: JogTracker::new(),
+            jog_c: JogTracker::new(),
+            encoder_trackers: std::array::from_fn(|_| JogTracker::new()),
+            last_debug_event: None,
+            keymap: Keymap::default(),
+            held: HeldState::new(false),
+        };
+
+        // 10 params split into 2 sub-pages (8 + 2).
+        app.handle_keys(&bus, &[kc('1')]);
+        assert_eq!(app.model.sub_page, 0);
+        assert_eq!(app.model.page_sub_page_count(), 2);
+
+        // Pg1 again (already on Param(0)) cycles the sub-page, not a reopen.
+        app.handle_keys(&bus, &[kc('1')]);
+        assert_eq!(
+            app.model.sub_page, 1,
+            "the same Pg key pressed again must cycle sub-page, not reopen at 0"
+        );
+
+        // Encoder col 0 on sub-page 1 must resolve to slot 8's param, not slot 0's.
+        app.handle_keys(&bus, &[func_trig('q')]);
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.type_id == paraclete_node_api::CMD_BUMP_PARAM && c.arg0 == 1008),
+            "encoder col 0 on sub-page 1 must target the param at slot 8"
         );
     }
 
