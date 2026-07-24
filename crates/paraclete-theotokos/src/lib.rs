@@ -17,10 +17,12 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::action::{
-    Action, Outcome, CMD_CLEAR_STEP_LOCK, CMD_SET_LOCK_TARGET, CMD_SET_STEP_LOCK, GRID_STEPS,
+    Action, Outcome, CMD_CLEAR_STEP_LOCK, CMD_SET_LOCK_TARGET, CMD_SET_STEP_LOCK, CMD_SET_PATTERN,
+    CMD_TRIG_NOW, GRID_STEPS, PATTERN_BANK_SIZE,
 };
+use crate::input::{button_to_action, key_to_button, HeldState, Keymap, Mods};
 use crate::model::{
-    CmdlineVerb, Dir, JogTracker, LeaderState, Model, Slot, Tuning, YankedLock, YankedStep,
+    CmdlineVerb, Dir, JogTracker, Model, Screen, Slot, Tuning, YankedLock, YankedStep,
 };
 
 pub type BusHandle = Rc<RefCell<StateBusHandle>>;
@@ -47,6 +49,11 @@ pub struct TheotokosApp {
     jog_a: JogTracker,
     jog_b: JogTracker,
     last_debug_event: Option<String>,
+    /// TK2 C3 (D11): flat user keymap. Empty by default; C8 adds YAML
+    /// load/save and the `:bind` verb family.
+    keymap: Keymap,
+    /// TK2 C3 (D6): TRK/PTN hold-chord state — kitty-probed at startup.
+    held: HeldState,
 }
 
 impl TheotokosApp {
@@ -68,6 +75,10 @@ impl TheotokosApp {
             33
         };
 
+        // D6: without kitty keyboard-enhancement release events, the hold
+        // chord falls back to the sticky one-shot grammar (§0 A9).
+        let kitty = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
+
         Ok(Self {
             model,
             pending: Vec::with_capacity(64),
@@ -79,6 +90,8 @@ impl TheotokosApp {
             jog_a: JogTracker::new(),
             jog_b: JogTracker::new(),
             last_debug_event: None,
+            keymap: Keymap::default(),
+            held: HeldState::new(kitty),
         })
     }
 
@@ -103,7 +116,9 @@ impl TheotokosApp {
         while event::poll(std::time::Duration::ZERO).map_err(|e| e.to_string())? {
             match event::read().map_err(|e| e.to_string())? {
                 Event::Key(ev) => {
-                    if is_press_or_repeat(ev) {
+                    // TK2 C3 (D6): a kitty terminal needs Release events
+                    // too, to disarm a real-hold TRK/PTN prefix.
+                    if self.held.kitty || is_press_or_repeat(ev) {
                         events.push(ev);
                     }
                 }
@@ -183,7 +198,13 @@ impl TheotokosApp {
         }
 
         let render_data = render::RenderData {
-            mode: self.model.mode,
+            screen: self.model.screen,
+            grid_rec: self.model.grid_rec,
+            armed_prefix: match self.held.armed {
+                Some(input::Hold::Trk) => Some("TRK…".to_string()),
+                Some(input::Hold::Ptn) => Some("PTN…".to_string()),
+                None => None,
+            },
             active_track: self.model.active_track,
             track_names: self.model.tracks.iter().map(|t| t.name.clone()).collect(),
             bpm,
@@ -206,7 +227,6 @@ impl TheotokosApp {
             cmdline: self.model.cmdline.clone(),
             cmdline_error: self.model.cmdline_error.clone(),
             cmdline_candidates: self.model.cmdline_candidates(),
-            leader: self.model.leader.clone(),
             slot_a_flash: self.model.slot_flash[0].map_or(false, |t| {
                 t.elapsed().as_millis() < self.tuning.flash_ms as u128
             }),
@@ -239,33 +259,112 @@ impl TheotokosApp {
         let mut dirty = false;
         let mut selected_changed = false;
         for ev in key_events {
-            // C7: while leader is active, route to leader chord handler
-            if self.model.leader.is_some() {
-                self.handle_leader_key(ev);
-                dirty = true;
-                continue;
-            }
             // C6: while cmdline is open, capture ALL keys to the line editor
             if self.model.cmdline.is_some() {
                 self.handle_cmdline_key(ev);
                 dirty = true;
                 continue;
             }
-            let action = input::map_key(self.model.mode, ev);
+
+            // TK2 C3 (D14, §2): Ctrl-C, `:`, `?`, Backspace are fixed
+            // utility keys outside the panel/keymap system entirely —
+            // "unchanged from TK1" (§2); Ctrl-C and `:` are also
+            // explicitly unbindable (D14). They do not interact with the
+            // TRK/PTN hold-chord state machine below.
+            let direct_action: Option<Action> = if ev.code == KeyCode::Char('c')
+                && ev.modifiers == KeyModifiers::CONTROL
+            {
+                Some(Action::Quit)
+            } else if matches!(ev.code, KeyCode::Char(':'))
+                || (ev.code == KeyCode::Char(';') && ev.modifiers.contains(KeyModifiers::SHIFT))
+            {
+                // A6: `:` any-modifiers is the primary binding; `;`+SHIFT
+                // is kept as the legacy alias.
+                Some(Action::Colon)
+            } else if ev.code == KeyCode::Char('?') {
+                Some(Action::ToggleHelp)
+            } else if ev.code == KeyCode::Backspace {
+                Some(if ev.modifiers.contains(KeyModifiers::SHIFT) {
+                    Action::ClearSlotLocks
+                } else {
+                    Action::ClearAllLocks
+                })
+            } else {
+                None
+            };
+
+            let action = match direct_action {
+                Some(a) => {
+                    // D6: "any non-trig key disarms" — these direct keys
+                    // bypass the button/hold system entirely, but a sticky
+                    // (non-kitty) armed prefix must still drop on any other
+                    // key. Kitty's real-hold prefix is exempt: it disarms
+                    // only on physical release, not on an unrelated key
+                    // pressed while TRK/PTN is still held down.
+                    if !self.held.kitty {
+                        self.held.armed = None;
+                    }
+                    a
+                }
+                None => {
+                    let button = match key_to_button(&self.keymap, *ev) {
+                        Some(b) => b,
+                        None => continue,
+                    };
+                    let mods = Mods {
+                        func: input::func_held(ev),
+                        ctrl: ev.modifiers.contains(KeyModifiers::CONTROL),
+                    };
+
+                    // D6: resolve against the hold state as it stood
+                    // BEFORE this press — a completed chord (on_press /
+                    // on_kitty_press already disarmed it as a side effect)
+                    // must still resolve using the prefix that was armed
+                    // when the trig landed.
+                    let armed_before = self.held.armed;
+                    let consumed = if self.held.kitty {
+                        match ev.kind {
+                            KeyEventKind::Release => {
+                                self.held.on_kitty_release(button);
+                                true
+                            }
+                            _ => self.held.on_kitty_press(button),
+                        }
+                    } else {
+                        self.held.on_press(button)
+                    };
+                    if consumed {
+                        dirty = true;
+                        continue;
+                    }
+
+                    let held_for_resolution = HeldState {
+                        kitty: self.held.kitty,
+                        armed: armed_before,
+                        pressed: Default::default(),
+                    };
+                    let screen_state = input::ScreenState {
+                        screen: self.model.screen,
+                        grid_rec: self.model.grid_rec,
+                    };
+                    button_to_action(&held_for_resolution, &screen_state, button, mods)
+                }
+            };
+
             if !matches!(action, Action::Noop) || self.last_debug_event.is_some() {
                 self.last_debug_event = Some(format!("{:?} → {:?}", ev, action));
             }
 
             match action {
                 Action::Quit => self.quit = true,
-                Action::CycleMode(_) => {
-                    self.model.cycle_mode();
-                    dirty = true;
-                }
                 Action::SelectTrack(i) => {
-                    self.model.select_track(i);
+                    if i < self.model.tracks.len() {
+                        self.model.select_track(i);
+                        selected_changed = true;
+                    } else {
+                        self.model.cmdline_error = Some(format!("no track {}", i + 1));
+                    }
                     dirty = true;
-                    selected_changed = true;
                 }
                 Action::PageWindow(dir) => {
                     let max_page = self
@@ -282,10 +381,6 @@ impl TheotokosApp {
                             }
                         }
                     }
-                    dirty = true;
-                }
-                Action::SelectParamPage(idx) => {
-                    self.model.select_perf_page(idx);
                     dirty = true;
                 }
                 Action::Jog { slot, dir, mag } => {
@@ -460,28 +555,6 @@ impl TheotokosApp {
                         dirty = true;
                     }
                 }
-                Action::PatternSelect(n) => {
-                    let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
-                    self.pending.push(paraclete_node_api::NodeCommand {
-                        target_id: seq_id,
-                        type_id: 27, // CMD_SET_PATTERN
-                        arg0: n as i64,
-                        arg1: 0.0,
-                    });
-                    dirty = true;
-                }
-                Action::Yank => {
-                    self.yank_active_pattern(state);
-                    dirty = true;
-                }
-                Action::Paste => {
-                    self.paste_pattern(state);
-                    dirty = true;
-                }
-                Action::Leader => {
-                    self.model.leader = Some(LeaderState { slot: None });
-                    dirty = true;
-                }
                 Action::ToggleHelp => {
                     self.model.help_visible = !self.model.help_visible;
                     dirty = true;
@@ -491,16 +564,50 @@ impl TheotokosApp {
                     self.model.cmdline_error = None;
                     dirty = true;
                 }
-                // TK2 C2 (§0 A4, additive-only): these actions exist so
-                // `input::button_to_action`'s pure functions can be typed
-                // and tested; nothing in this TK1 dispatch produces them
-                // yet, so there is nothing to wire until C3's wiring flip.
-                Action::SelectPattern(_)
-                | Action::LiveTrig { .. }
-                | Action::EncoderJog { .. }
-                | Action::ToggleGridRec
-                | Action::OpenScreen(_)
-                | Action::TapTempo => {}
+                // TK2 C2/C3 (D9): PTN-hold + trig. Clamped against the
+                // engine's fixed pattern bank (mirrors Sequencer's
+                // PATTERN_BANK_SIZE); out of range is a no-op + echo, not
+                // a malformed command.
+                Action::SelectPattern(n) => {
+                    if n < PATTERN_BANK_SIZE {
+                        let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
+                        self.pending.push(NodeCommand {
+                            target_id: seq_id,
+                            type_id: CMD_SET_PATTERN,
+                            arg0: n as i64,
+                            arg1: 0.0,
+                        });
+                    } else {
+                        self.model.cmdline_error = Some(format!("no pattern {}", n + 1));
+                    }
+                    dirty = true;
+                }
+                // TK2 C1/C3 (D5): a trig fired with grid-rec off. Not tied
+                // to any step or column — arg0/arg1 = 0 resolve to the
+                // engine's defaults (note 60, velocity 0.5).
+                Action::LiveTrig { .. } => {
+                    let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
+                    self.pending.push(NodeCommand {
+                        target_id: seq_id,
+                        type_id: CMD_TRIG_NOW,
+                        arg0: 0,
+                        arg1: 0.0,
+                    });
+                    dirty = true;
+                }
+                Action::ToggleGridRec => {
+                    self.model.grid_rec = !self.model.grid_rec;
+                    dirty = true;
+                }
+                Action::OpenScreen(screen) => {
+                    self.model.screen = screen;
+                    if let Screen::Param(idx) = screen {
+                        self.model.select_perf_page(idx);
+                    }
+                    dirty = true;
+                }
+                // TK2 C5/C6 territory — no dispatch yet.
+                Action::EncoderJog { .. } | Action::TapTempo => {}
             }
         }
         drop(bus_ref);
@@ -642,41 +749,14 @@ impl TheotokosApp {
                     });
                 }
             }
-            CmdlineVerb::Mode(mode) => {
-                self.model.mode = mode;
-            }
         }
     }
 
-    // ── C7: leader, yank, paste ──
-
-    fn handle_leader_key(&mut self, ev: &KeyEvent) {
-        let leader = match &mut self.model.leader {
-            Some(s) => s,
-            None => return,
-        };
-        match ev.code {
-            KeyCode::Esc => {
-                self.model.leader = None;
-            }
-            KeyCode::Char('a') | KeyCode::Char('A') => {
-                leader.slot = Some(Slot::A);
-            }
-            KeyCode::Char('b') | KeyCode::Char('B') => {
-                leader.slot = Some(Slot::B);
-            }
-            KeyCode::Char(c @ '1'..='9') if leader.slot.is_some() => {
-                let slot = leader.slot.unwrap();
-                let dig = c.to_digit(10).unwrap() as usize;
-                self.model.set_slot_lead(slot, dig);
-                self.model.leader = None;
-            }
-            _ => {
-                self.model.leader = None;
-            }
-        }
-    }
-
+    // ── C7: yank, paste ──
+    //
+    // No caller since the TK2 C3 wiring flip retired the TK1 `y`/`Y` keys
+    // (§2); TK2 C4 rewires FUNC+REC/STOP onto these unchanged (D7).
+    #[allow(dead_code)]
     fn yank_active_pattern(&mut self, bus: &StateBusHandle) {
         let track = self.model.active_track;
         if track >= self.model.tracks.len() {
@@ -739,6 +819,7 @@ impl TheotokosApp {
         self.model.yank_buffer = yanked;
     }
 
+    #[allow(dead_code)]
     fn paste_pattern(&mut self, bus: &StateBusHandle) {
         if self.model.yank_buffer.is_empty() {
             return;
@@ -848,9 +929,18 @@ fn is_press_or_repeat(ev: KeyEvent) -> bool {
 
 fn setup_keyboard_flags() -> Result<(), String> {
     use crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+    // §0 A2: REPORT_EVENT_TYPES alone yields no release events for text
+    // keys (Tab, `p`, all trigs) — exactly the events TK2 C3's kitty
+    // hold-chord branch (HeldState::on_kitty_press/release) needs. Without
+    // the other two flags, TRK/PTN would arm on press and never receive
+    // the release that disarms them.
     execute!(
         std::io::stdout(),
-        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_EVENT_TYPES)
+        PushKeyboardEnhancementFlags(
+            KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+        )
     )
     .map(|_| {})
     .map_err(|e| format!("kitty flags: {e}"))
@@ -866,7 +956,7 @@ fn pop_keyboard_flags() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Mode, SlotBinding, TrackInfo};
+    use crate::model::{SlotBinding, TrackInfo};
     use crossterm::event::{KeyCode, KeyModifiers};
     use paraclete_node_api::{CapabilityDocument, ParamDescriptor, ParamUnit, Rule, StateBusValue};
     use std::borrow::Cow;
@@ -974,6 +1064,8 @@ mod tests {
             jog_a: JogTracker::new(),
             jog_b: JogTracker::new(),
             last_debug_event: None,
+            keymap: Keymap::default(),
+            held: HeldState::new(false),
         }
     }
 
@@ -1078,15 +1170,30 @@ mod tests {
         }
 
         app.model.page_windows[0] = 1;
-        app.handle_keys(&bus, &[kc('a')]);
+        // TK2 C3: the continuous grid claims 'a' as Trig9 (col 8); use
+        // 'q' (Trig1, col 0) to keep this test's intent (page-window
+        // offset arithmetic) independent of which column fires.
+        app.handle_keys(&bus, &[kc('q')]);
         let cmd = &app.pending[0];
         assert_eq!(cmd.target_id, 200);
         assert_eq!(cmd.type_id, 16);
         assert_eq!(cmd.arg0, 16);
     }
 
+    // TK2 C3: `select_track_publishes_selected_sequencer_id` and
+    // `keymap_shift_track_toggles_mute`/`mute_toggle_reads_bus_and_flips_value`
+    // tested the TK1 bare-`qweruiop` track row and Shift+track mute chord —
+    // both explicitly retired at the wiring flip (§2 removed-bindings
+    // list). Track select now goes through a TRK-hold + trig chord (see
+    // `select_track_via_trk_chord_publishes_selected` below); the mute
+    // chord moves to TRK-held + FUNC+trig in TK2 C4 (D7/A10).
+
+    fn tab_key() -> KeyEvent {
+        KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)
+    }
+
     #[test]
-    fn select_track_publishes_selected_sequencer_id() {
+    fn select_track_via_trk_chord_publishes_selected() {
         let bus = test_bus();
         let mut app = test_app(
             1,
@@ -1096,58 +1203,70 @@ mod tests {
         );
         assert_eq!(app.model.tracks[1].sequencer_id, 201);
 
-        app.handle_keys(&bus, &[kc('w')]);
+        // Tab arms TRK (sticky fallback — kitty is false in tests); 'w'
+        // (Trig2) chords to select track index 1.
+        app.handle_keys(&bus, &[tab_key(), kc('w')]);
         let selected = bus.borrow().read("/script/theotokos/selected").cloned();
         assert_eq!(
             selected,
             Some(paraclete_node_api::StateBusValue::Int(201)),
-            "SelectTrack(w) must publish seq id 201"
+            "TRK-hold + Trig2 must select track 1 (seq id 201)"
         );
     }
 
-    fn shift_key(c: char) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(c), KeyModifiers::SHIFT)
-    }
-
+    /// D6: "any non-trig key disarms" — the direct-utility keys (Ctrl-C,
+    /// `:`, `?`, Backspace) bypass the button/hold system entirely (D14),
+    /// but a sticky armed prefix must still drop when one of them fires,
+    /// or the next trig would silently resolve as a track/pattern select
+    /// instead of the ordinary gesture the user expects (post-C3 hostile
+    /// review finding).
     #[test]
-    fn keymap_shift_track_toggles_mute() {
-        let bus = test_bus();
-        let mut app = test_app(
-            1,
-            vec![200, 201],
-            vec![100, 101],
-            vec!["T1".into(), "T2".into()],
-        );
-        {
-            let mut b = bus.borrow_mut();
-            b.write(
-                "/node/201/param/mute".into(),
-                paraclete_node_api::StateBusValue::Float(0.0),
-            );
-        }
-        app.handle_keys(&bus, &[shift_key('w')]);
-        let cmd = &app.pending[0];
-        assert_eq!(cmd.target_id, 201, "Shift+w targets track 1's sequencer");
-        assert_eq!(cmd.type_id, paraclete_node_api::CMD_SET_PARAM);
-        let mute_id = paraclete_node_api::ParamDescriptor::id_for_name("mute");
-        assert_eq!(cmd.arg0, mute_id as i64);
-        assert!((cmd.arg1 - 1.0).abs() < 0.001, "must set mute to 1.0");
-    }
-
-    #[test]
-    fn mute_toggle_reads_bus_and_flips_value() {
+    fn direct_utility_key_disarms_sticky_prefix() {
         let bus = test_bus();
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
-        {
-            let mut b = bus.borrow_mut();
-            b.write(
-                "/node/200/param/mute".into(),
-                paraclete_node_api::StateBusValue::Float(1.0),
-            );
-        }
-        app.handle_keys(&bus, &[shift_key('q')]);
-        let cmd = &app.pending[0];
-        assert!((cmd.arg1 - 0.0).abs() < 0.001, "must flip 1.0 → 0.0");
+
+        app.handle_keys(&bus, &[tab_key()]);
+        assert_eq!(app.held.armed, Some(input::Hold::Trk));
+
+        app.handle_keys(&bus, &[KeyEvent::new(KeyCode::Char('?'), KeyModifiers::NONE)]);
+        assert_eq!(
+            app.held.armed, None,
+            "a direct utility key must disarm a sticky TRK/PTN prefix"
+        );
+    }
+
+    #[test]
+    fn grid_rec_off_trig_key_emits_trig_now_command() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.grid_rec = false;
+
+        app.handle_keys(&bus, &[kc('q')]);
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.target_id == 200 && c.type_id == CMD_TRIG_NOW),
+            "a trig key with grid_rec off must emit CMD_TRIG_NOW"
+        );
+    }
+
+    #[test]
+    fn pattern_chord_clamps_with_echo() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+
+        // 'p' (hold) arms PTN; 'a' is Trig9 (col 8), >= PATTERN_BANK_SIZE
+        // (8) — must clamp to a no-op + echo (D9), not send a command.
+        app.handle_keys(&bus, &[kc('p'), kc('a')]);
+        assert!(
+            !app.pending.iter().any(|c| c.type_id == CMD_SET_PATTERN),
+            "an out-of-range pattern chord must not emit CMD_SET_PATTERN"
+        );
+        assert_eq!(
+            app.model.cmdline_error.as_deref(),
+            Some("no pattern 9"),
+            "must echo the out-of-range pattern index"
+        );
     }
 
     // ── C5: p-lock UI tests ──
@@ -1193,162 +1312,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn enter_focuses_last_toggled_step() {
-        let bus = test_bus();
-        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
-        setup_bus_with_params(&bus, 200, 100, true);
-
-        app.model.last_step[0] = Some(3);
-        app.handle_keys(&bus, &[enter_key()]);
-        assert_eq!(
-            app.model.step_focus[0],
-            Some(3),
-            "Enter must focus last_step"
-        );
-
-        app.handle_keys(&bus, &[enter_key()]);
-        assert_eq!(
-            app.model.step_focus[0], None,
-            "second Enter must release focus"
-        );
-    }
-
-    #[test]
-    fn esc_releases_focus() {
-        let bus = test_bus();
-        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
-        setup_bus_with_params(&bus, 200, 100, true);
-
-        app.model.step_focus[0] = Some(5);
-        app.handle_keys(&bus, &[esc_key()]);
-        assert_eq!(app.model.step_focus[0], None, "Esc must release focus");
-    }
-
-    #[test]
-    fn enter_focuses_in_seq_jog_edits_in_perf() {
-        let bus = test_bus();
-        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
-        setup_bus_with_params(&bus, 200, 100, true);
-
-        app.model.last_step[0] = Some(2);
-        app.handle_keys(&bus, &[enter_key()]);
-        assert!(
-            app.model.step_focus[0].is_some(),
-            "Enter must focus in SEQ mode"
-        );
-
-        app.model.mode = Mode::Perf;
-        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-        app.handle_keys(&bus, &[up]);
-        assert!(
-            !app.pending.is_empty(),
-            "jog while focused in PERF must emit lock commands"
-        );
-        // Verify the emitted commands are lock pairs, not bump_param
-        assert_eq!(app.pending[0].type_id, CMD_SET_LOCK_TARGET);
-        assert_eq!(app.pending[1].type_id, CMD_SET_STEP_LOCK);
-    }
-
-    #[test]
-    fn jog_while_focused_emits_target_then_lock_pair() {
-        let bus = test_bus();
-        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
-        setup_bus_with_params(&bus, 200, 100, true);
-
-        app.model.mode = Mode::Perf;
-        app.model.step_focus[0] = Some(4);
-
-        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-        app.handle_keys(&bus, &[up]);
-
-        assert_eq!(app.pending.len(), 2, "must emit pair: target + lock");
-        assert_eq!(
-            app.pending[0].type_id, CMD_SET_LOCK_TARGET,
-            "first cmd must be CMD_SET_LOCK_TARGET"
-        );
-        assert_eq!(
-            app.pending[1].type_id, CMD_SET_STEP_LOCK,
-            "second cmd must be CMD_SET_STEP_LOCK"
-        );
-        assert_eq!(app.pending[0].target_id, 200, "target must be sequencer");
-        assert_eq!(app.pending[1].target_id, 200, "target must be sequencer");
-        assert_eq!(app.pending[1].arg0, 4, "step arg must be focused step");
-    }
-
-    #[test]
-    fn jog_lock_value_starts_from_existing_lock() {
-        let bus = test_bus();
-        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
-        setup_bus_with_params(&bus, 200, 100, true);
-
-        // Pre-populate a lock for step 2, node 100 (generator), param decay
-        {
-            let mut b = bus.borrow_mut();
-            let decay_id = ParamDescriptor::id_for_name("decay");
-            b.write(
-                "/node/200/state/locks",
-                StateBusValue::Text(format!("s2:100:{}:0.300000", decay_id)),
-            );
-        }
-
-        app.model.mode = Mode::Perf;
-        app.model.step_focus[0] = Some(2);
-
-        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-        app.handle_keys(&bus, &[up]);
-
-        // The new value should be based on 0.3 + jog delta, not 0.5 + delta
-        assert_eq!(app.pending.len(), 2);
-        // Verify arg1 is based on the lock value (0.3 + delta)
-        assert!(
-            app.pending[1].arg1 > 0.3 && app.pending[1].arg1 < 0.32,
-            "lock value must start from existing lock 0.3, got {}",
-            app.pending[1].arg1
-        );
-    }
-
-    #[test]
-    fn jog_lock_value_starts_from_live_when_no_lock() {
-        let bus = test_bus();
-        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
-        setup_bus_with_params(&bus, 200, 100, true);
-
-        // No lock set — should fall back to live bus value (0.5)
-
-        app.model.mode = Mode::Perf;
-        app.model.step_focus[0] = Some(3);
-
-        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-        app.handle_keys(&bus, &[up]);
-
-        assert_eq!(app.pending.len(), 2);
-        assert!(
-            app.pending[1].arg1 > 0.5 && app.pending[1].arg1 < 0.52,
-            "lock value must start from live bus 0.5, got {}",
-            app.pending[1].arg1
-        );
-    }
-
-    #[test]
-    fn jog_without_focus_still_bumps_param() {
-        let bus = test_bus();
-        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
-        setup_bus_with_params(&bus, 200, 100, true);
-
-        app.model.mode = Mode::Perf;
-        // No focus set
-
-        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-        app.handle_keys(&bus, &[up]);
-
-        assert_eq!(app.pending.len(), 1);
-        assert_eq!(
-            app.pending[0].type_id,
-            paraclete_node_api::CMD_BUMP_PARAM,
-            "without focus, jog must emit CMD_BUMP_PARAM"
-        );
-    }
+    // TK2 C3: `enter_focuses_last_toggled_step`, `esc_releases_focus`,
+    // `enter_focuses_in_seq_jog_edits_in_perf`,
+    // `jog_while_focused_emits_target_then_lock_pair`,
+    // `jog_lock_value_starts_from_existing_lock`,
+    // `jog_lock_value_starts_from_live_when_no_lock`, and
+    // `jog_without_focus_still_bumps_param` all tested TK1's Enter→FocusStep
+    // and arrow-key→Jog triggers — both retired at the wiring flip (Enter
+    // now resolves to `Yes`/`Action::Noop`; arrows are navigation buttons,
+    // §2). `Action::FocusStep`/`Action::Jog` and their dispatch logic are
+    // kept (D8: the encoder bank reuses the step-focus + jog/ramp
+    // machinery in TK2 C5) but are temporarily unreachable from any key
+    // until a new gesture is specified.
 
     #[test]
     fn backspace_clears_all_lanes() {
@@ -1410,18 +1385,9 @@ mod tests {
         assert!(app.pending.is_empty(), "Backspace without focus is no-op");
     }
 
-    #[test]
-    fn enter_without_last_step_does_not_focus() {
-        let bus = test_bus();
-        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
-        setup_bus_with_params(&bus, 200, 100, true);
-
-        app.handle_keys(&bus, &[enter_key()]);
-        assert_eq!(
-            app.model.step_focus[0], None,
-            "Enter without last_step must not set focus"
-        );
-    }
+    // TK2 C3: `enter_without_last_step_does_not_focus` is retired alongside
+    // the other Enter→FocusStep tests above — under the new grammar it
+    // would pass vacuously (Enter no longer produces `FocusStep` at all).
 
     // ── C6: command line tests ──
 
@@ -1639,119 +1605,20 @@ mod tests {
         );
     }
 
-    // ── C7: pattern select, yank/paste, leader, flash ──
-
-    fn seq_key(n: u8) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char((b'0' + n) as char), KeyModifiers::NONE)
-    }
-
-    fn backslash_key() -> KeyEvent {
-        KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::NONE)
-    }
-
-    #[test]
-    fn seq_number_row_sends_set_pattern() {
-        let bus = test_bus();
-        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
-        setup_bus_with_params(&bus, 200, 100, true);
-
-        app.handle_keys(&bus, &[seq_key(3)]);
-        // SEQ mode by default
-        assert!(
-            app.pending
-                .iter()
-                .any(|c| { c.type_id == 27 && c.arg0 == 2 }),
-            "number key 3 must send CMD_SET_PATTERN(2)"
-        );
-    }
-
-    #[test]
-    fn yank_then_paste_emits_full_step_command_batch() {
-        let bus = test_bus();
-        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
-        setup_bus_with_params(&bus, 200, 100, true);
-        // Set up steps so yank has active data
-        {
-            let mut b = bus.borrow_mut();
-            b.write(
-                "/node/200/state/steps",
-                StateBusValue::Text("1100000000000000".into()),
-            );
-            b.write("/node/200/state/locks", StateBusValue::Text(String::new()));
-        }
-
-        app.handle_keys(&bus, &[kc('y')]);
-        assert!(
-            !app.model.yank_buffer.is_empty(),
-            "yank must populate buffer"
-        );
-
-        app.pending.clear();
-        app.handle_keys(
-            &bus,
-            &[KeyEvent::new(KeyCode::Char('y'), KeyModifiers::SHIFT)],
-        );
-        assert!(!app.pending.is_empty(), "paste must produce commands");
-    }
-
-    #[test]
-    fn paste_clears_stale_lock_lanes_before_writing() {
-        let bus = test_bus();
-        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
-        setup_bus_with_params(&bus, 200, 100, true);
-        {
-            let mut b = bus.borrow_mut();
-            b.write(
-                "/node/200/state/steps",
-                StateBusValue::Text("1000000000000000".into()),
-            );
-            b.write("/node/200/state/locks", StateBusValue::Text(String::new()));
-        }
-
-        app.handle_keys(&bus, &[kc('y')]);
-        app.pending.clear();
-        app.handle_keys(
-            &bus,
-            &[KeyEvent::new(KeyCode::Char('y'), KeyModifiers::SHIFT)],
-        );
-
-        // First command should be CMD_CLEAR_STEP_LOCK arg1=-1.0 for step 0
-        let first_cmd = &app.pending[0];
-        assert_eq!(first_cmd.type_id, CMD_CLEAR_STEP_LOCK);
-        assert_eq!(first_cmd.arg1, -1.0);
-    }
-
-    #[test]
-    fn leader_esc_cancels_chord() {
-        let bus = test_bus();
-        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
-        setup_bus_with_params(&bus, 200, 100, true);
-
-        app.handle_keys(&bus, &[backslash_key()]);
-        assert!(app.model.leader.is_some(), "leader must activate");
-
-        app.handle_keys(&bus, &[esc_key()]);
-        assert!(app.model.leader.is_none(), "Esc must cancel leader");
-    }
-
-    #[test]
-    fn leader_rebind_b3_binds_third_page_param() {
-        let bus = test_bus();
-        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
-        setup_bus_with_params(&bus, 200, 100, true);
-
-        // Set mode to PERF and page to 0 (AMP with decay+tune params)
-        app.model.mode = Mode::Perf;
-        app.model.perf_page = 0;
-
-        // Send leader sequence: \ b 3 (param index 2 = 3rd param)
-        app.handle_keys(&bus, &[backslash_key()]);
-        app.handle_keys(&bus, &[kc('b')]);
-        app.handle_keys(&bus, &[seq_key(3)]);
-
-        assert!(app.model.leader.is_none(), "leader must exit after chord");
-        assert!(app.model.slot_b.is_some(), "slot B must be bound");
-    }
+    // ── C7: flash ──
+    //
+    // TK2 C3: `seq_number_row_sends_set_pattern` (number-row 1-8 pattern
+    // select), `yank_then_paste_emits_full_step_command_batch` /
+    // `paste_clears_stale_lock_lanes_before_writing` ('y'/'Y'), and
+    // `leader_esc_cancels_chord` / `leader_rebind_b3_binds_third_page_param`
+    // ('\' leader) all tested TK1 bindings retired at the wiring flip (§2).
+    // Pattern select now goes through `select_pattern_via_ptn_chord_...`-
+    // style tests (see `pattern_chord_clamps_with_echo` below); copy/paste
+    // moves to FUNC+REC/STOP in TK2 C4 (D7), reusing the unchanged
+    // `yank_active_pattern`/`paste_pattern` functions below; the leader
+    // mechanism (`LeaderState`, `set_slot_lead`) is retired outright with
+    // no planned replacement (slot binding becomes automatic page-select
+    // binding + the encoder bank, D13/D8).
 
     #[test]
     fn flash_detects_value_change() {

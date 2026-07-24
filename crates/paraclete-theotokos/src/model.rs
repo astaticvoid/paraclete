@@ -3,24 +3,7 @@ use paraclete_node_api::{CapabilityDocument, PageRef, StateBusHandle, StateBusVa
 use paraclete_view_assembly::CompositeView;
 use std::collections::HashMap;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Mode {
-    Seq,
-    Perf,
-}
-
-impl Mode {
-    pub fn next(self) -> Self {
-        match self {
-            Mode::Seq => Mode::Perf,
-            Mode::Perf => Mode::Seq,
-        }
-    }
-}
-
-/// TK2 C2 (D12): replaces `Mode` — additive for now (§0 A4). `Mode` and
-/// the TK1 dispatch it drives stay live until C3's wiring flip; nothing
-/// reads `Screen` yet.
+/// TK2 C3 (D12): replaces `Mode` (deleted at the wiring flip, per §0 A4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Grid,
@@ -67,7 +50,11 @@ pub struct TrackInfo {
 }
 
 pub struct Model {
-    pub mode: Mode,
+    /// TK2 C3 (D12): replaces `Mode`.
+    pub screen: Screen,
+    /// TK2 C2/C3 (D12): grid-programming (steps toggle) vs. live (trigs
+    /// sound now). Defaults on — TK1 behavior preserved on day one.
+    pub grid_rec: bool,
     pub active_track: usize,
     pub tracks: Vec<TrackInfo>,
     pub clock_id: u32,
@@ -86,10 +73,12 @@ pub struct Model {
     pub cmdline_error: Option<String>,
     /// TK1 C6: fuzzy index built at startup from caps + tracks + static verbs.
     pub fuzzy_index: Vec<FuzzyEntry>,
-    /// TK1 C7: yanked pattern data for paste.
+    /// TK1 C7: yanked pattern data for paste. Kept for TK2 C4, which
+    /// rewires copy/paste onto FUNC+REC/STOP (D7) — the underlying
+    /// yank/paste logic (`TheotokosApp::yank_active_pattern`/
+    /// `paste_pattern`) is unchanged, only its TK1 `y`/`Y` key trigger was
+    /// retired at the TK2 C3 wiring flip.
     pub yank_buffer: Vec<YankedStep>,
-    /// TK1 C7: leader state for \\-prefix key chords (slot rebinding).
-    pub leader: Option<LeaderState>,
     /// TK1 C7: Instant when each slot value last changed (for yellow flash).
     pub slot_flash: [Option<std::time::Instant>; 2],
     /// TK1 C7: previous slot values (to detect change).
@@ -118,12 +107,6 @@ pub struct YankedLock {
     pub value: f64,
 }
 
-/// TK1 C7: `\\` leader chord state for slot rebinding.
-#[derive(Clone)]
-pub struct LeaderState {
-    pub slot: Option<Slot>,
-}
-
 /// TK1 C6: a searchable entry in the fuzzy command index.
 #[derive(Clone)]
 pub struct FuzzyEntry {
@@ -145,7 +128,6 @@ pub enum CmdlineVerb {
     Unmute(usize),
     Clear,
     LockClear,
-    Mode(Mode),
 }
 
 impl Model {
@@ -174,7 +156,8 @@ impl Model {
         let last_step: Vec<Option<usize>> = vec![None; track_count];
         let fuzzy_index = Self::build_fuzzy_index(&caps, &tracks);
         let mut model = Self {
-            mode: Mode::Seq,
+            screen: Screen::Grid,
+            grid_rec: true,
             active_track: 0,
             tracks,
             clock_id,
@@ -190,17 +173,12 @@ impl Model {
             cmdline_error: None,
             fuzzy_index,
             yank_buffer: Vec::new(),
-            leader: None,
             slot_flash: [None; 2],
             last_slot_values: [0.0; 2],
             help_visible: false,
         };
         model.bind_page();
         model
-    }
-
-    pub fn cycle_mode(&mut self) {
-        self.mode = self.mode.next();
     }
 
     pub fn select_track(&mut self, i: usize) {
@@ -512,7 +490,6 @@ impl Model {
             "unmute",
             "clear",
             "lock-clear",
-            "mode",
         ] {
             entries.push(FuzzyEntry {
                 text: verb.to_string(),
@@ -693,55 +670,11 @@ impl Model {
             }
             "clear" => Ok(CmdlineVerb::Clear),
             "lock-clear" => Ok(CmdlineVerb::LockClear),
-            "mode" => match rest {
-                "seq" => Ok(CmdlineVerb::Mode(Mode::Seq)),
-                "perf" => Ok(CmdlineVerb::Mode(Mode::Perf)),
-                other => Err(format!("unknown mode: {other} (seq or perf)")),
-            },
             _ => Err(format!("?{input}")),
         }
     }
 
-    // ── C7: yank/paste, leader, flash ──
-
-    pub fn set_slot_lead(&mut self, slot: Slot, dig: usize) {
-        let n = dig.saturating_sub(1);
-        let params = self.current_page_params();
-        if n < params.len() {
-            let (node_id, param_id, name) = &params[n];
-            let binding = SlotBinding {
-                node_id: *node_id,
-                param_id: *param_id,
-                param_name: name.clone(),
-                min: 0.0,
-                max: 1.0,
-            };
-            match slot {
-                Slot::A => self.slot_a = Some(binding),
-                Slot::B => self.slot_b = Some(binding),
-                Slot::C => {}
-            }
-        }
-    }
-
-    fn current_page_params(&self) -> Vec<(u32, u32, String)> {
-        let mut out = Vec::new();
-        if let Some(cv) = self.composite.get(self.active_track) {
-            if let Some(page) = cv.pages.get(self.perf_page) {
-                for p in &page.params {
-                    out.push((p.node_id, p.param_id, p.name.clone()));
-                }
-                return out;
-            }
-        }
-        let gen_id = self.tracks[self.active_track].generator_id;
-        if let Some(cap) = self.caps.get(&gen_id) {
-            for p in &cap.params {
-                out.push((gen_id, p.id, p.name.to_string()));
-            }
-        }
-        out
-    }
+    // ── C7: flash ──
 
     pub fn update_flash(&mut self, slot: usize, new_value: f64) {
         if (new_value - self.last_slot_values[slot]).abs() > 0.0001 {

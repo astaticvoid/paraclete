@@ -3,145 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::Action;
-use crate::model::{Dir, Mag, Mode, Screen, Slot};
-
-static TRACK_KEYS: &[KeyCode] = &[
-    KeyCode::Char('q'),
-    KeyCode::Char('w'),
-    KeyCode::Char('e'),
-    KeyCode::Char('r'),
-    KeyCode::Char('u'),
-    KeyCode::Char('i'),
-    KeyCode::Char('o'),
-    KeyCode::Char('p'),
-];
-
-static STEP_KEYS: &[KeyCode] = &[
-    KeyCode::Char('a'),
-    KeyCode::Char('s'),
-    KeyCode::Char('d'),
-    KeyCode::Char('f'),
-    KeyCode::Char('j'),
-    KeyCode::Char('k'),
-    KeyCode::Char('l'),
-    KeyCode::Char(';'),
-    KeyCode::Char('z'),
-    KeyCode::Char('x'),
-    KeyCode::Char('c'),
-    KeyCode::Char('v'),
-    KeyCode::Char('m'),
-    KeyCode::Char(','),
-    KeyCode::Char('.'),
-    KeyCode::Char('/'),
-];
-
-pub fn map_key(mode: Mode, ev: &KeyEvent) -> Action {
-    match mode {
-        Mode::Seq => map_global(ev).unwrap_or_else(|| map_seq(ev)),
-        Mode::Perf => map_global(ev).unwrap_or_else(|| map_perf(ev)),
-    }
-}
-
-fn map_global(ev: &KeyEvent) -> Option<Action> {
-    match ev.code {
-        KeyCode::Char('c') if ev.modifiers == KeyModifiers::CONTROL => Some(Action::Quit),
-        KeyCode::Tab => {
-            let dir = if ev.modifiers.contains(KeyModifiers::SHIFT) {
-                Dir::Prev
-            } else {
-                Dir::Next
-            };
-            Some(Action::CycleMode(dir))
-        }
-        KeyCode::Char(' ') => Some(Action::PlayToggle),
-        KeyCode::Esc => Some(Action::ReleaseFocus),
-        KeyCode::Char(';') if ev.modifiers == KeyModifiers::SHIFT => Some(Action::Colon),
-        KeyCode::Enter => Some(Action::FocusStep),
-        KeyCode::Backspace => {
-            if ev.modifiers.contains(KeyModifiers::SHIFT) {
-                Some(Action::ClearSlotLocks)
-            } else {
-                Some(Action::ClearAllLocks)
-            }
-        }
-        KeyCode::Char('y') if ev.modifiers == KeyModifiers::SHIFT => Some(Action::Paste),
-        KeyCode::Char('y') => Some(Action::Yank),
-        KeyCode::Char('\\') => Some(Action::Leader),
-        KeyCode::Char('?') => Some(Action::ToggleHelp),
-        _ => {
-            if let Some(col) = step_col(ev.code) {
-                return Some(Action::ToggleStep { col });
-            }
-            if ev.modifiers.contains(KeyModifiers::SHIFT) {
-                if let Some(i) = track_idx(ev.code) {
-                    return Some(Action::ToggleMute(i));
-                }
-            }
-            track_idx(ev.code).map(Action::SelectTrack)
-        }
-    }
-}
-
-fn map_seq(ev: &KeyEvent) -> Action {
-    match ev.code {
-        KeyCode::Char('-') => Action::PageWindow(Dir::Prev),
-        KeyCode::Char('=') => Action::PageWindow(Dir::Next),
-        KeyCode::Char('1') => Action::PatternSelect(0),
-        KeyCode::Char('2') => Action::PatternSelect(1),
-        KeyCode::Char('3') => Action::PatternSelect(2),
-        KeyCode::Char('4') => Action::PatternSelect(3),
-        KeyCode::Char('5') => Action::PatternSelect(4),
-        KeyCode::Char('6') => Action::PatternSelect(5),
-        KeyCode::Char('7') => Action::PatternSelect(6),
-        KeyCode::Char('8') => Action::PatternSelect(7),
-        _ => Action::Noop,
-    }
-}
-
-fn map_perf(ev: &KeyEvent) -> Action {
-    let mag = if ev.modifiers.contains(KeyModifiers::SHIFT) {
-        Mag::Fine
-    } else {
-        Mag::Normal
-    };
-    match ev.code {
-        KeyCode::Char('1') => Action::SelectParamPage(0),
-        KeyCode::Char('2') => Action::SelectParamPage(1),
-        KeyCode::Char('3') => Action::SelectParamPage(2),
-        KeyCode::Char('4') => Action::SelectParamPage(3),
-        KeyCode::Char('5') => Action::SelectParamPage(4),
-        KeyCode::Char('6') => Action::SelectParamPage(5),
-        KeyCode::Up => Action::Jog {
-            slot: Slot::A,
-            dir: Dir::Next,
-            mag,
-        },
-        KeyCode::Down => Action::Jog {
-            slot: Slot::A,
-            dir: Dir::Prev,
-            mag,
-        },
-        KeyCode::Right => Action::Jog {
-            slot: Slot::B,
-            dir: Dir::Next,
-            mag,
-        },
-        KeyCode::Left => Action::Jog {
-            slot: Slot::B,
-            dir: Dir::Prev,
-            mag,
-        },
-        _ => Action::Noop,
-    }
-}
-
-fn track_idx(code: KeyCode) -> Option<usize> {
-    TRACK_KEYS.iter().position(|k| *k == code)
-}
-
-fn step_col(code: KeyCode) -> Option<usize> {
-    STEP_KEYS.iter().position(|k| *k == code)
-}
+use crate::model::{Dir, Mag, Screen};
 
 // ── TK2 C2: panel model (pure types + mapping) ───────────────────────────
 //
@@ -406,6 +268,37 @@ impl HeldState {
     pub fn on_esc(&mut self) {
         self.armed = None;
     }
+
+    /// D6 (kitty branch, TK2 C3): a TRK/PTN press arms for as long as the
+    /// key stays physically down — real hold, not one-shot. Returns
+    /// `true` if consumed (same contract as `on_press`); non-prefix
+    /// buttons are not tracked here (only presence of `armed` matters to
+    /// `button_to_action`, so pressed only ever records the hold key
+    /// itself).
+    pub fn on_kitty_press(&mut self, button: PanelButton) -> bool {
+        match button {
+            PanelButton::Trk | PanelButton::Ptn => {
+                let hold = if button == PanelButton::Trk {
+                    Hold::Trk
+                } else {
+                    Hold::Ptn
+                };
+                self.pressed.insert(button);
+                self.armed = Some(hold);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// D6 (kitty branch): physical release disarms. A release for a button
+    /// that was never tracked as pressed (e.g. a trig's release) is a
+    /// no-op — only TRK/PTN releases matter here.
+    pub fn on_kitty_release(&mut self, button: PanelButton) {
+        if self.pressed.remove(&button) {
+            self.armed = None;
+        }
+    }
 }
 
 /// The subset of live app state `button_to_action` needs — decoupled from
@@ -436,8 +329,14 @@ pub fn button_to_action(
     mods: Mods,
 ) -> Action {
     // D6/A10: an armed TRK/PTN prefix chords with any trig, taking
-    // precedence over everything else while armed.
+    // precedence over everything else while armed. A10 reserves FUNC+trig
+    // while armed for the mute-toggle chord (TK2 C4, D7) — until that
+    // lands, it's a no-op here rather than a wrong-because-legacy
+    // track/pattern select (review finding, post-C3 hostile review).
     if let (Some(hold), Some(col)) = (held.armed, trig_col(button)) {
+        if mods.func {
+            return Action::Noop;
+        }
         return match hold {
             Hold::Trk => Action::SelectTrack(col),
             Hold::Ptn => Action::SelectPattern(col),
@@ -469,13 +368,22 @@ pub fn button_to_action(
     }
 
     match button {
-        // A12 (deferred): FUNC+Space (Play) must stay a no-op once Play
-        // gains real meaning here (C3+ transport wiring) — Space is a
-        // transport-only alias, never the destructive-clear chord. Nothing
-        // to guard yet: bare Play already falls through to Noop below, so
-        // a dedicated arm here would be unfalsifiable (review finding,
-        // post-C2 hostile review) until Play resolves to something else.
-        PanelButton::Rec => Action::ToggleGridRec,
+        // TK2 C3: Play (bare) restores the transport toggle Space provided
+        // in TK1 — the Play button IS the `Space` alias (§2). A12: FUNC+Play
+        // is a no-op (Space is transport-only, never the destructive-clear
+        // chord — that's the `x`/STOP+FUNC home, D7, C4).
+        PanelButton::Play if !mods.func => Action::PlayToggle,
+        // TK2 C3: bare REC toggles grid-rec (D12). FUNC+REC is reserved for
+        // the D7 copy chord (C4) — a no-op here until then.
+        PanelButton::Rec if !mods.func => Action::ToggleGridRec,
+        PanelButton::PagePrev => Action::PageWindow(Dir::Prev),
+        PanelButton::PageNext => Action::PageWindow(Dir::Next),
+        PanelButton::Pg1 => Action::OpenScreen(Screen::Param(0)),
+        PanelButton::Pg2 => Action::OpenScreen(Screen::Param(1)),
+        PanelButton::Pg3 => Action::OpenScreen(Screen::Param(2)),
+        PanelButton::Pg4 => Action::OpenScreen(Screen::Param(3)),
+        PanelButton::Pg5 => Action::OpenScreen(Screen::Param(4)),
+        PanelButton::Pg6 => Action::OpenScreen(Screen::Param(5)),
         PanelButton::Song => Action::OpenScreen(Screen::Chain),
         PanelButton::Mute => Action::OpenScreen(Screen::Mute),
         PanelButton::Tempo => Action::OpenScreen(Screen::Tempo),
@@ -490,159 +398,6 @@ mod tests {
 
     fn key(c: char) -> KeyEvent {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
-    }
-
-    fn ctrl_key(c: char) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
-    }
-
-    #[test]
-    fn global_keys_in_both_modes() {
-        for mode in [Mode::Seq, Mode::Perf] {
-            assert!(matches!(map_key(mode, &ctrl_key('c')), Action::Quit));
-            assert!(matches!(map_key(mode, &key(' ')), Action::PlayToggle));
-            assert!(matches!(map_key(mode, &key('q')), Action::SelectTrack(0)));
-            assert!(matches!(map_key(mode, &key('p')), Action::SelectTrack(7)));
-        }
-    }
-
-    #[test]
-    fn seq_home_row_toggles_steps() {
-        assert!(matches!(
-            map_key(Mode::Seq, &key('a')),
-            Action::ToggleStep { col: 0 }
-        ));
-        assert!(matches!(
-            map_key(Mode::Seq, &key(';')),
-            Action::ToggleStep { col: 7 }
-        ));
-        assert!(matches!(
-            map_key(Mode::Seq, &key('z')),
-            Action::ToggleStep { col: 8 }
-        ));
-        assert!(matches!(
-            map_key(Mode::Seq, &key('/')),
-            Action::ToggleStep { col: 15 }
-        ));
-    }
-
-    #[test]
-    fn step_keys_invariant_in_perf() {
-        assert!(matches!(
-            map_key(Mode::Perf, &key('a')),
-            Action::ToggleStep { col: 0 }
-        ));
-        assert!(matches!(
-            map_key(Mode::Perf, &key(',')),
-            Action::ToggleStep { col: 13 }
-        ));
-        assert!(matches!(
-            map_key(Mode::Perf, &key('z')),
-            Action::ToggleStep { col: 8 }
-        ));
-    }
-
-    #[test]
-    fn minus_equals_navigate_pages() {
-        assert!(matches!(
-            map_key(Mode::Seq, &key('-')),
-            Action::PageWindow(Dir::Prev)
-        ));
-        assert!(matches!(
-            map_key(Mode::Seq, &key('=')),
-            Action::PageWindow(Dir::Next)
-        ));
-    }
-
-    #[test]
-    fn bracket_keys_are_noop() {
-        assert!(matches!(map_key(Mode::Seq, &key('[')), Action::Noop));
-        assert!(matches!(map_key(Mode::Seq, &key(']')), Action::Noop));
-        assert!(matches!(map_key(Mode::Seq, &key('{')), Action::Noop));
-        assert!(matches!(map_key(Mode::Seq, &key('}')), Action::Noop));
-    }
-
-    #[test]
-    fn unknown_key_is_noop() {
-        assert!(matches!(map_key(Mode::Seq, &key('0')), Action::Noop));
-    }
-
-    #[test]
-    fn tab_cycles_modes() {
-        assert!(matches!(
-            map_key(Mode::Seq, &KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
-            Action::CycleMode(Dir::Next)
-        ));
-        assert!(matches!(
-            map_key(Mode::Seq, &KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT)),
-            Action::CycleMode(Dir::Prev)
-        ));
-    }
-
-    #[test]
-    fn perf_page_select_keys() {
-        assert!(matches!(
-            map_key(Mode::Perf, &key('1')),
-            Action::SelectParamPage(0)
-        ));
-        assert!(matches!(
-            map_key(Mode::Perf, &key('3')),
-            Action::SelectParamPage(2)
-        ));
-        assert!(matches!(
-            map_key(Mode::Perf, &key('6')),
-            Action::SelectParamPage(5)
-        ));
-    }
-
-    #[test]
-    fn perf_jog_keys() {
-        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-        let down = KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
-        let right = KeyEvent::new(KeyCode::Right, KeyModifiers::NONE);
-        let left = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
-        let fine_up = KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT);
-
-        assert!(matches!(
-            map_key(Mode::Perf, &up),
-            Action::Jog {
-                slot: Slot::A,
-                dir: Dir::Next,
-                mag: Mag::Normal
-            }
-        ));
-        assert!(matches!(
-            map_key(Mode::Perf, &down),
-            Action::Jog {
-                slot: Slot::A,
-                dir: Dir::Prev,
-                mag: Mag::Normal
-            }
-        ));
-        assert!(matches!(
-            map_key(Mode::Perf, &right),
-            Action::Jog {
-                slot: Slot::B,
-                dir: Dir::Next,
-                mag: Mag::Normal
-            }
-        ));
-        assert!(matches!(
-            map_key(Mode::Perf, &left),
-            Action::Jog {
-                slot: Slot::B,
-                dir: Dir::Prev,
-                mag: Mag::Normal
-            }
-        ));
-        assert!(matches!(
-            map_key(Mode::Perf, &fine_up),
-            Action::Jog {
-                slot: Slot::A,
-                dir: Dir::Next,
-                mag: Mag::Fine
-            }
-        ));
     }
 
     // ── TK2 C2: panel model (pure types + mapping) ───────────────────────
@@ -714,6 +469,28 @@ mod tests {
         assert!(matches!(action, Action::SelectTrack(4)));
     }
 
+    /// A10 reserves FUNC+trig while TRK/PTN is armed for the mute-toggle
+    /// chord (TK2 C4, D7) — until that lands, it must be a no-op, not a
+    /// wrong-because-legacy `SelectTrack`/`SelectPattern` (post-C3 hostile
+    /// review finding).
+    #[test]
+    fn armed_func_trig_is_reserved_not_a_wrong_select() {
+        let held = HeldState {
+            kitty: false,
+            armed: Some(Hold::Trk),
+            pressed: HashSet::new(),
+        };
+        let mods = Mods {
+            func: true,
+            ctrl: false,
+        };
+        let action = button_to_action(&held, &default_grid(), PanelButton::Trig5, mods);
+        assert!(
+            matches!(action, Action::Noop),
+            "FUNC+trig while armed must not resolve to a track/pattern select"
+        );
+    }
+
     #[test]
     fn ptn_hold_plus_trig_selects_pattern() {
         let held = HeldState {
@@ -781,6 +558,30 @@ mod tests {
         let consumed = held.on_press(PanelButton::Play);
         assert_eq!(held.armed, None, "a non-trig, non-prefix key disarms");
         assert!(!consumed, "and is still processed normally (not swallowed)");
+    }
+
+    /// TK2 C3 (D6, kitty branch): unlike the sticky fallback, a kitty
+    /// terminal delivers real release events — TRK stays armed exactly as
+    /// long as it is physically held.
+    #[test]
+    fn kitty_press_arms_and_release_disarms() {
+        let mut held = HeldState::new(true);
+        assert!(held.on_kitty_press(PanelButton::Ptn));
+        assert_eq!(held.armed, Some(Hold::Ptn));
+        held.on_kitty_release(PanelButton::Ptn);
+        assert_eq!(held.armed, None, "release must disarm the held prefix");
+    }
+
+    #[test]
+    fn kitty_release_of_unrelated_button_is_a_noop() {
+        let mut held = HeldState::new(true);
+        held.on_kitty_press(PanelButton::Trk);
+        held.on_kitty_release(PanelButton::Trig1);
+        assert_eq!(
+            held.armed,
+            Some(Hold::Trk),
+            "releasing a key that was never tracked as pressed must not disarm"
+        );
     }
 
     #[test]

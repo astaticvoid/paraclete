@@ -3,7 +3,34 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-23 (even later). **TK2 C2 shipped** — panel
+> **Last updated:** 2026-07-23 (still later). **TK2 C3 shipped** — wiring
+> + render migration: `lib.rs::handle_keys` now consumes the C2 pipeline
+> (`key_to_button` → `HeldState` → `button_to_action`), replacing the old
+> TK1 `map_key`/`map_seq`/`map_perf`. Real behavior change, not additive:
+> deleted the entire old input pipeline + 9 of its tests, `Mode`/
+> `LeaderState`/`Model.leader`/`CmdlineVerb::Mode` (Screen replaces Mode
+> per D12), and 16 TK1 integration tests whose triggers (`qweruiop` track
+> row, Shift+track mute, Enter/arrow-jog focus, number-row pattern select,
+> `y`/`Y` yank/paste, `\` leader) no longer exist under the new grammar —
+> `Action::Jog`/`FocusStep`/`ReleaseFocus` and `yank_active_pattern`/
+> `paste_pattern` are kept (unreachable, documented) for C4/C5 to reuse.
+> render.rs: status line (screen name/REC/armed-prefix), REC indicator on
+> the transport bar, help overlay regenerated from §2. 5 tests named in
+> spec, all passing. Hostile review found **1 blocker** — `setup_keyboard_flags`
+> never got the `DISAMBIGUATE_ESCAPE_CODES | REPORT_ALL_KEYS_AS_ESCAPE_CODES`
+> flags §0 A2 requires, so the kitty real-hold branch this very commit
+> built (`on_kitty_press`/`release`) would arm TRK/PTN and never see the
+> release that disarms it — fixed. **2 majors**: direct utility keys
+> (Ctrl-C/`:`/`?`/Backspace) bypassed the hold system entirely, so a sticky
+> armed prefix survived past them (D6 requires any non-trig key to disarm)
+> — fixed, kitty's real-hold exempted since it disarms only on physical
+> release. And FUNC+trig while TRK/PTN armed resolved to a wrong
+> `SelectTrack`/`SelectPattern` instead of the A10-reserved (C4) mute-chord
+> no-op — fixed. Plus a minor (stale slot A/B info under the Tempo/Chain/
+> Settings/Mute placeholders) — fixed. 4 new regression tests added for
+> the fixes; 60 crate tests, full workspace green. Per user request,
+> **pausing here** — TK2 C4 (FUNC+transport chords, mute) is next.
+> Previous: 2026-07-23 (even later). **TK2 C2 shipped** — panel
 > model pure types + mapping (`paraclete-theotokos/src/input.rs`,
 > additive-only per §0 A4: the old TK1 `map_key`/`map_seq`/`map_perf`
 > pipeline is untouched and still wired into `lib.rs`). New: `PanelButton`

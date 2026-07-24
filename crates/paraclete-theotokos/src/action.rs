@@ -9,33 +9,36 @@ pub const GRID_STEPS: usize = 16;
 pub const CMD_SET_LOCK_TARGET: u32 = 33;
 pub const CMD_SET_STEP_LOCK: u32 = 34;
 pub const CMD_CLEAR_STEP_LOCK: u32 = 35;
+/// P10 C4 (mirrors `Sequencer::CMD_SET_PATTERN`).
+pub const CMD_SET_PATTERN: u32 = 27;
+/// TK2 C1 (mirrors `Sequencer::CMD_TRIG_NOW`, D5).
+pub const CMD_TRIG_NOW: u32 = 38;
+/// P10 C4 (mirrors `Sequencer::PATTERN_BANK_SIZE`, D9 clamp).
+pub const PATTERN_BANK_SIZE: usize = 8;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Action {
     Quit,
-    CycleMode(Dir),
     PlayToggle,
     SelectTrack(usize),
     ToggleStep { col: usize },
     PageWindow(Dir),
-    SelectParamPage(usize),
+    /// Kept for TK2 C5+ (D8's encoder bank reuses this dispatch/ramp
+    /// machinery); unreachable from any key since the TK2 C3 wiring flip
+    /// retired the TK1 arrow-jog trigger (§2 removed-bindings list).
     Jog { slot: Slot, dir: Dir, mag: Mag },
     ToggleMute(usize),
+    /// Kept for TK2 C5+ (D8: "existing TK1 step-focus path"); unreachable
+    /// since Enter now resolves to `Yes` (§2), not `FocusStep`.
     FocusStep,
     ReleaseFocus,
     ClearAllLocks,
     ClearSlotLocks,
     Colon,
-    PatternSelect(u8),
-    Yank,
-    Paste,
-    Leader,
     ToggleHelp,
     Noop,
 
-    // ── TK2 C2 (additive — §0 A4): new panel-grammar actions. Nothing
-    // produces these yet outside `input::button_to_action`'s pure tests;
-    // lib.rs wiring lands in C3.
+    // ── TK2 C2/C3 (§0 A4): panel-grammar actions.
     /// D6/D11: TRK-hold or PTN-hold + trig, pattern arm.
     SelectPattern(usize),
     /// D5/D12: a trig fired with grid-rec off (`CMD_TRIG_NOW`, TK2 C1).
@@ -63,23 +66,18 @@ impl Action {
     pub fn execute(self, clock_id: u32, seq_id: u32, page_window: usize, playing: bool) -> Outcome {
         match self {
             Action::Quit => Outcome::Quit,
-            Action::CycleMode(_)
-            | Action::SelectTrack(_)
+            Action::SelectTrack(_)
             | Action::PageWindow(_)
-            | Action::SelectParamPage(_)
             | Action::Jog { .. }
             | Action::FocusStep
             | Action::ReleaseFocus
             | Action::ClearAllLocks
             | Action::ClearSlotLocks
             | Action::Colon
-            | Action::PatternSelect(_)
-            | Action::Yank
-            | Action::Paste
-            | Action::Leader
             | Action::ToggleHelp
-            // TK2 C2: not yet wired to an engine command (C3+ territory);
-            // these resolve as state-only until lib.rs consumes them.
+            // TK2 C2/C3: these are dispatched directly in lib.rs's own
+            // match, not through `execute()` — the arms below exist only
+            // so this match stays exhaustive.
             | Action::SelectPattern(_)
             | Action::LiveTrig { .. }
             | Action::EncoderJog { .. }

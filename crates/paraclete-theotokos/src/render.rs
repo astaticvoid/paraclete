@@ -6,12 +6,18 @@ use ratatui::{
     Frame,
 };
 
-use crate::model::{EnvelopeData, Mode, SlotBinding, StepState};
+use crate::model::{EnvelopeData, Screen, SlotBinding, StepState};
 
 const PAGE_SIZE: usize = 8;
 
 pub struct RenderData {
-    pub mode: Mode,
+    /// TK2 C3 (D12): replaces `Mode`.
+    pub screen: Screen,
+    /// TK2 C3 (D12): grid-programming (steps toggle) vs. live (trigs sound
+    /// now) — shown as a REC ●/○ indicator (transport bar + status line).
+    pub grid_rec: bool,
+    /// TK2 C3 (D6): the armed TRK/PTN hold prefix, if any (status line).
+    pub armed_prefix: Option<String>,
     pub active_track: usize,
     pub track_names: Vec<String>,
     pub bpm: f64,
@@ -34,7 +40,6 @@ pub struct RenderData {
     pub cmdline: Option<String>,
     pub cmdline_error: Option<String>,
     pub cmdline_candidates: Vec<String>,
-    pub leader: Option<crate::model::LeaderState>,
     pub slot_a_flash: bool,
     pub slot_b_flash: bool,
     pub help_visible: bool,
@@ -55,29 +60,52 @@ pub fn render(frame: &mut Frame, data: &RenderData) {
     if data.help_visible {
         render_help(frame, chunks[1], data);
     } else {
-        match data.mode {
-            Mode::Seq => render_seq_grid(frame, chunks[1], data),
-            Mode::Perf => render_perf_window(frame, chunks[1], data),
+        match data.screen {
+            Screen::Grid => render_seq_grid(frame, chunks[1], data),
+            Screen::Param(_) => render_perf_window(frame, chunks[1], data),
+            Screen::Tempo | Screen::Chain | Screen::Settings | Screen::Mute => {
+                render_screen_placeholder(frame, chunks[1], data)
+            }
         }
     }
     render_legend(frame, chunks[2], data);
     render_echo_area(frame, chunks[3], data);
-    render_mode_line(frame, chunks[4], data);
+    render_status_line(frame, chunks[4], data);
 }
 
-/// Compact mode-scoped key legend, always on screen (not gated behind `?`).
-/// TK1 C8 usability finding: current-mode keys must stay visible while
-/// learning the layout — a toggle-only overlay hides the grid you're
-/// trying to use the keys on.
+/// TK2 C6 builds these screens properly; until then, name the screen so
+/// it's at least legible that a button press landed somewhere real.
+fn render_screen_placeholder(frame: &mut Frame, area: Rect, data: &RenderData) {
+    let name = screen_name(data.screen);
+    let para = Paragraph::new(format!(" {name} (not yet implemented)"))
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(para, area);
+}
+
+fn screen_name(screen: Screen) -> &'static str {
+    match screen {
+        Screen::Grid => "GRID",
+        Screen::Param(_) => "PARAM",
+        Screen::Tempo => "TEMPO",
+        Screen::Chain => "CHAIN",
+        Screen::Settings => "SETTINGS",
+        Screen::Mute => "MUTE",
+    }
+}
+
+/// Compact key legend, always on screen (not gated behind `?`). TK1 C8
+/// usability finding: current keys must stay visible while learning the
+/// layout — a toggle-only overlay hides the grid you're trying to use the
+/// keys on. TK2 C3: content follows the §2 panel grammar.
 fn render_legend(frame: &mut Frame, area: Rect, data: &RenderData) {
-    let (line1, line2) = match data.mode {
-        Mode::Seq => (
-            "q..p:track  a;/z/:step  Space:play  Tab:mode  -/=:page  1-8:pattern",
-            "Enter:focus  Esc:cancel  Bksp:clr-lock  y/Y:yank/paste  \\:leader  ::cmd  ?:help  ^C:quit",
+    let (line1, line2) = match data.screen {
+        Screen::Grid => (
+            "q..i/a..k:trig  Tab(hold):TRK  p(hold):PTN  z/x/c:REC/PLAY/STOP  1-6:page  -/=:page-win",
+            "FUNC(Shift)+trig:encoder  Enter/Esc:YES/NO  o:song  m:mute  ::cmd  ?:help  ^C:quit",
         ),
-        Mode::Perf => (
-            "q..p:track  Space:play  Tab:mode  1-6:page  ↑↓:jog A  ←→:jog B",
-            "Shift+Arrows:fine  Shift+q..p:mute  \\:leader  ::cmd  ?:help  ^C:quit",
+        _ => (
+            "q..i/a..k:trig  Tab(hold):TRK  p(hold):PTN  z/x/c:REC/PLAY/STOP  1-6:page",
+            "FUNC(Shift)+trig:encoder  Enter/Esc:YES/NO  ::cmd  ?:help  ^C:quit",
         ),
     };
     let lines = vec![
@@ -90,6 +118,8 @@ fn render_legend(frame: &mut Frame, area: Rect, data: &RenderData) {
 
 fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
     let play_sym = if data.playing { "▶" } else { "■" };
+    // TK2 C3 (D12): transport bar gains a REC indicator.
+    let rec_sym = if data.grid_rec { "REC●" } else { "REC○" };
     let track_name = data
         .track_names
         .get(data.active_track)
@@ -99,9 +129,10 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
     let page_count = data.step_state.page_count.max(1);
 
     let transport = format!(
-        " {:.1} BPM  {}  {}  P{}/{}  Step:{}  Len:{}",
+        " {:.1} BPM  {}  {}  {}  P{}/{}  Step:{}  Len:{}",
         data.bpm,
         play_sym,
+        rec_sym,
         track_name,
         page,
         page_count,
@@ -243,79 +274,59 @@ fn render_envelope_section(frame: &mut Frame, area: Rect, data: &RenderData) {
     }
 }
 
+/// TK2 C3: regenerated from the §2 panel table (`design/phases/tk2-theotokos.md`)
+/// — the button vocabulary, not TK1's mode-scoped key list.
 fn render_help(frame: &mut Frame, area: Rect, data: &RenderData) {
     let mut lines: Vec<Line> = Vec::new();
 
     lines.push(Line::styled(
-        format!(
-            " MODE: {}  (? = close)",
-            if data.mode == Mode::Seq {
-                "SEQ"
-            } else {
-                "PERF"
-            }
-        ),
+        format!(" SCREEN: {}  (? = close)", screen_name(data.screen)),
         Style::default().fg(Color::Yellow),
     ));
     lines.push(Line::from(""));
 
-    // Global keys (all modes)
     lines.push(Line::styled(
-        "── GLOBAL ──",
+        "── PANEL ──",
         Style::default().fg(Color::Cyan),
     ));
     for (key, desc) in &[
-        ("q..p", "select track 1-8"),
-        ("a;/z/", "toggle step (16 keys, 2 rows)"),
-        ("Space", "play / stop"),
-        ("Tab", "cycle mode (SEQ ↔ PERF)"),
-        ("Shift+q..p", "mute / unmute track"),
-        ("Shift+;", "open command line"),
-        ("Enter", "focus / release step"),
-        ("Esc", "release focus / cancel"),
-        ("Backspace", "clear all locks on focused step"),
-        ("y / Y", "yank / paste pattern"),
-        ("\\", "leader (slot rebind: \\a3, \\b5)"),
-        ("?", "toggle help"),
-        ("Ctrl-C", "quit"),
+        ("q w e r t y u i", "Trig1-8 (top row)"),
+        ("a s d f g h j k", "Trig9-16 (bottom row)"),
+        ("Tab (hold)", "TRK — + trig: select track"),
+        ("p (hold)", "PTN — + trig: select pattern"),
+        ("z / x / c", "REC / PLAY / STOP (Space = PLAY)"),
+        ("FUNC (Shift)", "encoder plane + secondary chords"),
+        ("FUNC+trig", "encoder jog (top row up, bottom row down)"),
+        ("1-6", "page select (TRIG SRC FLTR AMP FX MOD)"),
+        ("7 / 8 / 9 / 0", "KIT / SETTINGS / SAMPLING / TEMPO"),
+        ("Enter / Esc", "YES / NO"),
+        ("arrows", "navigation"),
+        ("- / =", "step-page window prev / next"),
+        ("o", "SONG (opens Chain)"),
+        ("m", "MUTE screen"),
+        ("v", "KEYBD (reserved)"),
     ] {
         lines.push(Line::styled(
-            format!("  {:12}  {}", key, desc),
+            format!("  {:16}  {}", key, desc),
             Style::default().fg(Color::White),
         ));
     }
     lines.push(Line::from(""));
 
-    if data.mode == Mode::Seq {
+    lines.push(Line::styled(
+        "── UNBOUND / FIXED ──",
+        Style::default().fg(Color::Cyan),
+    ));
+    for (key, desc) in &[
+        (": (or Shift+;)", "open command line"),
+        ("Backspace", "clear locks on focused step"),
+        ("?", "toggle help"),
+        ("Ctrl-C", "quit"),
+    ] {
         lines.push(Line::styled(
-            "── SEQ MODE ──",
-            Style::default().fg(Color::Cyan),
+            format!("  {:16}  {}", key, desc),
+            Style::default().fg(Color::White),
         ));
-        for (key, desc) in &[
-            ("- / =", "page window prev / next"),
-            ("1..8", "select pattern 1-8"),
-        ] {
-            lines.push(Line::styled(
-                format!("  {:12}  {}", key, desc),
-                Style::default().fg(Color::White),
-            ));
-        }
-    } else {
-        lines.push(Line::styled(
-            "── PERF MODE ──",
-            Style::default().fg(Color::Cyan),
-        ));
-        for (key, desc) in &[
-            ("1..6", "select param page"),
-            ("↑ / ↓", "jog slot A (coarse)"),
-            ("← / →", "jog slot B (coarse)"),
-            ("Shift+Arrows", "fine jog (smaller steps)"),
-        ] {
-            lines.push(Line::styled(
-                format!("  {:12}  {}", key, desc),
-                Style::default().fg(Color::White),
-            ));
-        }
     }
 
     lines.push(Line::from(""));
@@ -332,8 +343,6 @@ fn render_help(frame: &mut Frame, area: Rect, data: &RenderData) {
         ("unmute <n>", "unmute track"),
         ("clear", "clear current pattern"),
         ("lock-clear", "clear locks on focused step"),
-        ("mode seq", "switch to SEQ mode"),
-        ("mode perf", "switch to PERF mode"),
     ] {
         lines.push(Line::styled(
             format!("  :{:12}  {}", verb, desc),
@@ -369,15 +378,14 @@ fn render_echo_area(frame: &mut Frame, area: Rect, data: &RenderData) {
     frame.render_widget(para, area);
 }
 
-fn render_mode_line(frame: &mut Frame, area: Rect, data: &RenderData) {
-    let mode_style = Style::default().fg(Color::Yellow);
-    let mode_name = match data.mode {
-        Mode::Seq => "SEQ",
-        Mode::Perf => "PERF",
-    };
+/// TK2 C3 (D12): replaces the TK1 mode line. Shows the current screen,
+/// active track, REC ●/○, and the armed TRK/PTN prefix (if any) — encoder
+/// bindings join this once the encoder bank exists (TK2 C5).
+fn render_status_line(frame: &mut Frame, area: Rect, data: &RenderData) {
+    let screen_style = Style::default().fg(Color::Yellow);
 
     let mut spans = vec![
-        Span::styled(format!(" {:4} ", mode_name), mode_style),
+        Span::styled(format!(" {:8} ", screen_name(data.screen)), screen_style),
         Span::raw(" "),
         Span::raw(
             data.track_names
@@ -386,47 +394,65 @@ fn render_mode_line(frame: &mut Frame, area: Rect, data: &RenderData) {
                 .unwrap_or("?"),
         ),
         Span::raw(" "),
+        Span::styled(
+            if data.grid_rec { "REC● " } else { "REC○ " },
+            Style::default().fg(if data.grid_rec {
+                Color::Red
+            } else {
+                Color::DarkGray
+            }),
+        ),
     ];
 
     if let Some(sf) = data.step_focuses.get(data.active_track).copied().flatten() {
         spans.push(Span::raw(format!("F:s{} ", sf)));
     }
 
-    if let Some(ref _leader) = data.leader {
-        spans.push(Span::styled("\\_ ", Style::default().fg(Color::Cyan)));
+    if let Some(ref prefix) = data.armed_prefix {
+        spans.push(Span::styled(
+            format!("{} ", prefix),
+            Style::default().fg(Color::Cyan),
+        ));
     }
 
-    if data.mode == Mode::Seq {
-        let page_info = format!(
-            "P{}/{}",
-            data.page_window + 1,
-            data.step_state.page_count.max(1)
-        );
-        spans.push(Span::raw(page_info));
-    } else {
-        let a_lock = if data.slot_a_locked { "L" } else { "" };
-        let a_color = if data.slot_a_flash {
-            Color::Yellow
-        } else {
-            Color::White
-        };
-        let a_text = match &data.slot_a {
-            Some(s) => format!(" A:{}={:.3}{}", s.param_name, data.slot_a_value, a_lock),
-            None => " A:--".to_string(),
-        };
-        spans.push(Span::styled(a_text, Style::default().fg(a_color)));
-        spans.push(Span::raw(" "));
-        let b_color = if data.slot_b_flash {
-            Color::Yellow
-        } else {
-            Color::White
-        };
-        let b_lock = if data.slot_b_locked { "L" } else { "" };
-        let b_text = match &data.slot_b {
-            Some(s) => format!("B:{}={:.3}{}", s.param_name, data.slot_b_value, b_lock),
-            None => "B:--".to_string(),
-        };
-        spans.push(Span::styled(b_text, Style::default().fg(b_color)));
+    match data.screen {
+        Screen::Grid => {
+            let page_info = format!(
+                "P{}/{}",
+                data.page_window + 1,
+                data.step_state.page_count.max(1)
+            );
+            spans.push(Span::raw(page_info));
+        }
+        Screen::Param(_) => {
+            let a_lock = if data.slot_a_locked { "L" } else { "" };
+            let a_color = if data.slot_a_flash {
+                Color::Yellow
+            } else {
+                Color::White
+            };
+            let a_text = match &data.slot_a {
+                Some(s) => format!(" A:{}={:.3}{}", s.param_name, data.slot_a_value, a_lock),
+                None => " A:--".to_string(),
+            };
+            spans.push(Span::styled(a_text, Style::default().fg(a_color)));
+            spans.push(Span::raw(" "));
+            let b_color = if data.slot_b_flash {
+                Color::Yellow
+            } else {
+                Color::White
+            };
+            let b_lock = if data.slot_b_locked { "L" } else { "" };
+            let b_text = match &data.slot_b {
+                Some(s) => format!("B:{}={:.3}{}", s.param_name, data.slot_b_value, b_lock),
+                None => "B:--".to_string(),
+            };
+            spans.push(Span::styled(b_text, Style::default().fg(b_color)));
+        }
+        // TK2 C6 builds these screens; until then, no stale slot A/B info
+        // next to the "not yet implemented" placeholder (review finding,
+        // post-C3 hostile review).
+        Screen::Tempo | Screen::Chain | Screen::Settings | Screen::Mute => {}
     }
 
     let line = Line::from(spans);
@@ -435,10 +461,12 @@ fn render_mode_line(frame: &mut Frame, area: Rect, data: &RenderData) {
 }
 
 impl RenderData {
-    pub fn for_test(mode: Mode, track_count: u8) -> Self {
+    pub fn for_test(screen: Screen, track_count: u8) -> Self {
         let track_count = track_count.max(1) as usize;
         Self {
-            mode,
+            screen,
+            grid_rec: true,
+            armed_prefix: None,
             active_track: 0,
             track_names: (1..=track_count).map(|i| format!("T{}", i)).collect(),
             bpm: 120.0,
@@ -461,7 +489,6 @@ impl RenderData {
             cmdline: None,
             cmdline_error: None,
             cmdline_candidates: vec![],
-            leader: None,
             slot_a_flash: false,
             slot_b_flash: false,
             help_visible: false,
@@ -472,14 +499,16 @@ impl RenderData {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Mode, StepState};
+    use crate::model::StepState;
 
     #[test]
     fn render_seq_does_not_panic() {
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let data = RenderData {
-            mode: Mode::Seq,
+            screen: Screen::Grid,
+            grid_rec: true,
+            armed_prefix: None,
             active_track: 0,
             track_names: vec!["Kick".into(), "Snare".into()],
             bpm: 140.0,
@@ -507,7 +536,6 @@ mod tests {
             cmdline: None,
             cmdline_error: None,
             cmdline_candidates: vec![],
-            leader: None,
             slot_a_flash: false,
             slot_b_flash: false,
             help_visible: false,
@@ -520,7 +548,9 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let data = RenderData {
-            mode: Mode::Perf,
+            screen: Screen::Param(1),
+            grid_rec: true,
+            armed_prefix: None,
             active_track: 0,
             track_names: vec!["Kick".into()],
             bpm: 120.0,
@@ -565,7 +595,6 @@ mod tests {
             cmdline: None,
             cmdline_error: None,
             cmdline_candidates: vec![],
-            leader: None,
             slot_a_flash: false,
             slot_b_flash: false,
             help_visible: false,
@@ -582,7 +611,9 @@ mod tests {
             current_step: 0,
         };
         let data = RenderData {
-            mode: Mode::Seq,
+            screen: Screen::Grid,
+            grid_rec: true,
+            armed_prefix: None,
             active_track: 0,
             track_names: vec!["Kick".into(), "Snare".into(), "Hihat".into(), "Bass".into()],
             bpm: 140.0,
@@ -605,7 +636,6 @@ mod tests {
             cmdline: None,
             cmdline_error: None,
             cmdline_candidates: vec![],
-            leader: None,
             slot_a_flash: false,
             slot_b_flash: false,
             help_visible: false,
@@ -613,5 +643,52 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal.draw(|f| render(f, &data)).unwrap();
+    }
+
+    fn buffer_text(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn status_line_shows_rec_state_and_armed_prefix() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.grid_rec = false;
+        data.armed_prefix = Some("TRK…".to_string());
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("REC○"),
+            "grid_rec=false must show the REC○ glyph; got: {text}"
+        );
+        assert!(
+            text.contains("TRK"),
+            "an armed TRK prefix must appear in the status line; got: {text}"
+        );
+    }
+
+    #[test]
+    fn help_overlay_lists_panel_buttons() {
+        let backend = ratatui::backend::TestBackend::new(100, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.help_visible = true;
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        for token in ["TRK", "PTN", "REC", "FUNC", "Trig"] {
+            assert!(
+                text.contains(token),
+                "help overlay must list panel button/concept {token}; got: {text}"
+            );
+        }
     }
 }
