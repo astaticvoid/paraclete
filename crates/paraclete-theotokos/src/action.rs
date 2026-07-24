@@ -15,6 +15,10 @@ pub const CMD_SET_PATTERN: u32 = 27;
 pub const CMD_TRIG_NOW: u32 = 38;
 /// P10 C4 (mirrors `Sequencer::PATTERN_BANK_SIZE`, D9 clamp).
 pub const PATTERN_BANK_SIZE: usize = 8;
+/// P10 C1 (mirrors `Sequencer::CMD_CLEAR`). §0 A8: clears steps only —
+/// locks survive; FUNC+PLAY (TK2 C4) pairs this with `CMD_CLEAR_STEP_LOCK`
+/// per step.
+pub const CMD_CLEAR: u32 = 18;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Action {
@@ -52,6 +56,15 @@ pub enum Action {
     OpenScreen(Screen),
     /// D12/OQ-T23: YES-tap on the Tempo screen.
     TapTempo,
+
+    // ── TK2 C4 (D7/A8): FUNC+transport chords ──
+    /// FUNC+REC: copy the active track's active pattern lane.
+    CopyLane,
+    /// FUNC+PLAY: clear the active track's pattern (§0 A8 — CMD_CLEAR
+    /// plus a CMD_CLEAR_STEP_LOCK per step; CMD_CLEAR alone leaves locks).
+    ClearLane,
+    /// FUNC+STOP: paste the copied lane.
+    PasteLane,
 }
 
 #[derive(Debug)]
@@ -83,7 +96,12 @@ impl Action {
             | Action::EncoderJog { .. }
             | Action::ToggleGridRec
             | Action::OpenScreen(_)
-            | Action::TapTempo => Outcome::StateOnly,
+            | Action::TapTempo
+            // TK2 C4: dispatched directly in lib.rs (bus/pattern-length
+            // access needed for ClearLane's per-step lock clears).
+            | Action::CopyLane
+            | Action::ClearLane
+            | Action::PasteLane => Outcome::StateOnly,
             Action::PlayToggle => {
                 if playing {
                     Outcome::Command(NodeCommand {

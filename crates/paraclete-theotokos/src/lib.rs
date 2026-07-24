@@ -17,8 +17,8 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::action::{
-    Action, Outcome, CMD_CLEAR_STEP_LOCK, CMD_SET_LOCK_TARGET, CMD_SET_STEP_LOCK, CMD_SET_PATTERN,
-    CMD_TRIG_NOW, GRID_STEPS, PATTERN_BANK_SIZE,
+    Action, Outcome, CMD_CLEAR, CMD_CLEAR_STEP_LOCK, CMD_SET_LOCK_TARGET, CMD_SET_PATTERN,
+    CMD_SET_STEP_LOCK, CMD_TRIG_NOW, GRID_STEPS, PATTERN_BANK_SIZE,
 };
 use crate::input::{button_to_action, key_to_button, HeldState, Keymap, Mods};
 use crate::model::{
@@ -177,6 +177,16 @@ impl TheotokosApp {
         let step_locks: Vec<Vec<usize>> = (0..self.model.tracks.len())
             .map(|t| self.model.read_step_locks(bus, t))
             .collect();
+        // TK2 C4 (D12): the Mute screen renders every track's mute state.
+        let mute_states: Vec<bool> = self
+            .model
+            .tracks
+            .iter()
+            .map(|t| {
+                bus.read(&format!("/node/{}/param/mute", t.sequencer_id))
+                    .is_some_and(|v| matches!(v, paraclete_node_api::StateBusValue::Float(f) if *f >= 0.5))
+            })
+            .collect();
 
         let mut slot_a_locked = false;
         let mut slot_b_locked = false;
@@ -222,6 +232,7 @@ impl TheotokosApp {
             debug_event: self.last_debug_event.take(),
             step_focuses,
             step_locks,
+            mute_states,
             slot_a_locked,
             slot_b_locked,
             cmdline: self.model.cmdline.clone(),
@@ -349,6 +360,19 @@ impl TheotokosApp {
                     };
                     button_to_action(&held_for_resolution, &screen_state, button, mods)
                 }
+            };
+            // A12 (normative): FUNC+Space must stay a no-op — Space is a
+            // transport-only Play alias; the destructive clear requires
+            // the literal `x` home. `key_to_button` necessarily collapses
+            // Space and `x` onto the same PanelButton::Play (D11), so
+            // button_to_action has no way to tell them apart; override
+            // using the raw key here (post-C4 hostile review: this
+            // collapse previously let FUNC+Space silently wipe the active
+            // pattern, the exact violation A12 prohibits).
+            let action = if matches!(action, Action::ClearLane) && ev.code == KeyCode::Char(' ') {
+                Action::Noop
+            } else {
+                action
             };
 
             if !matches!(action, Action::Noop) || self.last_debug_event.is_some() {
@@ -606,6 +630,38 @@ impl TheotokosApp {
                     }
                     dirty = true;
                 }
+                // TK2 C4 (D7): FUNC+REC/PLAY/STOP copy/clear/paste,
+                // reusing the unchanged TK1 yank/paste logic.
+                Action::CopyLane => {
+                    self.yank_active_pattern(state);
+                    dirty = true;
+                }
+                Action::ClearLane => {
+                    // §0 A8: CMD_CLEAR clears steps only — locks survive
+                    // unless explicitly cleared per step.
+                    let track = self.model.active_track;
+                    let seq_id = self.model.tracks[track].sequencer_id;
+                    let pattern_length = self.model.read_step_state(state, track).pattern_length;
+                    self.pending.push(NodeCommand {
+                        target_id: seq_id,
+                        type_id: CMD_CLEAR,
+                        arg0: 0,
+                        arg1: 0.0,
+                    });
+                    for step in 0..pattern_length {
+                        self.pending.push(NodeCommand {
+                            target_id: seq_id,
+                            type_id: CMD_CLEAR_STEP_LOCK,
+                            arg0: step as i64,
+                            arg1: -1.0,
+                        });
+                    }
+                    dirty = true;
+                }
+                Action::PasteLane => {
+                    self.paste_pattern(state);
+                    dirty = true;
+                }
                 // TK2 C5/C6 territory — no dispatch yet.
                 Action::EncoderJog { .. } | Action::TapTempo => {}
             }
@@ -752,11 +808,8 @@ impl TheotokosApp {
         }
     }
 
-    // ── C7: yank, paste ──
-    //
-    // No caller since the TK2 C3 wiring flip retired the TK1 `y`/`Y` keys
-    // (§2); TK2 C4 rewires FUNC+REC/STOP onto these unchanged (D7).
-    #[allow(dead_code)]
+    // ── C7: yank, paste (called by TK2 C4's CopyLane/PasteLane, D7) ──
+
     fn yank_active_pattern(&mut self, bus: &StateBusHandle) {
         let track = self.model.active_track;
         if track >= self.model.tracks.len() {
@@ -819,7 +872,6 @@ impl TheotokosApp {
         self.model.yank_buffer = yanked;
     }
 
-    #[allow(dead_code)]
     fn paste_pattern(&mut self, bus: &StateBusHandle) {
         if self.model.yank_buffer.is_empty() {
             return;
@@ -1266,6 +1318,109 @@ mod tests {
             app.model.cmdline_error.as_deref(),
             Some("no pattern 9"),
             "must echo the out-of-range pattern index"
+        );
+    }
+
+    // ── TK2 C4: FUNC+transport chords (D7) ──
+
+    /// A legacy-terminal FUNC+letter chord: uppercase char AND the SHIFT
+    /// flag (§0 A1) — not the synthetic lowercase+SHIFT combination A1
+    /// flags as the "BUG-035 false-pass class" real terminals never send.
+    fn func_key(c: char) -> KeyEvent {
+        KeyEvent::new(
+            KeyCode::Char(c.to_ascii_uppercase()),
+            KeyModifiers::SHIFT,
+        )
+    }
+
+    #[test]
+    fn func_rec_copies_active_lane() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        {
+            let mut b = bus.borrow_mut();
+            b.write(
+                "/node/200/state/steps",
+                StateBusValue::Text("1100000000000000".into()),
+            );
+            b.write("/node/200/state/locks", StateBusValue::Text(String::new()));
+        }
+
+        // FUNC+REC ('z' + SHIFT) copies the active track's active lane.
+        app.handle_keys(&bus, &[func_key('z')]);
+        assert!(
+            !app.model.yank_buffer.is_empty(),
+            "FUNC+REC must populate the yank buffer"
+        );
+    }
+
+    #[test]
+    fn func_stop_pastes() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        {
+            let mut b = bus.borrow_mut();
+            b.write(
+                "/node/200/state/steps",
+                StateBusValue::Text("1100000000000000".into()),
+            );
+            b.write("/node/200/state/locks", StateBusValue::Text(String::new()));
+        }
+
+        app.handle_keys(&bus, &[func_key('z')]); // FUNC+REC copies first.
+        app.pending.clear();
+        app.handle_keys(&bus, &[func_key('c')]); // FUNC+STOP pastes.
+        assert!(
+            !app.pending.is_empty(),
+            "FUNC+STOP must produce paste commands"
+        );
+    }
+
+    #[test]
+    fn func_play_clears_lane_and_locks() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        {
+            let mut b = bus.borrow_mut();
+            b.write("/node/200/state/pattern_length", StateBusValue::Int(4));
+        }
+
+        // FUNC+PLAY ('x' + SHIFT) clears the active track's pattern: §0
+        // A8 — CMD_CLEAR (steps only) plus a CMD_CLEAR_STEP_LOCK per step.
+        app.handle_keys(&bus, &[func_key('x')]);
+        assert_eq!(app.pending[0].type_id, CMD_CLEAR);
+        let lock_clears = app
+            .pending
+            .iter()
+            .filter(|c| c.type_id == CMD_CLEAR_STEP_LOCK)
+            .count();
+        assert_eq!(
+            lock_clears, 4,
+            "must clear locks for every step of the pattern length"
+        );
+    }
+
+    /// A12 (normative): FUNC+Space must stay a no-op — `key_to_button`
+    /// collapses Space and `x` onto the same `PanelButton::Play` (D11),
+    /// so without an explicit guard FUNC+Space silently wiped the active
+    /// pattern the same as FUNC+`x` (post-C4 hostile review blocker).
+    #[test]
+    fn func_space_does_not_clear_lane() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        {
+            let mut b = bus.borrow_mut();
+            b.write("/node/200/state/pattern_length", StateBusValue::Int(4));
+        }
+
+        app.handle_keys(
+            &bus,
+            &[KeyEvent::new(KeyCode::Char(' '), KeyModifiers::SHIFT)],
+        );
+        assert!(
+            app.pending.is_empty(),
+            "FUNC+Space must not clear the pattern; got {:?}",
+            app.pending
         );
     }
 

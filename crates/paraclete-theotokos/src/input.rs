@@ -329,18 +329,32 @@ pub fn button_to_action(
     mods: Mods,
 ) -> Action {
     // D6/A10: an armed TRK/PTN prefix chords with any trig, taking
-    // precedence over everything else while armed. A10 reserves FUNC+trig
-    // while armed for the mute-toggle chord (TK2 C4, D7) — until that
-    // lands, it's a no-op here rather than a wrong-because-legacy
-    // track/pattern select (review finding, post-C3 hostile review).
+    // precedence over everything else while armed. A10: FUNC+trig while
+    // TRK held is the mute-toggle chord; while PTN held it has no defined
+    // meaning (a no-op, not a wrong-because-legacy pattern select).
     if let (Some(hold), Some(col)) = (held.armed, trig_col(button)) {
         if mods.func {
-            return Action::Noop;
+            return match hold {
+                Hold::Trk => Action::ToggleMute(col),
+                Hold::Ptn => Action::Noop,
+            };
         }
         return match hold {
             Hold::Trk => Action::SelectTrack(col),
             Hold::Ptn => Action::SelectPattern(col),
         };
+    }
+
+    // D7: while TRK/PTN is held, FUNC+transport (REC/PLAY/STOP) is
+    // reserved — a no-op, not the copy/clear/paste chord below.
+    if held.armed.is_some()
+        && mods.func
+        && matches!(
+            button,
+            PanelButton::Rec | PanelButton::Play | PanelButton::Stop
+        )
+    {
+        return Action::Noop;
     }
 
     // D8/A10: encoder jog resolves only with no armed prefix. Top row
@@ -358,6 +372,11 @@ pub fn button_to_action(
     }
 
     if let Some(col) = trig_col(button) {
+        // A16: trigs are always trigs on Grid/Param — the Mute screen
+        // retargets them to mute-toggle instead.
+        if matches!(screen.screen, Screen::Mute) {
+            return Action::ToggleMute(col);
+        }
         // D12: grid_rec defaults on (TK1 behavior preserved); off routes
         // every trig to a live trig (TK2 C1's CMD_TRIG_NOW) instead.
         return if screen.grid_rec {
@@ -369,13 +388,23 @@ pub fn button_to_action(
 
     match button {
         // TK2 C3: Play (bare) restores the transport toggle Space provided
-        // in TK1 — the Play button IS the `Space` alias (§2). A12: FUNC+Play
-        // is a no-op (Space is transport-only, never the destructive-clear
-        // chord — that's the `x`/STOP+FUNC home, D7, C4).
+        // in TK1 — the Play button IS the `Space` alias (§2).
         PanelButton::Play if !mods.func => Action::PlayToggle,
-        // TK2 C3: bare REC toggles grid-rec (D12). FUNC+REC is reserved for
-        // the D7 copy chord (C4) — a no-op here until then.
+        // TK2 C4 (D7): FUNC+PLAY clears the active track's pattern.
+        // A12: Space is also the Play alias, so FUNC+Space collapses onto
+        // this same arm at the button-identity level — this function
+        // cannot tell them apart post-collapse (D11). The A12 no-op for
+        // FUNC+Space specifically is enforced one layer up, in
+        // `lib.rs::handle_keys`, using the raw key before it reaches here
+        // (post-C4 hostile review: this WAS a real gap — FUNC+Space could
+        // silently wipe the active pattern).
+        PanelButton::Play => Action::ClearLane,
+        // TK2 C3: bare REC toggles grid-rec (D12).
         PanelButton::Rec if !mods.func => Action::ToggleGridRec,
+        // TK2 C4 (D7): FUNC+REC copies the active lane.
+        PanelButton::Rec => Action::CopyLane,
+        // TK2 C4 (D7): FUNC+STOP pastes. Bare STOP has no meaning yet.
+        PanelButton::Stop if mods.func => Action::PasteLane,
         PanelButton::PagePrev => Action::PageWindow(Dir::Prev),
         PanelButton::PageNext => Action::PageWindow(Dir::Next),
         PanelButton::Pg1 => Action::OpenScreen(Screen::Param(0)),
@@ -475,9 +504,13 @@ mod tests {
     /// review finding).
     #[test]
     fn armed_func_trig_is_reserved_not_a_wrong_select() {
+        // TK2 C4 gave TRK+FUNC+trig its real meaning (mute toggle — see
+        // `trk_func_trig_toggles_mute`); PTN+FUNC+trig still has none
+        // defined, so it must stay a no-op rather than PTN's legacy
+        // `SelectPattern`.
         let held = HeldState {
             kitty: false,
-            armed: Some(Hold::Trk),
+            armed: Some(Hold::Ptn),
             pressed: HashSet::new(),
         };
         let mods = Mods {
@@ -487,7 +520,7 @@ mod tests {
         let action = button_to_action(&held, &default_grid(), PanelButton::Trig5, mods);
         assert!(
             matches!(action, Action::Noop),
-            "FUNC+trig while armed must not resolve to a track/pattern select"
+            "FUNC+trig while PTN-armed must not resolve to a pattern select"
         );
     }
 
@@ -500,6 +533,59 @@ mod tests {
         };
         let action = button_to_action(&held, &default_grid(), PanelButton::Trig3, Mods::default());
         assert!(matches!(action, Action::SelectPattern(2)));
+    }
+
+    /// D7/A10 (TK2 C4): TRK-held + FUNC+trig is the mute-toggle chord —
+    /// distinct from bare TRK+trig (track select, tested above).
+    #[test]
+    fn trk_func_trig_toggles_mute() {
+        let held = HeldState {
+            kitty: false,
+            armed: Some(Hold::Trk),
+            pressed: HashSet::new(),
+        };
+        let mods = Mods {
+            func: true,
+            ctrl: false,
+        };
+        let action = button_to_action(&held, &default_grid(), PanelButton::Trig5, mods);
+        assert!(matches!(action, Action::ToggleMute(4)));
+    }
+
+    /// A16 (TK2 C4): the Mute screen retargets trigs to mute-toggle
+    /// regardless of `grid_rec` (unlike Grid/Param, where trigs stay
+    /// trigs).
+    #[test]
+    fn mute_screen_trigs_toggle_mutes() {
+        let held = HeldState::new(false);
+        let screen = ScreenState {
+            screen: Screen::Mute,
+            grid_rec: true,
+        };
+        let action = button_to_action(&held, &screen, PanelButton::Trig2, Mods::default());
+        assert!(matches!(action, Action::ToggleMute(1)));
+    }
+
+    /// D7 (TK2 C4): while TRK/PTN is held, FUNC+transport (REC/PLAY/STOP)
+    /// is reserved — a no-op, not the copy/clear/paste chord.
+    #[test]
+    fn func_transport_noop_while_trk_held() {
+        let held = HeldState {
+            kitty: false,
+            armed: Some(Hold::Trk),
+            pressed: HashSet::new(),
+        };
+        let mods = Mods {
+            func: true,
+            ctrl: false,
+        };
+        for button in [PanelButton::Rec, PanelButton::Play, PanelButton::Stop] {
+            let action = button_to_action(&held, &default_grid(), button, mods);
+            assert!(
+                matches!(action, Action::Noop),
+                "FUNC+{button:?} while TRK held must be a no-op, got {action:?}"
+            );
+        }
     }
 
     #[test]

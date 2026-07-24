@@ -3,7 +3,28 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-23 (still later). **TK2 C3 shipped** — wiring
+> **Last updated:** 2026-07-23 (yet later). **TK2 C4 shipped** — FUNC
+> transport chords + mute chord (D7/A8/A10/A14/A16): FUNC+REC copies the
+> active lane, FUNC+PLAY clears it (`CMD_CLEAR` + `CMD_CLEAR_STEP_LOCK`
+> per step, §0 A8 — locks don't survive a plain `CMD_CLEAR`), FUNC+STOP
+> pastes — all reusing the unchanged TK1 `yank_active_pattern`/
+> `paste_pattern` (dormant since the C3 wiring flip, now reconnected).
+> TRK-held + FUNC+trig = mute toggle (was a C3 reserved no-op, now real);
+> PTN-held + FUNC+trig stays a no-op (nothing defined). Mute screen (`m`)
+> renders real per-track mute state, trigs retarget to mute-toggle (A16).
+> 6 tests named in spec. Hostile review found **1 blocker**: `key_to_button`
+> necessarily collapses Space and `x` onto the same `PanelButton::Play`
+> (D11) — meaning FUNC+Space silently hit the same `ClearLane` arm as
+> FUNC+x, directly violating normative A12 ("FUNC+Space is a no-op") on
+> any kitty-capable terminal (a live, reachable pattern-wipe footgun, not
+> hypothetical) — fixed with a raw-key override in `handle_keys` (button
+> identity can't distinguish them post-collapse, so the guard uses the
+> original `KeyEvent` one layer up). Also fixed a minor: 3 injection tests
+> used the synthetic lowercase+SHIFT combination §0 A1 flags as the
+> "BUG-035 false-pass class" — switched to uppercase+SHIFT (legacy
+> terminal shape). 2 new regression tests. 67 crate tests, full workspace
+> green. Next: TK2 C5 (encoder bank).
+> Previous: 2026-07-23 (still later). **TK2 C3 shipped** — wiring
 > + render migration: `lib.rs::handle_keys` now consumes the C2 pipeline
 > (`key_to_button` → `HeldState` → `button_to_action`), replacing the old
 > TK1 `map_key`/`map_seq`/`map_perf`. Real behavior change, not additive:

@@ -35,6 +35,8 @@ pub struct RenderData {
     pub debug_event: Option<String>,
     pub step_focuses: Vec<Option<usize>>,
     pub step_locks: Vec<Vec<usize>>,
+    /// TK2 C4 (D12): per-track mute state, shown on the Mute screen.
+    pub mute_states: Vec<bool>,
     pub slot_a_locked: bool,
     pub slot_b_locked: bool,
     pub cmdline: Option<String>,
@@ -63,7 +65,8 @@ pub fn render(frame: &mut Frame, data: &RenderData) {
         match data.screen {
             Screen::Grid => render_seq_grid(frame, chunks[1], data),
             Screen::Param(_) => render_perf_window(frame, chunks[1], data),
-            Screen::Tempo | Screen::Chain | Screen::Settings | Screen::Mute => {
+            Screen::Mute => render_mute_screen(frame, chunks[1], data),
+            Screen::Tempo | Screen::Chain | Screen::Settings => {
                 render_screen_placeholder(frame, chunks[1], data)
             }
         }
@@ -79,6 +82,24 @@ fn render_screen_placeholder(frame: &mut Frame, area: Rect, data: &RenderData) {
     let name = screen_name(data.screen);
     let para = Paragraph::new(format!(" {name} (not yet implemented)"))
         .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(para, area);
+}
+
+/// TK2 C4 (D12): "trigs toggle mutes, track states rendered" — one line
+/// per track, muted tracks marked ●.
+fn render_mute_screen(frame: &mut Frame, area: Rect, data: &RenderData) {
+    let lines: Vec<Line> = data
+        .track_names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let muted = data.mute_states.get(i).copied().unwrap_or(false);
+            let glyph = if muted { "●" } else { "○" };
+            let color = if muted { Color::Red } else { Color::DarkGray };
+            Line::styled(format!(" {glyph} {name}"), Style::default().fg(color))
+        })
+        .collect();
+    let para = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
     frame.render_widget(para, area);
 }
 
@@ -484,6 +505,7 @@ impl RenderData {
             debug_event: None,
             step_focuses: vec![None; track_count],
             step_locks: vec![vec![]; track_count],
+            mute_states: vec![false; track_count],
             slot_a_locked: false,
             slot_b_locked: false,
             cmdline: None,
@@ -531,6 +553,7 @@ mod tests {
             debug_event: None,
             step_focuses: vec![None; 2],
             step_locks: vec![vec![]; 2],
+            mute_states: vec![false; 2],
             slot_a_locked: false,
             slot_b_locked: false,
             cmdline: None,
@@ -590,6 +613,7 @@ mod tests {
             debug_event: None,
             step_focuses: vec![None; 1],
             step_locks: vec![vec![]; 1],
+            mute_states: vec![false; 1],
             slot_a_locked: false,
             slot_b_locked: false,
             cmdline: None,
@@ -631,6 +655,7 @@ mod tests {
             debug_event: None,
             step_focuses: vec![None; 4],
             step_locks: vec![vec![]; 4],
+            mute_states: vec![false; 4],
             slot_a_locked: false,
             slot_b_locked: false,
             cmdline: None,
