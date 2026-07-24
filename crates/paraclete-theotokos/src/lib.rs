@@ -491,6 +491,16 @@ impl TheotokosApp {
                     self.model.cmdline_error = None;
                     dirty = true;
                 }
+                // TK2 C2 (§0 A4, additive-only): these actions exist so
+                // `input::button_to_action`'s pure functions can be typed
+                // and tested; nothing in this TK1 dispatch produces them
+                // yet, so there is nothing to wire until C3's wiring flip.
+                Action::SelectPattern(_)
+                | Action::LiveTrig { .. }
+                | Action::EncoderJog { .. }
+                | Action::ToggleGridRec
+                | Action::OpenScreen(_)
+                | Action::TapTempo => {}
             }
         }
         drop(bus_ref);

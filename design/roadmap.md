@@ -3,7 +3,27 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-23 (later). **TK2 C1 shipped** — live-trig
+> **Last updated:** 2026-07-23 (even later). **TK2 C2 shipped** — panel
+> model pure types + mapping (`paraclete-theotokos/src/input.rs`,
+> additive-only per §0 A4: the old TK1 `map_key`/`map_seq`/`map_perf`
+> pipeline is untouched and still wired into `lib.rs`). New: `PanelButton`
+> (the §2 continuous grid + all named buttons), `Keymap`/`KeyBinding`
+> (D11, empty by default), `func_held` (§0 A1's case-fold/FUNC-inference
+> rule), `key_to_button`, `Hold`/`HeldState` (D6 sticky-prefix fallback,
+> amended by §0 A9 — same-prefix re-press is a no-op, not a toggle),
+> `ScreenState`/`Mods`/`button_to_action`. `model.rs` gained the `Screen`
+> enum (D12); `action.rs` gained 6 new `Action` variants routed to
+> `Outcome::StateOnly` for now. 76 crate tests (11 named in spec + 2 added
+> after hostile review: direct `func_held` coverage — was implemented but
+> untested by every other C2 test, which hand-built `Mods` instead — and
+> an accurately-named twin for `sticky_prefix_same_key_toggles_off`, whose
+> literal spec-mandated name asserts the opposite of what §0 A9 requires
+> it to test). Review also had a dead/unfalsifiable FUNC+Space guard
+> removed (both branches produced identical output; deferred to whichever
+> commit gives Play real meaning). All workspace tests green. Next: TK2 C3
+> (wiring + render migration — the deletions §0 A4 deferred from C2 move
+> here, alongside `lib.rs::handle_keys` consuming the C2 pipeline).
+> Previous: 2026-07-23 (later). **TK2 C1 shipped** — live-trig
 > engine command (`Sequencer::CMD_TRIG_NOW = 38`, D5/§0 A3): resolves
 > note/velocity sentinels, fires a `NoteOn` at the next `process` window's
 > sample offset 0, respects mute, works with the transport stopped. Two

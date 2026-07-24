@@ -18,6 +18,19 @@ impl Mode {
     }
 }
 
+/// TK2 C2 (D12): replaces `Mode` — additive for now (§0 A4). `Mode` and
+/// the TK1 dispatch it drives stay live until C3's wiring flip; nothing
+/// reads `Screen` yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Screen {
+    Grid,
+    Param(usize),
+    Tempo,
+    Chain,
+    Settings,
+    Mute,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dir {
     Prev,

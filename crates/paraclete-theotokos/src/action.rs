@@ -1,4 +1,4 @@
-use crate::model::{Dir, Mag, Slot};
+use crate::model::{Dir, Mag, Screen, Slot};
 use paraclete_node_api::NodeCommand;
 
 pub const CMD_CLOCK_START: u32 = 16;
@@ -32,6 +32,23 @@ pub enum Action {
     Leader,
     ToggleHelp,
     Noop,
+
+    // ── TK2 C2 (additive — §0 A4): new panel-grammar actions. Nothing
+    // produces these yet outside `input::button_to_action`'s pure tests;
+    // lib.rs wiring lands in C3.
+    /// D6/D11: TRK-hold or PTN-hold + trig, pattern arm.
+    SelectPattern(usize),
+    /// D5/D12: a trig fired with grid-rec off (`CMD_TRIG_NOW`, TK2 C1).
+    LiveTrig { col: usize },
+    /// D8: FUNC+top/bottom-row trig, resolved against the active page's
+    /// encoder bank.
+    EncoderJog { col: usize, dir: Dir, mag: Mag },
+    /// D12: the REC button toggles `grid_rec` (grid-programming vs. live).
+    ToggleGridRec,
+    /// D12: KIT/SETTINGS/SAMPLING/TEMPO/SONG/MUTE navigate to a `Screen`.
+    OpenScreen(Screen),
+    /// D12/OQ-T23: YES-tap on the Tempo screen.
+    TapTempo,
 }
 
 #[derive(Debug)]
@@ -60,7 +77,15 @@ impl Action {
             | Action::Yank
             | Action::Paste
             | Action::Leader
-            | Action::ToggleHelp => Outcome::StateOnly,
+            | Action::ToggleHelp
+            // TK2 C2: not yet wired to an engine command (C3+ territory);
+            // these resolve as state-only until lib.rs consumes them.
+            | Action::SelectPattern(_)
+            | Action::LiveTrig { .. }
+            | Action::EncoderJog { .. }
+            | Action::ToggleGridRec
+            | Action::OpenScreen(_)
+            | Action::TapTempo => Outcome::StateOnly,
             Action::PlayToggle => {
                 if playing {
                     Outcome::Command(NodeCommand {
