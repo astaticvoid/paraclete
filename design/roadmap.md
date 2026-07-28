@@ -3,7 +3,44 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-24 (later still). **TK2 C7 shipped** — agent
+> **Last updated:** 2026-07-27. **TK2 C8 shipped** — key remapping
+> (ADR-037, re-based by D11/D14): `Keymap` (`paraclete-theotokos/src/
+> input.rs`) is a flat `HashMap<KeyBinding, PanelButton>` with YAML
+> persistence (`serde_yml`, already a workspace dep) at `~/.config/
+> paraclete/keymap.yaml`, `./keymap.yaml` overriding on load (global→local
+> merge, `Keymap::merge_sources`); six new `:` verbs (`bind`/`unbind`/
+> `list-bindings`/`reset-bindings`/`save-bindings`/`load-bindings`) parsed
+> in `model.rs`, dispatched in `lib.rs`. `:save-bindings` is the only
+> write path — no auto-save anywhere, including on quit. Only `Char(':')`
+> is the D14-unbindable entry; Ctrl-C's protection is structural (the
+> `direct_action` branch in `handle_keys` intercepts it before the keymap
+> is ever consulted, regardless of what bare `c` is bound to). Hostile
+> review found **1 blocker**: two new tests mutated the process-global
+> `$HOME` env var with no synchronization — under `cargo test`'s default
+> multi-threaded runner they could interleave and write a test binding
+> into the developer's real `~/.config/paraclete/keymap.yaml` — fixed with
+> a `HOME_ENV_LOCK` mutex + a `with_scratch_home` helper that restores the
+> real `$HOME` even if the test body panics. **2 majors**: `Keymap::
+> from_yaml` never enforced the D14 unbindable guard (only the `:bind`
+> verb parser did), so a hand-edited `keymap.yaml` could smuggle a `:`
+> binding past it — fixed (enforced in `from_yaml` too, closing the load
+> path as well as the verb path; new regression test
+> `from_yaml_rejects_unbindable_key`). And every C8 success confirmation
+> (`:save-bindings`, `:list-bindings`, `:load-bindings`) reused the red
+> `cmdline_error` echo slot, so a successful save rendered as if it had
+> failed — fixed by adding a separate `cmdline_status` field (green,
+> distinct from the red error style) threaded through `Model`/
+> `RenderData`/`render_echo_area`, with the same "cleared on next real
+> action" lifecycle as `cmdline_error`. **1 minor**: the help overlay's
+> `:` verb list wasn't updated for the 6 new verbs — fixed. ADR-037
+> flipped to ✅ Accepted with an implementation note (its ratification is
+> "ratifies with C8 landing" per the TK2 spec's own framing — no separate
+> user session, unlike ADR-038). 96 crate tests (14 new: 8 spec-named + 5
+> bonus + 1 review-driven regression), full workspace green. Next: TK2 C9
+> (live visualization — independent/optional, "may land any time after
+> C3") or go straight to **⛔ usability session #2** (TK2 C10, D4) — now
+> unblocked since C1–C8 have all landed; C9 is not a prerequisite for it.
+> Previous: 2026-07-24 (later still). **TK2 C7 shipped** — agent
 > smoke + polish gate (no new features). Ran the live TUI on the 4-track
 > default via tmux and drove the panel grammar end-to-end; found and fixed
 > two paper cuts invisible to the unit/injection/`TestBackend`-render test
@@ -432,7 +469,7 @@ Ordered by nearness to the critical path.
 | **P16** | Macro & Terminal Control | Macro system; ~~TUI as editing surface~~ (terminal-surface half **superseded 2026-07-23** — delivered/owned by the TK track (ADR-036/038) and the WT convergence decision; P16 narrows to the instrument-wide macro system, which ADR-043's macro tier explicitly defers to) | — |
 | **W4** | Interface maturity | Ordo layout profiles, multi-client polish, wavetable view, protocol freeze, headless protocol CI driver | Ongoing after W3 |
 | **AN** | Anamnesis sampling layer | Capture-to-performance loop: HAL input + recorder rings (retroactive capture, resampling), app-owned sample pool + per-step sample locks, slices/chains, scenes + crossfader morph, pickup-style looping, staged timestretch — AN0–AN3, session-gated | **ADR-040 ✅ accepted 2026-07-23** (R1–R3: model as written; one-gesture transition trick frozen as an AN1 requirement; scheduling decided at TK2 exit) + `design/sampling/{problem,design}.md`. AN2 scenes depend on P11 KitStore |
-| **TK** | Theotokos performance terminal | Keyboard-first Elektron-class virtual front panel (continuous trig grid, TRK/PTN hold-chords, REC grid-rec toggle, FUNC-layer encoder bank, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **TK0 shipped 2026-07-21** (ADR-036). **TK1 code complete 2026-07-22** (C0–C7: p-locks, mutes, composite pages, `:` line, pattern select, yank/paste, leader rebind, flash, help overlay, suspend-crash fix). **Elektron convergence redesign 2026-07-23 (ADR-038 ✅ accepted, D1–D4)** — TK2 re-cut: S0 virtual front panel, key remapping (ADR-037, re-based), CHAIN + TEMPO screens, live-trig command (OQ-T20), live viz, ramp retune. C8 = usability session #2, held until S0 lands (D4), on the ADR-038 grammar. |
+| **TK** | Theotokos performance terminal | Keyboard-first Elektron-class virtual front panel (continuous trig grid, TRK/PTN hold-chords, REC grid-rec toggle, FUNC-layer encoder bank, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **TK0 shipped 2026-07-21** (ADR-036). **TK1 code complete 2026-07-22** (C0–C7: p-locks, mutes, composite pages, `:` line, pattern select, yank/paste, leader rebind, flash, help overlay, suspend-crash fix). **Elektron convergence redesign 2026-07-23 (ADR-038 ✅ accepted, D1–D4)** — full TK2 spec drafted same day (`tk2-theotokos.md`, commits C0–C9 + session C10). **TK2 C0–C8 shipped** (2026-07-23…2026-07-27): panel model, live-trig, FUNC transport chords, encoder bank, Tempo/Settings/Chain screens, agent smoke gate, key remapping (ADR-037 ✅ accepted). C9 (live viz) independent/optional; **⛔ usability session #2 (C10, D4)** next — unblocked now that C1–C8 have landed. |
 
 The interface track (Antiphon server + Theoria clients) is specified in
 `design/interface-plan.md` (**accepted July 2026**; ADR-031 authored with W0,

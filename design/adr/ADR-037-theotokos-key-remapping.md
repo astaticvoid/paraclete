@@ -2,9 +2,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | Proposed (2026-07-22) |
+| **Status** | ✅ Accepted (2026-07-27) |
 | **Author** | Agent |
-| **Ratification** | Pending user |
+| **Ratification** | Ratifies with TK2 C8 landing, per `design/phases/tk2-theotokos.md`'s framing ("re-based by ADR-038; ratifies with C8 landing") — no separate user ratification session required, unlike ADR-038 itself. |
 | **Scope** | `paraclete-theotokos` crate |
 | **Related** | ADR-036 (Theotokos), ADR-019 (semantic plane), TK1/TK2 phase specs; `design/theotokos/design.md` §3, §4 |
 
@@ -160,10 +160,29 @@ decides in the TK2 spec. (The touch-type split grid was dropped entirely
 at ADR-038 ratification D3 — no shipped preset; users can hand-write it
 under this mechanism.)
 
-## Implementation note (to be added when ratified)
+## Implementation note
 
 ```text
-ADR-037 implemented as part of TK2 (YYYY-MM-DD).
-See design/phases/tk2-theotokos.md for the full spec.
-See [commit hash] for the implementation.
+ADR-037 implemented as TK2 C8 (2026-07-27).
+See design/phases/tk2-theotokos.md §3 "C8 — Key remapping" for the spec.
+See `5d08fd2` for the implementation.
 ```
+
+Delivered per the design chosen in Alternative C (above) and re-based by
+ADR-038: `Keymap` (`crates/paraclete-theotokos/src/input.rs`) is a flat
+`HashMap<KeyBinding, PanelButton>` — resolves OQ-T19 (button-level, not
+positional) and OQ-T15 (bindings name a button, no parameter grammar
+needed) exactly as the amendment anticipated. `:bind`/`:unbind`/
+`:list-bindings`/`:reset-bindings`/`:save-bindings`/`:load-bindings`
+verbs live in `model.rs`'s `parse_cmdline`/`CmdlineVerb`, dispatched in
+`lib.rs::dispatch_cmdline_verb`. YAML persistence via `serde_yml`
+(already a workspace dep) at `~/.config/paraclete/keymap.yaml`, with
+`./keymap.yaml` overriding on load (global→local merge,
+`Keymap::merge_sources`); `:save-bindings` is the only write path — no
+auto-save anywhere, including on quit. The chicken-and-egg risk flagged
+under "Risks" above is resolved as specced: `Char(':')` is the sole
+D14-unbindable entry (Ctrl-C's protection is structural, enforced by
+`lib.rs::handle_keys`'s `direct_action` branch before the keymap is ever
+consulted), and the guard is enforced both in the `:bind` verb parser and
+in `Keymap::from_yaml` (closing a hand-edited-file loophole around the
+same entry found in post-C8 hostile review).
