@@ -12,8 +12,14 @@
 > regions, the one-track trig strip, the track indicator (with ADR-044 D2
 > windowing), and the display_name/engine_name split reaching every
 > consumer (transport bar and status line were initially missed — folded
-> pre-commit). **Next: TK2.1 C1 → C7** (C3a is now a no-op landing spot in
-> the phase sequence — the fix already shipped).
+> pre-commit). **TK2.1 C1 shipped** (`2028f9d`): `RecMode{Off,Grid,Live}`
+> replaces `grid_rec: bool` (default `Off`); REC toggle/fallback/REC+PLAY
+> chord per D5; pad-mode trig selects-and-sounds per D6; silent-launch
+> `CMD_CLOCK_STOP` push per D7; three-state REC indicator. Pre-commit
+> review caught a kitty auto-repeat storm re-firing `ToggleRec` on hold
+> duration instead of once per press — fixed, regression test added.
+> **Next: TK2.1 C2 → C7** (C3a is now a no-op landing spot in the phase
+> sequence — the fix already shipped).
 > Previous: 2026-07-28. **ADR-044 ✅ RATIFIED — TK2.1
 > implementation unlocked.** All six questions settled: R1 live rec
 > degrades to a transport-derived rule where key releases are unavailable;
