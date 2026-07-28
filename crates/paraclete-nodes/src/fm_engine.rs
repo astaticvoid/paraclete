@@ -323,6 +323,10 @@ impl Node for FmEngine {
 
     fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
+        buf.push((
+            format!("/node/{}/state/env_level", self.node_id),
+            StateBusValue::Float(self.amp_env.value as f64),
+        ));
     }
 
     fn activate(&mut self, sample_rate: f32, block_size: usize) {

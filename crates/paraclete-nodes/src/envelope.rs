@@ -72,6 +72,10 @@ impl Node for EnvelopeNode {
 
     fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
+        buf.push((
+            format!("/node/{}/state/env_level", self.node_id),
+            StateBusValue::Float(self.value as f64),
+        ));
     }
 
     fn activate(&mut self, sample_rate: f32, _block_size: usize) {
@@ -348,5 +352,35 @@ mod tests {
         let first = out[0];
         assert!((first - out_before).abs() < 0.1,
             "retrigger should not cause discontinuity: before={out_before}, first={first}");
+    }
+
+    #[test]
+    fn envelope_node_publishes_level() {
+        let mut env = EnvelopeNode::new();
+        env.activate(44100.0, 512);
+        set_param(&mut env, "attack", 0.01);
+        set_param(&mut env, "decay", 0.5);
+        set_param(&mut env, "sustain", 0.7);
+        set_param(&mut env, "release", 0.5);
+        env.set_node_id(42);
+        run_env(&mut env, &[gate_high(64)]);
+        let mid_value = env.value;
+        assert!(mid_value > 0.0, "value should be non-zero after attack samples");
+
+        let mut buf = Vec::new();
+        env.published_state(&mut buf);
+        let level = buf
+            .iter()
+            .find(|(k, _)| k == "/node/42/state/env_level");
+        assert!(level.is_some(), "must publish /node/42/state/env_level");
+        if let Some((_, v)) = level {
+            match v {
+                StateBusValue::Float(f) => {
+                    assert!(*f > 0.0, "env_level should reflect current envelope value");
+                    assert!(*f <= 1.0, "env_level should be <= 1.0");
+                }
+                _ => panic!("env_level must be Float, got {:?}", v),
+            }
+        }
     }
 }

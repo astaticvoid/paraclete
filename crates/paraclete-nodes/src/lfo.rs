@@ -68,6 +68,10 @@ impl Node for LfoNode {
 
     fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
+        buf.push((
+            format!("/node/{}/state/lfo_phase", self.node_id),
+            StateBusValue::Float(self.phase as f64),
+        ));
     }
 
     fn activate(&mut self, sample_rate: f32, _block_size: usize) {
@@ -267,5 +271,31 @@ mod tests {
         set(&mut lfo, "lfo_rate", 10.0);
         let out = run_lfo(&mut lfo, None, 1);
         assert!(out.iter().all(|&s| s == 0.0), "depth=0 should produce silence");
+    }
+    #[test]
+    fn lfo_node_publishes_phase() {
+        let mut lfo = LfoNode::new();
+        lfo.activate(44100.0, 512);
+        set(&mut lfo, "lfo_rate", 1.0);
+        lfo.set_node_id(77);
+        run_lfo(&mut lfo, None, 1);
+        let phase = lfo.phase;
+        assert!(phase > 0.0, "phase should be non-zero after one block");
+
+        let mut buf = Vec::new();
+        lfo.published_state(&mut buf);
+        let entry = buf
+            .iter()
+            .find(|(k, _)| k == "/node/77/state/lfo_phase");
+        assert!(entry.is_some(), "must publish /node/77/state/lfo_phase");
+        if let Some((_, v)) = entry {
+            match v {
+                StateBusValue::Float(f) => {
+                    assert!((*f - phase as f64).abs() < 0.001,
+                        "lfo_phase should match current phase; expected {:.5}, got {}", phase, f);
+                }
+                _ => panic!("lfo_phase must be Float, got {:?}", v),
+            }
+        }
     }
 }

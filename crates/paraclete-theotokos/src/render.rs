@@ -50,6 +50,8 @@ pub struct RenderData {
     pub sub_page: usize,
     pub sub_page_count: usize,
     pub envelope: Option<(EnvelopeData, f64)>,
+    pub live_env_level: Option<f64>,
+    pub live_lfo_phase: Option<f64>,
     pub debug_event: Option<String>,
     pub step_focuses: Vec<Option<usize>>,
     pub step_locks: Vec<Vec<usize>>,
@@ -362,12 +364,10 @@ fn render_perf_window(frame: &mut Frame, area: Rect, data: &RenderData) {
 
     render_page_tabs(frame, chunks[0], data);
     render_encoder_bank(frame, chunks[1], data);
-    // A single-row bar graph; a leftover Min(0) area handed straight to it
-    // stretches the Gauge widget across every row it's given, rendering
-    // as a tall repeated column instead of one bar (found live in the
-    // TK2 C7 agent smoke pass — pre-existing since TK1, first visible now
-    // that the encoder bank leaves more room below it to expose).
     render_envelope_section(frame, chunks[2], data);
+    if data.live_lfo_phase.is_some() {
+        render_lfo_phase_indicator(frame, chunks[3], data);
+    }
 }
 
 /// TK2 C5 (D8): 8 encoder cells, 2×4, name + bar + value. The cursor
@@ -408,6 +408,23 @@ fn render_encoder_cell(frame: &mut Frame, area: Rect, data: &RenderData, idx: us
     frame.render_widget(Paragraph::new(line), area);
 }
 
+fn render_lfo_phase_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
+    if let Some(phase) = data.live_lfo_phase {
+        let pos = (phase.clamp(0.0, 1.0) * 10.0).round() as usize;
+        let mut line = String::with_capacity(13);
+        line.push_str(" LFO ");
+        for i in 0..=10 {
+            if i == pos {
+                line.push('●');
+            } else {
+                line.push('─');
+            }
+        }
+        let para = Paragraph::new(line).style(Style::default().fg(Color::Magenta));
+        frame.render_widget(para, area);
+    }
+}
+
 fn render_page_tabs(frame: &mut Frame, area: Rect, data: &RenderData) {
     let tabs: Vec<String> = data
         .page_groups
@@ -436,17 +453,32 @@ fn render_page_tabs(frame: &mut Frame, area: Rect, data: &RenderData) {
 }
 
 fn render_envelope_section(frame: &mut Frame, area: Rect, data: &RenderData) {
-    if let Some((ref env, val)) = &data.envelope {
+    if let Some((ref env, static_val)) = &data.envelope {
         let chunks = Layout::horizontal([Constraint::Length(14), Constraint::Min(0)]).split(area);
 
-        let label_span = Span::styled(format!(" {} ", env.param_name), Style::default());
+        let (label_text, display_val, color) = if let Some(lv) = data.live_env_level {
+            (
+                format!(" {} ▶ ", env.param_name),
+                lv,
+                Color::Green,
+            )
+        } else {
+            (
+                format!(" {} ", env.param_name),
+                *static_val,
+                Color::Cyan,
+            )
+        };
+
+        let label_span = Span::styled(label_text, Style::default().fg(color));
         let label = Paragraph::new(label_span);
         frame.render_widget(label, chunks[0]);
 
-        let ratio = ((val - env.min) / (env.max - env.min).max(0.001)).clamp(0.0, 1.0);
+        let ratio =
+            ((display_val - env.min) / (env.max - env.min).max(0.001)).clamp(0.0, 1.0);
         let gauge = Gauge::default()
             .block(Block::default().borders(Borders::NONE))
-            .gauge_style(Style::default().fg(Color::Cyan))
+            .gauge_style(Style::default().fg(color))
             .ratio(ratio);
         frame.render_widget(gauge, chunks[1]);
     }
@@ -687,6 +719,8 @@ impl RenderData {
             page_groups: vec![],
             perf_page: 0,
             envelope: None,
+            live_env_level: None,
+            live_lfo_phase: None,
             debug_event: None,
             step_focuses: vec![None; track_count],
             step_locks: vec![vec![]; track_count],
@@ -752,6 +786,8 @@ mod tests {
             page_groups: vec![],
             perf_page: 0,
             envelope: None,
+            live_env_level: None,
+            live_lfo_phase: None,
             debug_event: None,
             step_focuses: vec![None; 2],
             step_locks: vec![vec![]; 2],
@@ -829,6 +865,8 @@ mod tests {
                 },
                 0.42,
             )),
+            live_env_level: Some(0.42),
+            live_lfo_phase: None,
             debug_event: None,
             step_focuses: vec![None; 1],
             step_locks: vec![vec![]; 1],
@@ -888,6 +926,8 @@ mod tests {
             page_groups: vec![],
             perf_page: 0,
             envelope: None,
+            live_env_level: None,
+            live_lfo_phase: None,
             debug_event: None,
             step_focuses: vec![None; 4],
             step_locks: vec![vec![]; 4],
@@ -1007,5 +1047,26 @@ mod tests {
             "encoder cells past the page's param count must render blank, not \
              a malformed cell; got: {text}"
         );
+    }
+
+    #[test]
+    fn param_screen_animates_envelope_and_lfo() {
+        let backend = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Param(0), 1);
+        data.envelope = Some((
+            EnvelopeData {
+                param_id: 1,
+                param_name: "decay".into(),
+                node_id: 20,
+                env_type: "AD".into(),
+                min: 0.0,
+                max: 1.0,
+            },
+            0.5,
+        ));
+        data.live_env_level = Some(0.72);
+        data.live_lfo_phase = Some(0.34);
+        terminal.draw(|f| render(f, &data)).unwrap();
     }
 }

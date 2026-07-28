@@ -196,6 +196,22 @@ impl TheotokosApp {
             let val = self.model.read_param_value(bus, e.node_id, e.param_id);
             (e, val)
         });
+        let live_env_level = envelope.as_ref().and_then(|(env, _)| {
+            bus.read(&format!("/node/{}/state/env_level", env.node_id))
+                .and_then(|v| match &v {
+                    StateBusValue::Float(f) => Some(*f),
+                    _ => None,
+                })
+        });
+
+        let live_lfo_phase: Option<f64> = {
+            let gen_id = self.model.tracks[self.model.active_track].generator_id;
+            bus.read(&format!("/node/{}/state/lfo_phase", gen_id))
+                .and_then(|v| match &v {
+                    StateBusValue::Float(f) => Some(*f),
+                    _ => None,
+                })
+        };
 
         let step_focuses = self.model.step_focus.clone();
         let step_locks: Vec<Vec<usize>> = (0..self.model.tracks.len())
@@ -321,6 +337,8 @@ impl TheotokosApp {
             sub_page: self.model.sub_page,
             sub_page_count: self.model.page_sub_page_count(),
             envelope,
+            live_env_level,
+            live_lfo_phase,
             debug_event: self.last_debug_event.take(),
             step_focuses,
             step_locks,
