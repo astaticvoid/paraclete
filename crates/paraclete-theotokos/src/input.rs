@@ -198,8 +198,10 @@ pub fn key_name(code: KeyCode) -> String {
     }
 }
 
-/// `col` 0..16 → the matching `PanelButton::TrigN`.
-fn trig_button(col: usize) -> Option<PanelButton> {
+/// `col` 0..16 → the matching `PanelButton::TrigN`. `pub`: lib.rs and
+/// render.rs (TK2.1 C2) both need to enumerate all 16 trig buttons to
+/// resolve `key_label` for the trig strip's chip column.
+pub fn trig_button(col: usize) -> Option<PanelButton> {
     use PanelButton::*;
     const TABLE: [PanelButton; 16] = [
         Trig1, Trig2, Trig3, Trig4, Trig5, Trig6, Trig7, Trig8, Trig9, Trig10, Trig11, Trig12,
@@ -232,10 +234,69 @@ fn trig_col(button: PanelButton) -> Option<usize> {
     }
 }
 
-/// The continuous grid's top row (§2): `q w e r t y u i` → Trig1..8.
+/// The continuous grid's top row (§2): `q w e r t y u i` → Trig1..8. TK2.1
+/// C2: `built_in_button` reads `DEFAULT_BINDINGS` now, not these — kept
+/// `#[cfg(test)]` as a from-the-spec fixture `continuous_grid_maps_sixteen_trigs`
+/// checks `DEFAULT_BINDINGS`/`key_to_button` against.
+#[cfg(test)]
 const TOP_TRIG_ROW: [char; 8] = ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i'];
 /// The continuous grid's bottom row (§2): `a s d f g h j k` → Trig9..16.
+#[cfg(test)]
 const BOTTOM_TRIG_ROW: [char; 8] = ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k'];
+
+/// TK2.1 C2 (D3): the §2 panel table as data — the single source both
+/// `built_in_button` (key → button) and `key_label` (button → key, for
+/// chip/legend rendering) read, so the two directions cannot drift. The
+/// `bool` marks the **preferred** key for a button reachable by more than
+/// one (only `Play`: `x` and `Space` both reach it, but the chip must read
+/// `[x] PLAY`, not whichever key sorts first lexicographically).
+const DEFAULT_BINDINGS: &[(KeyCode, PanelButton, bool)] = &[
+    (KeyCode::Char('q'), PanelButton::Trig1, true),
+    (KeyCode::Char('w'), PanelButton::Trig2, true),
+    (KeyCode::Char('e'), PanelButton::Trig3, true),
+    (KeyCode::Char('r'), PanelButton::Trig4, true),
+    (KeyCode::Char('t'), PanelButton::Trig5, true),
+    (KeyCode::Char('y'), PanelButton::Trig6, true),
+    (KeyCode::Char('u'), PanelButton::Trig7, true),
+    (KeyCode::Char('i'), PanelButton::Trig8, true),
+    (KeyCode::Char('a'), PanelButton::Trig9, true),
+    (KeyCode::Char('s'), PanelButton::Trig10, true),
+    (KeyCode::Char('d'), PanelButton::Trig11, true),
+    (KeyCode::Char('f'), PanelButton::Trig12, true),
+    (KeyCode::Char('g'), PanelButton::Trig13, true),
+    (KeyCode::Char('h'), PanelButton::Trig14, true),
+    (KeyCode::Char('j'), PanelButton::Trig15, true),
+    (KeyCode::Char('k'), PanelButton::Trig16, true),
+    (KeyCode::Tab, PanelButton::Trk, true),
+    (KeyCode::Char('p'), PanelButton::Ptn, true),
+    (KeyCode::Char('z'), PanelButton::Rec, true),
+    (KeyCode::Char('x'), PanelButton::Play, true),
+    // A12/A16: `Space` is a PLAY alias only — resolved as a transport-only
+    // no-op under FUNC by `button_to_action`, not here.
+    (KeyCode::Char(' '), PanelButton::Play, false),
+    (KeyCode::Char('c'), PanelButton::Stop, true),
+    (KeyCode::Char('1'), PanelButton::Pg1, true),
+    (KeyCode::Char('2'), PanelButton::Pg2, true),
+    (KeyCode::Char('3'), PanelButton::Pg3, true),
+    (KeyCode::Char('4'), PanelButton::Pg4, true),
+    (KeyCode::Char('5'), PanelButton::Pg5, true),
+    (KeyCode::Char('6'), PanelButton::Pg6, true),
+    (KeyCode::Char('7'), PanelButton::Kit, true),
+    (KeyCode::Char('8'), PanelButton::Settings, true),
+    (KeyCode::Char('9'), PanelButton::Sampling, true),
+    (KeyCode::Char('0'), PanelButton::Tempo, true),
+    (KeyCode::Enter, PanelButton::Yes, true),
+    (KeyCode::Esc, PanelButton::No, true),
+    (KeyCode::Up, PanelButton::Up, true),
+    (KeyCode::Down, PanelButton::Down, true),
+    (KeyCode::Left, PanelButton::Left, true),
+    (KeyCode::Right, PanelButton::Right, true),
+    (KeyCode::Char('-'), PanelButton::PagePrev, true),
+    (KeyCode::Char('='), PanelButton::PageNext, true),
+    (KeyCode::Char('o'), PanelButton::Song, true),
+    (KeyCode::Char('m'), PanelButton::Mute, true),
+    (KeyCode::Char('v'), PanelButton::Keybd, true),
+];
 
 /// A normalized key for the user keymap (D11) and the built-in §2 table:
 /// `Char` letters are always lowercase — see `func_held` (§0 A1), which
@@ -387,47 +448,48 @@ pub fn key_to_button(keymap: &Keymap, ev: KeyEvent) -> Option<PanelButton> {
     built_in_button(binding.code)
 }
 
+/// TK2.1 C2 (D3): reads `DEFAULT_BINDINGS` — the same table `key_label`
+/// reads in the reverse direction, so the two cannot drift.
 fn built_in_button(code: KeyCode) -> Option<PanelButton> {
-    use PanelButton::*;
-    if let KeyCode::Char(c) = code {
-        if let Some(i) = TOP_TRIG_ROW.iter().position(|&k| k == c) {
-            return trig_button(i);
-        }
-        if let Some(i) = BOTTOM_TRIG_ROW.iter().position(|&k| k == c) {
-            return trig_button(8 + i);
-        }
+    DEFAULT_BINDINGS
+        .iter()
+        .find(|(k, _, _)| *k == code)
+        .map(|(_, b, _)| *b)
+}
+
+/// TK2.1 C2 (D3): the key chip label for a `PanelButton`, resolved through
+/// the live `Keymap` exactly as `key_to_button` resolves the forward
+/// direction — a user binding wins (lowest `key_name` among several, for
+/// determinism if a button somehow gained two user bindings); otherwise
+/// the preferred `DEFAULT_BINDINGS` key, **but only if no user binding has
+/// claimed that `KeyCode` for a different button** (shadow-awareness:
+/// `key_to_button` consults user bindings first, so a shadowed default key
+/// no longer reaches this button). Returns the lowercase storage form —
+/// title-casing multi-character names for display (`[Tab]`, not `[tab]`)
+/// is the caller's job (render.rs), matching D3's "chip casing is
+/// display-only".
+pub fn key_label(keymap: &Keymap, button: PanelButton) -> Option<String> {
+    let mut user_keys: Vec<KeyCode> = keymap
+        .bindings
+        .iter()
+        .filter(|(_, b)| **b == button)
+        .map(|(k, _)| k.code)
+        .collect();
+    if !user_keys.is_empty() {
+        user_keys.sort_by_key(|c| key_name(*c));
+        return Some(key_name(user_keys[0]));
     }
-    match code {
-        KeyCode::Tab => Some(Trk),
-        KeyCode::Char('p') => Some(Ptn),
-        KeyCode::Char('z') => Some(Rec),
-        KeyCode::Char('x') => Some(Play),
-        KeyCode::Char('c') => Some(Stop),
-        // A12: `Space` is a PLAY alias only — resolved as a transport-only
-        // no-op under FUNC by `button_to_action`, not here.
-        KeyCode::Char(' ') => Some(Play),
-        KeyCode::Char('1') => Some(Pg1),
-        KeyCode::Char('2') => Some(Pg2),
-        KeyCode::Char('3') => Some(Pg3),
-        KeyCode::Char('4') => Some(Pg4),
-        KeyCode::Char('5') => Some(Pg5),
-        KeyCode::Char('6') => Some(Pg6),
-        KeyCode::Char('7') => Some(Kit),
-        KeyCode::Char('8') => Some(Settings),
-        KeyCode::Char('9') => Some(Sampling),
-        KeyCode::Char('0') => Some(Tempo),
-        KeyCode::Enter => Some(Yes),
-        KeyCode::Esc => Some(No),
-        KeyCode::Up => Some(Up),
-        KeyCode::Down => Some(Down),
-        KeyCode::Left => Some(Left),
-        KeyCode::Right => Some(Right),
-        KeyCode::Char('-') => Some(PagePrev),
-        KeyCode::Char('=') => Some(PageNext),
-        KeyCode::Char('o') => Some(Song),
-        KeyCode::Char('m') => Some(Mute),
-        KeyCode::Char('v') => Some(Keybd),
-        _ => None,
+
+    let (default_code, _, _) = DEFAULT_BINDINGS
+        .iter()
+        .find(|(_, b, preferred)| *b == button && *preferred)?;
+    let shadowed = keymap.bindings.contains_key(&KeyBinding {
+        code: *default_code,
+    });
+    if shadowed {
+        None
+    } else {
+        Some(key_name(*default_code))
     }
 }
 
@@ -1201,6 +1263,93 @@ mod tests {
             assert_eq!(button_from_name(name), Some(button));
             assert_eq!(button_from_name(&name.to_lowercase()), Some(button));
         }
+    }
+
+    // ── TK2.1 C2: key chips (D3) ──────────────────────────────────────────
+
+    /// Drift guard, both directions: every `DEFAULT_BINDINGS` entry must
+    /// round-trip through `key_to_button`, and every key `key_to_button`
+    /// resolves via the built-in fallthrough must appear in the table.
+    #[test]
+    fn default_bindings_match_key_to_button() {
+        let keymap = Keymap::default();
+        for &(code, button, _) in DEFAULT_BINDINGS {
+            assert_eq!(
+                key_to_button(&keymap, KeyEvent::new(code, KeyModifiers::NONE)),
+                Some(button),
+                "{code:?} must resolve to {button:?} via key_to_button"
+            );
+        }
+        // Reverse: every button reachable by a built-in key has exactly
+        // one PREFERRED entry in the table (key_label depends on this).
+        for &(_, button, preferred) in DEFAULT_BINDINGS {
+            if preferred {
+                let preferred_count = DEFAULT_BINDINGS
+                    .iter()
+                    .filter(|(_, b, p)| *b == button && *p)
+                    .count();
+                assert_eq!(
+                    preferred_count, 1,
+                    "{button:?} must have exactly one preferred default key"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn key_label_falls_back_to_preferred_default() {
+        let keymap = Keymap::default();
+        assert_eq!(
+            key_label(&keymap, PanelButton::Trig1),
+            Some("q".to_string())
+        );
+        assert_eq!(
+            key_label(&keymap, PanelButton::Trk),
+            Some("tab".to_string())
+        );
+    }
+
+    /// `x` is `Play`'s preferred key — `Space` is a valid alias but must
+    /// never be what the chip shows.
+    #[test]
+    fn play_chip_is_x_not_space() {
+        let keymap = Keymap::default();
+        assert_eq!(
+            key_label(&keymap, PanelButton::Play),
+            Some("x".to_string())
+        );
+    }
+
+    #[test]
+    fn key_label_prefers_user_binding() {
+        let mut keymap = Keymap::default();
+        keymap.bindings.insert(
+            KeyBinding {
+                code: KeyCode::Char('j'),
+            },
+            PanelButton::Play,
+        );
+        assert_eq!(
+            key_label(&keymap, PanelButton::Play),
+            Some("j".to_string()),
+            "a user binding must win over the default 'x'"
+        );
+    }
+
+    /// D3 shadow-awareness: binding `q` away from `Trig1` must remove
+    /// `Trig1`'s chip entirely, not leave the stale default lying around —
+    /// `key_to_button` would resolve `q` to the new target, not `Trig1`.
+    #[test]
+    fn key_label_skips_default_key_shadowed_by_user_binding() {
+        let mut keymap = Keymap::default();
+        keymap
+            .bindings
+            .insert(KeyBinding { code: KeyCode::Char('q') }, PanelButton::Play);
+        assert_eq!(
+            key_label(&keymap, PanelButton::Trig1),
+            None,
+            "Trig1's default key 'q' is shadowed by a user binding to Play"
+        );
     }
 
     #[test]

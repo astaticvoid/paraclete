@@ -21,7 +21,9 @@ use crate::action::{
     CMD_CLOCK_START, CMD_CLOCK_STOP, CMD_SET_LOCK_TARGET, CMD_SET_PATTERN, CMD_SET_STEP_LOCK,
     CMD_TRIG_NOW, GRID_STEPS, PATTERN_BANK_SIZE,
 };
-use crate::input::{button_to_action, key_to_button, HeldState, Keymap, Mods};
+use crate::input::{
+    button_to_action, key_label, key_to_button, trig_button, HeldState, Keymap, Mods, PanelButton,
+};
 use crate::model::{
     CmdlineVerb, Dir, JogTracker, Model, RecMode, Screen, Slot, Tuning, YankedLock, YankedStep,
 };
@@ -339,6 +341,30 @@ impl TheotokosApp {
             }
         }
 
+        // TK2.1 C2 (D3/D4): key chip labels, resolved fresh each render
+        // against the live keymap (bindings can change via `:bind` at
+        // runtime).
+        let trig_key_labels: Vec<Option<String>> = (0..16)
+            .map(|i| trig_button(i).and_then(|b| key_label(&self.keymap, b)))
+            .collect();
+        let track_key_labels: Vec<Option<String>> =
+            trig_key_labels[..self.model.tracks.len().min(16)].to_vec();
+        let legend_key_labels: HashMap<PanelButton, String> = [
+            PanelButton::Trk,
+            PanelButton::Ptn,
+            PanelButton::Rec,
+            PanelButton::Play,
+            PanelButton::Stop,
+            PanelButton::Song,
+            PanelButton::Tempo,
+            PanelButton::Settings,
+            PanelButton::Yes,
+            PanelButton::No,
+        ]
+        .into_iter()
+        .filter_map(|b| key_label(&self.keymap, b).map(|k| (b, k)))
+        .collect();
+
         let render_data = render::RenderData {
             screen: self.model.screen,
             rec: self.model.rec,
@@ -352,6 +378,9 @@ impl TheotokosApp {
             active_track: self.model.active_track,
             track_names: self.model.tracks.iter().map(|t| t.name.clone()).collect(),
             display_names: self.model.tracks.iter().map(|t| t.display_name.clone()).collect(),
+            trig_key_labels,
+            track_key_labels,
+            legend_key_labels,
             bpm,
             playing: self.model.playing(bus),
             page_window: self.model.page_windows[self.model.active_track],
@@ -514,9 +543,7 @@ impl TheotokosApp {
                             // Repeats are consumed silently; `armed` is
                             // already `Some(Hold::Rec)` from the initial
                             // press and stays that way.
-                            KeyEventKind::Repeat if button == crate::input::PanelButton::Rec => {
-                                true
-                            }
+                            KeyEventKind::Repeat if button == PanelButton::Rec => true,
                             _ => self.held.on_kitty_press(button),
                         }
                     } else {

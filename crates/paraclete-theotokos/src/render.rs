@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -6,9 +8,25 @@ use ratatui::{
     Frame,
 };
 
+use crate::input::PanelButton;
 use crate::model::{EnvelopeData, RecMode, Screen, SlotBinding, StepState};
 
 const PAGE_SIZE: usize = 8;
+
+/// TK2.1 C2 (D3): "chip casing is display-only" — `key_name`'s lowercase
+/// storage form (`"tab"`, `"q"`, `"space"`) title-cases multi-character
+/// names for display (`Tab`, `Space`) and leaves single characters as
+/// typed (`q`). The keymap file format itself is untouched.
+fn chip_key_display(label: &str) -> String {
+    let mut chars = label.chars();
+    match chars.next() {
+        Some(first) if label.chars().count() > 1 => {
+            first.to_uppercase().collect::<String>() + chars.as_str()
+        }
+        Some(first) => first.to_string(),
+        None => String::new(),
+    }
+}
 
 /// TK2 C5 (D8): one of the 8 encoder bank cells on the Param screen.
 #[derive(Clone)]
@@ -35,6 +53,20 @@ pub struct RenderData {
     /// The instrument file's display name per track (e.g. "Kick") — the
     /// track line, transport and status line (TK2.1 C0, D2).
     pub display_names: Vec<String>,
+    /// TK2.1 C2 (D3): key chip label per trig button (`Trig1..16`,
+    /// length 16), resolved through the live `Keymap` — shown on the trig
+    /// strip's step cells (bright in `RecMode::Grid`, dimmed otherwise).
+    pub trig_key_labels: Vec<Option<String>>,
+    /// TK2.1 C2 (D3): the same resolution, truncated to the discovered
+    /// track count — shown on the track indicator's pad columns (bright
+    /// in `RecMode::Off`/`Live`, absent in `Grid`).
+    pub track_key_labels: Vec<Option<String>>,
+    /// TK2.1 C2 (D3/D4): key chip labels for the legend's non-literal
+    /// entries (`Trk`, `Ptn`, `Rec`, `Play`, `Stop`, `Song`, `Tempo`,
+    /// `Settings`, `Yes`, `No`), resolved through the live `Keymap`. A
+    /// button absent from the map has no reachable key right now (shadowed
+    /// or otherwise unbound) and its legend chip is omitted.
+    pub legend_key_labels: HashMap<PanelButton, String>,
     pub bpm: f64,
     pub playing: bool,
     pub page_window: usize,
@@ -211,25 +243,155 @@ fn screen_name(screen: Screen) -> &'static str {
     }
 }
 
-/// Compact key legend, always on screen (not gated behind `?`). TK1 C8
-/// usability finding: current keys must stay visible while learning the
-/// layout — a toggle-only overlay hides the grid you're trying to use the
-/// keys on. TK2 C3: content follows the §2 panel grammar.
+/// TK2.1 C2 (D4): one entry in a screen's legend priority list. `Dynamic`
+/// resolves its key through the live `Keymap` (`RenderData.legend_key_labels`)
+/// and is omitted entirely if that button has no reachable key right now;
+/// `Literal` keys are hardcoded, unremappable raw-key checks (`lib.rs`) or
+/// key ranges/combinations no single `PanelButton` expresses (`1-6`,
+/// `-/=`, `←/→`, `↑/↓`, `FUNC+↑/↓`) — D4 names `:`, `?`, `^C` and the `1-6`
+/// range chip explicitly; the other compound range/combo chips are the
+/// same kind of thing and are declared the same way here.
+enum LegendChip {
+    Dynamic(PanelButton, &'static str),
+    Literal(&'static str, &'static str),
+}
+
+/// TK2.1 C2 (D4): the declared per-screen priority list — truncates from
+/// the tail on overflow (`pack_two_lines`), never wraps/scrolls/moves.
+/// `Screen::Mute` (temporary until C6 deletes it) reuses Grid's list,
+/// since trigs still retarget through the same panel while it exists.
+/// The Param row omits `[n] ENC`/`[m] LOCK`: those land in TK2.1 C5 with
+/// the real `PanelButton::Enc`/`Lock` — `m` currently still means `Mute`.
+fn legend_chips_for_screen(screen: Screen) -> Vec<LegendChip> {
+    use LegendChip::{Dynamic, Literal};
+    use PanelButton::{No, Play, Ptn, Rec, Settings, Song, Stop, Tempo, Trk, Yes};
+    match screen {
+        Screen::Grid | Screen::Mute => vec![
+            Dynamic(Trk, "TRK"),
+            Dynamic(Ptn, "PTN"),
+            Dynamic(Rec, "REC"),
+            Dynamic(Play, "PLAY"),
+            Dynamic(Stop, "STOP"),
+            Literal("1-6", "PAGE"),
+            Literal("-/=", "WIN"),
+            Dynamic(Song, "SONG"),
+            Dynamic(Tempo, "TEMPO"),
+            Dynamic(Settings, "SET"),
+            Dynamic(Yes, "YES"),
+            Dynamic(No, "NO"),
+            Literal(":", "CMD"),
+            Literal("?", "HELP"),
+            Literal("^C", "QUIT"),
+        ],
+        Screen::Param(_) => vec![
+            Literal("1-6", "PAGE"),
+            Dynamic(No, "BACK"),
+            Dynamic(Trk, "TRK"),
+            Dynamic(Rec, "REC"),
+            Dynamic(Play, "PLAY"),
+            Literal(":", "CMD"),
+            Literal("?", "HELP"),
+            Literal("^C", "QUIT"),
+        ],
+        Screen::Chain => vec![
+            Dynamic(Yes, "PUSH"),
+            Dynamic(No, "CLEAR"),
+            Literal("←/→", "CURSOR"),
+            Dynamic(Song, "SONG"),
+            Literal(":", "CMD"),
+            Literal("?", "HELP"),
+            Literal("^C", "QUIT"),
+        ],
+        Screen::Tempo => vec![
+            Dynamic(Yes, "TAP"),
+            Literal("↑/↓", "±1"),
+            Literal("FUNC+↑/↓", "±0.1"),
+            Dynamic(No, "BACK"),
+            Literal("?", "HELP"),
+            Literal("^C", "QUIT"),
+        ],
+        Screen::Settings => vec![
+            Dynamic(No, "BACK"),
+            Literal("?", "HELP"),
+            Literal("^C", "QUIT"),
+        ],
+    }
+}
+
+/// TK2.1 C2 (D4): greedily fills line 0, then line 1, from an ordered chip
+/// list — the first chip that doesn't fit anywhere marks the truncation
+/// point; everything after it is dropped (never wraps to a third line).
+/// Returns indices into `chip_texts` per line, so the caller can re-split
+/// each chip into its bright-key/dim-label spans for rendering.
+fn pack_two_lines(chip_texts: &[String], width: usize) -> (Vec<usize>, Vec<usize>) {
+    let mut line0 = Vec::new();
+    let mut line1 = Vec::new();
+    let mut on_line1 = false;
+    let mut len0 = 0usize;
+    let mut len1 = 0usize;
+    for (i, text) in chip_texts.iter().enumerate() {
+        let w = text.chars().count();
+        if !on_line1 {
+            let sep = if line0.is_empty() { 0 } else { 2 };
+            if len0 + sep + w <= width {
+                len0 += sep + w;
+                line0.push(i);
+                continue;
+            }
+            on_line1 = true;
+        }
+        let sep = if line1.is_empty() { 0 } else { 2 };
+        if len1 + sep + w <= width {
+            len1 += sep + w;
+            line1.push(i);
+        } else {
+            break;
+        }
+    }
+    (line0, line1)
+}
+
+/// Key legend, always on screen (not gated behind `?`). TK1 C8 usability
+/// finding: current keys must stay visible while learning the layout — a
+/// toggle-only overlay hides the grid you're trying to use the keys on.
+/// TK2.1 C2 (D4): rewritten as `[key] NAME` chips (bright key, dim label)
+/// from the declared per-screen priority list, replacing the grey run-on
+/// hint line.
 fn render_legend(frame: &mut Frame, area: Rect, data: &RenderData) {
-    let (line1, line2) = match data.screen {
-        Screen::Grid => (
-            "q..i/a..k:trig  Tab(hold):TRK  p(hold):PTN  z/x/c:REC/PLAY/STOP  1-6:page  -/=:page-win",
-            "FUNC(Shift)+trig:encoder  Enter/Esc:YES/NO  o:song  m:mute  ::cmd  ?:help  ^C:quit",
-        ),
-        _ => (
-            "q..i/a..k:trig  Tab(hold):TRK  p(hold):PTN  z/x/c:REC/PLAY/STOP  1-6:page",
-            "FUNC(Shift)+trig:encoder  Enter/Esc:YES/NO  ::cmd  ?:help  ^C:quit",
-        ),
+    let chips: Vec<(String, &'static str)> = legend_chips_for_screen(data.screen)
+        .into_iter()
+        .filter_map(|chip| match chip {
+            LegendChip::Dynamic(button, label) => data
+                .legend_key_labels
+                .get(&button)
+                .map(|k| (format!("[{}]", chip_key_display(k)), label)),
+            LegendChip::Literal(key, label) => Some((format!("[{key}]"), label)),
+        })
+        .collect();
+
+    let chip_texts: Vec<String> = chips
+        .iter()
+        .map(|(key, label)| format!("{key} {label}"))
+        .collect();
+    let (line0_idx, line1_idx) = pack_two_lines(&chip_texts, area.width as usize);
+
+    let render_line = |idxs: &[usize]| -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(idxs.len() * 3);
+        for (n, &i) in idxs.iter().enumerate() {
+            if n > 0 {
+                spans.push(Span::raw("  "));
+            }
+            let (key, label) = &chips[i];
+            spans.push(Span::styled(key.clone(), Style::default().fg(Color::White)));
+            spans.push(Span::styled(
+                format!(" {label}"),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+        Line::from(spans)
     };
-    let lines = vec![
-        Line::styled(line1, Style::default().fg(Color::DarkGray)),
-        Line::styled(line2, Style::default().fg(Color::DarkGray)),
-    ];
+
+    let lines = vec![render_line(&line0_idx), render_line(&line1_idx)];
     let para = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
     frame.render_widget(para, area);
 }
@@ -296,10 +458,21 @@ fn render_track_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
             } else {
                 Color::Gray
             };
-            let text = if narrow {
-                format!("{marker}{}{mute_glyph}  ", i + 1)
+            // D3: the track-line chip appears only in pad modes (Off/Live)
+            // — a bare trig doesn't select a track in Grid mode.
+            let chip = if matches!(data.rec, RecMode::Off | RecMode::Live) {
+                data.track_key_labels
+                    .get(i)
+                    .and_then(|o| o.as_deref())
+                    .map(|k| format!("[{}]", chip_key_display(k)))
+                    .unwrap_or_default()
             } else {
-                format!("{marker}{} {}{mute_glyph}  ", i + 1, name)
+                String::new()
+            };
+            let text = if narrow {
+                format!("{marker}{chip}{}{mute_glyph}  ", i + 1)
+            } else {
+                format!("{marker}{chip}{} {}{mute_glyph}  ", i + 1, name)
             };
             (text, color)
         })
@@ -391,12 +564,14 @@ fn render_trig_strip(frame: &mut Frame, area: Rect, data: &RenderData) {
 }
 
 /// One trig-strip row. §3's exact cell format: `[k]g` (4 cols: bracket,
-/// chip-or-space, bracket, glyph) joined by one space — `k` stays a blank
-/// chip slot until C2 wires `key_label`. State glyphs keep the TK2
-/// colour/state rules (playhead yellow, active+locked green, active cyan,
-/// locked white, empty dark gray); focus/playhead are carried by
-/// `Modifier::REVERSED` since a single-column glyph leaves no room for a
-/// wider block.
+/// chip, bracket, glyph) joined by one space. TK2.1 C2 (D3): `k` is the
+/// trig's key chip, always shown — bright in `RecMode::Grid` (the trig
+/// really does write that step right now), dimmed otherwise (display-only:
+/// pad modes address tracks, not steps, via this same key). State glyphs
+/// keep the TK2 colour/state rules (playhead yellow, active+locked green,
+/// active cyan, locked white, empty dark gray); focus/playhead are carried
+/// by `Modifier::REVERSED` since a single-column glyph leaves no room for
+/// a wider block.
 fn render_trig_row<'a>(
     track_idx: usize,
     data: &'a RenderData,
@@ -437,8 +612,21 @@ fn render_trig_row<'a>(
             (Color::DarkGray, Modifier::empty())
         };
 
+        let key_index = row_off + col;
+        let chip = data
+            .trig_key_labels
+            .get(key_index)
+            .and_then(|o| o.as_deref())
+            .map(chip_key_display)
+            .unwrap_or_else(|| " ".to_string());
+        let chip_color = if data.rec == RecMode::Grid {
+            Color::White
+        } else {
+            Color::DarkGray
+        };
+
         spans.push(Span::styled("[", Style::default().fg(Color::DarkGray)));
-        spans.push(Span::raw(" "));
+        spans.push(Span::styled(chip, Style::default().fg(chip_color)));
         spans.push(Span::styled("]", Style::default().fg(Color::DarkGray)));
         spans.push(Span::styled(
             glyph,
@@ -843,6 +1031,29 @@ fn render_status_line(frame: &mut Frame, area: Rect, data: &RenderData) {
 impl RenderData {
     pub fn for_test(screen: Screen, track_count: u8) -> Self {
         let track_count = track_count.max(1) as usize;
+        let keymap = crate::input::Keymap::default();
+        let trig_key_labels: Vec<Option<String>> = (0..16)
+            .map(|i| crate::input::trig_button(i).and_then(|b| crate::input::key_label(&keymap, b)))
+            .collect();
+        // Mirror lib.rs's real clamp: only 16 physical trig keys exist, so
+        // track_key_labels can never be longer than trig_key_labels.
+        let track_key_labels: Vec<Option<String>> =
+            trig_key_labels[..track_count.min(16)].to_vec();
+        let legend_key_labels: HashMap<PanelButton, String> = [
+            PanelButton::Trk,
+            PanelButton::Ptn,
+            PanelButton::Rec,
+            PanelButton::Play,
+            PanelButton::Stop,
+            PanelButton::Song,
+            PanelButton::Tempo,
+            PanelButton::Settings,
+            PanelButton::Yes,
+            PanelButton::No,
+        ]
+        .into_iter()
+        .filter_map(|b| crate::input::key_label(&keymap, b).map(|k| (b, k)))
+        .collect();
         Self {
             screen,
             rec: RecMode::Off,
@@ -850,6 +1061,9 @@ impl RenderData {
             active_track: 0,
             track_names: (1..=track_count).map(|i| format!("T{}", i)).collect(),
             display_names: (1..=track_count).map(|i| format!("T{}", i)).collect(),
+            trig_key_labels,
+            track_key_labels,
+            legend_key_labels,
             bpm: 120.0,
             playing: false,
             page_window: 0,
@@ -913,6 +1127,9 @@ mod tests {
             active_track: 0,
             track_names: vec!["AnalogKick".into(), "AnalogSnare".into()],
             display_names: vec!["Kick".into(), "Snare".into()],
+            trig_key_labels: vec![None; 16],
+            track_key_labels: vec![None; 2],
+            legend_key_labels: HashMap::new(),
             bpm: 140.0,
             playing: true,
             page_window: 0,
@@ -976,6 +1193,9 @@ mod tests {
             active_track: 0,
             track_names: vec!["AnalogKick".into()],
             display_names: vec!["Kick".into()],
+            trig_key_labels: vec![None; 16],
+            track_key_labels: vec![None; 1],
+            legend_key_labels: HashMap::new(),
             bpm: 120.0,
             playing: false,
             page_window: 0,
@@ -1342,8 +1562,9 @@ mod tests {
              got: {line:?}"
         );
         assert!(
-            line.contains("▸1"),
-            "the track number must survive the narrow drop; got: {line:?}"
+            line.contains("[q]1"),
+            "the track number AND its key chip must survive the narrow \
+             drop — names drop before chips (D3); got: {line:?}"
         );
     }
 
@@ -1388,6 +1609,154 @@ mod tests {
                 "{mode:?} must render {glyph}; got: {text}"
             );
         }
+    }
+
+    // ── TK2.1 C2: key chips and legend (D3/D4) ──────────────────────────
+
+    #[test]
+    fn strip_cells_show_key_chips_in_grid_mode() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.rec = RecMode::Grid;
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("[q]"),
+            "Grid mode must show the trig's key chip on its step cell; \
+             got: {text}"
+        );
+    }
+
+    #[test]
+    fn chips_move_to_track_line_in_pad_mode() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.rec = RecMode::Off;
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let indicator_row = find_row(&terminal, 24, 80, "PTN P");
+        let line = buffer_row_text(&terminal, indicator_row, 80);
+        assert!(
+            line.contains("[q]1"),
+            "pad mode must show the key chip on the track indicator; \
+             got: {line:?}"
+        );
+    }
+
+    /// D3 "no chip without an action": with only one discovered track, no
+    /// entry (and so no chip) exists for the keys addressing tracks 2-16.
+    #[test]
+    fn pad_column_without_a_track_has_no_chip() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.rec = RecMode::Off;
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let indicator_row = find_row(&terminal, 24, 80, "PTN P");
+        let line = buffer_row_text(&terminal, indicator_row, 80);
+        assert!(
+            !line.contains("[w]"),
+            "a pad column past the discovered track count must have no \
+             chip; got: {line:?}"
+        );
+    }
+
+    #[test]
+    fn legend_renders_labeled_chips() {
+        let backend = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let data = RenderData::for_test(Screen::Grid, 1);
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        for expected in ["[Tab] TRK", "[p] PTN", "[z] REC", "[x] PLAY"] {
+            assert!(
+                text.contains(expected),
+                "legend must render {expected:?}; got: {text}"
+            );
+        }
+    }
+
+    /// D4: "on overflow it truncates from the tail of that list. It never
+    /// wraps, scrolls or moves" — a narrow terminal must drop the lowest-
+    /// priority chips, not wrap them to a third line.
+    #[test]
+    fn legend_truncates_from_the_tail_when_crowded() {
+        let backend = ratatui::backend::TestBackend::new(30, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let data = RenderData::for_test(Screen::Grid, 1);
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("[Tab] TRK"),
+            "the highest-priority chip must always survive; got: {text}"
+        );
+        assert!(
+            !text.contains("QUIT"),
+            "at this width the lowest-priority chip must be dropped, not \
+             wrapped to a third line; got: {text}"
+        );
+    }
+
+    /// D4: `:`, `?` and the `1-6`/`-/=` range chips have no `PanelButton`
+    /// and bypass the keymap entirely — they must render even when every
+    /// dynamic (key_label-derived) legend entry has nothing to resolve.
+    #[test]
+    fn legend_literal_entries_are_not_derived() {
+        let backend = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.legend_key_labels.clear();
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        for literal in ["[:] CMD", "[?] HELP", "[1-6] PAGE", "[-/=] WIN"] {
+            assert!(
+                text.contains(literal),
+                "a literal legend entry must render even with no dynamic \
+                 bindings resolved; got: {text}"
+            );
+        }
+        assert!(
+            !text.contains("TRK"),
+            "a dynamic chip with no resolvable key must be omitted \
+             entirely, not shown with a blank/garbled key; got: {text}"
+        );
+    }
+
+    /// D3: chip casing is display-only — multi-character key names
+    /// title-case (`[Tab]`, not `[tab]`), single characters stay as typed
+    /// (`[q]`, not `[Q]`). The keymap storage form (`key_name`) is
+    /// untouched by this — only the rendered chip.
+    #[test]
+    fn chip_titlecases_named_keys_only() {
+        let backend = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let data = RenderData::for_test(Screen::Grid, 1);
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("[Tab] TRK"),
+            "multi-char key names must title-case; got: {text}"
+        );
+        assert!(
+            !text.contains("[tab] TRK"),
+            "must not render the lowercase storage form; got: {text}"
+        );
+        assert!(
+            text.contains("[q]"),
+            "single-char key names must stay as typed; got: {text}"
+        );
+        assert!(
+            !text.contains("[Q]"),
+            "single-char keys must not be uppercased; got: {text}"
+        );
     }
 
     #[test]
