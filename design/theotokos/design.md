@@ -665,6 +665,17 @@ verifying the draft's own "records nothing while stopped" claim, which
 depended on it). §5.1/§5.2 stay REOPENED until ADR-044 is ratified and
 TK2.1 C7 rewrites them.
 
+**2026-07-28 — ADR-044 RATIFIED.** All six ratification questions settled:
+live rec degrades to a transport-derived rule where key releases are
+unavailable (R1); ADR-039 decision 7's `live_rec` slice is pulled forward
+into TK2.1 C3 (R2); `Mute` leaves the `:bind` vocabulary and stale keymap
+entries are skipped rather than rejecting the file (R3); the trig/TRK
+semantics of R4 were confirmed in session; FUNC+transport ergonomics defer
+to session #3 (R5); cross-surface lock capture defers to ADR-045 (R6).
+§5.1/§5.2 stay REOPENED until TK2.1 C7 rewrites them as DETERMINED against
+the accepted ADR. **Implementation unlocked: TK2.1 C0 → C7, then session
+#3.**
+
 **2026-07-28 — encoder access and p-lock (user-directed).** Encoder access
 is an explicit **ENC mode** (`n`), not the Param screen: the
 screen-as-mode reading broke the pad invariant on the one screen where you

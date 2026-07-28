@@ -1,15 +1,18 @@
 # Paraclete — TK2.1 Theotokos Specification (Panel Redesign)
 
-> **DRAFT — 2026-07-27**, revised the same day after a three-domain
-> hostile review. The redesign pass roadmap step 2.5 calls for.
-> Written for implementation without further design decisions **once
-> ADR-044's R1–R5 are answered** — R1 determines C1's no-kitty fallback,
-> R2 determines whether C3 exists, R3 determines C6. Every commit names its files,
+> **EXECUTION-READY — 2026-07-27**, revised the same day after a
+> three-domain hostile review, D9/D15 revised and **ADR-044 ratified
+> 2026-07-28**. The redesign pass roadmap step 2.5 calls for. Written for
+> implementation without further design decisions; the ratification
+> answers that bind it: **R1** — C1's no-kitty fallback is the
+> transport-derived rule; **R2** — C3 is in scope; **R3** — C6 removes
+> `Mute` and degrades keymaps with warn-and-skip; **R5** — FUNC+transport
+> ergonomics are out, deferred to session #3; **R6** — cross-surface lock
+> capture is ADR-045, parked. Every commit names its files,
 > contracts, the existing sites it must update to stay green, and its
 > tests. Where a value is a tuning knob, the default is stated *(tunable)*.
 >
-> **Design authority:** ADR-044 (🟡 proposed — **do not start C0 until it
-> is ratified**), `design/sessions/theotokos-2.md`,
+> **Design authority:** ADR-044 (✅ accepted 2026-07-28), `design/sessions/theotokos-2.md`,
 > `design/phases/tk2-report.md`, design.md §3.A/§4/§5.1/§5.2/§6, and the
 > TK2 spec's normative §0 (A10 and A11 remain in force; A9/A16 are
 > superseded by ADR-044).

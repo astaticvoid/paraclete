@@ -49,5 +49,5 @@ but cannot resolve them without this index.
 | ADR-041 | `ADR-041-machine-identity.md` | Machine identity — runtime machine select, union bank, Rule variants (accepted, 2026-07-23) |
 | ADR-042 | `ADR-042-mod-page-lfo-block.md` | MOD page — per-node LFO block, node-local destinations (accepted, 2026-07-23) |
 | ADR-043 | `ADR-043-fm-voice.md` | FM voice — four-operator melodic FM, P14 model (accepted, 2026-07-23) |
-| ADR-044 | `ADR-044-theotokos-fixed-panel.md` | Theotokos fixed panel + trig-first mode model — TK2.1 redesign (🟡 proposed) |
+| ADR-044 | `ADR-044-theotokos-fixed-panel.md` | Theotokos fixed panel + trig-first mode model — TK2.1 redesign (accepted, 2026-07-28) |
 | ADR-045 | `ADR-045-cross-surface-lock-capture.md` | Cross-surface parameter-lock capture — any surface's value write becomes a p-lock while a step is armed (🟡 proposed) |

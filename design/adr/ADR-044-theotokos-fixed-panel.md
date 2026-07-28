@@ -1,10 +1,11 @@
 # ADR-044 — Theotokos fixed panel and trig-first mode model
 
-**Status:** 🟡 Proposed (2026-07-27; revised the same day after hostile
-review; D9/D15 revised 2026-07-28) — awaits user ratification (R1–R6 below).
-**Will supersede on ratification:** `design/theotokos/design.md` §5.1/§5.2
-(reopened 2026-07-27); TK2 spec §0 A9 and A16, and §1 D11/D12. **No
-accepted ADR is superseded:** D5 keeps ADR-038's grid-rec toggle and
+**Status:** ✅ **Accepted 2026-07-28** (drafted 2026-07-27, revised the same
+day after hostile review; D9/D15 revised 2026-07-28). Ratification
+decisions recorded below; implementation is `design/phases/tk2.1-theotokos.md`.
+**Supersedes:** `design/theotokos/design.md` §5.1/§5.2
+(reopened 2026-07-27 — rewritten as DETERMINED by TK2.1 C7); TK2 spec §0
+A9 and A16, and §1 D11/D12. **No accepted ADR is superseded:** D5 keeps ADR-038's grid-rec toggle and
 ADR-039's REC+PLAY grammar, and D6 keeps ADR-038 structural change 2's
 hold-chord mechanism. A proposed ADR supersedes nothing until ratified.
 **Evidence:** `design/sessions/theotokos-2.md`, `design/phases/tk2-report.md`
@@ -483,7 +484,36 @@ testable now, with hardware already in the room.
 
 ---
 
-## Ratification questions
+## Ratification decisions — 2026-07-28
+
+Ratified by the user. All six settled; nothing in this ADR is pending.
+
+- **R1 — live rec without key releases: degrade.** REC while the transport
+  runs arms `Live`, REC while stopped arms `Grid`, arming sticks. Same
+  bindings, degraded gesture; the branch is dead on any terminal where the
+  kitty probe succeeds.
+- **R2 — pull ADR-039 decision 7's `live_rec` slice forward.** TK2.1 C3
+  ships it (param + record-on-live-trig only; no kits, temp save, mute
+  tiers or CMD 39–45). Honours TK2 D10's "no inert state ships" — a
+  documented mode that does nothing would have been the alternative.
+- **R3 — remove `Mute` from the `:bind` vocabulary, warn-and-skip on
+  load** (D12 + D14). A stale `m: Mute` line is skipped with a message
+  instead of rejecting the whole keymap.
+- **R4 — resolved 2026-07-27 (in session).** Bare trig selects **and**
+  sounds; TRK+trig selects **silently**; the display follows the press
+  without changing which page is open. Folded into D6.
+- **R5 — FUNC+transport ergonomics defer to session #3.** The grammar
+  around those chords changes under this phase; redesigning now would be
+  designing against a surface nobody has played. Listed as an explicit
+  non-decision, not an absence.
+- **R6 — cross-surface lock capture defers to ADR-045** (🟡 proposed,
+  drafted 2026-07-28, parked per its own R3). TK2.1 ships D15's
+  Theotokos-local half and publishes the state the other half consumes.
+
+**Implementation unlocked:** `design/phases/tk2.1-theotokos.md` C0 → C7,
+then usability session #3 (C8).
+
+## Ratification questions (as put, 2026-07-27/28 — all answered above)
 
 | # | Question | Recommendation |
 |---|---|---|

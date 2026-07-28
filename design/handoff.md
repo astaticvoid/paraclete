@@ -25,10 +25,11 @@ For the Theotokos performance-terminal track (ADR-036 **accepted
 → the current phase spec. TK0 and TK1 shipped; **TK2 is code-complete
 (C0–C9) but did not sign off** — usability session #2 reopened the panel
 layout and the default mode model (`design/sessions/theotokos-2.md`,
-`design/phases/tk2-report.md`). **The active artifact is the TK2.1
-redesign: `design/adr/ADR-044-theotokos-fixed-panel.md` (🟡 proposed —
-do not start C0 until the user ratifies R1–R6) and its blueprint
-`design/phases/tk2.1-theotokos.md`.**
+`design/phases/tk2-report.md`). **ADR-044 was ratified 2026-07-28; TK2.1 is the active
+implementation phase.** Start at `design/phases/tk2.1-theotokos.md` C0 and
+work forward — the spec is execution-ready and each commit lists the
+existing sites it must update to stay green. Design authority is
+`design/adr/ADR-044-theotokos-fixed-panel.md` (✅ accepted).
 
 ## Task routing by tier
 
