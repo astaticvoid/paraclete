@@ -3,7 +3,14 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-28. **ADR-044 ✅ RATIFIED — TK2.1
+> **Last updated:** 2026-07-28 (later). **BUG-041 fixed** (`f2576f4`,
+> ahead of TK2.1 C3a — it was independently unblocked per the previous
+> entry). `CMD_CLOCK_STOP` now emits `global_stop`, gated on the final
+> playing state after commands and incoming events so a same-batch STOP
+> reversal doesn't emit a spurious stop (pre-commit hostile review
+> finding, folded). **Next: TK2.1 C0 → C7** (C3a is now a no-op landing
+> spot in the phase sequence — the fix already shipped).
+> Previous: 2026-07-28. **ADR-044 ✅ RATIFIED — TK2.1
 > implementation unlocked.** All six questions settled: R1 live rec
 > degrades to a transport-derived rule where key releases are unavailable;
 > R2 pulls ADR-039 decision 7's `live_rec` slice into TK2.1 C3 (honouring

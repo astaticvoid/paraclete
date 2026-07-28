@@ -4,9 +4,10 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ---
 
-## Status (2026-07-27)
+## Status (2026-07-28)
 
-**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, BUG-038 (Theotokos: D13 arrow-cursor nav and numpad slot jog speced but never wired), **BUG-039** (InternalClock auto-starts the transport on every surface — worked around surface-side by ADR-044 D7), **BUG-040** (Theotokos encoder jog invents a 0..1 range on composite pages and ignores `stepped` — fix is TK2.1 C4), **BUG-041** (`CMD_CLOCK_STOP` emits no transport event, so a Sequencer's `playing` never clears in the standalone app — fix is TK2.1 C3a).
+**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, BUG-038 (Theotokos: D13 arrow-cursor nav and numpad slot jog speced but never wired), **BUG-039** (InternalClock auto-starts the transport on every surface — worked around surface-side by ADR-044 D7), **BUG-040** (Theotokos encoder jog invents a 0..1 range on composite pages and ignores `stepped` — fix is TK2.1 C4).
+**Fixed 2026-07-28:** BUG-041 (`f2576f4`) — `CMD_CLOCK_STOP` now emits a `global_stop` transport event on the net transition to stopped; gated on final playing state (not a mid-batch flag) so a STOP reversed later in the same batch doesn't emit a spurious stop (hostile-review finding, folded before commit). Regression test drives a real `InternalClock` → `Sequencer` pair.
 **Fixed, code-complete (pending hardware-verification):** BUG-012.
 **Trigger-based (fix when named trigger fires):** BUG-003 (updated — StateBusHandle already moved to L2; remaining violation is NodeExecutor/RuntimeCounters in audio.rs).
 **Resolved in this session:** INFRA-011 (recovery code removed — pipewire-alsa + wireplumber no-suspend fixes root cause).
@@ -1579,3 +1580,21 @@ existing `global_start` emission. TK2.1 C3a schedules this fix, since
 ADR-044 D8 depends on it. Add a regression test that drives a real
 `InternalClock` → `Sequencer` pair rather than injecting flags, so the
 class of false-passing test that hid this is closed too.
+
+**Fixed 2026-07-28 (`f2576f4`, ahead of TK2.1 C3a per roadmap — this bug
+was independently unblocked, needing no ADR-044 ratification):**
+`handle_commands` now returns whether `CMD_CLOCK_STOP` transitioned
+`playing` true→false; `process` emits `emit_stop_event` (the
+`global_stop` mirror of `emit_transport`'s `global_start`) gated on the
+*final* `playing` state after commands **and** incoming events are
+applied — not a mid-batch flag. A pre-commit hostile review caught that
+the first draft latched the flag inside `handle_commands` alone, so a
+STOP reversed later in the same batch (`CMD_CLOCK_STOP` followed by
+`CMD_CLOCK_START`, or a STOP command alongside an incoming
+`global_start` transport event) emitted a spurious `global_stop` even
+though the clock ended the block still playing — fixed by gating on the
+net transition instead. `clock_stop_emits_global_stop` and
+`sequencer_playing_clears_on_clock_stop` (`sequencer.rs`) drive a real
+`InternalClock` → `Sequencer` pair per the fix direction above;
+`clock_stop_reversed_in_same_batch_does_not_emit_global_stop`
+(`internal_clock.rs`) pins the review finding.
