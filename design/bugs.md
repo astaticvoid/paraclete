@@ -6,7 +6,7 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ## Status (2026-07-27)
 
-**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, BUG-038 (Theotokos: D13 arrow-cursor nav and numpad slot jog speced but never wired), **BUG-039** (InternalClock auto-starts the transport on every surface — worked around surface-side by ADR-044 D7), **BUG-040** (Theotokos encoder jog invents a 0..1 range on composite pages and ignores `stepped` — fix is TK2.1 C4).
+**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, BUG-038 (Theotokos: D13 arrow-cursor nav and numpad slot jog speced but never wired), **BUG-039** (InternalClock auto-starts the transport on every surface — worked around surface-side by ADR-044 D7), **BUG-040** (Theotokos encoder jog invents a 0..1 range on composite pages and ignores `stepped` — fix is TK2.1 C4), **BUG-041** (`CMD_CLOCK_STOP` emits no transport event, so a Sequencer's `playing` never clears in the standalone app — fix is TK2.1 C3a).
 **Fixed, code-complete (pending hardware-verification):** BUG-012.
 **Trigger-based (fix when named trigger fires):** BUG-003 (updated — StateBusHandle already moved to L2; remaining violation is NodeExecutor/RuntimeCounters in audio.rs).
 **Resolved in this session:** INFRA-011 (recovery code removed — pipewire-alsa + wireplumber no-suspend fixes root cause).
@@ -1529,3 +1529,43 @@ visible; `stepped` params jog by exactly 1. Extending `CompositeParam`
 with range metadata is the alternative, and would fix Antiphon/Theoria
 consumers too — but it widens a shared assembly type, so the local
 cap-doc lookup is preferred first.
+
+---
+
+### BUG-041 — `CMD_CLOCK_STOP` emits no transport event; a Sequencer's `playing` never clears in the standalone app
+
+**Severity:** Medium — no audible symptom today (playback does stop), but
+every sequencer-side decision gated on "is the transport running" is
+silently wrong, and the natural unit test for such a gate passes anyway
+**Phase found:** TK2.1 hostile review (2026-07-27), verifying ADR-044 D8's
+"records nothing while stopped" claim
+**Description:** `InternalClock::handle_commands` sets `self.playing =
+false` on `CMD_CLOCK_STOP`
+(`crates/paraclete-nodes/src/internal_clock.rs:146-148`) and `process`
+then returns early (`:216`) — it emits **no** transport event, so no
+`global_stop` flag ever reaches downstream nodes. `Sequencer.playing`
+(`crates/paraclete-nodes/src/sequencer.rs:240`) is set by
+`flags.global_start` (`:925-926`) and cleared *only* by
+`flags.global_stop` (`:908-909`). The only in-tree emitters of
+`global_stop` are the CLAP bridges (`crates/paraclete-clap/src/
+subgraph.rs:252`, `transport.rs:102`), so in the standalone app a
+sequencer latches `playing = true` on the first tick after the clock's
+auto-start (BUG-039) and never clears it — including after a user STOP
+press and after the startup stop ADR-044 D7 adds.
+Playback itself is unaffected: the clock stops emitting ticks, so
+sequencers stop advancing. What is broken is the sequencer's *knowledge*
+of transport state. This is a trap for exactly the kind of feature
+ADR-039 decision 7 describes: a `live_rec` gate written against
+`self.playing` would be permanently open, recording at a frozen
+`current_step` while the transport reads as stopped — and the obvious unit
+test would still pass, because sequencer tests inject `global_stop`
+directly (`sequencer.rs:2080`, `:1970`, `:1987`) rather than driving a
+real clock.
+**Location:** `crates/paraclete-nodes/src/internal_clock.rs:136-148, 216`;
+consumer `crates/paraclete-nodes/src/sequencer.rs:908-909`
+**Fix direction:** Emit one transport event carrying `global_stop` on the
+transition to stopped, before the early return — the mirror of the
+existing `global_start` emission. TK2.1 C3a schedules this fix, since
+ADR-044 D8 depends on it. Add a regression test that drives a real
+`InternalClock` → `Sequencer` pair rather than injecting flags, so the
+class of false-passing test that hid this is closed too.

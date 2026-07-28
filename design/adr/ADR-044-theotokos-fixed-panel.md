@@ -1,11 +1,15 @@
 # ADR-044 — Theotokos fixed panel and trig-first mode model
 
-**Status:** 🟡 Proposed (2026-07-27) — awaits user ratification (R1–R3 below).
-**Supersedes in part:** `design/theotokos/design.md` §5.1/§5.2 (reopened
-2026-07-27), TK2 spec §0 A9 and §0 A16, ADR-038 D1's Mute-screen half.
+**Status:** 🟡 Proposed (2026-07-27; revised the same day after hostile
+review) — awaits user ratification (R1–R5 below).
+**Will supersede on ratification:** `design/theotokos/design.md` §5.1/§5.2
+(reopened 2026-07-27); TK2 spec §0 A9 and A16, and §1 D11/D12; ADR-038
+structural change 2 in part and its grid-rec-toggle half; **ADR-039
+decision 7's REC+PLAY grammar clause** (its recording *mechanics* are
+adopted unchanged). A proposed ADR supersedes nothing until ratified.
 **Evidence:** `design/sessions/theotokos-2.md`, `design/phases/tk2-report.md`
 (usability session #2, TK2 C10, held 2026-07-27).
-**Implemented by:** `design/phases/tk2.1-theotokos.md` (drafted with this ADR).
+**Implemented by:** `design/phases/tk2.1-theotokos.md`.
 
 Third-party marks appear per house naming policy: design prose only, never
 identifiers or UI strings.
@@ -20,40 +24,42 @@ derivation, key remapping, mute state, live visualization) but rejected
 two things the phase had treated as settled:
 
 1. **The rendering.** The GRID screen draws every track at once, stacked
-   as repeated two-row blocks (`render.rs::render_seq_grid`, one block per
-   track). Hands-on, that reads as an LED-grid emulator, not the fixed
-   front panel §5.1's own skeleton describes — "transport header / *one*
-   contextual window / mode line / echo area."
+   as repeated blocks (`render.rs::render_seq_grid`, 5–6 `Line`s per
+   track — each of the two logical rows drawn twice). Hands-on, that
+   reads as an LED-grid emulator, not the fixed front panel §5.1's own
+   skeleton describes — "transport header / *one* contextual window /
+   mode line / echo area."
 2. **The default mode.** The app launches REC-armed with the transport
    already running, so a trig key always writes a step and never sounds
    anything. design.md §3.A points 3–4 already say the opposite ("trigs
    are trigs everywhere", "on hardware, trigs always play") — those points
-   are why the live-trig command (D5/`CMD_TRIG_NOW`) was built in the
-   first place. The shipped default inverts the intent the command exists
-   to serve.
+   are why the live-trig command (`CMD_TRIG_NOW`) was built at all. The
+   shipped default inverts the intent the command exists to serve.
 
 Per §6's convergence rule, a DETERMINED item reopens only on new hands-on
 evidence. Session #2 is that evidence for both. This ADR freezes what
-replaces them, plus the four smaller session verdicts that ride along
-(sticky-prefix re-tap, Mute-screen retirement, encoder-mode access,
-jog resolution).
+replaces them, plus the smaller session verdicts that ride along.
 
 ### Verified code facts this ADR is built on
 
-Claims below were line-checked against TK2 HEAD (`be565b9`), per the
-standing "verify dependency behavior, not existence" rule:
+Line-checked against TK2 HEAD (`be565b9`) and re-checked under hostile
+review, per the standing "verify behavior, not existence" rule:
 
 | Claim | Evidence |
 |---|---|
-| GRID renders all tracks stacked | `render.rs:272-297` — `for t in 0..track_names.len()` pushes 4–5 `Line`s per track |
+| GRID renders all tracks stacked | `render.rs:272-297` — `for t in 0..track_names.len()` pushes 5 `Line`s per track (each logical row drawn twice) plus a 6th separator between tracks; `grid_structure_4_tracks_23_rows` (`render.rs:903`) pins 4×5+3 |
 | Transport auto-starts on launch | `internal_clock.rs:82` — `with_domain` constructs with `playing: true`; `main.rs:233` documents the consequence |
-| `grid_rec` defaults on | `model.rs:204` (`grid_rec: true`); `input.rs:629` routes trigs to `ToggleStep` when set |
-| A live trig ignores which trig was pressed | `lib.rs:757-766` — `Action::LiveTrig { .. }` discards `col` and fires `active_track`'s sequencer |
-| Composite pages jog with a fake 0..1 range | `model.rs:357` — the composite branch returns `(node_id, param_id, name, 0.0, 1.0)`; only the engine-local fallback (`model.rs:384`, `model.rs:400`) carries real `min`/`max`. The default 4-track instrument uses composite views, so in session #2 *every* encoder had range 1.0 |
-| `CompositeParam` carries no range metadata | `paraclete-view-assembly/src/lib.rs:59-68` — no `min`/`max`/`stepped`/`unit` fields (hence the placeholder above). `Model::caps` is keyed by arbitrary node id (`model.rs:747` already looks up a composite param's own node), so Theotokos can resolve the real descriptor locally — no cross-crate change is needed |
-| `stepped` params exist and are jogged fractionally today | `capability.rs:93` declares `stepped: bool`; `resolve_encoder_params` never reads it |
+| `grid_rec` defaults on | `model.rs:204`; `input.rs:629` routes trigs to `ToggleStep` when set |
+| A live trig ignores which trig was pressed | `lib.rs:757` — `Action::LiveTrig { .. }` discards `col` and fires `active_track`'s sequencer. The variant already declares `col` (`action.rs:53`) |
+| Composite pages jog with a fake 0..1 range | `model.rs:357` returns `(node_id, param_id, name, 0.0, 1.0)`; only the engine-local fallback (`model.rs:384`, `:400`) carries real `min`/`max`. The default instrument *does* take the composite path (engines attach a `view` Rule, `analog_engine.rs:322`; `assemble` returns `Some`, `view-assembly/src/lib.rs:98`), and its real ranges are wide — `tune` −24..24, `tone` 200..8000, `index` 0..8 |
+| The fake range is also a clamp | `lib.rs:856` — the step-focus p-lock path computes `(current + signed).clamp(min, max)`, so a lock on a 200..8000 param truncates to 1.0 |
+| `CompositeParam` carries no range metadata | `view-assembly/src/lib.rs:59-68` — no `min`/`max`/`stepped`/`unit` |
+| `Model::caps` covers non-generator nodes | `cap_docs` is built over `ids.all` (`main.rs:265`), `classify_node` pushes every node in the instrument file (`builder.rs:193`), and the map is handed to Theotokos whole (`main.rs:408`). The local descriptor lookup D10 relies on needs **no cross-crate change** |
+| `stepped` exists and is never read by the jog path | `capability.rs:93`; absent from `resolve_encoder_params` and `Tuning::jog_step` |
 | Sticky re-press is a deliberate no-op | `input.rs:479-490` — §0 A9, because OS auto-repeat streams `Press` events indistinguishable from a second tap without kitty release events |
-| Key chips are derivable | `Keymap.bindings: HashMap<KeyBinding, PanelButton>` (`input.rs:249`) plus the built-in `TOP_TRIG_ROW`/`BOTTOM_TRIG_ROW` tables (`input.rs:232-235`) — a reverse lookup is a pure function over data that already exists |
+| Key chips are derivable | `Keymap.bindings` (`input.rs:253`), `key_name`/`key_from_name` round-trip every key the built-in table uses (`input.rs:146-199`), `TOP_TRIG_ROW`/`BOTTOM_TRIG_ROW` (`input.rs:236`, `:238`) |
+| Fixed regions behave as D1 assumes | ratatui 0.26.3: `Length` outranks `Min` in the constraint solver (`layout.rs:1019`, `:1040`); `Paragraph` defaults to no wrapping and truncates (`paragraph.rs:97`) |
+| **`CMD_CLOCK_STOP` emits no transport event** | `internal_clock.rs:146-148` sets `playing = false` and `:216` returns early. `Sequencer.playing` clears only on `flags.global_stop` (`sequencer.rs:908`), which nothing in the standalone app emits — so a sequencer latches `playing = true` on the first tick and never clears it. Filed as **BUG-041**; D8's stopped-transport behaviour depends on fixing it |
 
 ---
 
@@ -61,42 +67,51 @@ standing "verify dependency behavior, not existence" rule:
 
 ### D1 — Fixed regions; only the contextual window changes
 
-The terminal is divided into regions whose heights do **not** vary by
-screen. Screens swap the contents of exactly one region.
+Region heights do **not** vary by screen. Screens swap the contents of
+exactly one region.
 
 ```
-┌ transport  1 line   BPM · ▶/■ · REC○/▦/● · track · pattern · step · CPU ──┐
+┌ transport  1 line   BPM · ▶/■ · REC○/▦/● · track · pattern · step ────────┐
 │                                                                            │
 │ contextual window   Min(0) — the ONLY region that changes per screen:      │
-│   TRIG (default)    selected track: engine name, its TRIG-page params,     │
-│                     live envelope/LFO for that voice                       │
-│   PARAM (Pg1–6)     8 encoder cells (2×4) + live env gauge + LFO phase     │
+│   TRACK (default)   selected track: display name — engine, its active      │
+│                     page's params, live envelope/LFO for that voice        │
+│   PARAM (Pg1–6)     page tabs + sub-page indicator (§0 A11), 8 encoder     │
+│                     cells (2×4), live env gauge, LFO phase — as TK2 C9     │
+│                     already renders them, re-fitted to the new region      │
 │   CHAIN / TEMPO / SETTINGS   as shipped in TK2 C6                          │
 │                                                                            │
 ├ track indicator  1 line   ▸1 Kick   2 Snare   3 HiHat●   4 Bass    P1 ─────┤
 │ trig strip       2 lines  selected track only, 8 cells per line            │
 ├ key legend       2 lines  [key] NAME chips, fixed position, never scrolls  ┤
-└ echo area        1 line   messages, confirms, `:` command line ────────────┘
-                    status line 1 line (unchanged from TK2 C3)
+├ echo area        1 line   messages, confirms, `:` command line ────────────┤
+└ status line      1 line   screen · track · REC · armed prefix · slots ─────┘
 ```
 
+The **status line is the mode line** §5.1's skeleton calls for and the
+legibility contract s1/s2 established: it keeps the armed TRK/PTN prefix
+(`render.rs:635` today — load-bearing under D11), step focus, slot
+bindings and page position. The legend is a separate, static teaching
+strip, not a status display. Nothing that TK2 renders today loses its home:
+page tabs and the `¶n/m` sub-page indicator (§0 A11) stay inside the Param
+contextual window.
+
 The trig strip and track indicator are **persistent**: they render on
-every screen, including Param, Chain, Tempo and Settings. Session #2's
-"trigs disappearing in encoder mode" is a layout bug under this decision,
-not a mode consequence.
+every screen. Session #2's "trigs disappearing in encoder mode" is a
+layout bug under this decision, not a mode consequence.
 
 ### D2 — The strip shows one track
 
 The trig strip renders the **selected track's** 16-step window as 2×8
-cells (top line steps 1–8, bottom 9–16), with playhead, trig state, lock
-markers and step focus exactly as TK2 renders them today — for one track,
-not all of them. Cross-track information (names, mute state, which track
-is selected, active pattern) is carried by the single-line track
-indicator above it.
+cells (top line steps 1–8, bottom 9–16), keeping the shipped colour/state
+rules (playhead, active, locked, focused) and the `page_window` stride
+(`render.rs:307`) while re-cutting the cell body to make room for D3's
+chips — the current 7-column `" ████ "` block run has no space for one.
 
-This is the literal reading of §5.1's skeleton; the all-tracks stack was a
-literal reading of §5.2's "two rows per track" applied to every track at
-once.
+Cross-track information is carried by the one-line track indicator: name,
+selection marker, mute state, and the active pattern. When more tracks
+exist than fit, the indicator windows around the selected track with `‹`/`›`
+markers rather than wrapping or truncating silently.
 
 ### D3 — The key chip is drawn where the key acts
 
@@ -107,42 +122,61 @@ address, the chips move with the meaning:
 
 | State | Chips on the track indicator | Chips on the step cells | Chips on encoder cells |
 |---|---|---|---|
-| `RecMode::Off` / `Live` on Grid (pads) | **yes** — `[q]1 Kick` | dimmed (display-only) | — |
-| `RecMode::Grid` | — | **yes** — `[q]▓` | — |
+| `RecMode::Off` / `Live` on a non-Param screen (pads) | **yes** — `[q]1 Kick` | dimmed (display-only) | — |
+| `RecMode::Grid` on a non-Param screen | — | **yes** — `[q]▓` | — |
 | Param screen (any rec mode) | — | dimmed (display-only) | **yes** |
 
 The invariant is one sentence and one test: *a key chip appears on the
-cell that key would act on if pressed right now, and nowhere else.*
-It is also the answer to session #2's "trig cells don't show their mapped
-key" finding, and it degrades correctly under user remapping.
+cell that key would act on if pressed right now, and nowhere else.* Two
+consequences follow and are normative:
+
+- **Shadow-awareness.** `key_to_button` consults user bindings *before*
+  the built-in table (`input.rs:380-388`), so the reverse lookup must not
+  offer a default-table key that a user binding has claimed for a
+  different button. Binding `q → Play` must remove `q`'s chip from
+  `Trig1`, not leave it lying.
+- **No chip without an action.** A pad column past the discovered track
+  count gets no chip and is a silent no-op — not an echo per keypress
+  (on the default 4-track instrument that would be 12 keys echoing).
 
 ### D4 — A labeled legend strip, not a hint line
 
 Two fixed lines of `[key] NAME` chips (bright key, dim label), screen-aware
-content, always in the same place. On overflow the strip truncates by a
-declared priority order — it never wraps, never scrolls, and never moves.
-This replaces the grey run-on hint line (`render.rs:221-238`).
+content from a declared per-screen priority list, always in the same
+place; on overflow it truncates from the tail of that list. It never
+wraps, scrolls or moves. This replaces the grey run-on hint line
+(`render.rs:221-238`).
 
-### D5 — `RecMode { Off, Grid, Live }`; REC cycles
+Three legend entries are **literal, not `key_label`-derived**: `:`, `?`
+and `^C` have no `PanelButton` (`input.rs:18-64`) and bypass the keymap
+entirely (`lib.rs:410-420`). So does the range chip `[1-6] PAGE`. They are
+declared constants in the legend table, and the spec says so rather than
+implying the whole strip is remap-aware.
+
+### D5 — `RecMode { Off, Grid, Live }`; REC cycles *(pending R1)*
 
 `grid_rec: bool` becomes a three-state mode, default **`Off`**.
 
 | Mode | Indicator | Trig keys | Transport interaction |
 |---|---|---|---|
 | `Off` (default) | `REC○` | pads (D6) | none |
-| `Grid` | `REC▦` | write/clear steps of the selected track | none — step programming works while playing |
+| `Grid` | `REC▦` | write/clear steps of the selected track | none — programming works while playing |
 | `Live` | `REC●` | pads **and** record, engine-side (D8) | records only while playing |
 
 The REC button cycles `Off → Grid → Live → Off`. The transport never
 changes the rec mode and the rec mode never starts the transport.
 
-This is a deliberate deviation from session #2's literal "PLAY+REC
-together = live record" wording, chosen at the user's direction during
-this drafting pass: deriving Live from `rec_armed × playing` would make it
-impossible to program steps while the pattern loops, and making REC a
-third hold prefix would saddle the most-used button with the kitty-less
-sticky one-shot delay. Marked HYPOTHESIS for session #3 (§6 convergence
-rule) — the cycle is a grammar claim, not an architectural one.
+**This is a contested decision and R1 exists to settle it.** It was chosen
+at the user's direction during this drafting pass, but it deviates from
+three standing authorities: session #2's own wording ("PLAY+REC together =
+live record"), ADR-038's frozen model half (the grid-rec *toggle*, not
+just its chord homes), and ADR-039's Consequences ("REC+PLAY = live record
+arms `live_rec`"). Drafting-pass direction is not the hands-on session
+evidence §6's convergence rule requires, so the cycle is put to explicit
+ratification rather than carried as a footnote. The rationale for it:
+deriving `Live` from `rec_armed × playing` makes it impossible to program
+steps while the pattern loops, and making REC a third hold prefix saddles
+the most-used button with the kitty-less sticky one-shot delay.
 
 ### D6 — In pad modes, trig N addresses track N
 
@@ -153,108 +187,171 @@ In `Off` and `Live`, a trig press:
 2. makes track N the selected track, so the contextual window, trig strip
    and track indicator all follow the finger.
 
-Columns past the discovered track count are a no-op plus the existing
-`no track N` echo (TK2 D9's clamp, reused verbatim). In `Grid`, trig N is
-step N of the selected track — unchanged.
+The grammar addresses all 16 trigs; columns past the discovered track
+count are silent no-ops with no chip (D3). In `Grid`, trig N is step N of
+the selected track — unchanged.
 
 This *is* a mode split in the trig keys, which §3.A point 3 warns about.
-It is accepted deliberately: the split is between "play the instrument"
-and "program the instrument", it is announced by the REC indicator, and
-D3's key chips make the current meaning visible on-screen at all times
-rather than leaving it to memory. §0 A16 ("trigs are always trigs on Grid
-and Param") is superseded accordingly.
+Accepted deliberately: the split is between playing and programming the
+instrument, it is announced by the REC indicator, and D3's chips keep the
+current meaning on screen rather than in memory. §0 A16 is superseded.
+
+It also partly supersedes **ADR-038 structural change 2** ("track select
+is a hold-chord, not a row"): in pad modes a bare trig selects a track,
+duplicating TRK+trig for tracks 1..N. TRK+trig survives deliberately — it
+is the only track-select gesture in `Grid` mode and on the Param screen,
+where bare trigs mean steps and encoders. The redundancy is one-directional
+and costs no keys.
 
 ### D7 — No transport at launch
 
 Theotokos issues `CMD_CLOCK_STOP` once during startup, so the instrument
-boots silent and stopped. The engine-side default that causes the
-auto-start (`InternalClock::with_domain` → `playing: true`,
-`internal_clock.rs:82`) is **not** changed here: it is load-bearing for
-`tools/test-driver` scenarios, regression baselines, the CLAP subgraph and
-`main.rs`'s static snapshot. It is filed as **BUG-039** so the wider
-question ("should any surface auto-start?") is owned somewhere, rather
-than being silently worked around in this ADR's prose.
+boots silent. Scope note, per BUG-041: this stops the *clock* (no ticks are
+emitted, `internal_clock.rs:216`), but until BUG-041 is fixed the
+sequencers' own `playing` flag never clears, so nothing may be built on
+"the sequencer knows it is stopped" (see D8).
+
+The engine-side default that causes the auto-start
+(`internal_clock.rs:82`) is **not** changed here: it is load-bearing for
+`tools/test-driver` scenarios (none issues `clock_start`), the two
+committed ADR-035 baselines that ride them, `paraclete-clap`'s subgraph
+(`subgraph.rs:201`) and `main.rs`'s static snapshot. Filed as **BUG-039**
+so the wider question — should any surface auto-start, and does the clock
+node or the app decide — is owned rather than lost in prose.
 
 ### D8 — Live record is engine-side, per ADR-039 decision 7
 
 `Live` does **not** compute steps on the surface. Entering `Live` sends
 `CMD_SET_PARAM live_rec = 1` to every track sequencer; leaving it sends
 `0`. Recording then happens inside the sequencer: while `live_rec ≥ 0.5`
-and the transport is playing, a consumed `CMD_TRIG_NOW` records itself —
+and the transport is running, a consumed `CMD_TRIG_NOW` records itself —
 nearest-step quantization, note and velocity written, signed distance to
 the grid captured as the step's micro-timing.
 
-This is ADR-039 decision 7 as accepted ("a pending `CMD_TRIG_NOW` (TK2 C1)
-records itself the same way when `live_rec` is on — Theotokos REC+PLAY
-needs no extra path"), whose rejected alternative is precisely the
-surface-side `CMD_SET_STEP` path. TK2.1 therefore **implements that one
-slice of ADR-039 early** (the `live_rec` param and the record-on-live-trig
-path — no kits, no temp save, no mute tiers, none of CMD 39–45) so the
-rec-mode model is complete; the P11 phase spec inherits it as shipped
-rather than re-planning it.
+This adopts ADR-039 decision 7's mechanics verbatim ("a pending
+`CMD_TRIG_NOW` (TK2 C1) records itself the same way when `live_rec` is
+on"), whose rejected alternative is precisely the surface-side
+`CMD_SET_STEP` path this ADR first drafted. Only that decision's *grammar*
+clause (REC+PLAY as the arming gesture) is superseded, and only if R1
+adopts D5's cycle.
 
-Timing bound, stated honestly per ADR-039's own amendment 2: `CMD_TRIG_NOW`
-is delivered at block start, so the recorded micro-timing is exact to the
-sequencer's tick position at command-drain time, not to the keystroke.
-Sub-block accuracy waits on the HAL timestamping work ADR-039 names as
-P11 scope. A pad press in `Live` with the transport stopped sounds the
-voice and records nothing.
+TK2.1 therefore **implements one slice of ADR-039 early** — the `live_rec`
+param and the record-on-live-trig path. Not pulled with it: kits, temp
+save, mute tiers, CMD 39–45. `live_rec` is a record-arm, not a sound
+parameter, so it must be excluded from kit membership when ADR-039
+amendment 1's opt-in flag lands.
+
+Two honest bounds:
+
+- **Timing.** `CMD_TRIG_NOW` is drained at block start
+  (`sequencer.rs:1298`), so recorded micro-timing is exact to the
+  sequencer's tick position, not to the keystroke. Sub-block accuracy
+  waits on the HAL timestamping work ADR-039 amendment 2 names as P11
+  scope.
+- **Stopped transport.** "A pad press in `Live` while stopped sounds the
+  voice and records nothing" is only implementable once BUG-041 is fixed;
+  the phase spec puts that fix in the same commit rather than asserting
+  behaviour the engine cannot currently express.
 
 ### D9 — Encoder mode is the Param screen, not a new toggle key
 
 Session #2 asked for a toggle key replacing held-FUNC for encoder access.
-This ADR grants the ergonomics without adding a key: **on the Param
-screen the trig rows are the encoder bank** — bare top-row key *n* =
-encoder *n* up, bottom-row = down, no modifier held. The screen is
-already reached by `1`–`6` and left by `Esc`, so the toggle exists and is
-already learned. `FUNC+trig` keeps working from every screen as the
-quick-access shortcut (and doubles as the coarse magnitude on Param, D10).
+This grants the ergonomics without adding a key: **on the Param screen the
+trig rows are the encoder bank** — bare top-row key *n* = encoder *n* up,
+bottom-row = down, no modifier held. The screen is reached by `1`–`6` and
+left by `Esc`, so the toggle already exists and is already learned.
+`FUNC+trig` keeps working from every screen as the quick-access shortcut.
 
-Consequence: trigs do not audition or edit steps while the Param screen is
-open. The strip stays visible there (display-only, dimmed chips, D3), so
-you can still read the pattern while editing sound. HYPOTHESIS for
+**§0 A10 is unchanged and wins:** encoder jog — bare-trig-on-Param
+included — resolves **only with no armed prefix**. While TRK is armed, a
+bare trig selects a track and `FUNC`+trig toggles mute, on *every* screen
+including Param. Without this carve-out D12's "only mute gesture" would be
+unreachable exactly where D10 wanted FUNC for coarse.
+
+Re-entry nuance: pressing the *active* PG key again cycles its sub-page
+(§0 A1/A11), so `1`–`6` re-entry is a sub-page gesture, not a screen
+toggle; `Esc` is the exit.
+
+Consequence: trigs do not audition or edit steps while Param is open. The
+strip stays visible there (display-only, dimmed chips). HYPOTHESIS for
 session #3.
+
+This also discharges §0 A7's open condition: A7 permitted one shared held
+modifier for the encoder bank *conditional on session evidence that
+held-FUNC sweeps are acceptable*. Session #2 returned the opposite
+("held-FUNC for encoder access feels wrong"), and bare-trig-on-Param
+satisfies design.md §4.4's modifier-free floor directly — so the floor no
+longer depends on the numpad slots, and OQ-T24 becomes a free choice at
+session #3 rather than a constrained one.
 
 ### D10 — Jog magnitude comes from the real parameter descriptor
 
 Encoder resolution stops inventing a range. `resolve_encoder_params` looks
-each `(node_id, param_id)` up in `Model::caps` and carries the real `min`,
-`max` and `stepped` from the `ParamDescriptor`; the 0..1 placeholder
-(`model.rs:357`) survives only as a last-resort fallback when no
-capability document declares the param, and a cell resolved that way is
-rendered dimmed so the condition is visible rather than silent.
+each `(node_id, param_id)` up in `Model::caps` and carries the descriptor's
+real `min`, `max` and `stepped`; the 0..1 placeholder (`model.rs:357`)
+survives only as a last-resort fallback when no capability document
+declares the param, and such a cell renders dimmed so the condition is
+visible rather than silent.
 
-| Magnitude | Binding | Step |
+**design.md §4.2's constants are unchanged** — the session evidence ("no
+variable step size") is fully explained by the fake range, not by the
+tiers. The shipped `Tuning` defaults stand: Normal `range/128`, Fine
+`range/1024` (`fine_divisor 8`), Coarse `range/32` (`coarse_multiplier 4`),
+ramp dwell 150 ms, ×1.05 capped at ×8 (`model.rs:896-909`). §4.2's
+step-size scaler (OQ-T4) remains unimplemented and open — not deleted.
+
+What changes is *bindings* and *stepped*:
+
+| Magnitude | Binding | Note |
 |---|---|---|
-| Fine | `Ctrl` + trig | `range/512` |
-| Normal | bare trig on Param; `FUNC`+trig elsewhere | `range/64` |
-| Coarse | `FUNC` + trig on Param | `range/16` |
+| Fine | `FUNC+Ctrl`+trig off Param; `Ctrl`+trig on Param | keeps fine on the FUNC plane where FUNC is what opens the plane (ADR-038 §3.A point 7) |
+| Normal | bare trig on Param; `FUNC`+trig elsewhere | |
+| Coarse | `FUNC`+trig on Param | `Mag::Coarse` already exists (`model.rs:33`, `:918`) and is simply never produced (`input.rs:612`) — this is its first binding |
 
-`stepped` params ignore the table and jog by exactly **1** per press
-(algorithm and machine selectors are unusable otherwise: an 8-value
-selector currently moves 8/128 ≈ 0.06 per press). Ramp and acceleration
-(`Tuning::jog_step`, dwell 150 ms, ×1.05 capped at ×8) are unchanged.
-The defect this replaces is filed as **BUG-040**.
+`stepped` params ignore the table and jog by exactly **1** per press;
+today they inherit whatever fake range the composite path supplied, so an
+`lfo_shape` (0..4) moves ≈0.008 per press. The defect is filed as
+**BUG-040**.
+
+Interim-ownership note: **ADR-041 amendment 3 already assigns
+`stepped`/`options` population to the composite/view layer** so machine
+encoders can label variants. D10's local cap-doc lookup is the interim fix
+for Theotokos only; when ADR-041's composite work lands, the local lookup
+defers to it. Recorded so the two do not silently become two sources of
+truth (AGENTS.md learnings 5 and 9).
 
 ### D11 — Sticky-prefix re-tap disarms, guarded by a repeat window
 
-§0 A9 (same-prefix re-press is a no-op) is **reversed**: a second press of
-an armed TRK/PTN prefix disarms it. A9's underlying observation still
-holds — without kitty release events, OS auto-repeat is indistinguishable
-from a deliberate second tap — so the toggle is guarded by time: a
-same-prefix press arriving within `repeat_guard_ms` (default **400 ms**,
-*tunable*) of the previous same-prefix press is treated as auto-repeat and
-ignored; beyond it, it disarms. Holding TRK therefore cannot flap the
-armed state (repeats arrive every ~30 ms), while tap-pause-tap disarms as
-session #2 expects. The kitty path (physical release) is untouched.
+§0 A9 is **reversed**: a second press of an armed TRK/PTN prefix disarms
+it. A9's underlying observation still holds — without kitty release events
+OS auto-repeat is indistinguishable from a deliberate second tap — so the
+toggle is guarded by time: a same-prefix press within `repeat_guard_ms`
+(default **400** *(tunable)*) of the previous same-prefix press is treated
+as auto-repeat and ignored; beyond it, it disarms. Holding TRK cannot flap
+the armed state (repeats arrive every ~30 ms), while tap-pause-tap disarms
+as session #2 expects. The kitty path (physical release) is untouched.
+The clock is injected, following the existing `JogTracker::press/repeat(now,
+tick_ms)` precedent (`model.rs:~940`).
 
 ### D12 — The Mute screen is retired (OQ-T22 resolved)
 
 `Screen::Mute` and `PanelButton::Mute` are removed. `TRK`+`FUNC`+trig is
-the only mute gesture; per-track mute state becomes a marker on the track
-indicator line (D2), which is visible on every screen — strictly more
-available than the screen it replaces. `m` becomes an unbound key,
-available to `:bind`, and drops out of the `:bind` button vocabulary.
+the only mute gesture (and per D9 it keeps working on every screen);
+per-track mute state moves to the track indicator, which is visible on
+every screen — strictly more available than the screen it replaces. `m`
+becomes unbound and available to `:bind`. This supersedes TK2 §1 D12's
+`Screen` enum and §1 D11's button-name list; §0 A14 goes half-stale
+(MUTE was "a screen + the TRK-held chord" and is now only the chord).
+
+### D13 — Retired button names degrade a keymap, they do not reject it
+
+`Keymap::from_yaml` currently fails the whole file on an unrecognized
+button name (`input.rs:297`, propagated with `?`), so D12 would turn one
+stale `m: Mute` line into "none of your bindings load". Unknown button and
+key names become **warn-and-skip**: the binding is dropped, the rest of the
+file loads, and the echo area reports what was skipped. Structurally
+invalid YAML still fails. This changes shipped ADR-037 behaviour and is
+therefore stated as a decision, not folded silently into a commit.
 
 ---
 
@@ -262,81 +359,111 @@ available to `:bind`, and drops out of the `:bind` button vocabulary.
 
 | # | Question | Recommendation |
 |---|---|---|
-| **R1** | D9 — is "encoder mode = the Param screen" the right reading of session #2's toggle-key request, or do you want a dedicated ENC key that overlays the encoder bank on the Grid screen? | As written (no new key; the screen is the toggle) |
-| **R2** | D8 — pulling ADR-039 decision 7's `live_rec` slice into TK2.1 (so `RecMode::Live` does something) versus shipping `Off`/`Grid` only and waiting for the P11 phase spec | Pull it forward; the slice is small and fully specified, and a REC cycle with a dead third state is worse than either |
-| **R3** | D12 — remove `Mute` from the `:bind` vocabulary entirely, or keep the button name bindable as an alias for the mute chord? | Remove; a chord has no single-button equivalent, so an alias would be a lie |
+| **R1** | D5 — adopt the REC cycle (`Off → Grid → Live`), superseding ADR-038's grid-rec toggle and ADR-039's REC+PLAY grammar? Or keep REC+PLAY as those ADRs and session #2 state it, accepting that step programming stops when the pattern plays? | Adopt the cycle — but knowingly, as a supersession of two accepted ADRs, re-judged at session #3 |
+| **R2** | D8 — pull ADR-039 decision 7's `live_rec` slice into TK2.1 (so `RecMode::Live` does something), versus shipping `Off`/`Grid` only and waiting for the P11 phase spec? | Pull it forward; the slice is small and fully specified, and a cycle with a dead third state is worse than either |
+| **R3** | D12/D13 — remove `Mute` from the `:bind` vocabulary entirely, with warn-and-skip loading for keymaps that still name it? | Yes; a chord has no single-button equivalent, so an alias would be a lie |
+| **R4** | D6 — is the pad/step split in the trig keys acceptable, given §3.A point 3's warning about mode errors? It is the one place this redesign *adds* a mode. | Yes, given the REC indicator plus D3's chips make it visible; re-judged at session #3 |
+| **R5** | Session #2 recorded FUNC+transport copy/clear/paste as "converged (provisional) … revisit inside the general redesign pass". This ADR does **not** redesign it — see "Out of scope". Accept the deferral to session #3? | Yes — the surrounding grammar changes under this ADR, so redesigning the chord now would be designing against a surface nobody has played |
 
 ## Alternatives considered
 
-- **Derive Live from `rec_armed × playing`** (session #2's literal
-  wording). Rejected during drafting: it makes step programming
-  impossible while the pattern plays.
+- **Derive `Live` from `rec_armed × playing`** (session #2's literal
+  wording, and closest to ADR-039's REC+PLAY). Rejected under D5: step
+  programming becomes impossible while the pattern plays. R1 can restore it.
 - **REC as a third hold prefix** (`Hold::Rec`, REC+PLAY = Live). Rejected:
-  on kitty-less terminals the most-used button would inherit the sticky
-  one-shot delay, and a bare REC tap could not resolve until the next key.
-- **Keep trig = step in pad mode** (any trig sounds the selected track,
+  on kitty-less terminals the most-used button inherits the sticky
+  one-shot delay, and a bare REC tap cannot resolve until the next key.
+- **Keep trig = step in pad mode** (any trig sounds the selected track;
   track select stays on TRK+trig — today's behavior). Rejected by the user
-  in this drafting pass: it does not deliver multi-track finger drumming.
+  in this drafting pass: no multi-track finger drumming.
 - **Split by row** (bottom row = track pads, top row = step audition).
-  Rejected: introduces a row asymmetry no other mode has.
+  Rejected: a row asymmetry no other mode has.
 - **A dedicated ENC toggle key.** Rejected under D9 — no free key with a
   good mnemonic, and the Param screen already is the mode.
+- **New jog constants** (`range/64`/`/512`/`/16`). Drafted, then withdrawn
+  under review: design.md §4.2 is DETERMINED, ADR-038 §3.B says §4
+  mechanics apply "unchanged", and the session evidence points at the fake
+  range, not the tiers.
+- **Surface-side live record** (read `current_step`, send `CMD_SET_STEP`).
+  Drafted, then withdrawn: ADR-039 decision 7 lists exactly this as its
+  rejected alternative.
 - **Change `InternalClock`'s `playing` default to `false`.** Rejected
-  under D7 — it would move regression baselines and every test-driver
-  scenario in one step, for a Theotokos-scoped complaint. Filed as
-  BUG-039 instead.
-- **Surface-side live record** (read `current_step` from the bus, send
-  `CMD_SET_STEP`). Drafted first, then withdrawn: ADR-039 decision 7 is
-  accepted and lists exactly this as its rejected alternative ("micro-
-  timing from a UI tick is quantization noise"). D8 follows the accepted
-  ADR instead.
-- **Ship `Off`/`Grid` only, defer `Live` to P11.** Rejected under R2 — a
-  three-state cycle whose third state does nothing is a worse teaching
-  surface than either complete option.
+  under D7 — it moves the regression baselines, every driver scenario and
+  the CLAP subgraph at once. BUG-039 instead.
+- **Extend `CompositeParam` with range metadata** (the cross-crate fix).
+  Deferred under D10 — ADR-041 amendment 3 already owns that work; the
+  local lookup is interim.
 
 ## Consequences
 
 - `render.rs` gains a fixed-region layout, a strip renderer, a track
-  indicator, a chip resolver and a legend builder; `render_seq_grid`'s
-  all-tracks path and `render_mute_screen` are deleted.
+  indicator, a chip resolver and a legend builder; `render_seq_grid`,
+  `render_track_row` and `render_mute_screen` are deleted.
 - `Model.grid_rec: bool` → `Model.rec: RecMode`; `Screen::Mute` and
-  `PanelButton::Mute` disappear from the model, the keymap vocabulary,
-  the help overlay and the `:bind` documentation.
-- `RenderData` grows chip/label fields and loses `mute_states`' screen —
-  the data stays, its home moves to the track indicator.
+  `PanelButton::Mute` leave the model, the keymap vocabulary, the help
+  overlay and the `:bind` docs.
+- `TheotokosConfig` gains per-track display names: today `track_names`
+  carries cap-doc type names (`AnalogKick`), while the human labels
+  (`Kick`) are `display_name` on the sequencer nodes in `instrument.yaml`
+  and were never plumbed through (`main.rs:390`).
 - `paraclete-nodes/sequencer.rs` gains ADR-039 decision 7's `live_rec`
-  bank param and its record-on-live-trig path — the only engine change in
-  this phase, and P11 scope consumed early (D8). The P11 phase spec must
-  record it as shipped, not re-plan it.
-- Two defects filed under the standing directive: **BUG-039** (engine
-  transport auto-start), **BUG-040** (encoder jog range/stepped).
-- design.md §5.1/§5.2 are rewritten as DETERMINED against this ADR when it
-  is ratified, and its Stage 5 note records the reopening's resolution.
-- **Out of scope, still open:** OQ-T24 (numpad cluster fate — session #3),
-  OQ-T23's screen-gating friction on tap tempo, `:` remap discoverability
-  (D11 of TK2, deferred by user request), OQ-T21 (KEYBD chromatic).
+  param and record path; `internal_clock.rs` gains the missing
+  `global_stop` emission (BUG-041). These are the only engine changes, and
+  the sequencer one is P11 scope consumed early — the P11 spec inherits it
+  as shipped rather than re-planning it.
+- Three defects filed under the standing directive: **BUG-039** (engine
+  transport auto-start), **BUG-040** (encoder jog range/`stepped`),
+  **BUG-041** (`CMD_CLOCK_STOP` emits no transport event, so a sequencer's
+  `playing` never clears in the standalone app).
+- **BUG-038** (arrow-cursor nav + numpad slot jog speced but never wired)
+  is touched by D9/D10's rewrite of the encoder path and must be either
+  wired or formally descoped in the same phase — not left dangling.
+- design.md §5.1/§5.2 are rewritten as DETERMINED against this ADR on
+  ratification, and Stage 5 records the reopening's resolution.
+- **Out of scope, still open:** FUNC+transport copy/clear/paste ergonomics
+  (session #2 "crazy workflow" — deferred to session #3 per R5); OQ-T24
+  (numpad cluster, now unconstrained per D9); OQ-T23's screen-gated tap
+  tempo; `:`-remap discoverability; OQ-T21 (KEYBD chromatic); design.md
+  §4.2's step-size scaler (OQ-T4).
 
 ## Test seams
 
-Per design.md §6, everything except feel is machine-checkable here:
+Per design.md §6, everything except feel is machine-checkable:
 
 - **Pure mapping:** rec-mode cycling, pad→track resolution and clamp,
-  encoder magnitudes, sticky re-tap vs. auto-repeat (injectable clock).
-- **Resolution:** descriptor-accurate min/max/stepped against fixture
+  armed-prefix precedence over encoder resolution (A10), magnitudes,
+  sticky re-tap vs. auto-repeat (injected clock).
+- **Resolution:** descriptor-accurate `min`/`max`/`stepped` against fixture
   capability documents, including the composite path that produced the
-  0..1 placeholder.
-- **Render:** `TestBackend` buffer assertions for one-track strip, chip
-  placement per mode, legend chips, persistence of the strip on every
-  screen.
-- **Engine effect:** sequencer tests for `live_rec` (records the nearest
-  step, writes micro-timing, ignores live trigs while stopped), plus a
-  `tools/test-driver` scenario driving `set_param live_rec` + `trig_now`
-  — both actions already exist in the driver (`main.rs:750`, `:809`).
+  0..1 placeholder; shadow-aware `key_label`.
+- **Render:** `TestBackend` assertions for the one-track strip, chip
+  placement per mode, legend chips, strip persistence on every screen.
+- **Engine effect:** sequencer tests for `live_rec` and for `CMD_CLOCK_STOP`
+  emitting `global_stop`; a `tools/test-driver` scenario (`set_param` and
+  `trig_now` both exist — `main.rs:727`, `:809` — but its assertion
+  vocabulary is numeric/audio only, so the scenario asserts audibly, not on
+  the text step bitfield).
 - **Feel:** usability session #3.
+
+## Review pass — 2026-07-27
+
+Three independent fresh-context reviewers (code claims / design
+consistency / implementability), per AGENTS.md learning 8. **15 B, 26 M,
+27 m; 49+ code claims verified clean.** All blockers and majors are folded
+above or into the phase spec. What changed materially in this ADR: the
+REC-cycle became a contested ratification item (R1) with ADR-038/ADR-039
+named in the supersession header; §0 A10's precedence was restored over
+D9/D10; §4.2's jog constants were restored; D3 gained shadow-awareness and
+the no-chip-without-action rule; D4 declared its non-derivable entries; D9
+discharged §0 A7; D10 recorded ADR-041 amendment 3's ownership; D13 was
+added; BUG-041 was filed and D7/D8's stopped-transport claims were bounded
+by it; the dropped FUNC+transport session verdict became R5.
 
 ## Cross-references
 
 - `design/sessions/theotokos-2.md`, `design/phases/tk2-report.md` — evidence
 - `design/phases/tk2.1-theotokos.md` — the commit blueprint
-- ADR-036 (Theotokos), ADR-038 (Elektron convergence), ADR-037 (key remapping)
-- design.md §3.A (deficiency review), §5.1/§5.2 (reopened), §6 (convergence rule)
+- ADR-036 (Theotokos), ADR-037 (key remapping), ADR-038 (Elektron
+  convergence), ADR-039 (performance state — live record), ADR-041
+  (machine identity — composite `stepped` ownership)
+- design.md §3.A, §4.2/§4.4, §5.1/§5.2 (reopened), §6 (convergence rule)

@@ -630,14 +630,40 @@ points 3–4 gap), no transport at launch, live record delegated to
 ADR-039 decision 7's engine-side `live_rec` (an early slice of P11, since
 that ADR explicitly rejects the surface-side path this draft first took).
 Also: §0 A9 reversed (sticky re-tap disarms, behind a 400 ms auto-repeat
-guard) and §0 A16's Param half superseded (the Param screen *is* the
-encoder mode — no new toggle key). Mute screen retired (OQ-T22).
-Two defects filed under the standing directive while grounding the draft:
-**BUG-039** (`InternalClock` constructs with `playing: true`) and
+guard) and §0 A16 superseded (the Param screen *is* the encoder mode — no
+new toggle key; and a trig now also selects a track in pad modes). §0 A10's
+chord precedence is explicitly **unchanged** — encoder jog, bare-trig
+included, resolves only with no armed prefix. Mute screen retired (OQ-T22).
+**The REC cycle is a contested deviation, not a session finding:** session
+#2 said "PLAY+REC together = live record", and ADR-038 froze the grid-rec
+toggle while ADR-039's consequences fix REC+PLAY as the arming gesture.
+The cycle was chosen at the user's direction during this drafting pass —
+which is not the hands-on evidence §6's convergence rule requires — so it
+is put to explicit ratification (ADR-044 R1) rather than carried as a
+footnote, and it is the session-#3 hypothesis with the most riding on it.
+design.md §4.2's jog constants are **not** changed: the draft's new
+divisors were withdrawn under review, since the session evidence points at
+a faked parameter range, not at the tiers.
+Three defects filed under the standing directive while grounding the
+draft: **BUG-039** (`InternalClock` constructs with `playing: true`),
 **BUG-040** (encoder jog invents a 0..1 range on composite pages and
 ignores `stepped` — the file:line cause of session #2's "no variable step
-size"). §5.1/§5.2 stay REOPENED until ADR-044 is ratified and TK2.1 C6
-rewrites them.
+size"), and **BUG-041** (`CMD_CLOCK_STOP` emits no transport event, so a
+sequencer's `playing` never clears in the standalone app — found while
+verifying the draft's own "records nothing while stopped" claim, which
+depended on it). §5.1/§5.2 stay REOPENED until ADR-044 is ratified and
+TK2.1 C7 rewrites them.
+
+**Hostile review, same day (3 fresh-context reviewers: code claims /
+design consistency / implementability): 15 B, 26 M, 27 m; 49+ code claims
+verified clean.** All blockers and majors folded before ratification, per
+process rule 1. Beyond the reversals above: the commit sequence was re-cut
+(key chips must follow the rec-mode change, not precede it), every rename
+and deletion gained an exhaustive site list, the legend content and cell
+formats became literal, the live-record quantization formula was stated in
+the sequencer's real units (1/96 beat, not ticks), and the dropped session
+verdict on FUNC+transport ergonomics was restored as an explicit deferral
+(R5).
 
 **2026-07-23 (post-ratification hostile review) — §4.4 corrected;
 TK2 spec §0 amendments are normative.** Three-subagent hostile review of
