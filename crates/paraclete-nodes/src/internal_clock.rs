@@ -133,8 +133,18 @@ impl InternalClock {
         }
     }
 
-    fn handle_commands(&mut self, commands: &[NodeCommand]) {
+    /// Returns whether a `CMD_CLOCK_STOP` transitioned `self.playing` from
+    /// true to false — the caller combines this with the *final*
+    /// `self.playing` (after commands AND
+    /// incoming events) to decide whether to emit `global_stop` (BUG-041),
+    /// so a STOP reversed later in the same batch — by a `CMD_CLOCK_START`
+    /// here or an incoming `global_start` event — does not emit a stale,
+    /// spurious stop (hostile review finding). Scoped to the command path
+    /// only: a bare incoming `global_stop` event (unreachable in today's
+    /// single-domain graph) is unchanged, matching BUG-041's fix direction.
+    fn handle_commands(&mut self, commands: &[NodeCommand]) -> bool {
         let bpm_id = ParamDescriptor::id_for_name(Self::PARAM_BPM);
+        let mut saw_stop_command = false;
         for cmd in commands {
             match cmd.type_id {
                 CMD_CLOCK_START => {
@@ -144,6 +154,9 @@ impl InternalClock {
                     }
                 }
                 CMD_CLOCK_STOP => {
+                    if self.playing {
+                        saw_stop_command = true;
+                    }
                     self.playing = false;
                 }
                 CMD_SET_PARAM => {
@@ -159,6 +172,30 @@ impl InternalClock {
                 _ => {}
             }
         }
+        saw_stop_command
+    }
+
+    /// Mirror of `emit_transport`'s `global_start` emission (BUG-041): the one
+    /// event downstream nodes (Sequencer) need to clear their own `playing` flag.
+    fn emit_stop_event(&mut self, output: &mut ProcessOutput) {
+        output.events_out.push(TimedEvent::new(
+            0,
+            Event::Transport(TransportEvent {
+                domain_id: self.domain_id_val,
+                bar: self.bar,
+                beat: self.beat,
+                tick: self.tick,
+                ticks_per_beat: TICKS_PER_BEAT,
+                bpm: self.bpm,
+                time_sig_num: self.time_sig_num,
+                time_sig_den: self.time_sig_den,
+                flags: TransportFlags {
+                    playing: false,
+                    global_stop: true,
+                    ..TransportFlags::default()
+                },
+            }),
+        ));
     }
 }
 
@@ -200,7 +237,7 @@ impl Node for InternalClock {
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
-        self.handle_commands(input.commands);
+        let saw_stop_command = self.handle_commands(input.commands);
 
         for timed in input.events {
             if let Event::Transport(te) = timed.event {
@@ -211,6 +248,14 @@ impl Node for InternalClock {
                     self.first_tick = true;
                 }
             }
+        }
+
+        // BUG-041: gate on the FINAL playing state, not a mid-batch flag —
+        // a STOP reversed later in the same batch (a CMD_CLOCK_START here,
+        // or an incoming global_start event) must not emit a spurious
+        // global_stop the caller never asked for (hostile review finding).
+        if saw_stop_command && !self.playing {
+            self.emit_stop_event(output);
         }
 
         if !self.playing { return; }
@@ -418,13 +463,42 @@ mod tests {
     }
 
     #[test]
+    fn clock_stop_reversed_in_same_batch_does_not_emit_global_stop() {
+        // Hostile review finding on BUG-041: a STOP immediately reversed by
+        // a START in the SAME command batch (or alongside an incoming
+        // global_start event) must not emit a spurious global_stop — the
+        // net effect across the whole process() call is "never stopped".
+        let mut node = InternalClock::new();
+        node.activate(44100.0, 512);
+
+        let stop = NodeCommand { target_id: 0, type_id: CMD_CLOCK_STOP, arg0: 0, arg1: 0.0 };
+        let start = NodeCommand { target_id: 0, type_id: CMD_CLOCK_START, arg0: 0, arg1: 0.0 };
+        let events = run_internal_clock_with_commands(&mut node, 512, &[], &[stop, start]);
+
+        assert!(node.playing, "net effect of STOP then START must be playing");
+        let has_global_stop = events.iter().any(|e| {
+            matches!(e, Event::Transport(te) if te.flags.global_stop)
+        });
+        assert!(
+            !has_global_stop,
+            "a STOP reversed within the same batch must not emit global_stop"
+        );
+    }
+
+    #[test]
     fn clock_start_via_command_plays_and_resets_first_tick() {
         let mut node = InternalClock::new();
         node.activate(44100.0, 512);
 
         let stop = NodeCommand { target_id: 0, type_id: CMD_CLOCK_STOP, arg0: 0, arg1: 0.0 };
-        let silent = run_internal_clock_with_commands(&mut node, 512, &[], &[stop]);
-        assert!(silent.is_empty(), "must be silent after CMD_CLOCK_STOP");
+        let stopped = run_internal_clock_with_commands(&mut node, 512, &[], &[stop]);
+        assert_eq!(stopped.len(), 1,
+            "CMD_CLOCK_STOP must emit exactly one transport event on the transition to stopped (BUG-041)");
+        match &stopped[0] {
+            Event::Transport(te) => assert!(te.flags.global_stop,
+                "the emitted event must carry global_stop"),
+            other => panic!("expected Transport event, got {:?}", other),
+        }
         assert!(!node.playing, "playing must be false after CMD_CLOCK_STOP");
 
         let start = NodeCommand { target_id: 0, type_id: CMD_CLOCK_START, arg0: 0, arg1: 0.0 };
@@ -498,7 +572,8 @@ mod tests {
 
         let stop = NodeCommand { target_id: 0, type_id: CMD_CLOCK_STOP, arg0: 0, arg1: 0.0 };
         let stopped = run_internal_clock_with_commands(&mut node, 512, &[], &[stop]);
-        assert!(stopped.is_empty(), "must be silent after CMD_CLOCK_STOP");
+        assert_eq!(stopped.len(), 1,
+            "must emit exactly the global_stop transition event, then go silent (BUG-041)");
         assert!(!node.playing);
     }
 

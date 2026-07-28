@@ -2084,6 +2084,100 @@ mod tests {
         assert!(!seq.playing);
     }
 
+    /// BUG-041: drives a real `InternalClock` → `Sequencer` pair (rather than
+    /// injecting `global_stop` directly, as every other test above does) so a
+    /// regression in the clock's own emission is caught here.
+    fn drive_clock(
+        clock: &mut crate::internal_clock::InternalClock,
+        commands: &[NodeCommand],
+    ) -> Vec<Event> {
+        let block = 512usize;
+        let mut audio = AudioBuffer::new(2, block);
+        let mut events_out = EventOutputBuffer::new(256);
+        let transport = TransportInfo::default();
+        let slab = ExtendedEventSlab::empty();
+        let audio_ptr: *mut AudioBuffer = &mut audio as *mut AudioBuffer;
+        let audio_ref: &mut AudioBuffer = unsafe { &mut *audio_ptr };
+        let mut outs = [audio_ref];
+        let input = ProcessInput {
+            audio_inputs: &[],
+            signal_inputs: &[],
+            events: &[],
+            transport: &transport,
+            sample_rate: 44100.0,
+            block_size: block,
+            extended_events: &slab,
+            commands,
+        };
+        let mut output = ProcessOutput::new(&mut outs, &mut [], &mut events_out);
+        clock.process(&input, &mut output);
+        events_out.as_slice().iter().map(|e| e.event).collect()
+    }
+
+    #[test]
+    fn clock_stop_emits_global_stop() {
+        use crate::internal_clock::{InternalClock, CMD_CLOCK_STOP};
+
+        let mut clock = InternalClock::new();
+        clock.activate(44100.0, 512);
+
+        let stop = NodeCommand {
+            target_id: 0,
+            type_id: CMD_CLOCK_STOP,
+            arg0: 0,
+            arg1: 0.0,
+        };
+        let events = drive_clock(&mut clock, &[stop]);
+        let has_global_stop = events.iter().any(|e| {
+            matches!(e, Event::Transport(te) if te.flags.global_stop)
+        });
+        assert!(
+            has_global_stop,
+            "CMD_CLOCK_STOP must emit a transport event carrying global_stop (BUG-041)"
+        );
+    }
+
+    #[test]
+    fn sequencer_playing_clears_on_clock_stop() {
+        use crate::internal_clock::{InternalClock, CMD_CLOCK_START, CMD_CLOCK_STOP};
+
+        let mut clock = InternalClock::new();
+        clock.activate(44100.0, 512);
+        let mut seq = Sequencer::new();
+        seq.set_step(0, 60, 32768, true);
+
+        let start = NodeCommand {
+            target_id: 0,
+            type_id: CMD_CLOCK_START,
+            arg0: 0,
+            arg1: 0.0,
+        };
+        let start_events = drive_clock(&mut clock, &[start]);
+        let start_timed: Vec<TimedEvent> = start_events
+            .into_iter()
+            .map(|e| TimedEvent::new(0, e))
+            .collect();
+        run_seq(&mut seq, &start_timed);
+        assert!(seq.playing, "sequencer must start on the clock's global_start");
+
+        let stop = NodeCommand {
+            target_id: 0,
+            type_id: CMD_CLOCK_STOP,
+            arg0: 0,
+            arg1: 0.0,
+        };
+        let stop_events = drive_clock(&mut clock, &[stop]);
+        let stop_timed: Vec<TimedEvent> = stop_events
+            .into_iter()
+            .map(|e| TimedEvent::new(0, e))
+            .collect();
+        run_seq(&mut seq, &stop_timed);
+        assert!(
+            !seq.playing,
+            "sequencer's playing must clear when the clock is stopped via CMD_CLOCK_STOP (BUG-041)"
+        );
+    }
+
     #[test]
     fn sequencer_cmd_toggle_step_flips_active() {
         let mut seq = Sequencer::new();
