@@ -8,8 +8,12 @@
 > entry). `CMD_CLOCK_STOP` now emits `global_stop`, gated on the final
 > playing state after commands and incoming events so a same-batch STOP
 > reversal doesn't emit a spurious stop (pre-commit hostile review
-> finding, folded). **Next: TK2.1 C0 → C7** (C3a is now a no-op landing
-> spot in the phase sequence — the fix already shipped).
+> finding, folded). **TK2.1 C0 shipped** (`e9328f8`): seven fixed render
+> regions, the one-track trig strip, the track indicator (with ADR-044 D2
+> windowing), and the display_name/engine_name split reaching every
+> consumer (transport bar and status line were initially missed — folded
+> pre-commit). **Next: TK2.1 C1 → C7** (C3a is now a no-op landing spot in
+> the phase sequence — the fix already shipped).
 > Previous: 2026-07-28. **ADR-044 ✅ RATIFIED — TK2.1
 > implementation unlocked.** All six questions settled: R1 live rec
 > degrades to a transport-derived rule where key releases are unavailable;
