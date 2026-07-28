@@ -613,6 +613,32 @@ layout (TRK/PTN physical feel, encoder ergonomics, numpad fate).
 
 ## Amendment log
 
+**2026-07-27 (later) — TK2.1 redesign drafted (ADR-044 🟡 proposed).**
+The redesign pass Stage 4 called for is drafted, not yet ratified:
+`design/adr/ADR-044-theotokos-fixed-panel.md` (decisions D1–D12,
+ratification questions R1–R3) plus its commit blueprint
+`design/phases/tk2.1-theotokos.md` (C0–C6 + session #3). What it freezes
+for §5.1/§5.2: fixed region heights with one contextual window; a
+persistent trig strip showing **only** the selected track, on every
+screen; a one-line track indicator carrying names, mute state and
+selection; key chips drawn on whichever cells the keys currently act on
+(resolved through the live `Keymap`, so remapping stays honest); a
+labeled `[key] NAME` legend strip replacing the grey hint line. Mode
+model: `RecMode { Off, Grid, Live }` with REC cycling and **`Off` as the
+default** (trig N = track N pads that play and select — closing the §3.A
+points 3–4 gap), no transport at launch, live record delegated to
+ADR-039 decision 7's engine-side `live_rec` (an early slice of P11, since
+that ADR explicitly rejects the surface-side path this draft first took).
+Also: §0 A9 reversed (sticky re-tap disarms, behind a 400 ms auto-repeat
+guard) and §0 A16's Param half superseded (the Param screen *is* the
+encoder mode — no new toggle key). Mute screen retired (OQ-T22).
+Two defects filed under the standing directive while grounding the draft:
+**BUG-039** (`InternalClock` constructs with `playing: true`) and
+**BUG-040** (encoder jog invents a 0..1 range on composite pages and
+ignores `stepped` — the file:line cause of session #2's "no variable step
+size"). §5.1/§5.2 stay REOPENED until ADR-044 is ratified and TK2.1 C6
+rewrites them.
+
 **2026-07-23 (post-ratification hostile review) — §4.4 corrected;
 TK2 spec §0 amendments are normative.** Three-subagent hostile review of
 the session's designs (9 B / 21 M / 14 m total; BUG-035/036/037 filed).

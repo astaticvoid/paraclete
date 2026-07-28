@@ -22,10 +22,13 @@ implementation follows in a separate commit.
 
 For the Theotokos performance-terminal track (ADR-036 **accepted
 2026-07-21**): `design/theotokos/problem.md` → `design/theotokos/design.md`
-→ the current phase spec. **TK0 shipped** (usable sign-off, session #1;
-report + TK1 planner notes in `design/phases/tk0-report.md`). **TK1 is the
-active phase** — spec `design/phases/tk1-theotokos.md`; TK1 Commit 0 fixes
-BUG-034 (page-window stride) before any feature work.
+→ the current phase spec. TK0 and TK1 shipped; **TK2 is code-complete
+(C0–C9) but did not sign off** — usability session #2 reopened the panel
+layout and the default mode model (`design/sessions/theotokos-2.md`,
+`design/phases/tk2-report.md`). **The active artifact is the TK2.1
+redesign: `design/adr/ADR-044-theotokos-fixed-panel.md` (🟡 proposed —
+do not start C0 until the user ratifies R1–R3) and its blueprint
+`design/phases/tk2.1-theotokos.md`.**
 
 ## Task routing by tier
 

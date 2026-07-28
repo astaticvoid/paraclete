@@ -4,9 +4,9 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ---
 
-## Status (2026-07-23)
+## Status (2026-07-27)
 
-**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, BUG-038 (Theotokos: D13 arrow-cursor nav and numpad slot jog speced but never wired).
+**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, BUG-038 (Theotokos: D13 arrow-cursor nav and numpad slot jog speced but never wired), **BUG-039** (InternalClock auto-starts the transport on every surface — worked around surface-side by ADR-044 D7), **BUG-040** (Theotokos encoder jog invents a 0..1 range on composite pages and ignores `stepped` — fix is TK2.1 C4).
 **Fixed, code-complete (pending hardware-verification):** BUG-012.
 **Trigger-based (fix when named trigger fires):** BUG-003 (updated — StateBusHandle already moved to L2; remaining violation is NodeExecutor/RuntimeCounters in audio.rs).
 **Resolved in this session:** INFRA-011 (recovery code removed — pipewire-alsa + wireplumber no-suspend fixes root cause).
@@ -1468,3 +1468,64 @@ formally descope D13's numpad clause and drop the cursor language from the
 spec if session #2 usability findings don't need it. Tracked so it isn't
 silently reintroduced as "already done" — TK2 C7's README/AGENTS.md pass
 was caught overclaiming this exact gap before it shipped.
+
+---
+
+### BUG-039 — InternalClock constructs with `playing: true`; every surface auto-starts the transport
+
+**Severity:** Low (behavioural, not a crash) — but user-visible on every launch
+**Phase found:** TK2.1 design pass (2026-07-27), grounding ADR-044 D7 against the code
+**Description:** `InternalClock::with_domain` initializes `playing: true`
+(`crates/paraclete-nodes/src/internal_clock.rs:82`), so the transport is
+already running before any surface has drawn a frame. Usability session #2
+found this as "transport must not auto-play on launch"
+(`design/sessions/theotokos-2.md`); `crates/paraclete-app/src/main.rs:233`
+documents the same fact from the other side ("InternalClock auto-starts, so
+playing=true"). It is not Theotokos-specific: the emulator, the CLAP
+subgraph and every headless run inherit it.
+**Location:** `crates/paraclete-nodes/src/internal_clock.rs:82`
+**Fix direction:** The stopped-at-construction default is the musically
+correct one, but flipping it moves `tools/test-driver` scenarios, the
+ADR-035 regression baselines, `paraclete-clap`'s subgraph and the app's
+static snapshot in one step — all of which assume a running clock.
+ADR-044 D7 therefore works around it surface-side for now (Theotokos sends
+`CMD_CLOCK_STOP` at startup) and files this so the wider question — should
+any surface auto-start, and who decides, the clock node or the app? — is
+owned rather than lost in prose. Candidate answer: an app/instrument-level
+`transport.autostart` decision, with the node defaulting to stopped.
+
+---
+
+### BUG-040 — Theotokos encoder jog invents a 0..1 range on composite pages and ignores `stepped`
+
+**Severity:** Medium — wrong jog magnitudes on every default-instrument
+param page, and a clamp that can truncate wide-range values
+**Phase found:** TK2.1 design pass (2026-07-27), grounding ADR-044 D10
+**Description:** Two defects in the same resolver.
+1. `Model::resolve_encoder_params`'s composite branch returns a hardcoded
+   `(node_id, param_id, name, 0.0, 1.0)`
+   (`crates/paraclete-theotokos/src/model.rs:357`) because `CompositeParam`
+   (`crates/paraclete-view-assembly/src/lib.rs:59-68`) carries no range
+   metadata. Only the engine-local `Rule` fallback (`model.rs:384`, `:400`)
+   passes the descriptor's real `min`/`max`. The default 4-track instrument
+   uses composite views, so **every** encoder in usability session #2 had
+   range 1.0 and stepped by `1/128` regardless of the parameter — the
+   session's "encoder jog has no variable step size" finding. Worse, the
+   step-focus p-lock path clamps with those bounds
+   (`lib.rs:856`, `(current + signed).clamp(min, max)`), so a lock on a
+   param whose real range exceeds 0..1 is silently truncated to 1.0.
+2. `ParamDescriptor::stepped` (`crates/paraclete-node-api/src/capability.rs:93`)
+   is never read by the resolver or `Tuning::jog_step`, so integer-stepped
+   selectors (algorithm, machine, waveform) move by `range/128` — an
+   8-value selector advances ≈0.06 per press instead of one step.
+**Location:** `crates/paraclete-theotokos/src/model.rs:343-402`,
+`crates/paraclete-theotokos/src/lib.rs:826-880`,
+`crates/paraclete-theotokos/src/model.rs:913` (`Tuning::jog_step`)
+**Fix direction:** ADR-044 D10 / TK2.1 C4 — resolve each `(node_id,
+param_id)` against `Model::caps` (already keyed by arbitrary node id, see
+`model.rs:747`) for the real `min`/`max`/`stepped`; keep 0..1 only as a
+last-resort fallback and render such cells dimmed so the condition is
+visible; `stepped` params jog by exactly 1. Extending `CompositeParam`
+with range metadata is the alternative, and would fix Antiphon/Theoria
+consumers too — but it widens a shared assembly type, so the local
+cap-doc lookup is preferred first.
