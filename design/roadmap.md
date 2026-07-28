@@ -34,10 +34,11 @@
 > unavailable (recommended: REC-while-running arms it). The cycle also had
 > its own hazard: leaving `Grid` passed *through* `Live` while the
 > transport ran, so a stray trig would record. D6 was re-grounded in the
-> same pass — pad mode promotes the reference's TRK-held track layer
-> (a trig key selects *and* sounds its track) to the REC-off default, so
-> it converges with the reference rather than diverging, and ADR-038
-> structural change 2 stands unamended; **§0
+> same pass on user-confirmed reference behaviour — a bare trig **selects
+> and sounds** its track while TRK+trig **selects silently**, and the
+> display follows the press without changing the open page; the two are
+> the audible and silent forms of one selection, so ADR-038 structural
+> change 2 stands unamended and TRK keeps a role outside `Grid` mode; **§0
 > A10's chord precedence restored** (encoder jog, bare-trig-on-Param
 > included, resolves only with no armed prefix, so the mute chord stays
 > reachable); **design.md §4.2's jog constants restored** (the drafted new

@@ -644,10 +644,14 @@ as session #2 and both ADRs state, so nothing is superseded. Where key
 releases are unavailable (no kitty protocol), `Live` degrades to a
 transport-derived rule — REC while running arms it — rather than being
 inferred from a timing window between two sequential presses (ADR-044 R1).
-Pad mode was re-grounded in the same pass: it promotes the reference's
-TRK-held track layer, where a trig key both selects and sounds its track,
-to the REC-off default — convergent with the reference, not a keyboard
-invention, so ADR-038 structural change 2 stands unamended.
+Pad mode was re-grounded in the same pass, on reference behaviour the user
+confirmed: with no recording armed a bare trig **selects and sounds** its
+track, TRK+trig **selects silently**, and the display follows the press
+without changing which page is open. The two are the audible and silent
+forms of one selection, not duplicates — the silent form is what a
+performance needs to re-point the encoders mid-pattern. ADR-038 structural
+change 2 stands unamended and TRK gains a reason to exist beyond `Grid`
+mode.
 design.md §4.2's jog constants are **not** changed: the draft's new
 divisors were withdrawn under review, since the session evidence points at
 a faked parameter range, not at the tiers.

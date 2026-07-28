@@ -216,22 +216,32 @@ The grammar addresses all 16 trigs; columns past the discovered track
 count are silent no-ops with no chip (D3). In `Grid`, trig N is step N of
 the selected track — unchanged.
 
-**This converges on the reference box rather than diverging from it**
-*(reference behaviour per the user, 2026-07-27 — confirm before
-ratification)*: holding TRK there turns the trig keys into track keys that
-both select and sound their track. D6 promotes that existing layer to the
-**default** layer whenever REC is off, on the grounds that a keyboard has
-no spare hand to hold TRK while drumming and no dedicated per-track
-buttons to fall back on. So a bare trig and TRK+trig meaning the same
-thing in pad modes is not redundancy to be explained away — it is the same
-gesture with the hold made unnecessary.
+**This is the reference box's own behaviour** *(confirmed by the user,
+2026-07-27)*: from power-on with no recording armed, pressing trig keys
+1, 2, 3 sounds tracks 1, 2, 3, and the display follows each press to that
+track's values **for whatever page is currently showing**. Holding TRK and
+pressing the same keys selects those tracks **silently**.
 
-TRK+trig survives unchanged and is not merely vestigial: it is the only
-track-select gesture in `Grid` mode and on the Param screen, where bare
-trigs mean steps and encoders. **ADR-038 structural change 2** ("track
-select is a hold-chord, not a row") therefore stands — the hold-chord is
-still the general mechanism; pad mode is a layer, not a return to the
-retired `qweruiop` row.
+So the two gestures are not duplicates with a redundant hold — they are
+the audible and silent forms of one selection:
+
+| Gesture (REC off) | Selects | Sounds |
+|---|---|---|
+| trig | yes | **yes** |
+| TRK + trig | yes | **no** |
+
+The silent form is the one a performance needs: re-pointing the encoders
+and the contextual window mid-pattern without adding a stray hit. Both are
+normative here, with exactly those semantics. **ADR-038 structural change
+2** ("track select is a hold-chord, not a row") therefore stands
+unamended, and TRK gains a defined reason to exist beyond `Grid` mode
+rather than reading as vestigial.
+
+**Selection follows the press, and only the subject changes.** Whichever
+gesture selects, the screen and page you are on are preserved — a pad
+press on the FLTR page leaves you on the FLTR page, now showing the new
+track's filter values. The contextual window's subject is the selected
+track; nothing about *which* view is open changes underneath you.
 
 It *is* a mode split in the trig keys, which §3.A point 3 warns about.
 Accepted deliberately: the split is between playing and programming the
@@ -413,7 +423,7 @@ therefore stated as a decision, not folded silently into a commit.
 | **R1** | D5 — on terminals with no key-release reporting, should `Live` degrade to the transport-derived rule (REC while running arms Live), or simply be unavailable with an echo? | Degrade; an unreachable mode teaches nothing, and the rule is honest about what it does |
 | **R2** | D8 — pull ADR-039 decision 7's `live_rec` slice into TK2.1 (so `RecMode::Live` does something), versus shipping `Off`/`Grid` only and waiting for the P11 phase spec? | Pull it forward; the slice is small and fully specified, and a cycle with a dead third state is worse than either |
 | **R3** | D12/D14 — remove `Mute` from the `:bind` vocabulary entirely, with warn-and-skip loading for keymaps that still name it? | Yes; a chord has no single-button equivalent, so an alias would be a lie |
-| **R4** | D6 — confirm the reference behaviour the decision now rests on (TRK-held trig keys select *and* sound their track), and that promoting it to the REC-off default is the intent | Yes — it makes pad mode convergent with the reference rather than a keyboard invention |
+| **R4** | ~~D6 — confirm the reference behaviour the decision rests on~~ | **Resolved 2026-07-27.** Bare trig = select **and** sound; TRK+trig = select **silently**; the display follows the press without changing which page is open. Folded into D6 |
 | **R5** | Session #2 recorded FUNC+transport copy/clear/paste as "converged (provisional) … revisit inside the general redesign pass". This ADR does **not** redesign it — see "Out of scope". Accept the deferral to session #3? | Yes — the surrounding grammar changes under this ADR, so redesigning the chord now would be designing against a surface nobody has played |
 
 ## Alternatives considered
