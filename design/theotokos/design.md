@@ -665,6 +665,24 @@ verifying the draft's own "records nothing while stopped" claim, which
 depended on it). §5.1/§5.2 stay REOPENED until ADR-044 is ratified and
 TK2.1 C7 rewrites them.
 
+**2026-07-28 — encoder access and p-lock (user-directed).** Encoder access
+is an explicit **ENC mode** (`n`), not the Param screen: the
+screen-as-mode reading broke the pad invariant on the one screen where you
+would A/B two tracks, and made p-locking unexpressible, since the
+reference gesture holds a step *while* turning an encoder and the trig
+rows cannot be both at once. **ADR-044 D15** gives p-lock authoring a
+gesture for the first time — a shared `lock_target`, momentary where the
+surface reports releases (kitty trig hold, Launchpad pad) and latched
+otherwise (`m` arms "next trig sets the target"), published on the bus.
+It supersedes D13's "state the gap and change nothing" and revives the
+`CMD_SET_LOCK_TARGET`/`CMD_SET_STEP_LOCK` path that has been unreachable
+since TK2 C3. Explicitly designed so the *value* may come from any surface
+— keyboard ENC mode, numpad slots, Theoria, or real encoders on a MIDI
+controller while the step is held here; capturing writes that arrive from
+other surfaces is deferred to its own ADR (R6, OQ-T28) because it rewrites
+the mutation path for every surface, and rests on the still-unverified
+relative-CC assumption.
+
 **Hostile review, same day (3 fresh-context reviewers: code claims /
 design consistency / implementability): 15 B, 26 M, 27 m; 49+ code claims
 verified clean.** All blockers and majors folded before ratification, per

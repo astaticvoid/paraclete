@@ -30,7 +30,8 @@
 indicator, contextual window, key chips, legend strip), per-track display
 names, the rec-mode/pad model, engine-side live record, the missing
 `global_stop` emission, encoder-mode access, descriptor-accurate jog,
-sticky-prefix re-tap, Mute-screen retirement, keymap degradation.
+sticky-prefix re-tap, Mute-screen retirement, keymap degradation, and
+p-lock authoring's Theotokos-local half.
 
 **Out, unchanged:** the input two-tier pipeline (`key_to_button` →
 `HeldState` → `button_to_action`), TRK/PTN hold grammar and §0 A10's
@@ -56,11 +57,11 @@ D4 legend strip with declared literal entries · D5 `RecMode{Off,Grid,Live}`,
 REC toggles `Off↔Grid`, REC+PLAY escalates to `Live` *(fallback per R1)* ·
 D6 trig N = track N in pad modes ·
 D7 no transport at launch · D8 live record engine-side (`live_rec`,
-ADR-039 D7) *(pending R2)* · D9 encoder mode = the Param screen, §0 A10
-intact · D10 descriptor-accurate jog, §4.2 constants unchanged ·
+ADR-039 D7) *(pending R2)* · D9 encoder access = an explicit ENC mode (`n`), §0 A10
+intact · D15 p-lock via a shared lock target (`m`), momentary where
+releases are reported · D10 descriptor-accurate jog, §4.2 constants unchanged ·
 D11 sticky re-tap disarms behind a repeat guard · D12 Mute retired ·
-D13 step focus / p-lock authoring stay gestureless and unchanged ·
-D14 retired button names warn-and-skip.
+D13 *(superseded by D15)* · D14 retired button names warn-and-skip.
 
 ---
 
@@ -279,7 +280,8 @@ violate D3's own invariant.
 | Screen | Ordered chips |
 |---|---|
 | Grid (pads or grid-rec) | `[Tab] TRK`, `[p] PTN`, `[z] REC`, `[x] PLAY`, `[c] STOP`, `[1-6] PAGE`, `[-/=] WIN`, `[o] SONG`, `[0] TEMPO`, `[8] SET`, `[Enter] YES`, `[Esc] NO`, `[:] CMD`, `[?] HELP` |
-| Param | `trigs ENCODER ±`, `[Ctrl] FINE`, `[FUNC] COARSE`, `[1-6] PAGE`, `[Esc] BACK`, `[Tab] TRK`, `[z] REC`, `[x] PLAY`, `[:] CMD`, `[?] HELP` |
+| Param, ENC off | `[n] ENC`, `[m] LOCK`, `[1-6] PAGE`, `[Esc] BACK`, `[Tab] TRK`, `[z] REC`, `[x] PLAY`, `[:] CMD`, `[?] HELP` |
+| Any screen, ENC on | `trigs ENCODER ±`, `[Ctrl] FINE`, `[FUNC] COARSE`, `[n] ENC off`, `[m] LOCK`, `[Esc] BACK`, `[:] CMD`, `[?] HELP` |
 | Chain | `[Enter] PUSH`, `[Esc] CLEAR`, `[←/→] CURSOR`, `[o] SONG`, `[:] CMD`, `[?] HELP` |
 | Tempo | `[Enter] TAP`, `[↑/↓] ±1`, `[FUNC+↑/↓] ±0.1`, `[Esc] BACK`, `[?] HELP` |
 | Settings | `[Esc] BACK`, `[?] HELP` |
@@ -409,31 +411,74 @@ must add a composite view — `test_app` passes `composite: vec![]`,
 `plock_clamp_uses_real_range` (the `lib.rs:856` truncation BUG-040 §1
 describes).
 
-### C5 — Encoder access on the Param screen (D9)
+### C5 — ENC mode + p-lock target (D9/D15)
 
-`input.rs`: on `Screen::Param(_)` **and only with no armed prefix (§0
-A10)**, a bare trig resolves to `EncoderJog { col: col % 8, dir, mag }`
-(top row `Next`, bottom `Prev`). Magnitudes: on Param, bare = `Normal`,
-`Ctrl` = `Fine`, `FUNC` = `Coarse` — the first producer of the
-already-existing `Mag::Coarse` (`model.rs:33`, `:918`; never constructed
-today, `input.rs:612`). Off Param, `FUNC`+trig = `Normal` and
-`FUNC+Ctrl` = `Fine`, exactly as TK2 §1 D8 has it. While TRK is armed,
-FUNC+trig remains the mute chord on every screen, Param included.
+**C5a — ENC mode.** `model.rs`: `Model.enc: bool`, default false.
+`input.rs`: a new `PanelButton::Enc` (default key `n`) toggles it;
+`PanelButton::Lock` (default key `m`, free since D12 retires the Mute
+screen) drives C5b. Both join `BUTTON_NAMES` so they are remappable
+(ADR-037). While `enc` is true **and no prefix is armed (§0 A10)**, a bare
+trig resolves to `EncoderJog { col: col % 8, dir, mag }` — top row `Next`,
+bottom `Prev` — on **any** screen, not only Param. While `enc` is false,
+trigs are pads or steps per D5/D6, on any screen including Param.
 
-The Param contextual window is **unchanged from TK2 C9** apart from
-re-fitting to C0's regions: `render_perf_window` (`render.rs:356-371`)
-already renders page tabs with the §0 A11 sub-page indicator
-(`:427-452`), the encoder bank, the live envelope gauge and the LFO phase
-track, and `param_screen_animates_envelope_and_lfo` (`render.rs:1052`)
-already covers the live half. Session #2's "live viz should surface inside
-the encoder view" is satisfied by making that window reachable and the
-strip persistent, not by new rendering.
+Magnitudes: in ENC mode, bare = `Normal`, `Ctrl` = `Fine`, `FUNC` =
+`Coarse` (the first producer of the already-existing `Mag::Coarse`,
+`model.rs:33`, `:918`; never constructed today, `input.rs:612`). Outside
+ENC mode `FUNC`+trig = `Normal` and `FUNC+Ctrl` = `Fine`, exactly as TK2
+§1 D8 has it. The status line shows `ENC` when on.
 
-**Tests:** `param_screen_bare_trig_jogs_encoder`,
-`param_bare_trig_does_not_jog_while_trk_armed` (A10 regression),
-`func_trig_still_jogs_from_grid_screen`,
-`param_func_is_coarse_ctrl_is_fine`,
-`off_param_fine_is_func_ctrl`.
+The Param contextual window is **unchanged from TK2 C9** apart from C0's
+region re-fit: `render_perf_window` (`render.rs:356-371`) already renders
+page tabs with the §0 A11 sub-page indicator (`:427-452`), the encoder
+bank, the live envelope gauge and the LFO phase track, and
+`param_screen_animates_envelope_and_lfo` (`render.rs:1052`) covers the
+live half. What changes is that reaching a knob no longer depends on which
+screen is open.
+
+**C5b — the lock target.** `model.rs`: `lock_target: Option<(usize,
+usize)>` (track, step), published as `/script/theotokos/lock_step`
+alongside the existing `/script/theotokos/selected` publish
+(`lib.rs:955-963` — set `selected_changed`-style flags, never borrow the
+bus inside the dispatch loop).
+
+- **Latched:** `PanelButton::Lock` arms "the next trig sets the target";
+  the following trig in `Grid` mode sets `(active_track, step)`. The same
+  key again, `Esc`, or re-pressing that trig clears it. This is the path
+  that works with no release reporting and the path that works in ENC
+  mode — arm the step, toggle ENC, jog.
+- **Momentary:** where the kitty probe is true, holding a trig in `Grid`
+  mode sets the target for the duration of the hold (`HeldState`'s
+  `on_kitty_press`/`on_kitty_release` already track physical state;
+  extend `pressed` to carry trig buttons, which today it deliberately does
+  not — `input.rs:509-539`).
+
+Value routing: while `lock_target` is `Some`, Theotokos's own parameter
+motion — ENC jog, numpad slots, `:set` — routes to
+`CMD_SET_LOCK_TARGET`/`CMD_SET_STEP_LOCK` (33/34) on that track's
+sequencer instead of the live bank. The code path already exists and is
+currently unreachable (`lib.rs:848-868`, the `step_focus` branch); this
+commit re-points it at `lock_target` and deletes the dead `step_focus`
+field rather than keeping two notions of the same thing. `ClearAllLocks`
+(`lib.rs:672`) and Backspace regain their meaning against the target.
+
+**Out of scope, by ADR-044 R6:** capturing parameter writes that arrive
+from *other* surfaces (a MIDI controller's encoders while the step is held
+here) — that rewrites every surface's mutation path and needs its own ADR.
+C5b is the half that makes the keyboard workflow whole and publishes the
+state the cross-surface half will consume.
+
+**Tests:** `enc_toggle_switches_trig_rows`,
+`enc_mode_works_on_grid_screen_not_only_param`,
+`param_screen_with_enc_off_still_pads` (D6 invariant),
+`enc_bare_trig_does_not_jog_while_trk_armed` (§0 A10 regression),
+`enc_func_is_coarse_ctrl_is_fine`, `off_enc_fine_is_func_ctrl`,
+`lock_key_then_trig_sets_lock_target`,
+`lock_target_clears_on_esc_and_on_retap`,
+`jog_with_lock_target_emits_lock_pair_not_bump`,
+`jog_without_lock_target_emits_bump`,
+`kitty_trig_hold_sets_lock_target_for_the_hold`,
+`lock_target_is_published_to_the_bus`.
 
 ### C6 — Sticky re-tap, Mute retirement, keymap degradation (D11/D12/D14)
 
@@ -485,9 +530,9 @@ No new features. Run the app on the default 4-track instrument, fix paper
 cuts the suites cannot see (the TK2 C7 precedent), file engine issues per
 the standing directive. Then:
 
-- The doc sweep must not describe p-locks as reachable (ADR-044 D13):
-  `AGENTS.md`, the help overlay and the README all currently imply a
-  step-focus gesture that no key produces.
+- The doc sweep documents the p-lock gesture D15 introduces, and drops
+  every reference to the retired `step_focus` model from `AGENTS.md`, the
+  help overlay and the README.
 - **BUG-038 must be resolved or formally descoped in this commit.** C4/C5
   rewrite the encoder path and make the trig rows the encoder bank, which
   raises the visibility of the cursor that never moves
@@ -495,7 +540,7 @@ the standing directive. Then:
   the arrow cursor, or descope it in `bugs.md` and drop the language from
   the spec — do not leave it dangling a second phase.
 - `AGENTS.md` + `README.md` key tables → the TK2.1 grammar (REC toggle +
-  REC+PLAY live rec, pads, encoder-on-Param, no `m`).
+  REC+PLAY live rec, pads, `n` = ENC, `m` = LOCK, no Mute screen).
 - Help overlay (`render.rs:488`) regenerated: rec modes, pads, encoder
   mode, live record, no Mute screen.
 - design.md §5.1/§5.2 rewritten as DETERMINED against ADR-044; Stage 5
@@ -523,7 +568,8 @@ explicit converged / revise / park verdict per hypothesis.
 | REC-toggle + REC+PLAY reads as the reference box's own grammar on a keyboard, and the no-kitty fallback (REC-while-running arms `Live`) is tolerable where releases are unavailable | D5, R1 |
 | Trig N = track N in pad modes gives real finger-drumming without a mode error | D6, R4 |
 | Engine-side live record feels tight enough at 120–140 bpm with block-start command delivery | D8 |
-| The Param screen *is* the encoder mode — no separate toggle key is missed | D9 |
+| An explicit ENC mode (`n`) beats both held-FUNC and screen-as-mode, and leaves pads reachable on every screen | D9 |
+| P-lock authoring works: latched target + ENC jog on the keyboard, and momentary hold where releases are reported | D15 |
 | Descriptor-accurate jog (incl. stepped = 1) fixes "no variable step size" without changing §4.2's constants | D10 |
 | Sticky re-tap with a 400 ms repeat guard behaves as the hand expects | D11 |
 | FUNC+transport copy/clear/paste ergonomics, deferred here per R5 | session #2 |
@@ -536,7 +582,8 @@ explicit converged / revise / park verdict per hypothesis.
 | OQ-T24 | Numpad slot cluster fate | OPEN — session #3; D9 discharges §0 A7's modifier-floor condition, so this is now a free choice |
 | OQ-T23b | Tap tempo behind a screen is friction — global chord? | OPEN — session #3 |
 | OQ-T25 | Live-record erase gesture (ADR-039 lists "hold NO?") | OPEN — P11 phase spec |
-| OQ-T27 | P-lock authoring has no gesture at all (ADR-044 D13): `Action::FocusStep` lost its key at TK2 C3, so design.md §4 point 6 and TK2 §1 D8's step-focus routing are dead paths — and in `RecMode::Off` no trig addresses a step | OPEN — session #3; deliberately untouched here |
+| OQ-T27 | ~~P-lock authoring has no gesture~~ | **Resolved by ADR-044 D15** — shared lock target, latched or momentary; C5b implements the Theotokos-local half |
+| OQ-T28 | Cross-surface lock capture: a MIDI controller's encoders writing locks while the step is held on the keyboard or a Launchpad pad (ADR-044 R6) | OPEN — needs its own ADR; also gated on the unverified relative-CC assumption (`handoff.md`) |
 | OQ-T4 | design.md §4.2's step-size scaler, still unimplemented | OPEN — unchanged by this phase |
 | OQ-T21 | KEYBD chromatic grammar | OPEN — TK3 |
 | OQ-T12 | WT convergence | OPEN — after session #3 (three sessions held) |

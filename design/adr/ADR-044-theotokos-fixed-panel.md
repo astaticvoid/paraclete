@@ -1,7 +1,7 @@
 # ADR-044 — Theotokos fixed panel and trig-first mode model
 
 **Status:** 🟡 Proposed (2026-07-27; revised the same day after hostile
-review) — awaits user ratification (R1–R5 below).
+review; D9/D15 revised 2026-07-28) — awaits user ratification (R1–R6 below).
 **Will supersede on ratification:** `design/theotokos/design.md` §5.1/§5.2
 (reopened 2026-07-27); TK2 spec §0 A9 and A16, and §1 D11/D12. **No
 accepted ADR is superseded:** D5 keeps ADR-038's grid-rec toggle and
@@ -122,9 +122,9 @@ address, the chips move with the meaning:
 
 | State | Chips on the track indicator | Chips on the step cells | Chips on encoder cells |
 |---|---|---|---|
-| `RecMode::Off` / `Live` on a non-Param screen (pads) | **yes** — `[q]1 Kick` | dimmed (display-only) | — |
-| `RecMode::Grid` on a non-Param screen | — | **yes** — `[q]▓` | — |
-| Param screen (any rec mode) | — | dimmed (display-only) | **yes** |
+| ENC off, `RecMode::Off`/`Live` (pads) | **yes** — `[q]1 Kick` | dimmed (display-only) | — |
+| ENC off, `RecMode::Grid` | — | **yes** — `[q]▓` | — |
+| ENC on (any screen, any rec mode) | — | dimmed (display-only) | **yes** |
 
 The invariant is one sentence and one test: *a key chip appears on the
 cell that key would act on if pressed right now, and nowhere else.* Two
@@ -297,36 +297,50 @@ Two honest bounds:
   the phase spec puts that fix in the same commit rather than asserting
   behaviour the engine cannot currently express.
 
-### D9 — Encoder mode is the Param screen, not a new toggle key
+### D9 — Encoder access is an explicit ENC mode, and value motion is never keyboard-only
 
 Session #2 asked for a toggle key replacing held-FUNC for encoder access.
-This grants the ergonomics without adding a key: **on the Param screen the
-trig rows are the encoder bank** — bare top-row key *n* = encoder *n* up,
-bottom-row = down, no modifier held. The screen is reached by `1`–`6` and
-left by `Esc`, so the toggle already exists and is already learned.
-`FUNC+trig` keeps working from every screen as the quick-access shortcut.
+An earlier draft answered it by making the Param *screen* the encoder mode
+(bare trigs = encoders whenever a param page is open). Withdrawn: it broke
+D6's invariant on the one screen where you most want to A/B two tracks,
+and — decisively — it makes p-locking impossible (D15).
 
-**§0 A10 is unchanged and wins:** encoder jog — bare-trig-on-Param
-included — resolves **only with no armed prefix**. While TRK is armed, a
-bare trig selects a track and `FUNC`+trig toggles mute, on *every* screen
-including Param. Without this carve-out D12's "only mute gesture" would be
-unreachable exactly where D10 wanted FUNC for coarse.
+**`enc: bool`, toggled by a dedicated ENC key** (`n` by default
+*(tunable, remappable per ADR-037)*):
 
-Re-entry nuance: pressing the *active* PG key again cycles its sub-page
-(§0 A1/A11), so `1`–`6` re-entry is a sub-page gesture, not a screen
-toggle; `Esc` is the exit.
+| ENC | Trig rows | Everything else |
+|---|---|---|
+| off (default) | pads in `Off`/`Live`, steps in `Grid` (D5/D6) | unchanged |
+| on | top row = encoder *n* up, bottom row = encoder *n* down | unchanged |
 
-Consequence: trigs do not audition or edit steps while Param is open. The
-strip stays visible there (display-only, dimmed chips). HYPOTHESIS for
-session #3.
+ENC is orthogonal to the screen: it can be on while the Grid, Param or
+Chain screen is showing, and opening a param page does not change it. The
+Param screen remains where the 8 cells, their values and the live
+envelope/LFO are *rendered* — but reaching a knob and looking at it are
+now separate things, which is what having no physical encoders forces.
+`FUNC+trig` keeps working from every screen as the no-mode-change
+shortcut, and the numpad slots (where the terminal reports KEYPAD, §0 A5)
+are a third, always-live path.
 
-This also discharges §0 A7's open condition: A7 permitted one shared held
+**Value motion has more than one source, by design.** ENC mode is the
+keyboard's way to reach a parameter; it is not the only way, and D15
+depends on that. Any surface on the semantic plane — the numpad slots,
+Theoria's touch encoders, a MIDI controller with real encoders — can move
+the same parameter, and every one of those paths must be able to write a
+p-lock. Nothing in this decision may assume the value came from the trig
+rows.
+
+**§0 A10 is unchanged and wins:** encoder jog resolves **only with no
+armed prefix**. While TRK is armed, a bare trig selects a track and
+`FUNC`+trig toggles mute, on every screen and in either ENC state.
+Without this carve-out D12's "only mute gesture" would be unreachable.
+
+This discharges §0 A7's open condition: A7 permitted one shared held
 modifier for the encoder bank *conditional on session evidence that
-held-FUNC sweeps are acceptable*. Session #2 returned the opposite
-("held-FUNC for encoder access feels wrong"), and bare-trig-on-Param
-satisfies design.md §4.4's modifier-free floor directly — so the floor no
-longer depends on the numpad slots, and OQ-T24 becomes a free choice at
-session #3 rather than a constrained one.
+held-FUNC sweeps are acceptable*. Session #2 returned the opposite, and an
+ENC mode satisfies design.md §4.4's modifier-free floor directly — so the
+floor no longer depends on the numpad slots, and OQ-T24 becomes a free
+choice at session #3 rather than a constrained one.
 
 ### D10 — Jog magnitude comes from the real parameter descriptor
 
@@ -387,22 +401,19 @@ becomes unbound and available to `:bind`. This supersedes TK2 §1 D12's
 `Screen` enum and §1 D11's button-name list; §0 A14 goes half-stale
 (MUTE was "a screen + the TRK-held chord" and is now only the chord).
 
-### D13 — Step focus and p-lock authoring have no gesture, and this phase does not invent one
+### D13 — *(superseded by D15 within this ADR, 2026-07-28)*
 
-design.md §4 point 6 (DETERMINED) and TK2 §1 D8 both assume a focused step
-that encoder jog can route a p-lock to. **No gesture reaches it today:**
-`Action::FocusStep` lost its key at TK2 C3's wiring flip (`Enter` now
-resolves to `Yes`) and is documented unreachable (`action.rs:41`), so the
-encoder p-lock branch (`lib.rs:848`), `ClearAllLocks` (`lib.rs:672`) and
-Backspace's screen-independent lock-clear are all dead paths.
+D13 originally recorded that step focus and p-lock authoring had no
+gesture at all — `Action::FocusStep` lost its key at TK2 C3's wiring flip
+(`action.rs:41`), leaving the encoder p-lock branch (`lib.rs:848`),
+`ClearAllLocks` (`lib.rs:672`) and Backspace's lock-clear as dead paths —
+and concluded that this phase should state the gap and change nothing.
 
-D6 makes this sharper, not looser: in the default `Off` mode no trig
-addresses a step at all, so even a hold-step gesture would need `Grid`
-mode. This phase **states the gap and changes nothing** — reviving p-lock
-authoring is a grammar decision that belongs with session #3's evidence,
-not a side effect of a layout pass. The dead paths stay, documented, for
-whichever commit gives them a gesture (OQ-T27). What the phase does owe:
-the C7 doc sweep must not describe p-locks as reachable.
+That conclusion is withdrawn. The gap is not incidental: p-locking is a
+primary workflow on the reference box, and D9's ENC mode would have made
+it unreachable rather than merely unbound. **D15 supersedes this
+decision** and gives the dead paths a gesture. The diagnosis above stands
+and is why D15 exists.
 
 ### D14 — Retired button names degrade a keymap, they do not reject it
 
@@ -414,6 +425,54 @@ file loads, and the echo area reports what was skipped. Structurally
 invalid YAML still fails. This changes shipped ADR-037 behaviour and is
 therefore stated as a decision, not folded silently into a commit.
 
+### D15 — P-lock authoring: a lock target, momentary where the hardware allows
+
+On the reference box a p-lock is one simultaneous gesture: hold the step,
+turn the encoder. A keyboard cannot express that when the same keys are
+both the steps and the encoders — and TK2 shipped with no p-lock gesture
+at all (D13). This decision gives it one, in a form that does not depend
+on which surface supplies the value.
+
+**The lock target is shared state, not a keyboard mode.** `lock_target:
+Option<(track, step)>` is set by a surface that can address a step, and is
+published on the bus (`/script/theotokos/lock_step`) so other surfaces can
+show it. While it is set, parameter motion for that track's nodes is
+written as a lock on that step instead of to the live bank — reusing the
+shipped `CMD_SET_LOCK_TARGET`/`CMD_SET_STEP_LOCK` pair (33/34) and the
+lock-value read the encoder path already performs (`lib.rs:848-868`).
+
+Two ways to set it, same state underneath:
+
+- **Momentary**, where the surface reports releases: hold a trig in `Grid`
+  mode (kitty keyboard protocol) or hold a Launchpad pad. Identical to the
+  reference gesture, and the natural one when the values come from
+  somewhere other than the trig rows.
+- **Latched**, everywhere else: the LOCK key (`m` by default *(tunable)*)
+  arms "the next trig sets the lock target"; the target persists until
+  the same key, `Esc`, or a second press of that trig clears it. This is
+  what makes p-locking reachable on a terminal with no release reporting,
+  and what makes it work in ENC mode — arm the step, flip ENC on, jog.
+
+**Why the target is not Theotokos-private:** the intended workflow is to
+hold the step on the keyboard or a Launchpad pad while turning *real*
+encoders on a MIDI controller. That requires parameter writes arriving
+from a different surface to be captured as locks, which Theotokos cannot
+do alone — a controller's `CMD_BUMP_PARAM` is addressed to the engine node
+and never passes through it. TK2.1 therefore implements the
+Theotokos-local half (its own value paths honour the target), and the
+cross-surface capture — rewriting any surface's parameter write for a
+track's own nodes while that track has a lock target armed — is deferred
+to its own ADR, because it changes the mutation plane for every surface
+and is not a panel decision. Track ownership is already computed:
+`CompositeView.chain` (`view-assembly/src/lib.rs:45`) is the per-track node
+list that capture would key on.
+
+One dependency worth naming: the external-encoder half rests on relative
+CC from the controller, which is the platform's last unverified assumption
+under the encoder path (`handoff.md`'s standing offer to test Digitakt
+relative-CC when hardware is at hand). Worth clearing before the
+cross-surface ADR is implemented, not before it is written.
+
 ---
 
 ## Ratification questions
@@ -424,6 +483,7 @@ therefore stated as a decision, not folded silently into a commit.
 | **R2** | D8 — pull ADR-039 decision 7's `live_rec` slice into TK2.1 (so `RecMode::Live` does something), versus shipping `Off`/`Grid` only and waiting for the P11 phase spec? | Pull it forward; the slice is small and fully specified, and a cycle with a dead third state is worse than either |
 | **R3** | D12/D14 — remove `Mute` from the `:bind` vocabulary entirely, with warn-and-skip loading for keymaps that still name it? | Yes; a chord has no single-button equivalent, so an alias would be a lie |
 | **R4** | ~~D6 — confirm the reference behaviour the decision rests on~~ | **Resolved 2026-07-27.** Bare trig = select **and** sound; TRK+trig = select **silently**; the display follows the press without changing which page is open. Folded into D6 |
+| **R6** | D15 — is the cross-surface half (hold the step on the keyboard or a Launchpad pad, turn real encoders on a MIDI controller) right to defer to its own ADR, with TK2.1 shipping only the Theotokos-local target? | Yes — it rewrites every surface's parameter writes; that is a mutation-plane decision, not a panel one |
 | **R5** | Session #2 recorded FUNC+transport copy/clear/paste as "converged (provisional) … revisit inside the general redesign pass". This ADR does **not** redesign it — see "Out of scope". Accept the deferral to session #3? | Yes — the surrounding grammar changes under this ADR, so redesigning the chord now would be designing against a surface nobody has played |
 
 ## Alternatives considered
@@ -443,8 +503,13 @@ therefore stated as a decision, not folded silently into a commit.
   in this drafting pass: no multi-track finger drumming.
 - **Split by row** (bottom row = track pads, top row = step audition).
   Rejected: a row asymmetry no other mode has.
-- **A dedicated ENC toggle key.** Rejected under D9 — no free key with a
-  good mnemonic, and the Param screen already is the mode.
+- **The Param screen *is* the encoder mode** (drafted, then withdrawn under
+  D9): it broke D6's pad invariant on one screen, and made the reference's
+  p-lock gesture unexpressible — the trig rows cannot be the steps and the
+  encoders at once.
+- **A p-lock modifier** (FUNC+trig writes a lock at the current value).
+  Rejected under D15: a lock is a *value* you dial in while watching it,
+  not a value you commit blind.
 - **New jog constants** (`range/64`/`/512`/`/16`). Drafted, then withdrawn
   under review: design.md §4.2 is DETERMINED, ADR-038 §3.B says §4
   mechanics apply "unchanged", and the session evidence points at the fake
@@ -480,6 +545,13 @@ therefore stated as a decision, not folded silently into a commit.
   transport auto-start), **BUG-040** (encoder jog range/`stepped`),
   **BUG-041** (`CMD_CLOCK_STOP` emits no transport event, so a sequencer's
   `playing` never clears in the standalone app).
+- `Model` gains `enc: bool` and `lock_target: Option<(track, step)>`, and
+  publishes the latter; the ENC and LOCK keys claim `n` and `m` by default
+  (both remappable, ADR-037) — `m` is free because D12 retired the Mute
+  screen.
+- **D15's cross-surface capture needs its own ADR** (proposed number
+  ADR-045): rewriting any surface's parameter write for a track's own
+  nodes while that track has a lock target armed. Not in TK2.1.
 - **BUG-038** (arrow-cursor nav + numpad slot jog speced but never wired)
   is touched by D9/D10's rewrite of the encoder path and must be either
   wired or formally descoped in the same phase — not left dangling.
@@ -509,6 +581,21 @@ Per design.md §6, everything except feel is machine-checkable:
   vocabulary is numeric/audio only, so the scenario asserts audibly, not on
   the text step bitfield).
 - **Feel:** usability session #3.
+
+## Revision — 2026-07-28 (user-directed, p-lock)
+
+D9 was rewritten again: encoder access is an explicit ENC mode (`n`), not
+the Param screen. The screen-as-mode reading broke D6's pad invariant
+exactly where you would A/B two tracks, and — the decisive objection, the
+user's — it made p-locking unexpressible, since the reference gesture
+holds a step *while* turning an encoder and the trig rows cannot be both
+at once. D15 was added to give p-lock authoring a gesture at last (a
+shared lock target: momentary where releases are reported, latched
+otherwise), superseding D13's "state the gap and change nothing", and to
+record that the value may arrive from any surface — a keyboard in ENC
+mode, the numpad slots, Theoria, or real encoders on a MIDI controller
+while the step is held on the keyboard or a Launchpad pad. The
+cross-surface half is deferred to its own ADR (R6).
 
 ## Revision — 2026-07-27 (post-review, user-directed)
 
