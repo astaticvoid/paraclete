@@ -1584,6 +1584,7 @@ dependencies = [
  "paraclete-node-api",
  "paraclete-view-assembly",
  "ratatui",
+ "serde_yml",
 ]
 
 [[package]]

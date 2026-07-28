@@ -7,5 +7,6 @@ license = "GPL-3.0-or-later"
 [dependencies]
 ratatui = { workspace = true }
 crossterm = { workspace = true }
+serde_yml = { workspace = true }
 paraclete-node-api = { path = "../paraclete-node-api" }
 paraclete-view-assembly = { path = "../paraclete-view-assembly" }

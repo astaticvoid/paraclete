@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -60,6 +60,144 @@ pub enum PanelButton {
     Mute,
 }
 
+/// TK2 C8 (D11): the `:bind`/`:unbind` verb vocabulary — every `PanelButton`
+/// variant name, case-insensitive. Single source of truth for both
+/// directions (`button_name`/`button_from_name`) so the table can't drift.
+const BUTTON_NAMES: &[(&str, PanelButton)] = &[
+    ("Trig1", PanelButton::Trig1),
+    ("Trig2", PanelButton::Trig2),
+    ("Trig3", PanelButton::Trig3),
+    ("Trig4", PanelButton::Trig4),
+    ("Trig5", PanelButton::Trig5),
+    ("Trig6", PanelButton::Trig6),
+    ("Trig7", PanelButton::Trig7),
+    ("Trig8", PanelButton::Trig8),
+    ("Trig9", PanelButton::Trig9),
+    ("Trig10", PanelButton::Trig10),
+    ("Trig11", PanelButton::Trig11),
+    ("Trig12", PanelButton::Trig12),
+    ("Trig13", PanelButton::Trig13),
+    ("Trig14", PanelButton::Trig14),
+    ("Trig15", PanelButton::Trig15),
+    ("Trig16", PanelButton::Trig16),
+    ("Trk", PanelButton::Trk),
+    ("Ptn", PanelButton::Ptn),
+    ("Rec", PanelButton::Rec),
+    ("Play", PanelButton::Play),
+    ("Stop", PanelButton::Stop),
+    ("Pg1", PanelButton::Pg1),
+    ("Pg2", PanelButton::Pg2),
+    ("Pg3", PanelButton::Pg3),
+    ("Pg4", PanelButton::Pg4),
+    ("Pg5", PanelButton::Pg5),
+    ("Pg6", PanelButton::Pg6),
+    ("Kit", PanelButton::Kit),
+    ("Settings", PanelButton::Settings),
+    ("Sampling", PanelButton::Sampling),
+    ("Tempo", PanelButton::Tempo),
+    ("Yes", PanelButton::Yes),
+    ("No", PanelButton::No),
+    ("Up", PanelButton::Up),
+    ("Down", PanelButton::Down),
+    ("Left", PanelButton::Left),
+    ("Right", PanelButton::Right),
+    ("PagePrev", PanelButton::PagePrev),
+    ("PageNext", PanelButton::PageNext),
+    ("Song", PanelButton::Song),
+    ("Keybd", PanelButton::Keybd),
+    ("Mute", PanelButton::Mute),
+];
+
+/// TK2 C8 (D11): canonical name for a `PanelButton`, as written by
+/// `:list-bindings` and `Keymap::to_yaml`.
+pub fn button_name(button: PanelButton) -> &'static str {
+    BUTTON_NAMES
+        .iter()
+        .find(|(_, b)| *b == button)
+        .map(|(name, _)| *name)
+        .unwrap_or("?")
+}
+
+/// TK2 C8 (D11): the inverse of `button_name`, case-insensitive — the
+/// `:bind`/`:unbind` verbs and `Keymap::from_yaml` both resolve button
+/// names through this.
+pub fn button_from_name(name: &str) -> Option<PanelButton> {
+    let lower = name.trim().to_lowercase();
+    BUTTON_NAMES
+        .iter()
+        .find(|(n, _)| n.to_lowercase() == lower)
+        .map(|(_, b)| *b)
+}
+
+/// TK2 C8 (D14/§0 A6): keys the `:bind` verb refuses to rebind. Ctrl-C
+/// (quit) is unbindable structurally — `lib.rs::handle_keys` intercepts it
+/// as a `direct_action` before the keymap is ever consulted, regardless of
+/// what `c` alone is bound to — so only the `:` line's own key needs a
+/// guard here (§0 A6: "the D14 unbindable entry is `Char(':')`").
+pub fn is_unbindable(code: KeyCode) -> bool {
+    matches!(code, KeyCode::Char(':'))
+}
+
+/// TK2 C8: parses a `:bind`/`:unbind` key token (and `Keymap::from_yaml`'s
+/// map keys) into a `KeyCode`. Single-character tokens map directly
+/// (case-folded, matching `normalize_code`); everything else is a named
+/// token (`tab`, `esc`, `f1`...`f24`, arrows, ...), case-insensitive. The
+/// inverse of `key_name`.
+pub fn key_from_name(name: &str) -> Option<KeyCode> {
+    let lower = name.trim().to_lowercase();
+    if lower.chars().count() == 1 {
+        return lower.chars().next().map(KeyCode::Char);
+    }
+    match lower.as_str() {
+        "space" => Some(KeyCode::Char(' ')),
+        "tab" => Some(KeyCode::Tab),
+        "backtab" => Some(KeyCode::BackTab),
+        "enter" | "return" => Some(KeyCode::Enter),
+        "esc" | "escape" => Some(KeyCode::Esc),
+        "up" => Some(KeyCode::Up),
+        "down" => Some(KeyCode::Down),
+        "left" => Some(KeyCode::Left),
+        "right" => Some(KeyCode::Right),
+        "backspace" => Some(KeyCode::Backspace),
+        "delete" | "del" => Some(KeyCode::Delete),
+        "insert" | "ins" => Some(KeyCode::Insert),
+        "home" => Some(KeyCode::Home),
+        "end" => Some(KeyCode::End),
+        "pageup" | "pgup" => Some(KeyCode::PageUp),
+        "pagedown" | "pgdn" => Some(KeyCode::PageDown),
+        "null" => Some(KeyCode::Null),
+        _ if lower.starts_with('f') => lower[1..].parse::<u8>().ok().map(KeyCode::F),
+        _ => None,
+    }
+}
+
+/// TK2 C8: the inverse of `key_from_name` — the canonical token
+/// `:list-bindings` and `Keymap::to_yaml` write for a `KeyCode`.
+pub fn key_name(code: KeyCode) -> String {
+    match code {
+        KeyCode::Char(' ') => "space".to_string(),
+        KeyCode::Char(c) => c.to_ascii_lowercase().to_string(),
+        KeyCode::Tab => "tab".into(),
+        KeyCode::BackTab => "backtab".into(),
+        KeyCode::Enter => "enter".into(),
+        KeyCode::Esc => "esc".into(),
+        KeyCode::Up => "up".into(),
+        KeyCode::Down => "down".into(),
+        KeyCode::Left => "left".into(),
+        KeyCode::Right => "right".into(),
+        KeyCode::Backspace => "backspace".into(),
+        KeyCode::Delete => "delete".into(),
+        KeyCode::Insert => "insert".into(),
+        KeyCode::Home => "home".into(),
+        KeyCode::End => "end".into(),
+        KeyCode::PageUp => "pageup".into(),
+        KeyCode::PageDown => "pagedown".into(),
+        KeyCode::Null => "null".into(),
+        KeyCode::F(n) => format!("f{n}"),
+        _ => "?".into(),
+    }
+}
+
 /// `col` 0..16 → the matching `PanelButton::TrigN`.
 fn trig_button(col: usize) -> Option<PanelButton> {
     use PanelButton::*;
@@ -108,11 +246,105 @@ pub struct KeyBinding {
 }
 
 /// The user keymap (D11): flat, global, no per-screen bindings. Empty by
-/// default — C2 introduces the type; C8 adds YAML load/save + the `:bind`
+/// default — C2 introduced the type; C8 adds YAML load/save + the `:bind`
 /// family of verbs.
 #[derive(Clone, Debug, Default)]
 pub struct Keymap {
     pub bindings: HashMap<KeyBinding, PanelButton>,
+}
+
+impl Keymap {
+    /// TK2 C8 (D11): global config path, `~/.config/paraclete/keymap.yaml`.
+    /// `None` if `$HOME` isn't set (headless/CI — `load_startup` just skips
+    /// the global source in that case).
+    pub fn global_path() -> Option<std::path::PathBuf> {
+        std::env::var_os("HOME").map(|home| {
+            std::path::Path::new(&home)
+                .join(".config")
+                .join("paraclete")
+                .join("keymap.yaml")
+        })
+    }
+
+    /// TK2 C8 (D11): serializes to the flat `key: Button` YAML map (keys
+    /// via `key_name`, buttons via `button_name`) — sorted (`BTreeMap`) so
+    /// output is deterministic across runs, not tied to `HashMap` order.
+    pub fn to_yaml(&self) -> Result<String, String> {
+        let map: BTreeMap<String, String> = self
+            .bindings
+            .iter()
+            .map(|(k, v)| (key_name(k.code), button_name(*v).to_string()))
+            .collect();
+        serde_yml::to_string(&map).map_err(|e| e.to_string())
+    }
+
+    /// TK2 C8 (D11/D14): the inverse of `to_yaml`. Any entry with an
+    /// unrecognized key/button name, or targeting an unbindable key (`:` —
+    /// D14), fails the whole parse (a malformed or tampered hand-edited
+    /// file should surface loudly, not silently drop or smuggle bindings —
+    /// enforcing `is_unbindable` here, not just in the `:bind` verb parser,
+    /// closes a hand-edited-YAML loophole around the D14 guarantee found in
+    /// post-C8 hostile review).
+    pub fn from_yaml(text: &str) -> Result<Self, String> {
+        let map: BTreeMap<String, String> = serde_yml::from_str(text).map_err(|e| e.to_string())?;
+        let mut bindings = HashMap::with_capacity(map.len());
+        for (key_str, button_str) in map {
+            let code = key_from_name(&key_str).ok_or_else(|| format!("unknown key: {key_str}"))?;
+            if is_unbindable(code) {
+                return Err(format!("{key_str} is reserved and cannot be bound"));
+            }
+            let button = button_from_name(&button_str)
+                .ok_or_else(|| format!("unknown button: {button_str}"))?;
+            bindings.insert(
+                KeyBinding {
+                    code: normalize_code(code),
+                },
+                button,
+            );
+        }
+        Ok(Keymap { bindings })
+    }
+
+    /// TK2 C8 (D11): merges two already-parsed YAML sources in load order —
+    /// global first, then local (local wins on key collision, via
+    /// `HashMap::extend`'s overwrite semantics). Malformed sources are
+    /// skipped, not fatal: a broken `keymap.yaml` should degrade to
+    /// built-in defaults, not block startup. Split out from `load_startup`
+    /// so the merge policy is testable without touching the filesystem
+    /// (`local_file_overrides_global`).
+    pub fn merge_sources(global: Option<&str>, local: Option<&str>) -> Self {
+        let mut merged = Keymap::default();
+        for text in [global, local].into_iter().flatten() {
+            if let Ok(loaded) = Keymap::from_yaml(text) {
+                merged.bindings.extend(loaded.bindings);
+            }
+        }
+        merged
+    }
+
+    /// TK2 C8 (D11): startup load order — global
+    /// (`~/.config/paraclete/keymap.yaml`) then local (`./keymap.yaml`,
+    /// "still overrides on load"). Missing files are not errors (most
+    /// users have neither); this is the only place `:load-bindings` and
+    /// `TheotokosApp::new` need to call.
+    pub fn load_startup() -> Self {
+        let global = Self::global_path().and_then(|p| std::fs::read_to_string(p).ok());
+        let local = std::fs::read_to_string("keymap.yaml").ok();
+        Self::merge_sources(global.as_deref(), local.as_deref())
+    }
+
+    /// TK2 C8 (D14): the only write path — `:save-bindings` is the sole
+    /// caller (no auto-save on quit or elsewhere). Always targets the
+    /// global path; the local `./keymap.yaml` override is read-only from
+    /// the app's perspective (hand-authored, e.g. a per-project preset).
+    pub fn save_global(&self) -> Result<(), String> {
+        let path = Self::global_path().ok_or("cannot resolve $HOME to save bindings")?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let yaml = self.to_yaml()?;
+        std::fs::write(&path, yaml).map_err(|e| e.to_string())
+    }
 }
 
 /// §0 A1: crossterm never delivers `Shift+letter` as lowercase+SHIFT —
@@ -129,7 +361,11 @@ pub fn func_held(ev: &KeyEvent) -> bool {
 
 /// Case-folds a key code to the form the §2 table and the user keymap are
 /// keyed on (§0 A1): letters always lowercase, everything else unchanged.
-fn normalize_code(code: KeyCode) -> KeyCode {
+/// `pub(crate)`: TK2 C8's `:bind`/`:unbind` dispatch (`lib.rs`) constructs
+/// `KeyBinding`s directly and must normalize the same way `key_to_button`
+/// does, or a bind of `Q` (uppercase) would silently never match a lookup
+/// keyed on lowercase `q`.
+pub(crate) fn normalize_code(code: KeyCode) -> KeyCode {
     match code {
         KeyCode::Char(c) => KeyCode::Char(c.to_ascii_lowercase()),
         other => other,
@@ -799,6 +1035,124 @@ mod tests {
         assert_eq!(
             key_to_button(&keymap, KeyEvent::new(KeyCode::Char('Q'), KeyModifiers::SHIFT)),
             Some(PanelButton::Trig1)
+        );
+    }
+
+    // ── TK2 C8: key remapping (D11/D14) ───────────────────────────────────
+
+    #[test]
+    fn keymap_resolves_user_binding_over_default() {
+        // Built-in §2 table: 'q' → Trig1. A user binding must shadow it.
+        let mut keymap = Keymap::default();
+        keymap.bindings.insert(
+            KeyBinding {
+                code: KeyCode::Char('q'),
+            },
+            PanelButton::Trig9,
+        );
+        assert_eq!(key_to_button(&keymap, key('q')), Some(PanelButton::Trig9));
+    }
+
+    #[test]
+    fn keymap_falls_through_when_unbound() {
+        // A non-empty keymap with no entry for 'w' must still fall through
+        // to the built-in table, not return None.
+        let mut keymap = Keymap::default();
+        keymap.bindings.insert(
+            KeyBinding {
+                code: KeyCode::Char('q'),
+            },
+            PanelButton::Trig9,
+        );
+        assert_eq!(key_to_button(&keymap, key('w')), Some(PanelButton::Trig2));
+    }
+
+    #[test]
+    fn keymap_roundtrips_yaml() {
+        let mut keymap = Keymap::default();
+        keymap.bindings.insert(
+            KeyBinding {
+                code: KeyCode::Char('q'),
+            },
+            PanelButton::Trig9,
+        );
+        keymap.bindings.insert(
+            KeyBinding { code: KeyCode::Tab },
+            PanelButton::Mute,
+        );
+        keymap.bindings.insert(
+            KeyBinding {
+                code: KeyCode::F(5),
+            },
+            PanelButton::Song,
+        );
+        let yaml = keymap.to_yaml().expect("serialize");
+        let restored = Keymap::from_yaml(&yaml).expect("deserialize");
+        assert_eq!(restored.bindings, keymap.bindings);
+    }
+
+    #[test]
+    fn local_file_overrides_global() {
+        let global_yaml = "q: Trig2\nw: Trig3\n";
+        let local_yaml = "q: Trig5\n";
+        let merged = Keymap::merge_sources(Some(global_yaml), Some(local_yaml));
+        assert_eq!(
+            merged.bindings.get(&KeyBinding {
+                code: KeyCode::Char('q')
+            }),
+            Some(&PanelButton::Trig5),
+            "local must win on collision"
+        );
+        assert_eq!(
+            merged.bindings.get(&KeyBinding {
+                code: KeyCode::Char('w')
+            }),
+            Some(&PanelButton::Trig3),
+            "global-only entries must survive the merge"
+        );
+    }
+
+    #[test]
+    fn button_name_roundtrips_every_variant() {
+        for &(name, button) in BUTTON_NAMES {
+            assert_eq!(button_name(button), name);
+            assert_eq!(button_from_name(name), Some(button));
+            assert_eq!(button_from_name(&name.to_lowercase()), Some(button));
+        }
+    }
+
+    #[test]
+    fn key_name_roundtrips_named_tokens() {
+        for code in [
+            KeyCode::Tab,
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Up,
+            KeyCode::F(12),
+            KeyCode::Char(' '),
+            KeyCode::Char('q'),
+        ] {
+            let name = key_name(code);
+            assert_eq!(key_from_name(&name), Some(code), "round-trip of {name:?}");
+        }
+    }
+
+    #[test]
+    fn colon_is_unbindable() {
+        assert!(is_unbindable(KeyCode::Char(':')));
+        assert!(!is_unbindable(KeyCode::Char('c')));
+    }
+
+    /// D14's guarantee must hold for a hand-edited/tampered `keymap.yaml`
+    /// too, not just the `:bind` verb parser — a file that smuggles a `:`
+    /// entry must fail to load rather than silently gaining a dead-but-
+    /// listed binding (post-C8 hostile review finding).
+    #[test]
+    fn from_yaml_rejects_unbindable_key() {
+        let err = Keymap::from_yaml("':': Trig1\n").unwrap_err();
+        assert!(
+            err.contains("reserved"),
+            "must reject a colon binding, got: {err}"
         );
     }
 }

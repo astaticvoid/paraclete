@@ -1,4 +1,6 @@
 use crate::action::GRID_STEPS;
+use crate::input::PanelButton;
+use crossterm::event::KeyCode;
 use paraclete_node_api::{CapabilityDocument, PageRef, StateBusHandle, StateBusValue};
 use paraclete_view_assembly::CompositeView;
 use std::collections::HashMap;
@@ -88,6 +90,11 @@ pub struct Model {
     pub cmdline: Option<String>,
     /// TK1 C6: error message from last command execution (shown in red).
     pub cmdline_error: Option<String>,
+    /// TK2 C8: non-error confirmation from the last command (`bindings
+    /// saved`, a `:list-bindings` listing, ...) — same lifecycle as
+    /// `cmdline_error` (cleared on the next real action) but styled
+    /// distinctly so success doesn't read as failure.
+    pub cmdline_status: Option<String>,
     /// TK1 C6: fuzzy index built at startup from caps + tracks + static verbs.
     pub fuzzy_index: Vec<FuzzyEntry>,
     /// TK1 C7: yanked pattern data for paste. Kept for TK2 C4, which
@@ -148,6 +155,23 @@ pub enum CmdlineVerb {
     Unmute(usize),
     Clear,
     LockClear,
+    /// TK2 C8 (D11): `:bind <key> <button>` — key/button names are
+    /// resolved (and the unbindable guard applied) at parse time, so a
+    /// syntactically valid `BindKey` is always safe to apply directly.
+    BindKey { code: KeyCode, button: PanelButton },
+    /// TK2 C8 (D11): `:unbind <key>`.
+    UnbindKey { code: KeyCode },
+    /// TK2 C8 (D11): `:list-bindings`.
+    ListBindings,
+    /// TK2 C8 (D14): `:reset-bindings` — clears all user bindings (full
+    /// fall-through to §2 defaults).
+    ResetBindings,
+    /// TK2 C8 (D14): `:save-bindings` — the *only* write path (no
+    /// auto-save).
+    SaveBindings,
+    /// TK2 C8 (D11): `:load-bindings` — re-runs the global→local startup
+    /// load order.
+    LoadBindings,
 }
 
 impl Model {
@@ -195,6 +219,7 @@ impl Model {
             last_step,
             cmdline: None,
             cmdline_error: None,
+            cmdline_status: None,
             fuzzy_index,
             yank_buffer: Vec::new(),
             slot_flash: [None; 3],
@@ -600,6 +625,12 @@ impl Model {
             "unmute",
             "clear",
             "lock-clear",
+            "bind",
+            "unbind",
+            "list-bindings",
+            "reset-bindings",
+            "save-bindings",
+            "load-bindings",
         ] {
             entries.push(FuzzyEntry {
                 text: verb.to_string(),
@@ -780,6 +811,34 @@ impl Model {
             }
             "clear" => Ok(CmdlineVerb::Clear),
             "lock-clear" => Ok(CmdlineVerb::LockClear),
+            // TK2 C8 (D11/D14): key remapping verbs.
+            "bind" => {
+                let (key_str, button_str) = rest
+                    .split_once(char::is_whitespace)
+                    .ok_or_else(|| "bind <key> <button>".to_string())?;
+                let button_str = button_str.trim();
+                let code = crate::input::key_from_name(key_str)
+                    .ok_or_else(|| format!("unknown key: {key_str}"))?;
+                if crate::input::is_unbindable(code) {
+                    return Err(format!("{key_str} is reserved and cannot be rebound"));
+                }
+                let button = crate::input::button_from_name(button_str)
+                    .ok_or_else(|| format!("unknown button: {button_str}"))?;
+                Ok(CmdlineVerb::BindKey { code, button })
+            }
+            "unbind" => {
+                let key_str = rest.trim();
+                if key_str.is_empty() {
+                    return Err("unbind <key>".into());
+                }
+                let code = crate::input::key_from_name(key_str)
+                    .ok_or_else(|| format!("unknown key: {key_str}"))?;
+                Ok(CmdlineVerb::UnbindKey { code })
+            }
+            "list-bindings" => Ok(CmdlineVerb::ListBindings),
+            "reset-bindings" => Ok(CmdlineVerb::ResetBindings),
+            "save-bindings" => Ok(CmdlineVerb::SaveBindings),
+            "load-bindings" => Ok(CmdlineVerb::LoadBindings),
             _ => Err(format!("?{input}")),
         }
     }

@@ -59,8 +59,9 @@ pub struct TheotokosApp {
     /// screen, YES). Oldest dropped once full.
     tap_times: Vec<Instant>,
     last_debug_event: Option<String>,
-    /// TK2 C3 (D11): flat user keymap. Empty by default; C8 adds YAML
-    /// load/save and the `:bind` verb family.
+    /// TK2 C3/C8 (D11): flat user keymap. Loaded global→local at startup
+    /// (`Keymap::load_startup`); `:bind`/`:unbind`/`:reset-bindings` edit
+    /// it at runtime; `:save-bindings` is the only write-to-disk path.
     keymap: Keymap,
     /// TK2 C3 (D6): TRK/PTN hold-chord state — kitty-probed at startup.
     held: HeldState,
@@ -103,7 +104,8 @@ impl TheotokosApp {
             encoder_trackers: std::array::from_fn(|_| JogTracker::new()),
             tap_times: Vec::new(),
             last_debug_event: None,
-            keymap: Keymap::default(),
+            // TK2 C8 (D11): global→local YAML load at startup.
+            keymap: Keymap::load_startup(),
             held: HeldState::new(kitty),
         })
     }
@@ -328,6 +330,7 @@ impl TheotokosApp {
             slot_c_locked,
             cmdline: self.model.cmdline.clone(),
             cmdline_error: self.model.cmdline_error.clone(),
+            cmdline_status: self.model.cmdline_status.clone(),
             cmdline_candidates: self.model.cmdline_candidates(),
             slot_a_flash: self.model.slot_flash[0].map_or(false, |t| {
                 t.elapsed().as_millis() < self.tuning.flash_ms as u128
@@ -496,9 +499,11 @@ impl TheotokosApp {
             // (kit)" over the screen forever (post-C6 hostile review). The
             // arms below that need a fresh echo (out-of-range
             // SelectTrack/SelectPattern, Action::Echo itself) re-set it
-            // after this clear, in the same dispatch.
+            // after this clear, in the same dispatch. `cmdline_status`
+            // (TK2 C8's success confirmations) gets the same treatment.
             if !matches!(action, Action::Noop) {
                 self.model.cmdline_error = None;
+                self.model.cmdline_status = None;
             }
 
             match action {
@@ -960,6 +965,7 @@ impl TheotokosApp {
                 let input = std::mem::take(cmdline);
                 self.model.cmdline = None;
                 self.model.cmdline_error = None;
+                self.model.cmdline_status = None;
                 match self.model.parse_cmdline(&input) {
                     Ok(verb) => {
                         self.dispatch_cmdline_verb(verb);
@@ -1066,6 +1072,68 @@ impl TheotokosApp {
                         arg1: -1.0,
                     });
                 }
+            }
+            // TK2 C8 (D11): key/button names are already resolved and the
+            // unbindable guard already applied by `parse_cmdline` — this
+            // just inserts. `normalize_code` matches `key_to_button`'s
+            // lookup key so an uppercase-typed binding still resolves.
+            CmdlineVerb::BindKey { code, button } => {
+                self.keymap.bindings.insert(
+                    input::KeyBinding {
+                        code: input::normalize_code(code),
+                    },
+                    button,
+                );
+                self.model.cmdline_status = Some(format!(
+                    "{} → {}",
+                    input::key_name(code),
+                    input::button_name(button)
+                ));
+            }
+            CmdlineVerb::UnbindKey { code } => {
+                self.keymap.bindings.remove(&input::KeyBinding {
+                    code: input::normalize_code(code),
+                });
+                self.model.cmdline_status = Some(format!("unbound {}", input::key_name(code)));
+            }
+            // TK2 C8 (D11): reuses the shared echo/status slot (`cmdline_status`,
+            // styled distinctly from `cmdline_error` — post-C8 hostile
+            // review: success confirmations previously reused the red error
+            // slot, reading as failures) to list the active user bindings —
+            // there is no dedicated overlay for it.
+            CmdlineVerb::ListBindings => {
+                if self.keymap.bindings.is_empty() {
+                    self.model.cmdline_status = Some("no user bindings".to_string());
+                } else {
+                    let mut entries: Vec<String> = self
+                        .keymap
+                        .bindings
+                        .iter()
+                        .map(|(k, v)| format!("{}={}", input::key_name(k.code), input::button_name(*v)))
+                        .collect();
+                    entries.sort();
+                    self.model.cmdline_status = Some(entries.join(" "));
+                }
+            }
+            // TK2 C8 (D14): full fall-through to §2 defaults.
+            CmdlineVerb::ResetBindings => {
+                self.keymap.bindings.clear();
+                self.model.cmdline_status = Some("all user bindings reset".to_string());
+            }
+            // TK2 C8 (D14): the only write path — no auto-save anywhere else.
+            CmdlineVerb::SaveBindings => match self.keymap.save_global() {
+                Ok(()) => self.model.cmdline_status = Some("bindings saved".to_string()),
+                Err(e) => self.model.cmdline_error = Some(e),
+            },
+            // TK2 C8 (D11): re-runs the global→local startup load order,
+            // replacing the runtime keymap outright (not merged with
+            // whatever the session had bound since launch).
+            CmdlineVerb::LoadBindings => {
+                self.keymap = Keymap::load_startup();
+                self.model.cmdline_status = Some(format!(
+                    "loaded {} binding(s)",
+                    self.keymap.bindings.len()
+                ));
             }
         }
     }
@@ -2550,6 +2618,202 @@ mod tests {
             app.model.cmdline_error.as_deref().unwrap().starts_with('?'),
             "error must start with ?"
         );
+    }
+
+    // ── TK2 C8: key remapping (D11/D14) ──
+
+    #[test]
+    fn bind_verb_adds_a_working_binding() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "bind w mute");
+        app.handle_keys(&bus, &[enter_key()]);
+
+        assert!(app.model.cmdline.is_none(), "cmdline closes on success");
+        assert_eq!(
+            crate::input::key_to_button(&app.keymap, kc('w')),
+            Some(crate::input::PanelButton::Mute),
+            "'w' must now resolve to Mute, not the default Trig2"
+        );
+
+        // `:unbind` removes it — 'w' falls back to the built-in default.
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "unbind w");
+        app.handle_keys(&bus, &[enter_key()]);
+        assert_eq!(
+            crate::input::key_to_button(&app.keymap, kc('w')),
+            Some(crate::input::PanelButton::Trig2),
+        );
+    }
+
+    #[test]
+    fn bind_unbindable_key_errors() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "bind : trig1");
+        app.handle_keys(&bus, &[enter_key()]);
+
+        assert!(
+            app.model.cmdline.is_some(),
+            "cmdline stays open on error"
+        );
+        assert!(
+            app.model.cmdline_error.is_some(),
+            "must error on the unbindable ':' key"
+        );
+        assert!(
+            app.keymap.bindings.is_empty(),
+            "the rejected bind must not be applied"
+        );
+    }
+
+    #[test]
+    fn unknown_button_name_echoes_error() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "bind q notabutton");
+        app.handle_keys(&bus, &[enter_key()]);
+
+        assert!(app.model.cmdline.is_some(), "cmdline stays open on error");
+        assert!(
+            app.model.cmdline_error.is_some(),
+            "unknown button name must echo an error"
+        );
+        assert!(app.keymap.bindings.is_empty());
+    }
+
+    #[test]
+    fn reset_clears_all_user_bindings() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "bind w mute");
+        app.handle_keys(&bus, &[enter_key()]);
+        assert!(!app.keymap.bindings.is_empty());
+
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "reset-bindings");
+        app.handle_keys(&bus, &[enter_key()]);
+
+        assert!(
+            app.keymap.bindings.is_empty(),
+            "reset-bindings must clear every user binding"
+        );
+        assert_eq!(
+            crate::input::key_to_button(&app.keymap, kc('w')),
+            Some(crate::input::PanelButton::Trig2),
+            "must fall through to the §2 default after reset"
+        );
+    }
+
+    /// TK2 C8: serializes tests that mutate the process-global `$HOME` env
+    /// var (`Keymap::global_path`/`save_global`/`load_startup` all read
+    /// it). `cargo test`'s default multi-threaded runner would otherwise
+    /// let two such tests interleave and clobber each other's `$HOME` mid-
+    /// test — a real hazard flagged as a blocker in post-C8 hostile review
+    /// (could point a test at, and write into, the developer's actual
+    /// `~/.config/paraclete/keymap.yaml`).
+    static HOME_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Runs `f` with `$HOME` pointed at a scratch directory unique to this
+    /// call, holding `HOME_ENV_LOCK` for the duration so no other
+    /// `$HOME`-touching test can interleave. Restores the real `$HOME` and
+    /// removes the scratch directory afterward even if `f` panics (an
+    /// assertion failure must not leave `$HOME` pointed at a deleted
+    /// scratch dir for the rest of the test process).
+    fn with_scratch_home(tag: &str, f: impl FnOnce()) {
+        let _guard = HOME_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let scratch = std::env::temp_dir().join(format!(
+            "paraclete-theotokos-test-home-{}-{tag}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let prev_home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &scratch);
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+        match prev_home {
+            Some(h) => std::env::set_var("HOME", h),
+            None => std::env::remove_var("HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&scratch);
+
+        if let Err(e) = result {
+            std::panic::resume_unwind(e);
+        }
+    }
+
+    /// TK2 C8 (D14): "no auto-save" — quitting (Ctrl-C) must never write
+    /// `~/.config/paraclete/keymap.yaml`, only the explicit `:save-bindings`
+    /// verb does. Uses a scratch `$HOME` so the assertion can check the
+    /// real save path without touching the developer's actual config.
+    #[test]
+    fn bindings_do_not_autosave_on_quit() {
+        with_scratch_home("autosave", || {
+            let bus = test_bus();
+            let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+            setup_bus_with_params(&bus, 200, 100, true);
+            app.keymap.bindings.insert(
+                crate::input::KeyBinding {
+                    code: KeyCode::Char('w'),
+                },
+                crate::input::PanelButton::Mute,
+            );
+
+            app.handle_keys(
+                &bus,
+                &[KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)],
+            );
+            assert!(app.should_quit());
+
+            let saved_path = crate::input::Keymap::global_path().expect("HOME is set");
+            assert!(
+                !saved_path.exists(),
+                "quitting must not write the keymap file"
+            );
+        });
+    }
+
+    #[test]
+    fn save_bindings_writes_and_load_bindings_reads_back() {
+        with_scratch_home("save-load", || {
+            let bus = test_bus();
+            let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+            setup_bus_with_params(&bus, 200, 100, true);
+
+            app.handle_keys(&bus, &[colon_key()]);
+            cmdline_type(&mut app, &bus, "bind w mute");
+            app.handle_keys(&bus, &[enter_key()]);
+
+            app.handle_keys(&bus, &[colon_key()]);
+            cmdline_type(&mut app, &bus, "save-bindings");
+            app.handle_keys(&bus, &[enter_key()]);
+            let saved_path = crate::input::Keymap::global_path().expect("HOME is set");
+            assert!(saved_path.exists(), "save-bindings must write the file");
+
+            // Clear the runtime keymap, then reload from disk.
+            app.keymap.bindings.clear();
+            app.handle_keys(&bus, &[colon_key()]);
+            cmdline_type(&mut app, &bus, "load-bindings");
+            app.handle_keys(&bus, &[enter_key()]);
+            assert_eq!(
+                crate::input::key_to_button(&app.keymap, kc('w')),
+                Some(crate::input::PanelButton::Mute),
+                "load-bindings must restore the saved binding"
+            );
+        });
     }
 
     // ── C7: flash ──

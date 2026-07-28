@@ -59,6 +59,11 @@ pub struct RenderData {
     pub slot_b_locked: bool,
     pub cmdline: Option<String>,
     pub cmdline_error: Option<String>,
+    /// TK2 C8 (D11): non-error confirmations (`:save-bindings`,
+    /// `:list-bindings`, `:load-bindings`) — same echo slot as
+    /// `cmdline_error` but styled distinctly so success doesn't read as a
+    /// failure (post-C8 hostile review finding).
+    pub cmdline_status: Option<String>,
     pub cmdline_candidates: Vec<String>,
     pub slot_a_flash: bool,
     pub slot_b_flash: bool,
@@ -516,6 +521,12 @@ fn render_help(frame: &mut Frame, area: Rect, data: &RenderData) {
         ("unmute <n>", "unmute track"),
         ("clear", "clear current pattern"),
         ("lock-clear", "clear locks on focused step"),
+        ("bind <key> <button>", "remap a key (D11)"),
+        ("unbind <key>", "remove a user binding"),
+        ("list-bindings", "show active user bindings"),
+        ("reset-bindings", "clear all user bindings"),
+        ("save-bindings", "write bindings to disk"),
+        ("load-bindings", "reload bindings from disk"),
     ] {
         lines.push(Line::styled(
             format!("  :{:12}  {}", verb, desc),
@@ -533,6 +544,15 @@ fn render_echo_area(frame: &mut Frame, area: Rect, data: &RenderData) {
     if let Some(ref err) = data.cmdline_error {
         let err_span = Span::styled(format!(" {} ", err), Style::default().fg(Color::Red));
         let para = Paragraph::new(err_span);
+        frame.render_widget(para, area);
+        return;
+    }
+    // TK2 C8: success confirmations (`:save-bindings`, `:list-bindings`,
+    // `:load-bindings`, ...) share the echo slot but not the red styling —
+    // green reads as "done", not "failed" (post-C8 hostile review).
+    if let Some(ref status) = data.cmdline_status {
+        let status_span = Span::styled(format!(" {} ", status), Style::default().fg(Color::Green));
+        let para = Paragraph::new(status_span);
         frame.render_widget(para, area);
         return;
     }
@@ -675,6 +695,7 @@ impl RenderData {
             slot_b_locked: false,
             cmdline: None,
             cmdline_error: None,
+            cmdline_status: None,
             cmdline_candidates: vec![],
             slot_a_flash: false,
             slot_c: None,
@@ -739,6 +760,7 @@ mod tests {
             slot_b_locked: false,
             cmdline: None,
             cmdline_error: None,
+            cmdline_status: None,
             cmdline_candidates: vec![],
             slot_a_flash: false,
             slot_c: None,
@@ -815,6 +837,7 @@ mod tests {
             slot_b_locked: false,
             cmdline: None,
             cmdline_error: None,
+            cmdline_status: None,
             cmdline_candidates: vec![],
             slot_a_flash: false,
             slot_c: None,
@@ -873,6 +896,7 @@ mod tests {
             slot_b_locked: false,
             cmdline: None,
             cmdline_error: None,
+            cmdline_status: None,
             cmdline_candidates: vec![],
             slot_a_flash: false,
             slot_c: None,
