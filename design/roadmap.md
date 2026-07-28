@@ -3,7 +3,19 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-27. **TK2 C8 shipped** — key remapping
+> **Last updated:** 2026-07-27. **TK2 C9 shipped** — live visualization
+> (design.md §5.3b): `EnvelopeNode`/`LfoNode` publish
+> `/node/{id}/state/env_level` and `/node/{id}/state/lfo_phase` via
+> `published_state()`; `AnalogEngine`/`FmEngine` also publish
+> `env_level` so the default 4-track instrument animates. Theotokos
+> Param screen shows live envelope output as a green ▶ gauge (falling
+> back to static cyan) and an LFO phase track (●/─) when an LFO node
+> is in the graph. LFO phase scans all state-bus entries (not just
+> `generator_id`). 3 tests: `envelope_node_publishes_level`,
+> `lfo_node_publishes_phase`, `param_screen_animates_envelope_and_lfo`
+> (with buffer-text assertions). Full workspace green. Next: **⛔
+> usability session #2 (TK2 C10, D4)** — TK2 code-complete.
+> Previous: 2026-07-27 (earlier). **TK2 C8 shipped** — key remapping
 > (ADR-037, re-based by D11/D14): `Keymap` (`paraclete-theotokos/src/
 > input.rs`) is a flat `HashMap<KeyBinding, PanelButton>` with YAML
 > persistence (`serde_yml`, already a workspace dep) at `~/.config/
@@ -36,10 +48,9 @@
 > flipped to ✅ Accepted with an implementation note (its ratification is
 > "ratifies with C8 landing" per the TK2 spec's own framing — no separate
 > user session, unlike ADR-038). 96 crate tests (14 new: 8 spec-named + 5
-> bonus + 1 review-driven regression), full workspace green. Next: TK2 C9
-> (live visualization — independent/optional, "may land any time after
-> C3") or go straight to **⛔ usability session #2** (TK2 C10, D4) — now
-> unblocked since C1–C8 have all landed; C9 is not a prerequisite for it.
+> bonus + 1 review-driven regression), full workspace green. Next:
+> **⛔ usability session #2** (TK2 C10, D4) — TK2 code-complete; all
+> C0–C9 landed.
 > Previous: 2026-07-24 (later still). **TK2 C7 shipped** — agent
 > smoke + polish gate (no new features). Ran the live TUI on the 4-track
 > default via tmux and drove the panel grammar end-to-end; found and fixed
@@ -469,7 +480,7 @@ Ordered by nearness to the critical path.
 | **P16** | Macro & Terminal Control | Macro system; ~~TUI as editing surface~~ (terminal-surface half **superseded 2026-07-23** — delivered/owned by the TK track (ADR-036/038) and the WT convergence decision; P16 narrows to the instrument-wide macro system, which ADR-043's macro tier explicitly defers to) | — |
 | **W4** | Interface maturity | Ordo layout profiles, multi-client polish, wavetable view, protocol freeze, headless protocol CI driver | Ongoing after W3 |
 | **AN** | Anamnesis sampling layer | Capture-to-performance loop: HAL input + recorder rings (retroactive capture, resampling), app-owned sample pool + per-step sample locks, slices/chains, scenes + crossfader morph, pickup-style looping, staged timestretch — AN0–AN3, session-gated | **ADR-040 ✅ accepted 2026-07-23** (R1–R3: model as written; one-gesture transition trick frozen as an AN1 requirement; scheduling decided at TK2 exit) + `design/sampling/{problem,design}.md`. AN2 scenes depend on P11 KitStore |
-| **TK** | Theotokos performance terminal | Keyboard-first Elektron-class virtual front panel (continuous trig grid, TRK/PTN hold-chords, REC grid-rec toggle, FUNC-layer encoder bank, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **TK0 shipped 2026-07-21** (ADR-036). **TK1 code complete 2026-07-22** (C0–C7: p-locks, mutes, composite pages, `:` line, pattern select, yank/paste, leader rebind, flash, help overlay, suspend-crash fix). **Elektron convergence redesign 2026-07-23 (ADR-038 ✅ accepted, D1–D4)** — full TK2 spec drafted same day (`tk2-theotokos.md`, commits C0–C9 + session C10). **TK2 C0–C8 shipped** (2026-07-23…2026-07-27): panel model, live-trig, FUNC transport chords, encoder bank, Tempo/Settings/Chain screens, agent smoke gate, key remapping (ADR-037 ✅ accepted). C9 (live viz) independent/optional; **⛔ usability session #2 (C10, D4)** next — unblocked now that C1–C8 have landed. |
+| **TK** | Theotokos performance terminal | Keyboard-first Elektron-class virtual front panel (continuous trig grid, TRK/PTN hold-chords, REC grid-rec toggle, FUNC-layer encoder bank, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **TK0 shipped 2026-07-21** (ADR-036). **TK1 code complete 2026-07-22** (C0–C7: p-locks, mutes, composite pages, `:` line, pattern select, yank/paste, leader rebind, flash, help overlay, suspend-crash fix). **Elektron convergence redesign 2026-07-23 (ADR-038 ✅ accepted, D1–D4)** — full TK2 spec drafted same day (`tk2-theotokos.md`, commits C0–C9 + session C10). **TK2 C0–C9 shipped** (2026-07-23…2026-07-27): panel model, live-trig, FUNC transport chords, encoder bank, Tempo/Settings/Chain screens, agent smoke gate, key remapping (ADR-037 ✅ accepted), live visualization (env_level, lfo_phase). **⛔ usability session #2 (C10, D4)** next — TK2 code-complete; all C0–C9 landed. |
 
 The interface track (Antiphon server + Theoria clients) is specified in
 `design/interface-plan.md` (**accepted July 2026**; ADR-031 authored with W0,
