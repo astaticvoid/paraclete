@@ -634,13 +634,20 @@ guard) and §0 A16 superseded (the Param screen *is* the encoder mode — no
 new toggle key; and a trig now also selects a track in pad modes). §0 A10's
 chord precedence is explicitly **unchanged** — encoder jog, bare-trig
 included, resolves only with no armed prefix. Mute screen retired (OQ-T22).
-**The REC cycle is a contested deviation, not a session finding:** session
-#2 said "PLAY+REC together = live record", and ADR-038 froze the grid-rec
-toggle while ADR-039's consequences fix REC+PLAY as the arming gesture.
-The cycle was chosen at the user's direction during this drafting pass —
-which is not the hands-on evidence §6's convergence rule requires — so it
-is put to explicit ratification (ADR-044 R1) rather than carried as a
-footnote, and it is the session-#3 hypothesis with the most riding on it.
+**REC follows the reference box, after a wrong turn:** the draft first had
+REC cycling `Off→Grid→Live→Off`; review showed that superseded ADR-038's
+grid-rec toggle and ADR-039's REC+PLAY grammar, and the cycle carried its
+own hazard — leaving `Grid` passed *through* `Live` while the transport
+ran, so a stray trig would record. Withdrawn at the user's direction:
+**REC toggles `Off↔Grid`, REC held + PLAY escalates to `Live`**, exactly
+as session #2 and both ADRs state, so nothing is superseded. Where key
+releases are unavailable (no kitty protocol), `Live` degrades to a
+transport-derived rule — REC while running arms it — rather than being
+inferred from a timing window between two sequential presses (ADR-044 R1).
+Pad mode was re-grounded in the same pass: it promotes the reference's
+TRK-held track layer, where a trig key both selects and sounds its track,
+to the REC-off default — convergent with the reference, not a keyboard
+invention, so ADR-038 structural change 2 stands unamended.
 design.md §4.2's jog constants are **not** changed: the draft's new
 divisors were withdrawn under review, since the session evidence points at
 a faked parameter range, not at the tiers.

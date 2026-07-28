@@ -12,7 +12,8 @@
 > every screen, a one-line track indicator (names, mute, selection), key
 > chips drawn wherever the keys currently act (resolved through the live
 > `Keymap`), and a labeled `[key] NAME` legend strip replacing the grey
-> hint line. Mode model: `RecMode { Off, Grid, Live }`, REC cycles,
+> hint line. Mode model: `RecMode { Off, Grid, Live }`, REC toggles
+> `Off↔Grid` and REC held + PLAY escalates to `Live`,
 > **default `Off`** — trig N = track N pads that play *and* select
 > (user-chosen this pass over the trig-is-step reading), no transport at
 > launch, encoder mode = the Param screen (no new toggle key), sticky
@@ -24,10 +25,19 @@
 > the same day** (3 fresh-context reviewers — code claims / design
 > consistency / implementability): **15 B, 26 M, 27 m; 49+ code claims
 > verified clean**; all blockers and majors folded before ratification per
-> process rule 1. What review changed: the **REC cycle became a contested
-> ratification item (R1)** — it supersedes ADR-038's frozen grid-rec
-> toggle *and* ADR-039's "REC+PLAY arms `live_rec`" grammar, and
-> drafting-pass direction is not the session evidence §6 requires; **§0
+> process rule 1. What review changed: the drafted **REC cycle became a
+> contested ratification item** — since **withdrawn at the user's
+> direction** in favour of the reference box's own gestures (REC toggles
+> grid rec; REC held + PLAY escalates), which leaves ADR-038's grid-rec
+> toggle and ADR-039's REC+PLAY grammar **intact — nothing is superseded**,
+> and R1 narrows to what `Live` degrades to where key releases are
+> unavailable (recommended: REC-while-running arms it). The cycle also had
+> its own hazard: leaving `Grid` passed *through* `Live` while the
+> transport ran, so a stray trig would record. D6 was re-grounded in the
+> same pass — pad mode promotes the reference's TRK-held track layer
+> (a trig key selects *and* sounds its track) to the REC-off default, so
+> it converges with the reference rather than diverging, and ADR-038
+> structural change 2 stands unamended; **§0
 > A10's chord precedence restored** (encoder jog, bare-trig-on-Param
 > included, resolves only with no armed prefix, so the mute chord stays
 > reachable); **design.md §4.2's jog constants restored** (the drafted new
@@ -463,7 +473,7 @@ Agent-executable stretches need no input between gates.
 |---|---|---|
 | 1 | ~~**TK2 C0–C9**~~ (`tk2-theotokos.md` — panel, live-trig, encoder bank, screens, remapping, live viz) | **Shipped** |
 | 2 | ~~**⛔ Session #2**~~ (TK2 C10, user-paired) | **Held 2026-07-27 — NOT a clean sign-off.** `theotokos-2.md`/`tk2-report.md`. OQ-T22 resolved (chord wins), OQ-T23 converged, **OQ-T24 still open**. Reopened design.md §5.1/§5.2 (layout) + the default REC/trig mode model. |
-| 2.5 | **⛔ TK2.1 redesign pass** — **drafted + hostile-reviewed 2026-07-27** (`ADR-044` 🟡 proposed + `design/phases/tk2.1-theotokos.md`, C0–C7 + session #3 as C8). Freezes the fixed panel (persistent one-track trig strip, track indicator, contextual window, key chips, legend strip) and the mode model (`RecMode{Off,Grid,Live}` with REC cycling and pads by default, no transport at launch, engine-side live record per ADR-039 D7, encoder mode = the Param screen with §0 A10 intact, sticky re-tap disarms, Mute screen retired) | **awaits user ratification of ADR-044 R1–R5** — R1 (the REC cycle) knowingly supersedes ADR-038 and ADR-039 grammar and is the live question; then C0–C7, then session #3. Still blocks step 3 |
+| 2.5 | **⛔ TK2.1 redesign pass** — **drafted + hostile-reviewed 2026-07-27** (`ADR-044` 🟡 proposed + `design/phases/tk2.1-theotokos.md`, C0–C7 + session #3 as C8). Freezes the fixed panel (persistent one-track trig strip, track indicator, contextual window, key chips, legend strip) and the mode model (`RecMode{Off,Grid,Live}` — REC toggles `Off↔Grid`, REC+PLAY escalates to `Live` — pads by default, no transport at launch, engine-side live record per ADR-039 D7, encoder mode = the Param screen with §0 A10 intact, sticky re-tap disarms, Mute screen retired) | **awaits user ratification of ADR-044 R1–R5** — no accepted ADR is superseded; R1 is now only live rec's fallback where key releases are unavailable, R4 confirms the reference behaviour pad mode rests on; then C0–C7, then session #3. Still blocks step 3 |
 | 3 | **⛔ TK2-exit scheduling pass** (user) — **on hold until step 2.5 clears** | order the parallel tracks: P11 spec → impl; AN0(→AN1); ADR-041+042 implementation. All three are independent of each other |
 | 4a | **P11**: spec (agent, session-informed) → **⛔ spec ratification** (kit UX OQs) → impl → session | two gates |
 | 4b | **AN0–AN1** (pool → capture; R2 transition-trick gate on AN1 exit) → **⛔ sampling session** | AN2 additionally needs P11 KitStore shipped |
@@ -560,7 +570,7 @@ Ordered by nearness to the critical path.
 | **P16** | Macro & Terminal Control | Macro system; ~~TUI as editing surface~~ (terminal-surface half **superseded 2026-07-23** — delivered/owned by the TK track (ADR-036/038) and the WT convergence decision; P16 narrows to the instrument-wide macro system, which ADR-043's macro tier explicitly defers to) | — |
 | **W4** | Interface maturity | Ordo layout profiles, multi-client polish, wavetable view, protocol freeze, headless protocol CI driver | Ongoing after W3 |
 | **AN** | Anamnesis sampling layer | Capture-to-performance loop: HAL input + recorder rings (retroactive capture, resampling), app-owned sample pool + per-step sample locks, slices/chains, scenes + crossfader morph, pickup-style looping, staged timestretch — AN0–AN3, session-gated | **ADR-040 ✅ accepted 2026-07-23** (R1–R3: model as written; one-gesture transition trick frozen as an AN1 requirement; scheduling decided at TK2 exit) + `design/sampling/{problem,design}.md`. AN2 scenes depend on P11 KitStore |
-| **TK** | Theotokos performance terminal | Keyboard-first Elektron-class virtual front panel (continuous trig grid, TRK/PTN hold-chords, REC grid-rec toggle — **pending supersession by ADR-044 R1's three-state cycle** — FUNC-layer encoder bank, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **TK0 shipped 2026-07-21** (ADR-036). **TK1 code complete 2026-07-22** (C0–C7: p-locks, mutes, composite pages, `:` line, pattern select, yank/paste, leader rebind, flash, help overlay, suspend-crash fix). **Elektron convergence redesign 2026-07-23 (ADR-038 ✅ accepted, D1–D4)** — full TK2 spec drafted same day (`tk2-theotokos.md`, commits C0–C9 + session C10). **TK2 C0–C9 shipped** (2026-07-23…2026-07-27): panel model, live-trig, FUNC transport chords, encoder bank, Tempo/Settings/Chain screens, agent smoke gate, key remapping (ADR-037 ✅ accepted), live visualization (env_level, lfo_phase). **Usability session #2 held 2026-07-27 (C10) — NOT a clean sign-off** (`theotokos-2.md`/`tk2-report.md`): plumbing all works, but shipped rendering (all-tracks-stacked grid) and default mode (REC-armed, trig=step-write) don't match intent — reopens design.md §5.1/§5.2 and reverses the shipped REC-default against §3.A's own "trigs always play" principle. OQ-T22 resolved (mute chord wins, Mute screen retired); OQ-T23 converged; **OQ-T24 still open**. **TK2.1 redesign drafted + hostile-reviewed 2026-07-27** — `ADR-044` (🟡 proposed; fixed panel, `RecMode{Off,Grid,Live}`, pads-by-default, engine-side live record per ADR-039 D7, encoder mode on the Param screen, Mute screen retired) + `design/phases/tk2.1-theotokos.md` (C0–C7 + session #3). Review: 15 B / 26 M / 27 m, all blockers and majors folded pre-ratification; BUG-039/040/041 filed. **Next: ratify ADR-044 (R1–R5, R1 supersedes ADR-038/039 grammar), implement TK2.1, then session #3**, before the TK2-exit scheduling pass. |
+| **TK** | Theotokos performance terminal | Keyboard-first Elektron-class virtual front panel (continuous trig grid, TRK/PTN hold-chords, REC grid-rec toggle, FUNC-layer encoder bank, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **TK0 shipped 2026-07-21** (ADR-036). **TK1 code complete 2026-07-22** (C0–C7: p-locks, mutes, composite pages, `:` line, pattern select, yank/paste, leader rebind, flash, help overlay, suspend-crash fix). **Elektron convergence redesign 2026-07-23 (ADR-038 ✅ accepted, D1–D4)** — full TK2 spec drafted same day (`tk2-theotokos.md`, commits C0–C9 + session C10). **TK2 C0–C9 shipped** (2026-07-23…2026-07-27): panel model, live-trig, FUNC transport chords, encoder bank, Tempo/Settings/Chain screens, agent smoke gate, key remapping (ADR-037 ✅ accepted), live visualization (env_level, lfo_phase). **Usability session #2 held 2026-07-27 (C10) — NOT a clean sign-off** (`theotokos-2.md`/`tk2-report.md`): plumbing all works, but shipped rendering (all-tracks-stacked grid) and default mode (REC-armed, trig=step-write) don't match intent — reopens design.md §5.1/§5.2 and reverses the shipped REC-default against §3.A's own "trigs always play" principle. OQ-T22 resolved (mute chord wins, Mute screen retired); OQ-T23 converged; **OQ-T24 still open**. **TK2.1 redesign drafted + hostile-reviewed 2026-07-27** — `ADR-044` (🟡 proposed; fixed panel, `RecMode{Off,Grid,Live}` reached by REC toggle + REC+PLAY, pads-by-default, engine-side live record per ADR-039 D7, encoder mode on the Param screen, Mute screen retired) + `design/phases/tk2.1-theotokos.md` (C0–C7 + session #3). Review: 15 B / 26 M / 27 m, all blockers and majors folded pre-ratification; BUG-039/040/041 filed. **Next: ratify ADR-044 (R1–R5; no accepted ADR is superseded), implement TK2.1, then session #3**, before the TK2-exit scheduling pass. |
 
 The interface track (Antiphon server + Theoria clients) is specified in
 `design/interface-plan.md` (**accepted July 2026**; ADR-031 authored with W0,
