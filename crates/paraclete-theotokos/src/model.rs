@@ -48,7 +48,12 @@ pub struct SlotBinding {
 pub struct TrackInfo {
     pub sequencer_id: u32,
     pub generator_id: u32,
+    /// The engine/cap-doc name (e.g. "AnalogKick") — the contextual
+    /// window header's second half (TK2.1 C0).
     pub name: String,
+    /// The instrument file's `display_name` (e.g. "Kick") — what the
+    /// track line, transport and status line show (TK2.1 C0, D2).
+    pub display_name: String,
 }
 
 pub struct Model {
@@ -180,6 +185,7 @@ impl Model {
         seq_ids: &[u32],
         gen_ids: &[u32],
         gen_names: &[String],
+        display_names: &[String],
         caps: HashMap<u32, CapabilityDocument>,
         composite: Vec<CompositeView>,
     ) -> Self {
@@ -189,6 +195,10 @@ impl Model {
                 sequencer_id: seq_ids[i],
                 generator_id: gen_ids[i],
                 name: gen_names
+                    .get(i)
+                    .cloned()
+                    .unwrap_or_else(|| format!("Trk{}", i + 1)),
+                display_name: display_names
                     .get(i)
                     .cloned()
                     .unwrap_or_else(|| format!("Trk{}", i + 1)),

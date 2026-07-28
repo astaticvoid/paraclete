@@ -397,6 +397,33 @@ fn main() {
                     .unwrap_or_else(|| format!("Node{}", id))
             })
             .collect();
+        // TK2.1 C0 (D2): the instrument file's display_name per sequencer
+        // ("Kick", "Snare", ...), distinct from gen_names above (the
+        // cap-doc engine type name, e.g. "AnalogKick") — the same two-level
+        // label-preference rule as collect_node_summaries: prefer the
+        // instrument-file label when it differs from the type_tag (i.e. a
+        // real display_name was set), else fall back to the cap-doc name
+        // rather than the raw type_tag string.
+        let all_labels: HashMap<u32, &str> = ids
+            .all
+            .iter()
+            .map(|(label, id)| (*id, label.as_str()))
+            .collect();
+        let display_names: Vec<String> = seq_ids
+            .iter()
+            .map(|id| {
+                let label = all_labels.get(id).copied().unwrap_or("");
+                let type_tag = conf.type_tag_for(*id).unwrap_or("");
+                if !label.is_empty() && label != type_tag {
+                    label.to_string()
+                } else {
+                    cap_docs
+                        .get(id)
+                        .map(|d| d.name.to_string())
+                        .unwrap_or_else(|| format!("Node{}", id))
+                }
+            })
+            .collect();
 
         match setup_terminal() {
             Ok(terminal) => {
@@ -405,6 +432,7 @@ fn main() {
                     seq_ids,
                     gen_ids,
                     gen_names,
+                    display_names,
                     caps: cap_docs.clone(),
                     composite,
                     fps: 30,

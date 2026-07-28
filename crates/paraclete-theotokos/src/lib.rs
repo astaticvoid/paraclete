@@ -33,6 +33,11 @@ pub struct TheotokosConfig {
     pub seq_ids: Vec<u32>,
     pub gen_ids: Vec<u32>,
     pub gen_names: Vec<String>,
+    /// TK2.1 C0 (D2): the sequencer nodes' instrument-file `display_name`
+    /// ("Kick", "Snare", ...) — distinct from `gen_names`, the cap-doc
+    /// engine type name ("AnalogKick") used for the contextual header's
+    /// second half.
+    pub display_names: Vec<String>,
     pub caps: HashMap<u32, CapabilityDocument>,
     /// TK1 C3: composite views, one per track, same order as tracks.
     pub composite: Vec<CompositeView>,
@@ -76,6 +81,7 @@ impl TheotokosApp {
             &config.seq_ids,
             &config.gen_ids,
             &config.gen_names,
+            &config.display_names,
             config.caps,
             config.composite,
         );
@@ -321,6 +327,7 @@ impl TheotokosApp {
             },
             active_track: self.model.active_track,
             track_names: self.model.tracks.iter().map(|t| t.name.clone()).collect(),
+            display_names: self.model.tracks.iter().map(|t| t.display_name.clone()).collect(),
             bpm,
             playing: self.model.playing(bus),
             page_window: self.model.page_windows[self.model.active_track],
@@ -1466,6 +1473,7 @@ mod tests {
                 &seq_ids,
                 &gen_ids,
                 &gen_names,
+                &gen_names, // display_names: no separate fixture in unit tests
                 test_caps(),
                 vec![], // no composite views in unit tests
             ),
@@ -1890,7 +1898,7 @@ mod tests {
     fn encoder_col_maps_to_page_param_in_rule_order() {
         let bus = test_bus();
         let mut app = TheotokosApp {
-            model: Model::new(1, &[200], &[100], &["T1".into()], rule_ordered_caps(), vec![]),
+            model: Model::new(1, &[200], &[100], &["T1".into()], &["T1".into()], rule_ordered_caps(), vec![]),
             pending: Vec::new(),
             quit: false,
             dirty: true,
@@ -2082,7 +2090,7 @@ mod tests {
     fn same_pg_key_cycles_sub_page() {
         let bus = test_bus();
         let mut app = TheotokosApp {
-            model: Model::new(1, &[200], &[100], &["T1".into()], many_params_caps(10), vec![]),
+            model: Model::new(1, &[200], &[100], &["T1".into()], &["T1".into()], many_params_caps(10), vec![]),
             pending: Vec::new(),
             quit: false,
             dirty: true,
@@ -2494,6 +2502,7 @@ mod tests {
             sequencer_id: 200,
             generator_id: 100,
             name: "Kick".into(),
+            display_name: "Kick".into(),
         }];
         let index = Model::build_fuzzy_index(&caps, &tracks);
         let entries: Vec<String> = index.iter().map(|e| e.text.clone()).collect();
@@ -2851,7 +2860,7 @@ mod tests {
 
     #[test]
     fn flash_detects_value_change() {
-        let mut model = Model::new(1, &[200], &[100], &["Kick".into()], test_caps(), vec![]);
+        let mut model = Model::new(1, &[200], &[100], &["Kick".into()], &["Kick".into()], test_caps(), vec![]);
         model.slot_a = Some(SlotBinding {
             node_id: 100,
             param_id: ParamDescriptor::id_for_name("decay"),

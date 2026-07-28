@@ -28,7 +28,12 @@ pub struct RenderData {
     /// TK2 C3 (D6): the armed TRK/PTN hold prefix, if any (status line).
     pub armed_prefix: Option<String>,
     pub active_track: usize,
+    /// The engine/cap-doc name per track (e.g. "AnalogKick") — the
+    /// contextual header's second half (TK2.1 C0).
     pub track_names: Vec<String>,
+    /// The instrument file's display name per track (e.g. "Kick") — the
+    /// track line, transport and status line (TK2.1 C0, D2).
+    pub display_names: Vec<String>,
     pub bpm: f64,
     pub playing: bool,
     pub page_window: usize,
@@ -92,12 +97,17 @@ pub struct RenderData {
 
 pub fn render(frame: &mut Frame, data: &RenderData) {
     let area = frame.size();
+    // TK2.1 C0 (D1): seven fixed regions — heights never change across
+    // screens (`region_heights_are_identical_across_screens`). Only the
+    // Min(0) contextual window's content varies by screen.
     let chunks = Layout::vertical([
-        Constraint::Length(2),
-        Constraint::Min(0),
-        Constraint::Length(2),
-        Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(1), // transport
+        Constraint::Min(0),    // contextual window
+        Constraint::Length(1), // track indicator
+        Constraint::Length(2), // trig strip (selected track only)
+        Constraint::Length(2), // legend
+        Constraint::Length(1), // echo
+        Constraint::Length(1), // status
     ])
     .split(area);
 
@@ -106,17 +116,21 @@ pub fn render(frame: &mut Frame, data: &RenderData) {
         render_help(frame, chunks[1], data);
     } else {
         match data.screen {
-            Screen::Grid => render_seq_grid(frame, chunks[1], data),
+            Screen::Grid => render_track_context(frame, chunks[1], data),
             Screen::Param(_) => render_perf_window(frame, chunks[1], data),
-            Screen::Mute => render_mute_screen(frame, chunks[1], data),
+            // C0: Screen::Mute retargets here until C6 deletes the variant
+            // (D12) — the match must stay exhaustive in the meantime.
+            Screen::Mute => render_track_context(frame, chunks[1], data),
             Screen::Tempo => render_tempo_screen(frame, chunks[1], data),
             Screen::Settings => render_settings_screen(frame, chunks[1], data),
             Screen::Chain => render_chain_screen(frame, chunks[1], data),
         }
     }
-    render_legend(frame, chunks[2], data);
-    render_echo_area(frame, chunks[3], data);
-    render_status_line(frame, chunks[4], data);
+    render_track_indicator(frame, chunks[2], data);
+    render_trig_strip(frame, chunks[3], data);
+    render_legend(frame, chunks[4], data);
+    render_echo_area(frame, chunks[5], data);
+    render_status_line(frame, chunks[6], data);
 }
 
 /// TK2 C6 (D12): bpm display; YES-tap and UP/DOWN nudge live in the
@@ -185,24 +199,6 @@ fn render_chain_screen(frame: &mut Frame, area: Rect, data: &RenderData) {
     );
 }
 
-/// TK2 C4 (D12): "trigs toggle mutes, track states rendered" — one line
-/// per track, muted tracks marked ●.
-fn render_mute_screen(frame: &mut Frame, area: Rect, data: &RenderData) {
-    let lines: Vec<Line> = data
-        .track_names
-        .iter()
-        .enumerate()
-        .map(|(i, name)| {
-            let muted = data.mute_states.get(i).copied().unwrap_or(false);
-            let glyph = if muted { "●" } else { "○" };
-            let color = if muted { Color::Red } else { Color::DarkGray };
-            Line::styled(format!(" {glyph} {name}"), Style::default().fg(color))
-        })
-        .collect();
-    let para = Paragraph::new(lines).block(Block::default().borders(Borders::NONE));
-    frame.render_widget(para, area);
-}
-
 fn screen_name(screen: Screen) -> &'static str {
     match screen {
         Screen::Grid => "GRID",
@@ -242,7 +238,7 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
     // TK2 C3 (D12): transport bar gains a REC indicator.
     let rec_sym = if data.grid_rec { "REC●" } else { "REC○" };
     let track_name = data
-        .track_names
+        .display_names
         .get(data.active_track)
         .map(|s| s.as_str())
         .unwrap_or("?");
@@ -269,26 +265,115 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
     frame.render_widget(para, area);
 }
 
-fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
-    let mut rows: Vec<Line> = Vec::with_capacity(data.track_names.len().max(1) * 5);
-    for t in 0..data.track_names.len() {
-        let focus = data.step_focuses.get(t).copied().flatten();
-        let locks: std::collections::HashSet<usize> = data
-            .step_locks
-            .get(t)
-            .map(|v| v.iter().copied().collect())
-            .unwrap_or_default();
-        rows.push(render_track_row(t, data, 0, true, focus, &locks));
-        rows.push(render_track_row(t, data, 0, false, focus, &locks));
-        rows.push(Line::from(""));
-        rows.push(render_track_row(t, data, PAGE_SIZE, false, focus, &locks));
-        rows.push(render_track_row(t, data, PAGE_SIZE, false, focus, &locks));
-        if t + 1 < data.track_names.len() {
-            rows.push(Line::from(""));
-        }
+/// TK2.1 C0 (D2): one line per track — selection marker, `N Name`, mute
+/// marker, and (right-aligned by trailing spans) the pattern indicator.
+/// Below **60** columns *(tunable, §3 minimum width)* names drop, keeping
+/// just the selection marker and track number. When the full list doesn't
+/// fit, ADR-044 D2 requires windowing around the selected track with
+/// `‹`/`›` markers rather than truncating silently.
+fn render_track_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
+    let narrow = area.width < 60;
+    let ptn_text = format!("PTN P{}", data.active_pattern + 1);
+    let entries: Vec<(String, Color)> = data
+        .display_names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| {
+            let marker = if i == data.active_track { "▸" } else { " " };
+            let muted = data.mute_states.get(i).copied().unwrap_or(false);
+            let mute_glyph = if muted { "●" } else { "" };
+            let color = if i == data.active_track {
+                Color::White
+            } else {
+                Color::Gray
+            };
+            let text = if narrow {
+                format!("{marker}{}{mute_glyph}  ", i + 1)
+            } else {
+                format!("{marker}{} {}{mute_glyph}  ", i + 1, name)
+            };
+            (text, color)
+        })
+        .collect();
+
+    let mut spans: Vec<Span> = Vec::with_capacity(entries.len() * 2 + 2);
+    if entries.is_empty() {
+        spans.push(Span::styled(ptn_text, Style::default().fg(Color::DarkGray)));
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        return;
     }
 
-    let para = Paragraph::new(rows).block(
+    let entries_width: usize = entries.iter().map(|(t, _)| t.chars().count()).sum();
+    let budget = (area.width as usize).saturating_sub(ptn_text.chars().count());
+    let active = data.active_track.min(entries.len() - 1);
+
+    if entries_width <= budget {
+        for (text, color) in &entries {
+            spans.push(Span::styled(text.clone(), Style::default().fg(*color)));
+        }
+    } else {
+        // ADR-044 D2: grow a window outward from the selected track (right
+        // first, matching reading order) until the budget — minus room for
+        // the `‹`/`›` markers — is spent.
+        let marker_budget = budget.saturating_sub(4);
+        let mut start = active;
+        let mut end = active;
+        let mut width = entries[active].0.chars().count();
+        loop {
+            let can_grow_left = start > 0;
+            let can_grow_right = end + 1 < entries.len();
+            let right_w = if can_grow_right {
+                entries[end + 1].0.chars().count()
+            } else {
+                usize::MAX
+            };
+            let left_w = if can_grow_left {
+                entries[start - 1].0.chars().count()
+            } else {
+                usize::MAX
+            };
+            if can_grow_right && width + right_w <= marker_budget {
+                end += 1;
+                width += right_w;
+            } else if can_grow_left && width + left_w <= marker_budget {
+                start -= 1;
+                width += left_w;
+            } else {
+                break;
+            }
+        }
+        if start > 0 {
+            spans.push(Span::styled("‹ ", Style::default().fg(Color::DarkGray)));
+        }
+        for (text, color) in &entries[start..=end] {
+            spans.push(Span::styled(text.clone(), Style::default().fg(*color)));
+        }
+        if end + 1 < entries.len() {
+            spans.push(Span::styled("›", Style::default().fg(Color::DarkGray)));
+        }
+    }
+    spans.push(Span::styled(ptn_text, Style::default().fg(Color::DarkGray)));
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// TK2.1 C0 (D2/D3): the persistent trig strip — **only** the selected
+/// track, two rows of 8 cells, rendered on every screen. Below **48**
+/// columns *(tunable, §3 minimum width)* the row labels (` 1-8`/`9-16`)
+/// drop.
+fn render_trig_strip(frame: &mut Frame, area: Rect, data: &RenderData) {
+    let track = data.active_track;
+    let focus = data.step_focuses.get(track).copied().flatten();
+    let locks: std::collections::HashSet<usize> = data
+        .step_locks
+        .get(track)
+        .map(|v| v.iter().copied().collect())
+        .unwrap_or_default();
+    let show_label = area.width >= 48;
+    let lines = vec![
+        render_trig_row(track, data, 0, " 1-8", show_label, focus, &locks),
+        render_trig_row(track, data, PAGE_SIZE, "9-16", show_label, focus, &locks),
+    ];
+    let para = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::NONE)
             .style(Style::default().fg(Color::Gray)),
@@ -296,61 +381,114 @@ fn render_seq_grid(frame: &mut Frame, area: Rect, data: &RenderData) {
     frame.render_widget(para, area);
 }
 
-fn render_track_row<'a>(
+/// One trig-strip row. §3's exact cell format: `[k]g` (4 cols: bracket,
+/// chip-or-space, bracket, glyph) joined by one space — `k` stays a blank
+/// chip slot until C2 wires `key_label`. State glyphs keep the TK2
+/// colour/state rules (playhead yellow, active+locked green, active cyan,
+/// locked white, empty dark gray); focus/playhead are carried by
+/// `Modifier::REVERSED` since a single-column glyph leaves no room for a
+/// wider block.
+fn render_trig_row<'a>(
     track_idx: usize,
     data: &'a RenderData,
     row_off: usize,
+    label: &str,
     show_label: bool,
     focus: Option<usize>,
     locks: &std::collections::HashSet<usize>,
 ) -> Line<'a> {
     let st = data.step_states.get(track_idx).unwrap_or(&data.step_state);
     let window = data.page_window * PAGE_SIZE * 2 + row_off;
-    let mut spans: Vec<Span> = Vec::with_capacity(PAGE_SIZE + 2);
+    let mut spans: Vec<Span> = Vec::with_capacity(PAGE_SIZE * 4);
 
-    let label = if show_label {
-        format!("{:>2}:", track_idx + 1)
-    } else {
-        "   ".to_string()
-    };
-    spans.push(Span::styled(
-        label,
-        Style::default().fg(if track_idx == data.active_track {
-            Color::White
-        } else {
-            Color::Gray
-        }),
-    ));
+    if show_label {
+        spans.push(Span::styled(
+            format!("{:>4} ", label),
+            Style::default().fg(Color::Gray),
+        ));
+    }
 
     for col in 0..PAGE_SIZE {
         let step = window + col;
         let is_active = st.steps.get(step).copied().unwrap_or(false);
-
         let is_locked = locks.contains(&step);
+        let is_playhead = step == st.current_step;
         let focused = focus == Some(step);
 
-        let (glyph, color, modifier) = if focused {
-            (" ████ ", Color::Yellow, Modifier::REVERSED)
-        } else if step == st.current_step {
-            (" ████ ", Color::Yellow, Modifier::empty())
+        let glyph = if is_active { "▓" } else { "░" };
+        let (color, modifier) = if focused || is_playhead {
+            (Color::Yellow, Modifier::REVERSED)
         } else if is_active && is_locked {
-            (" ████ ", Color::Green, Modifier::empty())
+            (Color::Green, Modifier::empty())
         } else if is_active {
-            (" ████ ", Color::Cyan, Modifier::empty())
+            (Color::Cyan, Modifier::empty())
         } else if is_locked {
-            (" ████ ", Color::White, Modifier::empty())
+            (Color::White, Modifier::empty())
         } else {
-            (" ░░░░ ", Color::DarkGray, Modifier::empty())
+            (Color::DarkGray, Modifier::empty())
         };
 
+        spans.push(Span::styled("[", Style::default().fg(Color::DarkGray)));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled("]", Style::default().fg(Color::DarkGray)));
         spans.push(Span::styled(
             glyph,
             Style::default().fg(color).add_modifier(modifier),
         ));
-        spans.push(Span::raw(" "));
+        if col + 1 < PAGE_SIZE {
+            spans.push(Span::raw(" "));
+        }
     }
 
     Line::from(spans)
+}
+
+/// TK2.1 C0: the contextual window for `Screen::Grid` (and, temporarily,
+/// `Screen::Mute` until C6) — header `{display_name} — {engine_name}`,
+/// then the active page's first 4 params *(tunable)* as name/value/bar
+/// (reusing the already-resolved `encoder_cells`), then the existing
+/// envelope section. A track with no page params (no composite view, no
+/// `Rule` pagination — `model.rs` `resolve_encoder_params` returns empty)
+/// renders the header plus a placeholder line rather than an empty pane.
+fn render_track_context(frame: &mut Frame, area: Rect, data: &RenderData) {
+    let chunks = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(area);
+
+    let display_name = data
+        .display_names
+        .get(data.active_track)
+        .map(|s| s.as_str())
+        .unwrap_or("?");
+    let engine_name = data
+        .track_names
+        .get(data.active_track)
+        .map(|s| s.as_str())
+        .unwrap_or("?");
+    let header = Paragraph::new(format!(" {display_name} — {engine_name}"))
+        .style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD));
+    frame.render_widget(header, chunks[0]);
+
+    let params: Vec<&EncoderCell> = data.encoder_cells.iter().take(4).flatten().collect();
+    if params.is_empty() {
+        let placeholder = Paragraph::new("   no page params")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(placeholder, chunks[1]);
+    } else {
+        let mut spans: Vec<Span> = Vec::with_capacity(params.len());
+        for cell in params {
+            let ratio = ((cell.value - cell.min) / (cell.max - cell.min).max(0.001)).clamp(0.0, 1.0);
+            let filled = (ratio * 4.0).round() as usize;
+            let bar = "▓".repeat(filled) + &"░".repeat(4 - filled);
+            spans.push(Span::raw(format!("  {} {:.2} {bar}", cell.name, cell.value)));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), chunks[1]);
+    }
+
+    render_envelope_section(frame, chunks[2], data);
 }
 
 fn render_perf_window(frame: &mut Frame, area: Rect, data: &RenderData) {
@@ -612,7 +750,7 @@ fn render_status_line(frame: &mut Frame, area: Rect, data: &RenderData) {
         Span::styled(format!(" {:8} ", screen_name(data.screen)), screen_style),
         Span::raw(" "),
         Span::raw(
-            data.track_names
+            data.display_names
                 .get(data.active_track)
                 .map(|s| s.as_str())
                 .unwrap_or("?"),
@@ -706,6 +844,7 @@ impl RenderData {
             armed_prefix: None,
             active_track: 0,
             track_names: (1..=track_count).map(|i| format!("T{}", i)).collect(),
+            display_names: (1..=track_count).map(|i| format!("T{}", i)).collect(),
             bpm: 120.0,
             playing: false,
             page_window: 0,
@@ -767,7 +906,8 @@ mod tests {
             grid_rec: true,
             armed_prefix: None,
             active_track: 0,
-            track_names: vec!["Kick".into(), "Snare".into()],
+            track_names: vec!["AnalogKick".into(), "AnalogSnare".into()],
+            display_names: vec!["Kick".into(), "Snare".into()],
             bpm: 140.0,
             playing: true,
             page_window: 0,
@@ -829,7 +969,8 @@ mod tests {
             grid_rec: true,
             armed_prefix: None,
             active_track: 0,
-            track_names: vec!["Kick".into()],
+            track_names: vec!["AnalogKick".into()],
+            display_names: vec!["Kick".into()],
             bpm: 120.0,
             playing: false,
             page_window: 0,
@@ -899,67 +1040,31 @@ mod tests {
         terminal.draw(|f| render(f, &data)).unwrap();
     }
 
+    /// TK2.1 C0 (D2): renamed from `grid_structure_4_tracks_23_rows`, which
+    /// pinned the deleted all-tracks-stacked grid — the trig strip renders
+    /// exactly two rows (the selected track only), regardless of track
+    /// count.
     #[test]
-    fn grid_structure_4_tracks_23_rows() {
-        let st = StepState {
-            pattern_length: 16,
-            page_count: 1,
-            steps: vec![false; 16],
-            current_step: 0,
-        };
-        let data = RenderData {
-            screen: Screen::Grid,
-            grid_rec: true,
-            armed_prefix: None,
-            active_track: 0,
-            track_names: vec!["Kick".into(), "Snare".into(), "Hihat".into(), "Bass".into()],
-            bpm: 140.0,
-            playing: true,
-            page_window: 0,
-            step_state: st.clone(),
-            step_states: vec![st.clone(), st.clone(), st.clone(), st],
-            slot_a: None,
-            slot_a_value: 0.0,
-            slot_b: None,
-            slot_b_value: 0.0,
-            page_groups: vec![],
-            perf_page: 0,
-            envelope: None,
-            live_env_level: None,
-            live_lfo_phase: None,
-            debug_event: None,
-            step_focuses: vec![None; 4],
-            step_locks: vec![vec![]; 4],
-            mute_states: vec![false; 4],
-            slot_a_locked: false,
-            slot_b_locked: false,
-            cmdline: None,
-            cmdline_error: None,
-            cmdline_status: None,
-            cmdline_candidates: vec![],
-            slot_a_flash: false,
-            slot_c: None,
-            slot_c_value: 0.0,
-            slot_c_locked: false,
-            slot_c_flash: false,
-            slot_b_flash: false,
-            sub_page: 0,
-            sub_page_count: 1,
-            encoder_cells: vec![None; 8],
-            encoder_cursor: 0,
-            encoder_flash: vec![false; 8],
-            kitty: false,
-            pattern_bank_size: 8,
-            active_pattern: 0,
-            cued_pattern: None,
-            chain_len: 0,
-            page_loop: (0, 0),
-            chain_cursor: 0,
-            help_visible: false,
-        };
+    fn strip_structure_is_two_rows() {
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 4);
+        data.active_track = 1;
         terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert_eq!(
+            text.matches(" 1-8").count(),
+            1,
+            "the trig strip must render exactly one ' 1-8' row (selected \
+             track only), not one per track; got: {text}"
+        );
+        assert_eq!(
+            text.matches("9-16").count(),
+            1,
+            "the trig strip must render exactly one '9-16' row (selected \
+             track only), not one per track; got: {text}"
+        );
     }
 
     fn buffer_text(terminal: &ratatui::Terminal<ratatui::backend::TestBackend>) -> String {
@@ -970,6 +1075,271 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect()
+    }
+
+    /// Extracts a single row's text — used where whole-buffer text would
+    /// mix glyphs from two regions that legitimately reuse the same
+    /// characters (e.g. `▓`/`░` in both the trig strip and the contextual
+    /// window's param bars).
+    fn buffer_row_text(
+        terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+        row: u16,
+        width: u16,
+    ) -> String {
+        let buf = terminal.backend().buffer();
+        (0..width).map(|x| buf.get(x, row).symbol()).collect()
+    }
+
+    /// Row index of the first line whose text contains `needle`, or panics.
+    fn find_row(
+        terminal: &ratatui::Terminal<ratatui::backend::TestBackend>,
+        height: u16,
+        width: u16,
+        needle: &str,
+    ) -> u16 {
+        for row in 0..height {
+            if buffer_row_text(terminal, row, width).contains(needle) {
+                return row;
+            }
+        }
+        panic!("no row contains {needle:?}");
+    }
+
+    /// TK2.1 C0 (D2): the trig strip shows the selected track's steps only
+    /// — a second track's pattern must not leak into the rendered strip.
+    #[test]
+    fn trig_strip_renders_only_selected_track() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 2);
+        data.active_track = 1;
+        // Track 0: every step active. Track 1 (selected): every step empty.
+        // If the strip leaked track 0's pattern, active glyphs would show.
+        data.step_states = vec![
+            StepState {
+                pattern_length: 16,
+                page_count: 1,
+                steps: vec![true; 16],
+                current_step: usize::MAX, // no playhead cell to confound the glyph count
+            },
+            StepState {
+                pattern_length: 16,
+                page_count: 1,
+                steps: vec![false; 16],
+                current_step: usize::MAX,
+            },
+        ];
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        // The strip is the two rows directly below the one-line track
+        // indicator, which is the row containing "PTN P" (§3).
+        let indicator_row = find_row(&terminal, 24, 80, "PTN P");
+        let strip_row_1 = buffer_row_text(&terminal, indicator_row + 1, 80);
+        let strip_row_2 = buffer_row_text(&terminal, indicator_row + 2, 80);
+        assert!(
+            !strip_row_1.contains('▓') && !strip_row_2.contains('▓'),
+            "the strip must render track 1 (all empty), not track 0 (all \
+             active); got row1={strip_row_1:?} row2={strip_row_2:?}"
+        );
+    }
+
+    /// TK2.1 C0 (D2): the track line lists every track with its display
+    /// name and a mute marker for muted tracks.
+    #[test]
+    fn track_indicator_lists_tracks_with_mute_markers() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 2);
+        data.display_names = vec!["Kick".into(), "Snare".into()];
+        data.mute_states = vec![false, true];
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(text.contains("Kick"), "must list Kick; got: {text}");
+        assert!(text.contains("Snare"), "must list Snare; got: {text}");
+        assert!(
+            text.contains("Snare●") || text.contains("Snare ●"),
+            "muted Snare must carry a mute marker; got: {text}"
+        );
+    }
+
+    /// ADR-044 D2: when the full track list doesn't fit, the indicator
+    /// windows around the selected track with `‹`/`›` markers rather than
+    /// truncating silently.
+    #[test]
+    fn track_indicator_windows_around_selected_track_when_crowded() {
+        let backend = ratatui::backend::TestBackend::new(70, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 12);
+        data.display_names = (1..=12).map(|i| format!("TrackNumber{i:02}")).collect();
+        data.active_track = 6; // mid-list: both edges must be hidden
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let indicator_row = find_row(&terminal, 24, 70, "PTN P");
+        let line = buffer_row_text(&terminal, indicator_row, 70);
+        assert!(
+            line.contains('‹') && line.contains('›'),
+            "a crowded track list must window with both markers when the \
+             selection sits mid-list; got: {line:?}"
+        );
+        assert!(
+            line.contains("TrackNumber07"),
+            "the selected track must stay visible inside the window; \
+             got: {line:?}"
+        );
+    }
+
+    /// TK2.1 C0 (D1/D2): the trig strip and track line are rendered from
+    /// `render()` directly, never from a per-screen branch — they must
+    /// appear on every screen, not just Grid.
+    #[test]
+    fn trig_strip_and_track_line_render_on_every_screen() {
+        for screen in [
+            Screen::Grid,
+            Screen::Param(0),
+            Screen::Tempo,
+            Screen::Chain,
+            Screen::Settings,
+            Screen::Mute,
+        ] {
+            let backend = ratatui::backend::TestBackend::new(80, 24);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            let data = RenderData::for_test(screen, 1);
+            terminal.draw(|f| render(f, &data)).unwrap();
+
+            let text = buffer_text(&terminal);
+            assert!(
+                text.contains("PTN P"),
+                "track indicator must render on {screen:?}; got: {text}"
+            );
+            assert!(
+                text.contains(" 1-8") && text.contains("9-16"),
+                "trig strip must render on {screen:?}; got: {text}"
+            );
+        }
+    }
+
+    /// TK2.1 C0 (D1): region heights never change across screens — only
+    /// the contextual window's content varies.
+    #[test]
+    fn region_heights_are_identical_across_screens() {
+        let mut rows: Vec<u16> = Vec::new();
+        for screen in [
+            Screen::Grid,
+            Screen::Param(0),
+            Screen::Tempo,
+            Screen::Chain,
+            Screen::Settings,
+            Screen::Mute,
+        ] {
+            let backend = ratatui::backend::TestBackend::new(80, 24);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            let data = RenderData::for_test(screen, 1);
+            terminal.draw(|f| render(f, &data)).unwrap();
+            rows.push(find_row(&terminal, 24, 80, "PTN P"));
+        }
+        assert!(
+            rows.iter().all(|r| *r == rows[0]),
+            "the track indicator must land on the same row on every \
+             screen; got: {rows:?}"
+        );
+    }
+
+    /// TK2.1 C0: the contextual window's header shows both the display
+    /// name and the engine name.
+    #[test]
+    fn track_context_shows_display_name_and_engine_name() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.display_names = vec!["Kick".into()];
+        data.track_names = vec!["AnalogKick".into()];
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        // Scoped to the header line itself (found via the `—` separator
+        // only the header emits) — a whole-buffer search can't tell this
+        // apart from the engine name leaking into the transport bar or
+        // status line (the exact bug this field split exists to prevent).
+        let header_row = find_row(&terminal, 24, 80, "—");
+        let line = buffer_row_text(&terminal, header_row, 80);
+        assert!(
+            line.contains("Kick") && line.contains("AnalogKick"),
+            "contextual header must show display name and engine name; \
+             got: {line:?}"
+        );
+    }
+
+    /// TK2.1 C0 (D2, §3): the transport bar and status line show the
+    /// display name ("Kick"), not the engine/cap-doc name ("AnalogKick") —
+    /// review finding: these two consumers were initially left reading
+    /// `track_names` (engine name) after the display_name/track_names
+    /// split, exactly reintroducing the bug the split exists to fix.
+    #[test]
+    fn transport_and_status_line_show_display_name_not_engine_name() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.display_names = vec!["Kick".into()];
+        data.track_names = vec!["AnalogKick".into()];
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let transport_line = buffer_row_text(&terminal, 0, 80);
+        assert!(
+            transport_line.contains("Kick") && !transport_line.contains("AnalogKick"),
+            "transport bar must show the display name, not the engine \
+             name; got: {transport_line:?}"
+        );
+
+        let status_row = 23; // fixed last row: 24-row terminal, status is Length(1) at the bottom
+        let status_line = buffer_row_text(&terminal, status_row, 80);
+        assert!(
+            status_line.contains("Kick") && !status_line.contains("AnalogKick"),
+            "status line must show the display name, not the engine name; \
+             got: {status_line:?}"
+        );
+    }
+
+    /// TK2.1 C0: a track with no page params (no composite view, no `Rule`
+    /// pagination) renders a placeholder line, not an empty pane.
+    #[test]
+    fn track_context_without_page_params_renders_placeholder() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let data = RenderData::for_test(Screen::Grid, 1); // encoder_cells: all None
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("no page params"),
+            "an empty page-param resolution must render the placeholder; \
+             got: {text}"
+        );
+    }
+
+    /// TK2.1 C0 (§3 minimum width): below 60 columns the track line drops
+    /// names, keeping the track number.
+    #[test]
+    fn narrow_terminal_drops_names_before_chips() {
+        let backend = ratatui::backend::TestBackend::new(40, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.display_names = vec!["Kick".into()];
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        // Scoped to the track line itself — the contextual header
+        // legitimately shows the name at any width; only the §3 minimum-
+        // width rule for the track line is under test here.
+        let indicator_row = find_row(&terminal, 24, 40, "PTN P");
+        let line = buffer_row_text(&terminal, indicator_row, 40);
+        assert!(
+            !line.contains("Kick"),
+            "below the 60-column minimum, the track line must drop names; \
+             got: {line:?}"
+        );
+        assert!(
+            line.contains("▸1"),
+            "the track number must survive the narrow drop; got: {line:?}"
+        );
     }
 
     #[test]
