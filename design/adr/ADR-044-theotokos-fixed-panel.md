@@ -467,11 +467,19 @@ and is not a panel decision. Track ownership is already computed:
 `CompositeView.chain` (`view-assembly/src/lib.rs:45`) is the per-track node
 list that capture would key on.
 
-One dependency worth naming: the external-encoder half rests on relative
-CC from the controller, which is the platform's last unverified assumption
-under the encoder path (`handoff.md`'s standing offer to test Digitakt
-relative-CC when hardware is at hand). Worth clearing before the
-cross-surface ADR is implemented, not before it is written.
+One reality check on the external half: **no true-relative controller is
+on hand.** Paraclete's encoder contract is relative-only (a named
+decision), and the hardware here transmits absolute positions — the
+LaunchControl XL has pots, and the Digitakt II was checked and disqualified
+on 2026-07-04 (`design/sessions/s0-hardware-checks.md`, Check 1). An
+absolute-position surface is a *macro* surface, not a contextual encoder
+bank, and belongs to the P16 macro system plus MIDI learn rather than to
+this decision; SPIKE-006 scopes what the XL can actually provide.
+
+What this does **not** mean is that the cross-surface path is theoretical:
+**Theoria's touch encoders are relative today** (W1 C0, `CMD_BUMP_PARAM`),
+so holding a step on the keyboard while dialling a value on the tablet is
+testable now, with hardware already in the room.
 
 ---
 
@@ -483,7 +491,7 @@ cross-surface ADR is implemented, not before it is written.
 | **R2** | D8 — pull ADR-039 decision 7's `live_rec` slice into TK2.1 (so `RecMode::Live` does something), versus shipping `Off`/`Grid` only and waiting for the P11 phase spec? | Pull it forward; the slice is small and fully specified, and a cycle with a dead third state is worse than either |
 | **R3** | D12/D14 — remove `Mute` from the `:bind` vocabulary entirely, with warn-and-skip loading for keymaps that still name it? | Yes; a chord has no single-button equivalent, so an alias would be a lie |
 | **R4** | ~~D6 — confirm the reference behaviour the decision rests on~~ | **Resolved 2026-07-27.** Bare trig = select **and** sound; TRK+trig = select **silently**; the display follows the press without changing which page is open. Folded into D6 |
-| **R6** | D15 — is the cross-surface half (hold the step on the keyboard or a Launchpad pad, turn real encoders on a MIDI controller) right to defer to its own ADR, with TK2.1 shipping only the Theotokos-local target? | Yes — it rewrites every surface's parameter writes; that is a mutation-plane decision, not a panel one |
+| **R6** | D15 — is the cross-surface half (hold the step here, supply the value from Theoria or another surface) right to defer to **ADR-045** (drafted 2026-07-28), with TK2.1 shipping only the Theotokos-local target? | Yes — it rewrites every surface's parameter writes; that is a mutation-plane decision, not a panel one |
 | **R5** | Session #2 recorded FUNC+transport copy/clear/paste as "converged (provisional) … revisit inside the general redesign pass". This ADR does **not** redesign it — see "Out of scope". Accept the deferral to session #3? | Yes — the surrounding grammar changes under this ADR, so redesigning the chord now would be designing against a surface nobody has played |
 
 ## Alternatives considered
@@ -549,8 +557,8 @@ cross-surface ADR is implemented, not before it is written.
   publishes the latter; the ENC and LOCK keys claim `n` and `m` by default
   (both remappable, ADR-037) — `m` is free because D12 retired the Mute
   screen.
-- **D15's cross-surface capture needs its own ADR** (proposed number
-  ADR-045): rewriting any surface's parameter write for a track's own
+- **D15's cross-surface capture is ADR-045** (🟡 proposed, drafted
+  2026-07-28): rewriting any surface's parameter write for a track's own
   nodes while that track has a lock target armed. Not in TK2.1.
 - **BUG-038** (arrow-cursor nav + numpad slot jog speced but never wired)
   is touched by D9/D10's rewrite of the encoder path and must be either
@@ -595,7 +603,7 @@ otherwise), superseding D13's "state the gap and change nothing", and to
 record that the value may arrive from any surface — a keyboard in ENC
 mode, the numpad slots, Theoria, or real encoders on a MIDI controller
 while the step is held on the keyboard or a Launchpad pad. The
-cross-surface half is deferred to its own ADR (R6).
+cross-surface half is deferred to ADR-045 (R6).
 
 ## Revision — 2026-07-27 (post-review, user-directed)
 

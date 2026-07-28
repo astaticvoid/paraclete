@@ -583,7 +583,7 @@ explicit converged / revise / park verdict per hypothesis.
 | OQ-T23b | Tap tempo behind a screen is friction — global chord? | OPEN — session #3 |
 | OQ-T25 | Live-record erase gesture (ADR-039 lists "hold NO?") | OPEN — P11 phase spec |
 | OQ-T27 | ~~P-lock authoring has no gesture~~ | **Resolved by ADR-044 D15** — shared lock target, latched or momentary; C5b implements the Theotokos-local half |
-| OQ-T28 | Cross-surface lock capture: a MIDI controller's encoders writing locks while the step is held on the keyboard or a Launchpad pad (ADR-044 R6) | OPEN — needs its own ADR; also gated on the unverified relative-CC assumption (`handoff.md`) |
+| OQ-T28 | Cross-surface lock capture: any surface's parameter write becoming a lock while the step is held here (ADR-044 R6) | **ADR-045 drafted** (🟡 proposed) — not TK2.1 scope. Testable today with Theoria's relative touch encoders; no relative *hardware* controller exists here (SPIKE-006) |
 | OQ-T4 | design.md §4.2's step-size scaler, still unimplemented | OPEN — unchanged by this phase |
 | OQ-T21 | KEYBD chromatic grammar | OPEN — TK3 |
 | OQ-T12 | WT convergence | OPEN — after session #3 (three sessions held) |

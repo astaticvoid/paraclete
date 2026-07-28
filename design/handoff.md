@@ -27,7 +27,7 @@ For the Theotokos performance-terminal track (ADR-036 **accepted
 layout and the default mode model (`design/sessions/theotokos-2.md`,
 `design/phases/tk2-report.md`). **The active artifact is the TK2.1
 redesign: `design/adr/ADR-044-theotokos-fixed-panel.md` (🟡 proposed —
-do not start C0 until the user ratifies R1–R3) and its blueprint
+do not start C0 until the user ratifies R1–R6) and its blueprint
 `design/phases/tk2.1-theotokos.md`.**
 
 ## Task routing by tier
@@ -177,6 +177,18 @@ a small open project may not match their per-surface polish. The pitch is the
 *combination* (performance immediacy + open composability, one graph, any
 controller, free license), **never** superiority over a named product.
 
-Standing user offers to schedule when hardware is at hand: Digitakt
-relative-CC verification (last unverified assumption under the encoder path),
-BUG-001 before/after audibility check.
+Standing user offer to schedule when hardware is at hand: BUG-001
+before/after audibility check.
+
+**Do not revive the Digitakt-as-encoder-controller idea.** It was checked
+on hardware 2026-07-04 and disqualified: the Digitakt II transmits
+**absolute** CC (knob position, mirrored from the internal parameter) and
+Elektron's MIDI implementation has no relative mode
+(`design/sessions/s0-hardware-checks.md`, Check 1; side finding BUG-009).
+It survived in later docs as a "standing offer" and an "unverified
+assumption" long after it was settled — it is neither. Paraclete's
+relative-only encoder contract needs a controller that transmits knob
+*deltas*; no such device is on hand (SPIKE-006 explores what the
+LaunchControl XL's pots can and cannot do instead). Digitakt remains a
+*design reference* for workflow, per naming policy — never a control
+surface for parameter editing.

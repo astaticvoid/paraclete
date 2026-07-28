@@ -679,9 +679,13 @@ It supersedes D13's "state the gap and change nothing" and revives the
 since TK2 C3. Explicitly designed so the *value* may come from any surface
 — keyboard ENC mode, numpad slots, Theoria, or real encoders on a MIDI
 controller while the step is held here; capturing writes that arrive from
-other surfaces is deferred to its own ADR (R6, OQ-T28) because it rewrites
-the mutation path for every surface, and rests on the still-unverified
-relative-CC assumption.
+other surfaces is deferred to **ADR-045** (R6, OQ-T28) because it rewrites
+the mutation path for every surface. Note what that ADR can and cannot
+lean on: Theoria's touch encoders are relative today, so the workflow is
+testable with hardware already here; there is **no relative hardware
+controller** — the Digitakt II was checked and disqualified 2026-07-04
+(absolute CC, no relative mode), and the LaunchControl XL's pots are a
+macro surface, not a contextual encoder bank (SPIKE-006).
 
 **Hostile review, same day (3 fresh-context reviewers: code claims /
 design consistency / implementability): 15 B, 26 M, 27 m; 49+ code claims
