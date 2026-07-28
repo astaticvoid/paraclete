@@ -617,7 +617,7 @@ layout (TRK/PTN physical feel, encoder ergonomics, numpad fate).
 The redesign pass Stage 4 called for is drafted, not yet ratified:
 `design/adr/ADR-044-theotokos-fixed-panel.md` (decisions D1–D12,
 ratification questions R1–R3) plus its commit blueprint
-`design/phases/tk2.1-theotokos.md` (C0–C6 + session #3). What it freezes
+`design/phases/tk2.1-theotokos.md` (C0–C7 + session #3 as C8). What it freezes
 for §5.1/§5.2: fixed region heights with one contextual window; a
 persistent trig strip showing **only** the selected track, on every
 screen; a one-line track indicator carrying names, mute state and

@@ -138,6 +138,11 @@ consequences follow and are normative:
 - **No chip without an action.** A pad column past the discovered track
   count gets no chip and is a silent no-op — not an echo per keypress
   (on the default 4-track instrument that would be 12 keys echoing).
+- **Chip casing is display-only.** `key_name` is the storage form and is
+  lowercase (`"tab"`, `"esc"`, `"space"` — `input.rs:176-199`); chips
+  title-case the multi-character names (`[Tab]`, `[Esc]`, `[Space]`) and
+  leave single characters as typed (`[q]`). The keymap file format is
+  untouched.
 
 ### D4 — A labeled legend strip, not a hint line
 
@@ -343,7 +348,24 @@ becomes unbound and available to `:bind`. This supersedes TK2 §1 D12's
 `Screen` enum and §1 D11's button-name list; §0 A14 goes half-stale
 (MUTE was "a screen + the TRK-held chord" and is now only the chord).
 
-### D13 — Retired button names degrade a keymap, they do not reject it
+### D13 — Step focus and p-lock authoring have no gesture, and this phase does not invent one
+
+design.md §4 point 6 (DETERMINED) and TK2 §1 D8 both assume a focused step
+that encoder jog can route a p-lock to. **No gesture reaches it today:**
+`Action::FocusStep` lost its key at TK2 C3's wiring flip (`Enter` now
+resolves to `Yes`) and is documented unreachable (`action.rs:41`), so the
+encoder p-lock branch (`lib.rs:848`), `ClearAllLocks` (`lib.rs:672`) and
+Backspace's screen-independent lock-clear are all dead paths.
+
+D6 makes this sharper, not looser: in the default `Off` mode no trig
+addresses a step at all, so even a hold-step gesture would need `Grid`
+mode. This phase **states the gap and changes nothing** — reviving p-lock
+authoring is a grammar decision that belongs with session #3's evidence,
+not a side effect of a layout pass. The dead paths stay, documented, for
+whichever commit gives them a gesture (OQ-T27). What the phase does owe:
+the C7 doc sweep must not describe p-locks as reachable.
+
+### D14 — Retired button names degrade a keymap, they do not reject it
 
 `Keymap::from_yaml` currently fails the whole file on an unrecognized
 button name (`input.rs:297`, propagated with `?`), so D12 would turn one
@@ -361,7 +383,7 @@ therefore stated as a decision, not folded silently into a commit.
 |---|---|---|
 | **R1** | D5 — adopt the REC cycle (`Off → Grid → Live`), superseding ADR-038's grid-rec toggle and ADR-039's REC+PLAY grammar? Or keep REC+PLAY as those ADRs and session #2 state it, accepting that step programming stops when the pattern plays? | Adopt the cycle — but knowingly, as a supersession of two accepted ADRs, re-judged at session #3 |
 | **R2** | D8 — pull ADR-039 decision 7's `live_rec` slice into TK2.1 (so `RecMode::Live` does something), versus shipping `Off`/`Grid` only and waiting for the P11 phase spec? | Pull it forward; the slice is small and fully specified, and a cycle with a dead third state is worse than either |
-| **R3** | D12/D13 — remove `Mute` from the `:bind` vocabulary entirely, with warn-and-skip loading for keymaps that still name it? | Yes; a chord has no single-button equivalent, so an alias would be a lie |
+| **R3** | D12/D14 — remove `Mute` from the `:bind` vocabulary entirely, with warn-and-skip loading for keymaps that still name it? | Yes; a chord has no single-button equivalent, so an alias would be a lie |
 | **R4** | D6 — is the pad/step split in the trig keys acceptable, given §3.A point 3's warning about mode errors? It is the one place this redesign *adds* a mode. | Yes, given the REC indicator plus D3's chips make it visible; re-judged at session #3 |
 | **R5** | Session #2 recorded FUNC+transport copy/clear/paste as "converged (provisional) … revisit inside the general redesign pass". This ADR does **not** redesign it — see "Out of scope". Accept the deferral to session #3? | Yes — the surrounding grammar changes under this ADR, so redesigning the chord now would be designing against a surface nobody has played |
 
@@ -455,8 +477,8 @@ REC-cycle became a contested ratification item (R1) with ADR-038/ADR-039
 named in the supersession header; §0 A10's precedence was restored over
 D9/D10; §4.2's jog constants were restored; D3 gained shadow-awareness and
 the no-chip-without-action rule; D4 declared its non-derivable entries; D9
-discharged §0 A7; D10 recorded ADR-041 amendment 3's ownership; D13 was
-added; BUG-041 was filed and D7/D8's stopped-transport claims were bounded
+discharged §0 A7; D10 recorded ADR-041 amendment 3's ownership; D13 (the
+dead p-lock path) and D14 were added; BUG-041 was filed and D7/D8's stopped-transport claims were bounded
 by it; the dropped FUNC+transport session verdict became R5.
 
 ## Cross-references

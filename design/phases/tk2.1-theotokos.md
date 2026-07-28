@@ -58,7 +58,8 @@ D7 no transport at launch · D8 live record engine-side (`live_rec`,
 ADR-039 D7) *(pending R2)* · D9 encoder mode = the Param screen, §0 A10
 intact · D10 descriptor-accurate jog, §4.2 constants unchanged ·
 D11 sticky re-tap disarms behind a repeat guard · D12 Mute retired ·
-D13 retired button names warn-and-skip.
+D13 step focus / p-lock authoring stay gestureless and unchanged ·
+D14 retired button names warn-and-skip.
 
 ---
 
@@ -280,7 +281,9 @@ in C0.
 `play_chip_is_x_not_space`, `strip_cells_show_key_chips_in_grid_mode`,
 `chips_move_to_track_line_in_pad_mode`,
 `pad_column_without_a_track_has_no_chip`,
-`legend_renders_labeled_chips`, `legend_literal_entries_are_not_derived`.
+`legend_renders_labeled_chips`, `legend_literal_entries_are_not_derived`,
+`chip_titlecases_named_keys_only` (D3 — `[Tab]`, not `[tab]`; `[q]`, not
+`[Q]`; the keymap file format is untouched).
 
 ### C3 — Live record + the missing stop signal (D8) *(depends on R2)*
 
@@ -412,7 +415,7 @@ strip persistent, not by new rendering.
 `param_func_is_coarse_ctrl_is_fine`,
 `off_param_fine_is_func_ctrl`.
 
-### C6 — Sticky re-tap, Mute retirement, keymap degradation (D11/D12/D13)
+### C6 — Sticky re-tap, Mute retirement, keymap degradation (D11/D12/D14)
 
 `input.rs::HeldState`: `on_press` gains an injected `now` (following
 `JogTracker::press/repeat(now, tick_ms)`, `model.rs:~940`) and a
@@ -427,7 +430,7 @@ path untouched.
 legend entries. Mute state already lives on the track indicator (C0);
 `TRK`+`FUNC`+trig is unchanged.
 
-D13: `Keymap::from_yaml` (`input.rs:297`) stops propagating unknown key
+D14: `Keymap::from_yaml` (`input.rs:297`) stops propagating unknown key
 and button names with `?`. Unknown entries are skipped, the rest of the
 file loads, and the skipped names are reported through `cmdline_status`.
 Structurally invalid YAML still fails. Without this, one stale `m: Mute`
@@ -453,7 +456,7 @@ a new name.
 `sticky_prefix_autorepeat_within_guard_does_not_disarm`,
 `sticky_prefix_esc_still_disarms`,
 `mute_button_name_is_rejected_by_bind`,
-`keymap_with_retired_button_name_skips_only_that_binding` (D13),
+`keymap_with_retired_button_name_skips_only_that_binding` (D14),
 `mute_state_visible_on_track_indicator`.
 
 ### C7 — Docs, smoke gate, BUG-038 disposition
@@ -462,6 +465,9 @@ No new features. Run the app on the default 4-track instrument, fix paper
 cuts the suites cannot see (the TK2 C7 precedent), file engine issues per
 the standing directive. Then:
 
+- The doc sweep must not describe p-locks as reachable (ADR-044 D13):
+  `AGENTS.md`, the help overlay and the README all currently imply a
+  step-focus gesture that no key produces.
 - **BUG-038 must be resolved or formally descoped in this commit.** C4/C5
   rewrite the encoder path and make the trig rows the encoder bank, which
   raises the visibility of the cursor that never moves
@@ -510,6 +516,7 @@ explicit converged / revise / park verdict per hypothesis.
 | OQ-T24 | Numpad slot cluster fate | OPEN — session #3; D9 discharges §0 A7's modifier-floor condition, so this is now a free choice |
 | OQ-T23b | Tap tempo behind a screen is friction — global chord? | OPEN — session #3 |
 | OQ-T25 | Live-record erase gesture (ADR-039 lists "hold NO?") | OPEN — P11 phase spec |
+| OQ-T27 | P-lock authoring has no gesture at all (ADR-044 D13): `Action::FocusStep` lost its key at TK2 C3, so design.md §4 point 6 and TK2 §1 D8's step-focus routing are dead paths — and in `RecMode::Off` no trig addresses a step | OPEN — session #3; deliberately untouched here |
 | OQ-T4 | design.md §4.2's step-size scaler, still unimplemented | OPEN — unchanged by this phase |
 | OQ-T21 | KEYBD chromatic grammar | OPEN — TK3 |
 | OQ-T12 | WT convergence | OPEN — after session #3 (three sessions held) |
@@ -525,4 +532,6 @@ list; the legend priority list, cell formats, minimum width and
 quantization formula are now literal; `startup_emits_clock_stop` gained a
 real seam; BUG-041 was found and folded into C3; §4.2's constants were
 restored; §0 A10's precedence was restored over C5; BUG-038 got a deadline;
-D13 was added so a retired button name cannot reject a user's keymap.
+D13 recorded the dead step-focus/p-lock path rather than leaving §4 point 6
+reading as live, and D14 was added so a retired button name cannot reject a
+user's keymap.

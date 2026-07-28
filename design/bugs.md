@@ -1530,6 +1530,16 @@ with range metadata is the alternative, and would fix Antiphon/Theoria
 consumers too — but it widens a shared assembly type, so the local
 cap-doc lookup is preferred first.
 
+**Correction (2026-07-27, hostile review):** §2's arithmetic above was
+illustrative and overstated. No 8-value stepped param exists in tree —
+every `stepped: true` descriptor is narrow (`lfo.rs:49` 0..4,
+`filter.rs:82` 0..3, `oscillator.rs:68` 0..4, `envelope.rs:52` 0..2,
+`sampler.rs:153` 0..127) — and on the only path where a stepped param can
+surface today (a chain node reached through the composite branch) the
+range is already faked to 1.0, so the real symptom is a `1/128` step, not
+`range/128`. The defect and its fix direction are unchanged; only the
+worked example was wrong.
+
 ---
 
 ### BUG-041 — `CMD_CLOCK_STOP` emits no transport event; a Sequencer's `playing` never clears in the standalone app
