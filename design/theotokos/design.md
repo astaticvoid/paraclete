@@ -299,7 +299,25 @@ key will do** (the legibility lesson from sessions s1/s2).
 
 ## §5. Rendering & real-time visualization
 
-### 5.1 Layout — DETERMINED skeleton
+### 5.1 Layout — **REOPENED 2026-07-27** (session #2, `theotokos-2.md`)
+
+Session #2 found the shipped GRID screen renders **all tracks
+simultaneously**, stacked as repeated per-track blocks — a literal reading
+of §5.2's "two rows per track" applied across every track at once. In
+hands-on play this reads as a Launchpad-style LED-grid emulator, not the
+fixed hardware panel this skeleton intends. Per §6's convergence rule,
+this session is the hands-on evidence required to reopen a DETERMINED
+item. Redesign direction (not yet specced): **one** always-visible 2×8
+trig strip for the *selected* track only, a single track/pattern
+indicator, and a genuinely separate contextual window above it that
+changes with editing mode — closer to the letter of the skeleton below
+than the shipped implementation is. A labeled key-legend strip (replacing
+the scrolling grey hint line) is part of the same redesign. See
+`design/phases/tk2-report.md` for full detail. The skeleton shape below
+is retained as the target to redesign *toward*, not a description of what
+shipped.
+
+### 5.1 (prior) Layout — DETERMINED skeleton
 
 ```
 ┌ transport: BPM · ▶/■ · pattern · position · CPU ──────────────┐
@@ -314,7 +332,14 @@ key will do** (the legibility lesson from sessions s1/s2).
 The mode line is the legibility contract (s1/s2 lesson): current bindings
 and values are always on screen.
 
-### 5.2 Graphics from data we already have — DETERMINED for POC
+### 5.2 Graphics from data we already have — **REOPENED 2026-07-27** (session #2)
+
+The "two rows per track" step-grid line below is what produced the
+all-tracks-stacked rendering session #2 rejected — see §5.1's reopening
+note. Retained for reference; the redesign scopes this down to the
+selected track only.
+
+### 5.2 (prior) Graphics from data we already have — DETERMINED for POC
 
 - **Envelope curves**: drawn from `Rule::EnvelopeGroup` param values
   (attack/decay/sustain/release → piecewise curve on a braille canvas),
@@ -517,6 +542,46 @@ supersessions:
 Chord homes remain HYPOTHESIS-grade per §6; the two-tier model
 (key→PanelButton→Action), hold semantics, and grid-rec toggle are
 DETERMINED (ADR-038 ratified 2026-07-23, decisions D1–D4).
+
+---
+
+## Stage 4 — 2026-07-27 — Usability session #2 (TK2 C10) reopens §5.1/§5.2
+
+Full findings: `design/sessions/theotokos-2.md`, `design/phases/tk2-report.md`.
+TK2 C0–C9 are code-complete and unaffected — this session reopens
+**rendering and default-mode-state decisions only**, using the §6
+convergence rule's own mechanism (hands-on evidence required to reopen a
+DETERMINED item).
+
+- **§5.1/§5.2 REOPENED** (see inline notes at each section). The shipped
+  GRID screen renders all tracks simultaneously, stacked — reads as a
+  Launchpad LED-grid emulator. Redesign target: one always-visible 2×8
+  trig strip for the selected track, a single track/pattern indicator, a
+  genuinely separate contextual window above it, and a labeled key-legend
+  strip. Trig cells should show their bound key.
+- **§3.A points 3–4 gap, not a new question:** those points already say
+  "trigs are trigs everywhere" / "on hardware, trigs always play." The
+  shipped default (REC-armed on launch, trig = step-write) inverts this.
+  Redesign: default = trig/finger-drum mode (trig plays live + switches
+  contextual display to that track); REC arms step-entry; no auto-play on
+  launch; PLAY+REC = live record.
+- **§0 A9 (TK2 spec amendment) overridden:** sticky-prefix (D6) re-tap
+  should toggle the prefix off, not no-op.
+- **OQ-T22 resolved:** mute quick-chord (TRK+FUNC+trig) wins outright;
+  the dedicated Mute screen is retired.
+- **OQ-T23:** tap-tempo mechanic converged; screen-gating flagged as
+  friction for a later pass.
+- **OQ-T24:** still open — no verdict, needs a redesigned context to
+  judge fairly.
+- TK1 C8's carried-over obligations close with this session: superseded
+  items (`\` leader, Shift+track mute, number-row pattern select) dropped
+  without further action; yellow-flash and composite-page-order both
+  converged clean.
+
+**Next:** a short redesign pass (TK2.1 addendum or new ADR) freezing the
+layout + mode-model changes above, then implementation, then **session #3**
+to re-judge what session #2 could not fairly evaluate under the old
+layout (TRK/PTN physical feel, encoder ergonomics, numpad fate).
 
 ---
 

@@ -3,7 +3,41 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-27. **TK2 C9 shipped** — live visualization
+> **Last updated:** 2026-07-27 (later). **TK2 C10 — usability session #2
+> held, NOT a clean sign-off** (`design/sessions/theotokos-2.md`,
+> `design/phases/tk2-report.md`). Live, paired, in a shared tmux session
+> on the default 4-track instrument. Verdict: the underlying plumbing
+> (live-trig, encoder resolution, tempo derivation, key remapping, mute
+> state, live viz) all works, but the **default rendering and mode model
+> don't** — the shipped GRID screen renders all tracks stacked as
+> repeated blocks, reading as a Launchpad LED-grid emulator rather than
+> the intended fixed Elektron-style panel (one always-visible trig strip
+> + a genuinely separate contextual window above it + a labeled key
+> legend, not a scrolling grey hint line). Session reopens design.md
+> §5.1/§5.2 (were DETERMINED) per its own §6 convergence rule — hands-on
+> evidence is exactly what's required to reopen them. Also surfaced that
+> the shipped default (REC-armed on launch, trig = step-write) inverts
+> design.md §3.A's own already-accepted intent ("trigs are trigs
+> everywhere," "on hardware, trigs always play") — this is closing a gap
+> against existing intent, not opening a new question: redesign target
+> is trig/finger-drum-mode default (trig plays live + switches
+> contextual display to that track), REC arms step-entry, no auto-play
+> on launch, PLAY+REC = live record. Sticky-prefix (D6) re-tap should
+> toggle off, reversing the TK2 spec's own §0 A9 amendment. **OQ-T22
+> resolved** — mute quick-chord (TRK+FUNC+trig) wins outright; Mute
+> screen to be retired. OQ-T23 (tempo/tap) converged with a minor
+> friction note; **OQ-T24 (numpad fate) still open** — no verdict yet.
+> This session also formally closes the outstanding TK1 C8 obligation
+> (folded in per D4): superseded hypotheses (`\` leader, Shift+track
+> mute, number-row pattern select) dropped, yellow-flash and
+> composite-page-order carry-overs both converged clean. **Next: a short
+> redesign pass** (TK2.1 addendum or new ADR) freezing the layout +
+> mode-model changes, then implementation, then **session #3** to
+> re-judge what this session couldn't fairly evaluate under the old
+> layout (TRK/PTN physical feel, encoder bank ergonomics, numpad fate).
+> The TK2-exit scheduling pass (parallel P11/AN/ADR-041+042 tracks) is
+> **on hold** until the redesign + session #3 land — do not start it yet.
+> Previous: 2026-07-27 (earlier). **TK2 C9 shipped** — live visualization
 > (design.md §5.3b): `EnvelopeNode`/`LfoNode` publish
 > `/node/{id}/state/env_level` and `/node/{id}/state/lfo_phase` via
 > `published_state()`; `AnalogEngine`/`FmEngine` also publish
@@ -382,9 +416,10 @@ Agent-executable stretches need no input between gates.
 
 | Step | Work | Gate before proceeding |
 |---|---|---|
-| 1 | **TK2 C0–C9** (`tk2-theotokos.md` — panel, live-trig, encoder bank, screens, remapping, live viz) | none — spec is execution-ready |
-| 2 | **⛔ Session #2** (TK2 C10, user-paired) | grammar verdicts; OQ-T22/T23/T24 |
-| 3 | **⛔ TK2-exit scheduling pass** (user) | order the parallel tracks: P11 spec → impl; AN0(→AN1); ADR-041+042 implementation. All three are independent of each other |
+| 1 | ~~**TK2 C0–C9**~~ (`tk2-theotokos.md` — panel, live-trig, encoder bank, screens, remapping, live viz) | **Shipped** |
+| 2 | ~~**⛔ Session #2**~~ (TK2 C10, user-paired) | **Held 2026-07-27 — NOT a clean sign-off.** `theotokos-2.md`/`tk2-report.md`. OQ-T22 resolved (chord wins), OQ-T23 converged, **OQ-T24 still open**. Reopened design.md §5.1/§5.2 (layout) + the default REC/trig mode model. |
+| 2.5 | **⛔ TK2 redesign pass** (agent draft, user-paired ratify) — freeze the reopened layout (persistent trig strip + contextual window + key legend) and mode model (trig-mode default, REC arms step-entry, PLAY+REC live-record) as a TK2.1 addendum or new ADR, then implement, then **session #3** to re-judge TRK/PTN feel, encoder ergonomics, and OQ-T24 against the new layout | new gate inserted 2026-07-27 — blocks step 3 |
+| 3 | **⛔ TK2-exit scheduling pass** (user) — **on hold until step 2.5 clears** | order the parallel tracks: P11 spec → impl; AN0(→AN1); ADR-041+042 implementation. All three are independent of each other |
 | 4a | **P11**: spec (agent, session-informed) → **⛔ spec ratification** (kit UX OQs) → impl → session | two gates |
 | 4b | **AN0–AN1** (pool → capture; R2 transition-trick gate on AN1 exit) → **⛔ sampling session** | AN2 additionally needs P11 KitStore shipped |
 | 4c | **ADR-041 + ADR-042 impl** (machine select, MOD page — mechanical vs the ADRs) | none until P14 |
@@ -480,7 +515,7 @@ Ordered by nearness to the critical path.
 | **P16** | Macro & Terminal Control | Macro system; ~~TUI as editing surface~~ (terminal-surface half **superseded 2026-07-23** — delivered/owned by the TK track (ADR-036/038) and the WT convergence decision; P16 narrows to the instrument-wide macro system, which ADR-043's macro tier explicitly defers to) | — |
 | **W4** | Interface maturity | Ordo layout profiles, multi-client polish, wavetable view, protocol freeze, headless protocol CI driver | Ongoing after W3 |
 | **AN** | Anamnesis sampling layer | Capture-to-performance loop: HAL input + recorder rings (retroactive capture, resampling), app-owned sample pool + per-step sample locks, slices/chains, scenes + crossfader morph, pickup-style looping, staged timestretch — AN0–AN3, session-gated | **ADR-040 ✅ accepted 2026-07-23** (R1–R3: model as written; one-gesture transition trick frozen as an AN1 requirement; scheduling decided at TK2 exit) + `design/sampling/{problem,design}.md`. AN2 scenes depend on P11 KitStore |
-| **TK** | Theotokos performance terminal | Keyboard-first Elektron-class virtual front panel (continuous trig grid, TRK/PTN hold-chords, REC grid-rec toggle, FUNC-layer encoder bank, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **TK0 shipped 2026-07-21** (ADR-036). **TK1 code complete 2026-07-22** (C0–C7: p-locks, mutes, composite pages, `:` line, pattern select, yank/paste, leader rebind, flash, help overlay, suspend-crash fix). **Elektron convergence redesign 2026-07-23 (ADR-038 ✅ accepted, D1–D4)** — full TK2 spec drafted same day (`tk2-theotokos.md`, commits C0–C9 + session C10). **TK2 C0–C9 shipped** (2026-07-23…2026-07-27): panel model, live-trig, FUNC transport chords, encoder bank, Tempo/Settings/Chain screens, agent smoke gate, key remapping (ADR-037 ✅ accepted), live visualization (env_level, lfo_phase). **⛔ usability session #2 (C10, D4)** next — TK2 code-complete; all C0–C9 landed. |
+| **TK** | Theotokos performance terminal | Keyboard-first Elektron-class virtual front panel (continuous trig grid, TRK/PTN hold-chords, REC grid-rec toggle, FUNC-layer encoder bank, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **TK0 shipped 2026-07-21** (ADR-036). **TK1 code complete 2026-07-22** (C0–C7: p-locks, mutes, composite pages, `:` line, pattern select, yank/paste, leader rebind, flash, help overlay, suspend-crash fix). **Elektron convergence redesign 2026-07-23 (ADR-038 ✅ accepted, D1–D4)** — full TK2 spec drafted same day (`tk2-theotokos.md`, commits C0–C9 + session C10). **TK2 C0–C9 shipped** (2026-07-23…2026-07-27): panel model, live-trig, FUNC transport chords, encoder bank, Tempo/Settings/Chain screens, agent smoke gate, key remapping (ADR-037 ✅ accepted), live visualization (env_level, lfo_phase). **Usability session #2 held 2026-07-27 (C10) — NOT a clean sign-off** (`theotokos-2.md`/`tk2-report.md`): plumbing all works, but shipped rendering (all-tracks-stacked grid) and default mode (REC-armed, trig=step-write) don't match intent — reopens design.md §5.1/§5.2 and reverses the shipped REC-default against §3.A's own "trigs always play" principle. OQ-T22 resolved (mute chord wins, Mute screen retired); OQ-T23 converged; **OQ-T24 still open**. **Next: TK2 redesign pass** (layout + mode-model addendum) → impl → **session #3**, before the TK2-exit scheduling pass. |
 
 The interface track (Antiphon server + Theoria clients) is specified in
 `design/interface-plan.md` (**accepted July 2026**; ADR-031 authored with W0,
