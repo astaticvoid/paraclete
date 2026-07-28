@@ -3,23 +3,24 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-28 (later). **BUG-041 fixed** (`f2576f4`,
-> ahead of TK2.1 C3a — it was independently unblocked per the previous
-> entry). `CMD_CLOCK_STOP` now emits `global_stop`, gated on the final
-> playing state after commands and incoming events so a same-batch STOP
-> reversal doesn't emit a spurious stop (pre-commit hostile review
-> finding, folded). **TK2.1 C0 shipped** (`e9328f8`): seven fixed render
-> regions, the one-track trig strip, the track indicator (with ADR-044 D2
-> windowing), and the display_name/engine_name split reaching every
-> consumer (transport bar and status line were initially missed — folded
-> pre-commit). **TK2.1 C1 shipped** (`2028f9d`): `RecMode{Off,Grid,Live}`
-> replaces `grid_rec: bool` (default `Off`); REC toggle/fallback/REC+PLAY
-> chord per D5; pad-mode trig selects-and-sounds per D6; silent-launch
-> `CMD_CLOCK_STOP` push per D7; three-state REC indicator. Pre-commit
-> review caught a kitty auto-repeat storm re-firing `ToggleRec` on hold
-> duration instead of once per press — fixed, regression test added.
-> **Next: TK2.1 C2 → C7** (C3a is now a no-op landing spot in the phase
-> sequence — the fix already shipped).
+> **Last updated:** 2026-07-28 (later still). **TK2.1 C0–C2 shipped**
+> (`e9328f8`, `2028f9d`, `f3053fb`), **BUG-041 fixed** (`f2576f4`, ahead of
+> its scheduled C3a landing spot — it was independently unblocked). Seven
+> fixed render regions + one-track trig strip + track indicator (D2
+> windowing) + display_name/engine_name split (C0); `RecMode{Off,Grid,Live}`
+> replacing `grid_rec: bool`, default `Off`, REC toggle/fallback/REC+PLAY
+> chord (D5), pad-mode trig selects-and-sounds (D6), silent-launch
+> `CMD_CLOCK_STOP` push (D7) (C1); `DEFAULT_BINDINGS`-driven key chips on
+> the trig strip/track indicator and the rewritten `[key] NAME` legend
+> strip with tail-truncation (D3/D4), the Param row's `[n] ENC`/`[m] LOCK`
+> deliberately deferred to C5 (C2). Every commit's pre-commit hostile
+> review caught and fixed at least one real defect before landing (see
+> each commit message; nothing summarized here to keep this short).
+> **Next: TK2.1 C3b → C7** (C3a already shipped as part of the standalone
+> BUG-041 fix).
+> Previous: 2026-07-28 (later). BUG-041 fixed (`f2576f4`); TK2.1 C0
+> shipped (`e9328f8`); TK2.1 C1 shipped (`2028f9d`) — see prior revisions
+> of this file for the full per-commit narrative.
 > Previous: 2026-07-28. **ADR-044 ✅ RATIFIED — TK2.1
 > implementation unlocked.** All six questions settled: R1 live rec
 > degrades to a transport-derived rule where key releases are unavailable;
