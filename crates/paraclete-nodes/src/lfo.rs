@@ -66,6 +66,8 @@ impl Node for LfoNode {
     fn set_node_id(&mut self, id: u32) { self.node_id = id; }
     fn capability_document(&self) -> CapabilityDocument { Self::default_doc() }
 
+    // published_state() runs on the main thread after process() returns
+    // on the audio thread — no concurrent access to self.phase.
     fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
         buf.push((

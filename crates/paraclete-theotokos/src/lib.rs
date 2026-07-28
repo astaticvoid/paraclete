@@ -205,9 +205,9 @@ impl TheotokosApp {
         });
 
         let live_lfo_phase: Option<f64> = {
-            let gen_id = self.model.tracks[self.model.active_track].generator_id;
-            bus.read(&format!("/node/{}/state/lfo_phase", gen_id))
-                .and_then(|v| match &v {
+            bus.iter()
+                .find(|(k, _)| k.ends_with("/state/lfo_phase"))
+                .and_then(|(_, v)| match v {
                     StateBusValue::Float(f) => Some(*f),
                     _ => None,
                 })

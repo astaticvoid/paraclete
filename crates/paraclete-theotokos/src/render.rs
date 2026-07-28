@@ -409,20 +409,19 @@ fn render_encoder_cell(frame: &mut Frame, area: Rect, data: &RenderData, idx: us
 }
 
 fn render_lfo_phase_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
-    if let Some(phase) = data.live_lfo_phase {
-        let pos = (phase.clamp(0.0, 1.0) * 10.0).round() as usize;
-        let mut line = String::with_capacity(13);
-        line.push_str(" LFO ");
-        for i in 0..=10 {
-            if i == pos {
-                line.push('●');
-            } else {
-                line.push('─');
-            }
+    let phase = data.live_lfo_phase.expect("caller must guard with is_some()");
+    let pos = (phase.clamp(0.0, 1.0) * 10.0).round() as usize;
+    let mut line = String::with_capacity(13);
+    line.push_str(" LFO ");
+    for i in 0..=10 {
+        if i == pos {
+            line.push('●');
+        } else {
+            line.push('─');
         }
-        let para = Paragraph::new(line).style(Style::default().fg(Color::Magenta));
-        frame.render_widget(para, area);
     }
+    let para = Paragraph::new(line).style(Style::default().fg(Color::Magenta));
+    frame.render_widget(para, area);
 }
 
 fn render_page_tabs(frame: &mut Frame, area: Rect, data: &RenderData) {
@@ -865,7 +864,7 @@ mod tests {
                 },
                 0.42,
             )),
-            live_env_level: Some(0.42),
+            live_env_level: Some(0.73),
             live_lfo_phase: None,
             debug_event: None,
             step_focuses: vec![None; 1],
@@ -1068,5 +1067,15 @@ mod tests {
         data.live_env_level = Some(0.72);
         data.live_lfo_phase = Some(0.34);
         terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("▶"),
+            "live env_level: must show the play glyph indicating animation; got: {text}"
+        );
+        assert!(
+            text.contains("●"),
+            "live LFO phase: must show the dot marker in the phase track; got: {text}"
+        );
     }
 }

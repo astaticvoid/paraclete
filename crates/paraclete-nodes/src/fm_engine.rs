@@ -321,6 +321,8 @@ impl Node for FmEngine {
         self.pending_initial_params = params.clone();
     }
 
+    // published_state() runs on the main thread after process() returns
+    // on the audio thread — no concurrent access to self.amp_env.value.
     fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
         buf.push((
