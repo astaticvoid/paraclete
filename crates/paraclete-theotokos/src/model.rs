@@ -16,6 +16,18 @@ pub enum Screen {
     Mute,
 }
 
+/// TK2.1 C1 (D5): replaces `grid_rec: bool`. `Off` (default) and `Live`
+/// are the pad modes (D6 — trig N addresses track N); `Grid` is
+/// step-programming. REC toggles `Off ↔ Grid`; REC held + PLAY escalates
+/// to `Live` (or, on the no-kitty fallback, REC while the transport is
+/// running arms `Live` directly).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecMode {
+    Off,
+    Grid,
+    Live,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Dir {
     Prev,
@@ -59,9 +71,10 @@ pub struct TrackInfo {
 pub struct Model {
     /// TK2 C3 (D12): replaces `Mode`.
     pub screen: Screen,
-    /// TK2 C2/C3 (D12): grid-programming (steps toggle) vs. live (trigs
-    /// sound now). Defaults on — TK1 behavior preserved on day one.
-    pub grid_rec: bool,
+    /// TK2.1 C1 (D5): replaces `grid_rec: bool` — see `RecMode`. Default
+    /// `Off` (D5): the reference box boots with pads live, not grid-rec
+    /// armed, reversing TK2's "on by default" choice.
+    pub rec: RecMode,
     pub active_track: usize,
     pub tracks: Vec<TrackInfo>,
     pub clock_id: u32,
@@ -211,7 +224,7 @@ impl Model {
         let fuzzy_index = Self::build_fuzzy_index(&caps, &tracks);
         let mut model = Self {
             screen: Screen::Grid,
-            grid_rec: true,
+            rec: RecMode::Off,
             active_track: 0,
             tracks,
             clock_id,

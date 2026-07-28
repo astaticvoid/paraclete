@@ -54,8 +54,14 @@ pub enum Action {
     /// D8: FUNC+top/bottom-row trig, resolved against the active page's
     /// encoder bank.
     EncoderJog { col: usize, dir: Dir, mag: Mag },
-    /// D12: the REC button toggles `grid_rec` (grid-programming vs. live).
-    ToggleGridRec,
+    /// TK2.1 C1 (D5): renamed from `ToggleGridRec` — bare REC press. Toggles
+    /// `Off ↔ Grid` on the kitty path (or applies the transport-derived
+    /// fallback rule where key releases are unavailable); from `Live`,
+    /// always returns to `Off`.
+    ToggleRec,
+    /// TK2.1 C1 (D5): REC held + PLAY (kitty path only) — arms `Live` and
+    /// starts the transport.
+    EnterLiveRec,
     /// D12: KIT/SETTINGS/SAMPLING/TEMPO/SONG/MUTE navigate to a `Screen`.
     OpenScreen(Screen),
     /// D12/OQ-T23: YES-tap on the Tempo screen.
@@ -116,7 +122,8 @@ impl Action {
             | Action::SelectPattern(_)
             | Action::LiveTrig { .. }
             | Action::EncoderJog { .. }
-            | Action::ToggleGridRec
+            | Action::ToggleRec
+            | Action::EnterLiveRec
             | Action::OpenScreen(_)
             | Action::TapTempo
             // TK2 C4: dispatched directly in lib.rs (bus/pattern-length

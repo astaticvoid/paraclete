@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::action::Action;
-use crate::model::{Dir, Mag, Screen};
+use crate::model::{Dir, Mag, RecMode, Screen};
 
 // ── TK2 C2: panel model (pure types + mapping) ───────────────────────────
 //
@@ -431,11 +431,16 @@ fn built_in_button(code: KeyCode) -> Option<PanelButton> {
     }
 }
 
-/// D6: which hold-prefix is armed.
+/// D6: which hold-prefix is armed. TK2.1 C1 (D5) adds `Rec` — kitty path
+/// only, so REC held + PLAY can resolve to `Action::EnterLiveRec`; the
+/// sticky fallback (`on_press`) never arms it (REC's own action fires on
+/// every press regardless, so unlike `Trk`/`Ptn` it never needs to wait
+/// for a release-less approximation of "held").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hold {
     Trk,
     Ptn,
+    Rec,
 }
 
 /// D6 hold-chord state, both branches: `kitty = true` selects the
@@ -510,7 +515,11 @@ impl HeldState {
     /// `true` if consumed (same contract as `on_press`); non-prefix
     /// buttons are not tracked here (only presence of `armed` matters to
     /// `button_to_action`, so pressed only ever records the hold key
-    /// itself).
+    /// itself). TK2.1 C1 (D5): REC also arms `Hold::Rec` for the duration
+    /// of the physical hold, but — unlike TRK/PTN — is **not** consumed:
+    /// REC's own `Action::ToggleRec` must still resolve on this same
+    /// press, so the caller sees `false` and calls `button_to_action`
+    /// normally.
     pub fn on_kitty_press(&mut self, button: PanelButton) -> bool {
         match button {
             PanelButton::Trk | PanelButton::Ptn => {
@@ -522,6 +531,11 @@ impl HeldState {
                 self.pressed.insert(button);
                 self.armed = Some(hold);
                 true
+            }
+            PanelButton::Rec => {
+                self.pressed.insert(button);
+                self.armed = Some(Hold::Rec);
+                false
             }
             _ => false,
         }
@@ -543,7 +557,7 @@ impl HeldState {
 #[derive(Clone, Copy, Debug)]
 pub struct ScreenState {
     pub screen: Screen,
-    pub grid_rec: bool,
+    pub rec: RecMode,
 }
 
 /// FUNC (fixed Shift modifier, §0 A15 — not a `PanelButton`) and Ctrl
@@ -583,12 +597,16 @@ pub fn button_to_action(
         if mods.func {
             return match hold {
                 Hold::Trk => Action::ToggleMute(col),
-                Hold::Ptn => Action::Noop,
+                Hold::Ptn | Hold::Rec => Action::Noop,
             };
         }
         return match hold {
             Hold::Trk => Action::SelectTrack(col),
             Hold::Ptn => Action::SelectPattern(col),
+            // TK2.1 C1 (D5): REC has no defined trig chord — a bare pad
+            // press while REC is physically held (kitty) is not a thing
+            // the reference box does; PLAY is REC's only chord partner.
+            Hold::Rec => Action::Noop,
         };
     }
 
@@ -624,16 +642,24 @@ pub fn button_to_action(
         if matches!(screen.screen, Screen::Mute) {
             return Action::ToggleMute(col);
         }
-        // D12: grid_rec defaults on (TK1 behavior preserved); off routes
-        // every trig to a live trig (TK2 C1's CMD_TRIG_NOW) instead.
-        return if screen.grid_rec {
-            Action::ToggleStep { col }
-        } else {
-            Action::LiveTrig { col }
+        // TK2.1 C1 (D5/D6): Grid writes/clears steps of the selected
+        // track; Off and Live are pad modes — a trig sounds and selects
+        // track N (D6), handled by `Action::LiveTrig` in `lib.rs`.
+        return match screen.rec {
+            RecMode::Grid => Action::ToggleStep { col },
+            RecMode::Off | RecMode::Live => Action::LiveTrig { col },
         };
     }
 
     match button {
+        // TK2.1 C1 (D5): REC held (kitty path only — `held.armed` is only
+        // ever `Some(Hold::Rec)` there, per `HeldState::on_press`'s fixed
+        // sticky-fallback match) + bare PLAY enters Live and starts the
+        // transport. Checked before the plain PLAY arms below so it wins
+        // the chord.
+        PanelButton::Play if !mods.func && held.armed == Some(Hold::Rec) => {
+            Action::EnterLiveRec
+        }
         // TK2 C3: Play (bare) restores the transport toggle Space provided
         // in TK1 — the Play button IS the `Space` alias (§2).
         PanelButton::Play if !mods.func => Action::PlayToggle,
@@ -646,8 +672,10 @@ pub fn button_to_action(
         // (post-C4 hostile review: this WAS a real gap — FUNC+Space could
         // silently wipe the active pattern).
         PanelButton::Play => Action::ClearLane,
-        // TK2 C3: bare REC toggles grid-rec (D12).
-        PanelButton::Rec if !mods.func => Action::ToggleGridRec,
+        // TK2.1 C1 (D5): bare REC toggles rec mode — fires on every press
+        // regardless of whether this is also the first half of a REC+PLAY
+        // chord (see the `Hold::Rec` arm above).
+        PanelButton::Rec if !mods.func => Action::ToggleRec,
         // TK2 C4 (D7): FUNC+REC copies the active lane.
         PanelButton::Rec => Action::CopyLane,
         // TK2 C4 (D7): FUNC+STOP pastes. Bare STOP has no meaning yet.
@@ -716,7 +744,7 @@ mod tests {
     fn default_grid() -> ScreenState {
         ScreenState {
             screen: Screen::Grid,
-            grid_rec: true,
+            rec: RecMode::Grid,
         }
     }
 
@@ -835,14 +863,14 @@ mod tests {
     }
 
     /// A16 (TK2 C4): the Mute screen retargets trigs to mute-toggle
-    /// regardless of `grid_rec` (unlike Grid/Param, where trigs stay
+    /// regardless of rec mode (unlike Grid/Param, where trigs stay
     /// trigs).
     #[test]
     fn mute_screen_trigs_toggle_mutes() {
         let held = HeldState::new(false);
         let screen = ScreenState {
             screen: Screen::Mute,
-            grid_rec: true,
+            rec: RecMode::Grid,
         };
         let action = button_to_action(&held, &screen, PanelButton::Trig2, Mods::default());
         assert!(matches!(action, Action::ToggleMute(1)));
@@ -995,22 +1023,76 @@ mod tests {
         ));
     }
 
+    /// TK2.1 C1 (D5): renamed from `rec_toggles_grid_recording` —
+    /// `button_to_action` itself is state-independent (the actual
+    /// Off/Grid/Live transition needs kitty + transport state, resolved in
+    /// `lib.rs`'s dispatch); this pins that a bare REC press always
+    /// resolves to `Action::ToggleRec`.
     #[test]
-    fn rec_toggles_grid_recording() {
+    fn rec_toggles_off_and_grid() {
         let held = HeldState::new(false);
         let action = button_to_action(&held, &default_grid(), PanelButton::Rec, Mods::default());
-        assert!(matches!(action, Action::ToggleGridRec));
+        assert!(matches!(action, Action::ToggleRec));
     }
 
+    /// TK2.1 C1 (D5/D6): renamed from `trig_with_grid_rec_off_is_live_trig`
+    /// — pad modes (`Off`/`Live`) resolve a trig to `LiveTrig`, carrying
+    /// the column so `lib.rs` can select *and* sound track N (D6).
     #[test]
-    fn trig_with_grid_rec_off_is_live_trig() {
+    fn pad_mode_trig_resolves_to_live_trig_with_column() {
         let held = HeldState::new(false);
         let screen = ScreenState {
             screen: Screen::Grid,
-            grid_rec: false,
+            rec: RecMode::Off,
         };
         let action = button_to_action(&held, &screen, PanelButton::Trig3, Mods::default());
         assert!(matches!(action, Action::LiveTrig { col: 2 }));
+
+        let live_screen = ScreenState {
+            screen: Screen::Grid,
+            rec: RecMode::Live,
+        };
+        let action = button_to_action(&held, &live_screen, PanelButton::Trig3, Mods::default());
+        assert!(
+            matches!(action, Action::LiveTrig { col: 2 }),
+            "Live is a pad mode too — trigs still select and sound"
+        );
+    }
+
+    /// TK2.1 C1 (D5): the Grid-mode counterpart of the pad-mode test above
+    /// — trigs write/clear steps instead.
+    #[test]
+    fn grid_mode_trig_toggles_step() {
+        let held = HeldState::new(false);
+        let action = button_to_action(&held, &default_grid(), PanelButton::Trig3, Mods::default());
+        assert!(matches!(action, Action::ToggleStep { col: 2 }));
+    }
+
+    /// TK2.1 C1 (D5): REC held (kitty) + bare PLAY is the Live-record
+    /// chord.
+    #[test]
+    fn rec_held_plus_play_enters_live_rec() {
+        let mut held = HeldState::new(true);
+        assert!(!held.on_kitty_press(PanelButton::Rec));
+        let action = button_to_action(&held, &default_grid(), PanelButton::Play, Mods::default());
+        assert!(matches!(action, Action::EnterLiveRec));
+    }
+
+    /// TK2.1 C1 (§0 A10 regression): an armed TRK prefix still wins over
+    /// pad-mode trig resolution — a trig must chord, not sound live.
+    #[test]
+    fn armed_trk_still_wins_over_pads() {
+        let held = HeldState {
+            kitty: false,
+            armed: Some(Hold::Trk),
+            pressed: HashSet::new(),
+        };
+        let screen = ScreenState {
+            screen: Screen::Grid,
+            rec: RecMode::Off,
+        };
+        let action = button_to_action(&held, &screen, PanelButton::Trig5, Mods::default());
+        assert!(matches!(action, Action::SelectTrack(4)));
     }
 
     /// Old TK1 actions are unmapped; the keys resolve to their new buttons

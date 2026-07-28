@@ -18,12 +18,12 @@ use ratatui::Terminal;
 
 use crate::action::{
     Action, Outcome, CMD_CHAIN_CLEAR, CMD_CHAIN_PUSH, CMD_CLEAR, CMD_CLEAR_STEP_LOCK,
-    CMD_SET_LOCK_TARGET, CMD_SET_PATTERN, CMD_SET_STEP_LOCK, CMD_TRIG_NOW, GRID_STEPS,
-    PATTERN_BANK_SIZE,
+    CMD_CLOCK_START, CMD_CLOCK_STOP, CMD_SET_LOCK_TARGET, CMD_SET_PATTERN, CMD_SET_STEP_LOCK,
+    CMD_TRIG_NOW, GRID_STEPS, PATTERN_BANK_SIZE,
 };
 use crate::input::{button_to_action, key_to_button, HeldState, Keymap, Mods};
 use crate::model::{
-    CmdlineVerb, Dir, JogTracker, Model, Screen, Slot, Tuning, YankedLock, YankedStep,
+    CmdlineVerb, Dir, JogTracker, Model, RecMode, Screen, Slot, Tuning, YankedLock, YankedStep,
 };
 
 pub type BusHandle = Rc<RefCell<StateBusHandle>>;
@@ -73,6 +73,25 @@ pub struct TheotokosApp {
 }
 
 impl TheotokosApp {
+    /// TK2.1 C1 (D7): the command(s) issued once at startup, pushed onto
+    /// `pending` before the first drain — `Model::new` boots with
+    /// `rec: RecMode::Off`, but the clock itself (`InternalClock::new`,
+    /// BUG-039) still constructs `playing: true`, so this is what actually
+    /// makes the instrument boot silent. Honest bound: `main.rs` ticks the
+    /// executor before draining commands, so frame 1 still paints
+    /// `playing = true` — "boots stopped" holds from the first drain, not
+    /// the first frame. A free function (not a method) so both `new` and
+    /// the `new_pushes_clock_stop` test can build the same value without
+    /// duplicating the `NodeCommand` literal.
+    fn startup_commands(clock_id: u32) -> Vec<NodeCommand> {
+        vec![NodeCommand {
+            target_id: clock_id,
+            type_id: CMD_CLOCK_STOP,
+            arg0: 0,
+            arg1: 0.0,
+        }]
+    }
+
     pub fn new(config: TheotokosConfig) -> Result<Self, String> {
         setup_keyboard_flags()?;
 
@@ -96,9 +115,12 @@ impl TheotokosApp {
         // chord falls back to the sticky one-shot grammar (§0 A9).
         let kitty = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
 
+        let mut pending = Vec::with_capacity(64);
+        pending.extend(Self::startup_commands(config.clock_id));
+
         Ok(Self {
             model,
-            pending: Vec::with_capacity(64),
+            pending,
             quit: false,
             dirty: true,
             last_render: Instant::now(),
@@ -319,11 +341,13 @@ impl TheotokosApp {
 
         let render_data = render::RenderData {
             screen: self.model.screen,
-            grid_rec: self.model.grid_rec,
+            rec: self.model.rec,
             armed_prefix: match self.held.armed {
                 Some(input::Hold::Trk) => Some("TRK…".to_string()),
                 Some(input::Hold::Ptn) => Some("PTN…".to_string()),
-                None => None,
+                // REC has its own three-state transport/status indicator
+                // (D5) — it isn't an "armed prefix" chip like TRK/PTN.
+                Some(input::Hold::Rec) | None => None,
             },
             active_track: self.model.active_track,
             track_names: self.model.tracks.iter().map(|t| t.name.clone()).collect(),
@@ -477,6 +501,22 @@ impl TheotokosApp {
                                 self.held.on_kitty_release(button);
                                 true
                             }
+                            // TK2.1 C1 (D5, hostile review finding): unlike
+                            // Trk/Ptn, REC's press is deliberately NOT
+                            // consumed by `on_kitty_press` (its own action
+                            // must fire on every press) — but that means an
+                            // OS/terminal auto-repeat stream while the key
+                            // stays physically down (this app requests
+                            // `REPORT_EVENT_TYPES`, so repeats do arrive)
+                            // would re-fire `Action::ToggleRec` once per
+                            // pulse, flipping the mode on repeat-count
+                            // parity instead of "once per physical press".
+                            // Repeats are consumed silently; `armed` is
+                            // already `Some(Hold::Rec)` from the initial
+                            // press and stays that way.
+                            KeyEventKind::Repeat if button == crate::input::PanelButton::Rec => {
+                                true
+                            }
                             _ => self.held.on_kitty_press(button),
                         }
                     } else {
@@ -494,7 +534,7 @@ impl TheotokosApp {
                     };
                     let screen_state = input::ScreenState {
                         screen: self.model.screen,
-                        grid_rec: self.model.grid_rec,
+                        rec: self.model.rec,
                     };
                     button_to_action(&held_for_resolution, &screen_state, button, mods)
                 }
@@ -758,21 +798,62 @@ impl TheotokosApp {
                     }
                     dirty = true;
                 }
-                // TK2 C1/C3 (D5): a trig fired with grid-rec off. Not tied
-                // to any step or column — arg0/arg1 = 0 resolve to the
-                // engine's defaults (note 60, velocity 0.5).
-                Action::LiveTrig { .. } => {
-                    let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
+                // TK2.1 C1 (D6): a trig in a pad mode (Off/Live) sounds
+                // AND selects track `col` — arg0/arg1 = 0 resolve to the
+                // engine's defaults (note 60, velocity 0.5). A column past
+                // the discovered track count is a silent no-op (no echo —
+                // D3 also gives those columns no chip); order is
+                // normative, selection lands before the trig command.
+                Action::LiveTrig { col } => {
+                    if col < self.model.tracks.len() {
+                        self.model.select_track(col);
+                        selected_changed = true;
+                        let seq_id = self.model.tracks[col].sequencer_id;
+                        self.pending.push(NodeCommand {
+                            target_id: seq_id,
+                            type_id: CMD_TRIG_NOW,
+                            arg0: 0,
+                            arg1: 0.0,
+                        });
+                        dirty = true;
+                    }
+                }
+                // TK2.1 C1 (D5): bare REC. From Live, always back to Off.
+                // Otherwise: kitty path toggles Off<->Grid; the no-kitty
+                // fallback arms by transport state (Live while running,
+                // Grid while stopped) since it has no release event to
+                // build a REC+PLAY chord from.
+                Action::ToggleRec => {
+                    self.model.rec = if self.model.rec == RecMode::Live {
+                        RecMode::Off
+                    } else if self.held.kitty {
+                        match self.model.rec {
+                            RecMode::Off => RecMode::Grid,
+                            RecMode::Grid => RecMode::Off,
+                            // Unreachable: the outer `if` above already
+                            // peels off `Live`. Kept explicit (no `_`) so a
+                            // future RecMode variant fails to compile here
+                            // instead of silently routing to Off.
+                            RecMode::Live => RecMode::Off,
+                        }
+                    } else if playing {
+                        RecMode::Live
+                    } else {
+                        RecMode::Grid
+                    };
+                    dirty = true;
+                }
+                // TK2.1 C1 (D5/D8): REC held + PLAY (kitty only) — arms
+                // Live and starts the transport (D8's live_rec keys off
+                // this, engine-side, from TK2.1 C3).
+                Action::EnterLiveRec => {
+                    self.model.rec = RecMode::Live;
                     self.pending.push(NodeCommand {
-                        target_id: seq_id,
-                        type_id: CMD_TRIG_NOW,
+                        target_id: self.model.clock_id,
+                        type_id: CMD_CLOCK_START,
                         arg0: 0,
                         arg1: 0.0,
                     });
-                    dirty = true;
-                }
-                Action::ToggleGridRec => {
-                    self.model.grid_rec = !self.model.grid_rec;
                     dirty = true;
                 }
                 Action::OpenScreen(screen) => {
@@ -1498,6 +1579,21 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
+    /// TK2.1 C1 (D7): `test_app` bypasses `TheotokosApp::new` (it runs
+    /// `setup_keyboard_flags`, unusable headless in CI), so this asserts
+    /// directly on the `startup_commands` seam `new` calls.
+    #[test]
+    fn new_pushes_clock_stop() {
+        let commands = TheotokosApp::startup_commands(7);
+        assert!(
+            commands
+                .iter()
+                .any(|c| c.target_id == 7 && c.type_id == CMD_CLOCK_STOP),
+            "startup must push a CMD_CLOCK_STOP for the clock node, so the \
+             first command drain boots the instrument silent (D7)"
+        );
+    }
+
     #[test]
     fn equals_increments_page_window() {
         let bus = test_bus();
@@ -1595,6 +1691,10 @@ mod tests {
         }
 
         app.model.page_windows[0] = 1;
+        // TK2.1 C1 (D5): default rec is now Off (a pad mode) — this test's
+        // own intent is the ToggleStep offset arithmetic, which needs
+        // Grid mode explicitly.
+        app.model.rec = RecMode::Grid;
         // TK2 C3: the continuous grid claims 'a' as Trig9 (col 8); use
         // 'q' (Trig1, col 0) to keep this test's intent (page-window
         // offset arithmetic) independent of which column fires.
@@ -1660,19 +1760,179 @@ mod tests {
         );
     }
 
+    /// TK2.1 C1 (D5): renamed from `grid_rec_off_trig_key_emits_trig_now_command`.
     #[test]
-    fn grid_rec_off_trig_key_emits_trig_now_command() {
+    fn pad_mode_trig_key_emits_trig_now_command() {
         let bus = test_bus();
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
-        app.model.grid_rec = false;
+        app.model.rec = RecMode::Off;
 
         app.handle_keys(&bus, &[kc('q')]);
         assert!(
             app.pending
                 .iter()
                 .any(|c| c.target_id == 200 && c.type_id == CMD_TRIG_NOW),
-            "a trig key with grid_rec off must emit CMD_TRIG_NOW"
+            "a trig key in a pad mode (Off) must emit CMD_TRIG_NOW"
         );
+    }
+
+    /// TK2.1 C1 (D6): a pad-mode trig both selects and sounds track `col`.
+    #[test]
+    fn pad_press_selects_track_and_trigs_that_track() {
+        let bus = test_bus();
+        let mut app = test_app(
+            1,
+            vec![200, 201],
+            vec![100, 101],
+            vec!["T1".into(), "T2".into()],
+        );
+        app.handle_keys(&bus, &[kc('w')]); // Trig2 -> col 1
+        assert_eq!(
+            app.model.active_track, 1,
+            "a pad press must select the track under the pressed key"
+        );
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.target_id == 201 && c.type_id == CMD_TRIG_NOW),
+            "the trig must land on the newly selected track's sequencer"
+        );
+    }
+
+    /// TK2.1 C1 (D6): a pad column past the discovered track count is a
+    /// silent no-op — no selection change, no command, no echo (D3: those
+    /// columns get no chip either).
+    #[test]
+    fn pad_beyond_track_count_is_silent() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.handle_keys(&bus, &[kc('w')]); // Trig2 -> col 1, no track 1
+        assert_eq!(app.model.active_track, 0, "selection must not change");
+        assert!(
+            app.pending.iter().all(|c| c.type_id != CMD_TRIG_NOW),
+            "a column past the track count must not trig anything"
+        );
+        assert!(
+            app.model.cmdline_error.is_none(),
+            "must be silent — no echo (D6)"
+        );
+    }
+
+    /// TK2.1 C1 (D5): kitty path — bare REC toggles Off <-> Grid.
+    #[test]
+    fn rec_toggles_off_and_grid() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.held.kitty = true;
+        assert_eq!(app.model.rec, RecMode::Off);
+
+        app.handle_keys(&bus, &[kc('z')]);
+        assert_eq!(app.model.rec, RecMode::Grid, "REC must toggle Off -> Grid");
+
+        app.handle_keys(&bus, &[kc('z')]);
+        assert_eq!(app.model.rec, RecMode::Off, "REC must toggle Grid -> Off");
+    }
+
+    /// TK2.1 C1 (D5, hostile review finding): a sustained physical hold on
+    /// a kitty terminal streams `KeyEventKind::Repeat` events (this app
+    /// requests `REPORT_EVENT_TYPES`) — REC's own action must fire once
+    /// per physical press, not once per repeat pulse, or the resulting
+    /// mode depends on hold duration instead of "acts on press" (D5).
+    #[test]
+    fn rec_hold_repeat_events_do_not_re_toggle() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.held.kitty = true;
+
+        app.handle_keys(&bus, &[kc('z')]); // press: Off -> Grid
+        assert_eq!(app.model.rec, RecMode::Grid);
+
+        let repeat = KeyEvent::new_with_kind(
+            KeyCode::Char('z'),
+            KeyModifiers::NONE,
+            KeyEventKind::Repeat,
+        );
+        app.handle_keys(&bus, &[repeat, repeat, repeat]);
+        assert_eq!(
+            app.model.rec,
+            RecMode::Grid,
+            "auto-repeat pulses while REC stays physically held must not \
+             re-toggle the mode"
+        );
+    }
+
+    /// TK2.1 C1 (D5): REC held (kitty) + PLAY escalates to Live and starts
+    /// the transport.
+    #[test]
+    fn rec_held_plus_play_enters_live_rec() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.held.kitty = true;
+
+        app.handle_keys(
+            &bus,
+            &[KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE)],
+        );
+        app.handle_keys(
+            &bus,
+            &[KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)],
+        );
+        assert_eq!(app.model.rec, RecMode::Live);
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.target_id == 1 && c.type_id == CMD_CLOCK_START),
+            "entering Live must start the transport"
+        );
+    }
+
+    /// TK2.1 C1 (D5): REC pressed again from Live always returns to Off,
+    /// regardless of kitty/fallback path.
+    #[test]
+    fn rec_from_live_returns_to_off() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.rec = RecMode::Live;
+        app.handle_keys(&bus, &[kc('z')]);
+        assert_eq!(app.model.rec, RecMode::Off);
+    }
+
+    /// TK2.1 C1 (D5): the REC/PLAY cycle's pass-through hazard — an
+    /// ordinary PLAY press must never silently convert Grid into Live.
+    #[test]
+    fn grid_rec_survives_a_later_play_press() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.rec = RecMode::Grid;
+        app.handle_keys(&bus, &[kc('x')]); // bare PLAY
+        assert_eq!(
+            app.model.rec,
+            RecMode::Grid,
+            "a later PLAY press must not convert Grid into Live"
+        );
+    }
+
+    /// TK2.1 C1 (D5): no-kitty fallback — REC while the transport is
+    /// running arms Live directly (no chord needed).
+    #[test]
+    fn fallback_rec_while_running_arms_live() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        bus.borrow_mut().write(
+            "/transport/playing",
+            paraclete_node_api::StateBusValue::Bool(true),
+        );
+        app.handle_keys(&bus, &[kc('z')]);
+        assert_eq!(app.model.rec, RecMode::Live);
+    }
+
+    /// TK2.1 C1 (D5): no-kitty fallback — REC while stopped arms Grid.
+    #[test]
+    fn fallback_rec_while_stopped_arms_grid() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.handle_keys(&bus, &[kc('z')]);
+        assert_eq!(app.model.rec, RecMode::Grid);
     }
 
     #[test]
@@ -2462,13 +2722,14 @@ mod tests {
         setup_bus_with_params(&bus, 200, 100, true);
 
         app.handle_keys(&bus, &[colon_key()]);
-        // typing should not trigger normal key handlers (like ToggleStep for 'a')
+        // typing should not trigger normal key handlers (like the trig 'a'
+        // would otherwise resolve to)
         let prev_pending = app.pending.len();
         app.handle_keys(&bus, &[kc('a')]);
         assert_eq!(
             app.pending.len(),
             prev_pending,
-            "keys captured, no ToggleStep emitted"
+            "keys captured, no trig command emitted"
         );
         assert!(
             app.model.cmdline.as_deref().unwrap().contains('a'),

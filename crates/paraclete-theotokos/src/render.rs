@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::model::{EnvelopeData, Screen, SlotBinding, StepState};
+use crate::model::{EnvelopeData, RecMode, Screen, SlotBinding, StepState};
 
 const PAGE_SIZE: usize = 8;
 
@@ -22,9 +22,10 @@ pub struct EncoderCell {
 pub struct RenderData {
     /// TK2 C3 (D12): replaces `Mode`.
     pub screen: Screen,
-    /// TK2 C3 (D12): grid-programming (steps toggle) vs. live (trigs sound
-    /// now) — shown as a REC ●/○ indicator (transport bar + status line).
-    pub grid_rec: bool,
+    /// TK2.1 C1 (D5): replaces `grid_rec: bool` — shown as a three-state
+    /// REC indicator (transport bar + status line): `REC○` dark gray
+    /// (`Off`), `REC▦` red (`Grid`), `REC●` bright red (`Live`).
+    pub rec: RecMode,
     /// TK2 C3 (D6): the armed TRK/PTN hold prefix, if any (status line).
     pub armed_prefix: Option<String>,
     pub active_track: usize,
@@ -233,10 +234,19 @@ fn render_legend(frame: &mut Frame, area: Rect, data: &RenderData) {
     frame.render_widget(para, area);
 }
 
+/// TK2.1 C1 (D5): the three-state REC glyph/colour pair, shared by the
+/// transport bar and the status line.
+fn rec_indicator(rec: RecMode) -> (&'static str, Color) {
+    match rec {
+        RecMode::Off => ("REC○", Color::DarkGray),
+        RecMode::Grid => ("REC▦", Color::Red),
+        RecMode::Live => ("REC●", Color::LightRed),
+    }
+}
+
 fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
     let play_sym = if data.playing { "▶" } else { "■" };
-    // TK2 C3 (D12): transport bar gains a REC indicator.
-    let rec_sym = if data.grid_rec { "REC●" } else { "REC○" };
+    let (rec_sym, rec_color) = rec_indicator(data.rec);
     let track_name = data
         .display_names
         .get(data.active_track)
@@ -245,11 +255,9 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
     let page = data.page_window + 1;
     let page_count = data.step_state.page_count.max(1);
 
-    let transport = format!(
-        " {:.1} BPM  {}  {}  {}  P{}/{}  Step:{}  Len:{}",
-        data.bpm,
-        play_sym,
-        rec_sym,
+    let prefix = format!(" {:.1} BPM  {}  ", data.bpm, play_sym);
+    let suffix = format!(
+        "  {}  P{}/{}  Step:{}  Len:{}",
         track_name,
         page,
         page_count,
@@ -257,11 +265,12 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
         data.step_state.pattern_length,
     );
 
-    let para = Paragraph::new(transport).block(
-        Block::default()
-            .borders(Borders::NONE)
-            .style(Style::default().fg(Color::White)),
-    );
+    let line = Line::from(vec![
+        Span::styled(prefix, Style::default().fg(Color::White)),
+        Span::styled(rec_sym, Style::default().fg(rec_color)),
+        Span::styled(suffix, Style::default().fg(Color::White)),
+    ]);
+    let para = Paragraph::new(line).block(Block::default().borders(Borders::NONE));
     frame.render_widget(para, area);
 }
 
@@ -756,14 +765,10 @@ fn render_status_line(frame: &mut Frame, area: Rect, data: &RenderData) {
                 .unwrap_or("?"),
         ),
         Span::raw(" "),
-        Span::styled(
-            if data.grid_rec { "REC● " } else { "REC○ " },
-            Style::default().fg(if data.grid_rec {
-                Color::Red
-            } else {
-                Color::DarkGray
-            }),
-        ),
+        {
+            let (rec_sym, rec_color) = rec_indicator(data.rec);
+            Span::styled(format!("{rec_sym} "), Style::default().fg(rec_color))
+        },
     ];
 
     if let Some(sf) = data.step_focuses.get(data.active_track).copied().flatten() {
@@ -840,7 +845,7 @@ impl RenderData {
         let track_count = track_count.max(1) as usize;
         Self {
             screen,
-            grid_rec: true,
+            rec: RecMode::Off,
             armed_prefix: None,
             active_track: 0,
             track_names: (1..=track_count).map(|i| format!("T{}", i)).collect(),
@@ -903,7 +908,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let data = RenderData {
             screen: Screen::Grid,
-            grid_rec: true,
+            rec: RecMode::Off,
             armed_prefix: None,
             active_track: 0,
             track_names: vec!["AnalogKick".into(), "AnalogSnare".into()],
@@ -966,7 +971,7 @@ mod tests {
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let data = RenderData {
             screen: Screen::Param(1),
-            grid_rec: true,
+            rec: RecMode::Off,
             armed_prefix: None,
             active_track: 0,
             track_names: vec!["AnalogKick".into()],
@@ -1347,19 +1352,42 @@ mod tests {
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut data = RenderData::for_test(Screen::Grid, 1);
-        data.grid_rec = false;
+        data.rec = RecMode::Off;
         data.armed_prefix = Some("TRK…".to_string());
         terminal.draw(|f| render(f, &data)).unwrap();
 
         let text = buffer_text(&terminal);
         assert!(
             text.contains("REC○"),
-            "grid_rec=false must show the REC○ glyph; got: {text}"
+            "RecMode::Off must show the REC○ glyph; got: {text}"
         );
         assert!(
             text.contains("TRK"),
             "an armed TRK prefix must appear in the status line; got: {text}"
         );
+    }
+
+    /// TK2.1 C1 (D5): the three-state REC glyph on both the transport bar
+    /// and the status line.
+    #[test]
+    fn rec_indicator_shows_three_states() {
+        for (mode, glyph) in [
+            (RecMode::Off, "REC○"),
+            (RecMode::Grid, "REC▦"),
+            (RecMode::Live, "REC●"),
+        ] {
+            let backend = ratatui::backend::TestBackend::new(80, 24);
+            let mut terminal = ratatui::Terminal::new(backend).unwrap();
+            let mut data = RenderData::for_test(Screen::Grid, 1);
+            data.rec = mode;
+            terminal.draw(|f| render(f, &data)).unwrap();
+
+            let text = buffer_text(&terminal);
+            assert!(
+                text.contains(glyph),
+                "{mode:?} must render {glyph}; got: {text}"
+            );
+        }
     }
 
     #[test]
