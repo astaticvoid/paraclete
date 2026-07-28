@@ -3,8 +3,8 @@
 > **DRAFT — 2026-07-27**, revised the same day after a three-domain
 > hostile review. The redesign pass roadmap step 2.5 calls for.
 > Written for implementation without further design decisions **once
-> ADR-044's R1–R5 are answered** — R1 determines C1/C3, R2 determines
-> whether C3 exists, R3 determines C6. Every commit names its files,
+> ADR-044's R1–R5 are answered** — R1 determines C1's no-kitty fallback,
+> R2 determines whether C3 exists, R3 determines C6. Every commit names its files,
 > contracts, the existing sites it must update to stay green, and its
 > tests. Where a value is a tuning knob, the default is stated *(tunable)*.
 >
@@ -53,7 +53,8 @@ dropped; it is a listed non-decision.
 D1 fixed regions (status line = the mode line) · D2 one-track strip ·
 D3 chip where the key acts, shadow-aware, none without an action ·
 D4 legend strip with declared literal entries · D5 `RecMode{Off,Grid,Live}`,
-REC cycles *(pending R1)* · D6 trig N = track N in pad modes ·
+REC toggles `Off↔Grid`, REC+PLAY escalates to `Live` *(fallback per R1)* ·
+D6 trig N = track N in pad modes ·
 D7 no transport at launch · D8 live record engine-side (`live_rec`,
 ADR-039 D7) *(pending R2)* · D9 encoder mode = the Param screen, §0 A10
 intact · D10 descriptor-accurate jog, §4.2 constants unchanged ·
@@ -164,13 +165,24 @@ and `lib.rs:314`) gain the new field.
 `track_context_without_page_params_renders_placeholder`,
 `narrow_terminal_drops_names_before_chips`.
 
-### C1 — `RecMode`, pads, silent launch (D5/D6/D7) *(depends on R1)*
+### C1 — `RecMode`, pads, silent launch (D5/D6/D7)
 
 `model.rs`: `pub enum RecMode { Off, Grid, Live }`; `Model.grid_rec: bool`
 → `Model.rec: RecMode` (default `Off`, replacing `model.rs:204`'s `true`).
 `input.rs::ScreenState.grid_rec` → `rec` (`input.rs:546`).
 
-`action.rs`: `Action::ToggleGridRec` → `Action::CycleRecMode`.
+`action.rs`: `Action::ToggleGridRec` → `Action::ToggleRec`, plus
+`Action::EnterLiveRec`.
+
+`input.rs`: `Hold` gains a `Rec` variant, but **only on the kitty path**
+(`on_kitty_press`/`on_kitty_release`, `input.rs:509-539`) — REC's own
+action fires on press either way, so unlike TRK/PTN it never waits for the
+next key and the sticky fallback never arms it. `PanelButton::Play` while
+`Hold::Rec` is held resolves to `Action::EnterLiveRec` (which also starts
+the transport, as PLAY otherwise would). Where the kitty probe is false,
+`Action::ToggleRec` resolves by transport state instead
+(D5's fallback): REC while running arms `Live`, REC while stopped arms
+`Grid`, and a later PLAY does not convert one into the other.
 
 `input.rs::button_to_action`: the trig arm (`input.rs:627-633`) branches on
 `rec` — `Grid` → `ToggleStep { col }`; `Off`/`Live` → `LiveTrig { col }`
@@ -190,7 +202,9 @@ and TRK+FUNC+trig mutes exactly as today.
   publish already runs after `drop(bus_ref)`, `lib.rs:954-963`), and emit
   `CMD_TRIG_NOW` on **that** track's sequencer. Order is normative: the
   trig lands on the newly selected track.
-- `Action::CycleRecMode` advances `Off → Grid → Live → Off`.
+- `Action::ToggleRec` toggles `Off ↔ Grid` on the kitty path, or applies
+  the transport-derived rule on the fallback path; `Action::EnterLiveRec`
+  sets `Live` and starts the transport; REC from `Live` returns to `Off`.
 - `TheotokosApp::new` pushes `CMD_CLOCK_STOP` (`action.rs:5`) for
   `clock_id` onto `self.pending`, so the first command drain stops the
   clock. Note the honest bound: `main.rs:553-560` ticks before draining,
@@ -202,7 +216,7 @@ and TRK+FUNC+trig mutes exactly as today.
 **Update to stay green** (every `grid_rec` reader; all are compile errors):
 `model.rs:59,204` · `input.rs:546`, `:627-633`, `:719` (`default_grid()`
 helper, used by 6 tests), `:845`, `:1002` (`rec_toggles_grid_recording` →
-rename `rec_cycles_off_grid_live` and re-assert), `:1010`
+rename `rec_toggles_off_and_grid` and re-assert), `:1010`
 (`trig_with_grid_rec_off_is_live_trig` → rename
 `pad_mode_trig_resolves_to_live_trig_with_column`) · `render.rs:243`,
 `:622-623`, `:705`, `:767`, `:829`, `:912`, `:980`, `:987` · `lib.rs:316`,
@@ -210,7 +224,13 @@ rename `rec_cycles_off_grid_live` and re-assert), `:1010`
 (`grid_rec_off_trig_key_emits_trig_now_command`) · `action.rs:119` (the
 `Outcome` match arm).
 
-**Tests** (pure): `rec_cycles_off_grid_live`,
+**Tests** (pure): `rec_toggles_off_and_grid`,
+`rec_held_plus_play_enters_live_rec` (kitty path),
+`rec_from_live_returns_to_off`,
+`grid_rec_survives_a_later_play_press` (the cycle's pass-through hazard,
+pinned so it cannot come back),
+`fallback_rec_while_running_arms_live` and
+`fallback_rec_while_stopped_arms_grid` (no-kitty path),
 `pad_mode_trig_resolves_to_live_trig_with_column`,
 `grid_mode_trig_toggles_step`,
 `armed_trk_still_wins_over_pads` (§0 A10 regression).
@@ -474,8 +494,8 @@ the standing directive. Then:
   (`encoder_cursor` stuck at 0) and of the unwired numpad slot jog. Wire
   the arrow cursor, or descope it in `bugs.md` and drop the language from
   the spec — do not leave it dangling a second phase.
-- `AGENTS.md` + `README.md` key tables → the TK2.1 grammar (rec cycle,
-  pads, encoder-on-Param, no `m`).
+- `AGENTS.md` + `README.md` key tables → the TK2.1 grammar (REC toggle +
+  REC+PLAY live rec, pads, encoder-on-Param, no `m`).
 - Help overlay (`render.rs:488`) regenerated: rec modes, pads, encoder
   mode, live record, no Mute screen.
 - design.md §5.1/§5.2 rewritten as DETERMINED against ADR-044; Stage 5
@@ -483,8 +503,8 @@ the standing directive. Then:
   A9 and A16 are superseded, A14 is half-stale, and A7's condition is
   discharged by D9 (append, never rewrite).
 - ADR-044 `Status:` → ✅ accepted with an implementation note; ADR-039
-  gains an appended note that its decision-7 slice shipped early and that
-  its REC+PLAY grammar clause is superseded (if R1 adopted the cycle).
+  gains an appended note that its decision-7 slice shipped early (its
+  REC+PLAY grammar is implemented as written, not superseded).
 - `design/phases/tk2.1-report.md` + roadmap.
 
 ### C8 — Usability session #3 (user-paired, no code)
@@ -500,7 +520,7 @@ explicit converged / revise / park verdict per hypothesis.
 |---|---|
 | The fixed panel (one-track strip + separate contextual window + legend) reads as a hardware front panel, not an LED grid | ADR-044 D1/D2 |
 | Key chips make the current meaning of the trig rows self-evident without the help overlay | D3 |
-| REC cycling `Off → Grid → Live` is learnable and beats PLAY+REC — **the deviation R1 ratifies against two accepted ADRs, so this is the hypothesis with the most riding on it** | D5 |
+| REC-toggle + REC+PLAY reads as the reference box's own grammar on a keyboard, and the no-kitty fallback (REC-while-running arms `Live`) is tolerable where releases are unavailable | D5, R1 |
 | Trig N = track N in pad modes gives real finger-drumming without a mode error | D6, R4 |
 | Engine-side live record feels tight enough at 120–140 bpm with block-start command delivery | D8 |
 | The Param screen *is* the encoder mode — no separate toggle key is missed | D9 |
@@ -525,8 +545,11 @@ explicit converged / revise / park verdict per hypothesis.
 
 Three independent fresh-context reviewers (code claims / design
 consistency / implementability), per AGENTS.md learning 8. **15 B, 26 M,
-27 m; 49+ code claims verified clean.** Folded here: the commit sequence
-was re-cut (chips now follow `RecMode`; the old C4 split into C4/C5);
+27 m; 49+ code claims verified clean.** **Superseded in part the same day:** D5's REC cycle was withdrawn at the
+user's direction in favour of the reference box's own gestures (REC
+toggles grid rec; REC held + PLAY escalates), which removes the review's
+two largest findings outright rather than answering them — see ADR-044's
+revision note. Folded here: the commit sequence was re-cut (chips now follow `RecMode`; the old C4 split into C4/C5);
 every rename and deletion gained an exhaustive "update to stay green"
 list; the legend priority list, cell formats, minimum width and
 quantization formula are now literal; `startup_emits_clock_stop` gained a

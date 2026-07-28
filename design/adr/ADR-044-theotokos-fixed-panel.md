@@ -3,10 +3,10 @@
 **Status:** 🟡 Proposed (2026-07-27; revised the same day after hostile
 review) — awaits user ratification (R1–R5 below).
 **Will supersede on ratification:** `design/theotokos/design.md` §5.1/§5.2
-(reopened 2026-07-27); TK2 spec §0 A9 and A16, and §1 D11/D12; ADR-038
-structural change 2 in part and its grid-rec-toggle half; **ADR-039
-decision 7's REC+PLAY grammar clause** (its recording *mechanics* are
-adopted unchanged). A proposed ADR supersedes nothing until ratified.
+(reopened 2026-07-27); TK2 spec §0 A9 and A16, and §1 D11/D12. **No
+accepted ADR is superseded:** D5 keeps ADR-038's grid-rec toggle and
+ADR-039's REC+PLAY grammar, and D6 keeps ADR-038 structural change 2's
+hold-chord mechanism. A proposed ADR supersedes nothing until ratified.
 **Evidence:** `design/sessions/theotokos-2.md`, `design/phases/tk2-report.md`
 (usability session #2, TK2 C10, held 2026-07-27).
 **Implemented by:** `design/phases/tk2.1-theotokos.md`.
@@ -158,7 +158,7 @@ entirely (`lib.rs:410-420`). So does the range chip `[1-6] PAGE`. They are
 declared constants in the legend table, and the spec says so rather than
 implying the whole strip is remap-aware.
 
-### D5 — `RecMode { Off, Grid, Live }`; REC cycles *(pending R1)*
+### D5 — `RecMode { Off, Grid, Live }`; REC toggles, REC+PLAY escalates
 
 `grid_rec: bool` becomes a three-state mode, default **`Off`**.
 
@@ -168,20 +168,40 @@ implying the whole strip is remap-aware.
 | `Grid` | `REC▦` | write/clear steps of the selected track | none — programming works while playing |
 | `Live` | `REC●` | pads **and** record, engine-side (D8) | records only while playing |
 
-The REC button cycles `Off → Grid → Live → Off`. The transport never
-changes the rec mode and the rec mode never starts the transport.
+The gestures follow the reference box exactly:
 
-**This is a contested decision and R1 exists to settle it.** It was chosen
-at the user's direction during this drafting pass, but it deviates from
-three standing authorities: session #2's own wording ("PLAY+REC together =
-live record"), ADR-038's frozen model half (the grid-rec *toggle*, not
-just its chord homes), and ADR-039's Consequences ("REC+PLAY = live record
-arms `live_rec`"). Drafting-pass direction is not the hands-on session
-evidence §6's convergence rule requires, so the cycle is put to explicit
-ratification rather than carried as a footnote. The rationale for it:
-deriving `Live` from `rec_armed × playing` makes it impossible to program
-steps while the pattern loops, and making REC a third hold prefix saddles
-the most-used button with the kitty-less sticky one-shot delay.
+- **REC toggles `Off ↔ Grid`**, and acts on press — grid recording arms
+  or disarms immediately, with no dependence on what is pressed next.
+- **REC held + PLAY enters `Live`.** REC pressed again leaves it, back to
+  `Off`. The transport never changes the rec mode by itself, and grid
+  recording is fully usable while the pattern plays.
+
+The three states are what the reference box has (grid rec lit, live rec
+blinking, neither); only the physical gesture differs, and this decision
+keeps that gesture too. Because REC's own action fires on press, making
+REC a held prefix costs nothing: unlike TRK/PTN, it never has to wait for
+the next key to know what it meant.
+
+**Degradation without key-release reporting.** The held-REC chord needs
+release events, which only the kitty keyboard protocol provides
+(`supports_keyboard_enhancement()` probe at startup, already stored on the
+model and shown on the Settings screen). Where they are absent, `Live` is
+reached by a transport-derived rule instead: **REC pressed while the
+transport is running arms `Live`; REC pressed while stopped arms `Grid`**,
+and arming sticks — a later PLAY does *not* convert `Grid` into `Live`.
+Same bindings, degraded gesture, in the spirit of §4.3's ramp
+degradation. What is explicitly **not** done is inferring the chord from a
+timing window between two sequential presses: "REC then PLAY" (program,
+then start playback) and "REC+PLAY" (live record) are both real
+workflows, and separating them by milliseconds would guess wrong under
+exactly the pressure a session applies.
+
+*(An earlier draft of this ADR had REC cycling `Off → Grid → Live → Off`
+to avoid needing a chord at all. Withdrawn: cycling from `Grid` back to
+`Off` passes **through** `Live` while the transport runs, so any trig in
+that window records — a footgun in precisely the state the cycle existed
+to simplify. It also conflicted with ADR-038's grid-rec toggle and
+ADR-039's REC+PLAY grammar; this decision conflicts with neither.)*
 
 ### D6 — In pad modes, trig N addresses track N
 
@@ -196,17 +216,27 @@ The grammar addresses all 16 trigs; columns past the discovered track
 count are silent no-ops with no chip (D3). In `Grid`, trig N is step N of
 the selected track — unchanged.
 
-This *is* a mode split in the trig keys, which §3.A point 3 warns about.
+**This converges on the reference box rather than diverging from it**
+*(reference behaviour per the user, 2026-07-27 — confirm before
+ratification)*: holding TRK there turns the trig keys into track keys that
+both select and sound their track. D6 promotes that existing layer to the
+**default** layer whenever REC is off, on the grounds that a keyboard has
+no spare hand to hold TRK while drumming and no dedicated per-track
+buttons to fall back on. So a bare trig and TRK+trig meaning the same
+thing in pad modes is not redundancy to be explained away — it is the same
+gesture with the hold made unnecessary.
+
+TRK+trig survives unchanged and is not merely vestigial: it is the only
+track-select gesture in `Grid` mode and on the Param screen, where bare
+trigs mean steps and encoders. **ADR-038 structural change 2** ("track
+select is a hold-chord, not a row") therefore stands — the hold-chord is
+still the general mechanism; pad mode is a layer, not a return to the
+retired `qweruiop` row.
+
+It *is* a mode split in the trig keys, which §3.A point 3 warns about.
 Accepted deliberately: the split is between playing and programming the
 instrument, it is announced by the REC indicator, and D3's chips keep the
 current meaning on screen rather than in memory. §0 A16 is superseded.
-
-It also partly supersedes **ADR-038 structural change 2** ("track select
-is a hold-chord, not a row"): in pad modes a bare trig selects a track,
-duplicating TRK+trig for tracks 1..N. TRK+trig survives deliberately — it
-is the only track-select gesture in `Grid` mode and on the Param screen,
-where bare trigs mean steps and encoders. The redundancy is one-directional
-and costs no keys.
 
 ### D7 — No transport at launch
 
@@ -233,12 +263,11 @@ and the transport is running, a consumed `CMD_TRIG_NOW` records itself —
 nearest-step quantization, note and velocity written, signed distance to
 the grid captured as the step's micro-timing.
 
-This adopts ADR-039 decision 7's mechanics verbatim ("a pending
+This adopts ADR-039 decision 7 whole — its mechanics ("a pending
 `CMD_TRIG_NOW` (TK2 C1) records itself the same way when `live_rec` is
 on"), whose rejected alternative is precisely the surface-side
-`CMD_SET_STEP` path this ADR first drafted. Only that decision's *grammar*
-clause (REC+PLAY as the arming gesture) is superseded, and only if R1
-adopts D5's cycle.
+`CMD_SET_STEP` path this ADR first drafted, **and** its grammar clause,
+since D5 now arms `Live` with REC+PLAY exactly as that ADR states.
 
 TK2.1 therefore **implements one slice of ADR-039 early** — the `live_rec`
 param and the record-on-live-trig path. Not pulled with it: kits, temp
@@ -381,20 +410,24 @@ therefore stated as a decision, not folded silently into a commit.
 
 | # | Question | Recommendation |
 |---|---|---|
-| **R1** | D5 — adopt the REC cycle (`Off → Grid → Live`), superseding ADR-038's grid-rec toggle and ADR-039's REC+PLAY grammar? Or keep REC+PLAY as those ADRs and session #2 state it, accepting that step programming stops when the pattern plays? | Adopt the cycle — but knowingly, as a supersession of two accepted ADRs, re-judged at session #3 |
+| **R1** | D5 — on terminals with no key-release reporting, should `Live` degrade to the transport-derived rule (REC while running arms Live), or simply be unavailable with an echo? | Degrade; an unreachable mode teaches nothing, and the rule is honest about what it does |
 | **R2** | D8 — pull ADR-039 decision 7's `live_rec` slice into TK2.1 (so `RecMode::Live` does something), versus shipping `Off`/`Grid` only and waiting for the P11 phase spec? | Pull it forward; the slice is small and fully specified, and a cycle with a dead third state is worse than either |
 | **R3** | D12/D14 — remove `Mute` from the `:bind` vocabulary entirely, with warn-and-skip loading for keymaps that still name it? | Yes; a chord has no single-button equivalent, so an alias would be a lie |
-| **R4** | D6 — is the pad/step split in the trig keys acceptable, given §3.A point 3's warning about mode errors? It is the one place this redesign *adds* a mode. | Yes, given the REC indicator plus D3's chips make it visible; re-judged at session #3 |
+| **R4** | D6 — confirm the reference behaviour the decision now rests on (TRK-held trig keys select *and* sound their track), and that promoting it to the REC-off default is the intent | Yes — it makes pad mode convergent with the reference rather than a keyboard invention |
 | **R5** | Session #2 recorded FUNC+transport copy/clear/paste as "converged (provisional) … revisit inside the general redesign pass". This ADR does **not** redesign it — see "Out of scope". Accept the deferral to session #3? | Yes — the surrounding grammar changes under this ADR, so redesigning the chord now would be designing against a surface nobody has played |
 
 ## Alternatives considered
 
-- **Derive `Live` from `rec_armed × playing`** (session #2's literal
-  wording, and closest to ADR-039's REC+PLAY). Rejected under D5: step
-  programming becomes impossible while the pattern plays. R1 can restore it.
-- **REC as a third hold prefix** (`Hold::Rec`, REC+PLAY = Live). Rejected:
-  on kitty-less terminals the most-used button inherits the sticky
-  one-shot delay, and a bare REC tap cannot resolve until the next key.
+- **REC cycles `Off → Grid → Live → Off`** (drafted, then withdrawn — see
+  D5): cycling out of `Grid` passes through `Live` while the transport
+  runs, and it conflicted with two accepted ADRs for no gain.
+- **Deriving `Live` from `rec_armed × playing` unconditionally** — i.e. a
+  later PLAY converts `Grid` into `Live`. Rejected: it makes programming
+  impossible while the pattern loops. The D5 fallback keeps the derivation
+  but freezes it at arming time, which does not have that effect.
+- **Inferring the chord from a timing window** between sequential REC and
+  PLAY presses. Rejected under D5: two real workflows separated by
+  milliseconds.
 - **Keep trig = step in pad mode** (any trig sounds the selected track;
   track select stays on TRK+trig — today's behavior). Rejected by the user
   in this drafting pass: no multi-track finger drumming.
@@ -467,14 +500,27 @@ Per design.md §6, everything except feel is machine-checkable:
   the text step bitfield).
 - **Feel:** usability session #3.
 
+## Revision — 2026-07-27 (post-review, user-directed)
+
+D5 was rewritten from the REC cycle to the reference box's own gestures
+(REC toggles grid rec; REC held + PLAY escalates to live rec), with a
+transport-derived fallback where key releases are unavailable. This
+**removes** the review's two largest findings rather than answering them:
+nothing supersedes ADR-038's grid-rec toggle or ADR-039's REC+PLAY
+grammar any more, so R1 narrows to the fallback choice. D6's rationale
+was corrected in the same pass — pad mode promotes the reference's own
+TRK-held track layer to the REC-off default, so it converges with the
+reference instead of diverging from it, and ADR-038 structural change 2
+stands unamended.
+
 ## Review pass — 2026-07-27
 
 Three independent fresh-context reviewers (code claims / design
 consistency / implementability), per AGENTS.md learning 8. **15 B, 26 M,
 27 m; 49+ code claims verified clean.** All blockers and majors are folded
 above or into the phase spec. What changed materially in this ADR: the
-REC-cycle became a contested ratification item (R1) with ADR-038/ADR-039
-named in the supersession header; §0 A10's precedence was restored over
+REC-cycle became a contested ratification item (later resolved by dropping
+the cycle — see the revision note above); §0 A10's precedence was restored over
 D9/D10; §4.2's jog constants were restored; D3 gained shadow-awareness and
 the no-chip-without-action rule; D4 declared its non-derivable entries; D9
 discharged §0 A7; D10 recorded ADR-041 amendment 3's ownership; D13 (the
