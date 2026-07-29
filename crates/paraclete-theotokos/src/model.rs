@@ -1,7 +1,7 @@
 use crate::action::GRID_STEPS;
 use crate::input::PanelButton;
 use crossterm::event::KeyCode;
-use paraclete_node_api::{CapabilityDocument, PageRef, StateBusHandle, StateBusValue};
+use paraclete_node_api::{CapabilityDocument, PageRef, ParamDescriptor, StateBusHandle, StateBusValue};
 use paraclete_view_assembly::CompositeView;
 use std::collections::HashMap;
 
@@ -363,7 +363,20 @@ impl Model {
     /// params), this is what the 8-encoder bank resolves against, so a
     /// page with more than 8 params splits into sub-pages instead of
     /// silently truncating.
-    pub fn resolve_encoder_params(&self) -> Vec<(u32, u32, String, f64, f64)> {
+    /// TK2.1 C4 (D10, closes BUG-040): looks up `(node_id, param_id)`
+    /// against `Model::caps` — verified to contain every node in the
+    /// instrument file, not just generators — for the descriptor's real
+    /// `min`/`max`/`stepped`. `None` when the node or param isn't found
+    /// (caller falls back to 0..1 and renders the cell dimmed).
+    fn resolve_param_descriptor(&self, node_id: u32, param_id: u32) -> Option<&ParamDescriptor> {
+        self.caps.get(&node_id)?.params.iter().find(|pd| pd.id == param_id)
+    }
+
+    /// Returns `(node_id, param_id, name, min, max, stepped, resolved)`.
+    /// `resolved` is false only for the composite branch's "no cap-doc
+    /// entry found" case (TK2.1 C4) — the `min`/`max` fields are 0..1 and
+    /// not to be trusted when it is.
+    pub fn resolve_encoder_params(&self) -> Vec<(u32, u32, String, f64, f64, bool, bool)> {
         let lo = (self.sub_page * 8) as u16;
         let hi = lo + 8;
         if let Some(cv) = self.composite.get(self.active_track) {
@@ -377,7 +390,18 @@ impl Model {
                     params.sort_by_key(|p| p.slot);
                     return params
                         .into_iter()
-                        .map(|p| (p.node_id, p.param_id, p.name.clone(), 0.0, 1.0))
+                        .map(|p| match self.resolve_param_descriptor(p.node_id, p.param_id) {
+                            Some(pd) => (
+                                p.node_id,
+                                p.param_id,
+                                p.name.clone(),
+                                pd.min,
+                                pd.max,
+                                pd.stepped,
+                                true,
+                            ),
+                            None => (p.node_id, p.param_id, p.name.clone(), 0.0, 1.0, false, false),
+                        })
                         .collect();
                 }
             }
@@ -404,7 +428,7 @@ impl Model {
                     .params
                     .iter()
                     .take(8)
-                    .map(|p| (gen_id, p.id, p.name.to_string(), p.min, p.max))
+                    .map(|p| (gen_id, p.id, p.name.to_string(), p.min, p.max, p.stepped, true))
                     .collect();
             }
         };
@@ -420,7 +444,7 @@ impl Model {
                 cap.params
                     .iter()
                     .find(|pd| pd.id == *pid)
-                    .map(|pd| (gen_id, pd.id, pd.name.to_string(), pd.min, pd.max))
+                    .map(|pd| (gen_id, pd.id, pd.name.to_string(), pd.min, pd.max, pd.stepped, true))
             })
             .collect()
     }
@@ -947,6 +971,15 @@ impl Tuning {
         } else {
             step
         }
+    }
+
+    /// TK2.1 C4 (D10, closes BUG-040 §2): a stepped param (an integer
+    /// selector — algorithm, machine, waveform) moves exactly one unit
+    /// per press, ignoring range, magnitude and ramp entirely. A separate
+    /// method (not a branch inside `jog_step`) so §4.2's constants and the
+    /// existing `Tuning` tests stay untouched.
+    pub fn jog_step_stepped(&self) -> f64 {
+        1.0
     }
 }
 

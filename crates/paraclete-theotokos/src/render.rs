@@ -35,6 +35,10 @@ pub struct EncoderCell {
     pub value: f64,
     pub min: f64,
     pub max: f64,
+    /// TK2.1 C4 (D10, closes BUG-040): false when `min`/`max` are the
+    /// 0..1 last-resort fallback (no cap-doc entry found) — the cell
+    /// renders dimmed so the condition is visible.
+    pub resolved: bool,
 }
 
 pub struct RenderData {
@@ -729,7 +733,17 @@ fn render_encoder_cell(frame: &mut Frame, area: Rect, data: &RenderData, idx: us
             let filled = (ratio * 4.0).round() as usize;
             let bar = "█".repeat(filled) + &"░".repeat(4 - filled);
             let flash = data.encoder_flash.get(idx).copied().unwrap_or(false);
-            let color = if flash { Color::Yellow } else { Color::White };
+            // TK2.1 C4 (D10, closes BUG-040): an unresolved cell (no
+            // cap-doc entry found, min/max are the 0..1 fallback) renders
+            // dimmed so the condition is visible rather than looking like
+            // an ordinary, trustworthy 0..1 param.
+            let color = if !c.resolved {
+                Color::DarkGray
+            } else if flash {
+                Color::Yellow
+            } else {
+                Color::White
+            };
             Line::styled(
                 format!("{cursor}{} {} {:.2}", c.name, bar, c.value),
                 Style::default().fg(color),
@@ -1787,12 +1801,14 @@ mod tests {
                 value: 0.5,
                 min: 0.0,
                 max: 1.0,
+                resolved: true,
             }),
             Some(EncoderCell {
                 name: "tune".into(),
                 value: 0.25,
                 min: 0.0,
                 max: 1.0,
+                resolved: true,
             }),
             None,
             None,
@@ -1812,6 +1828,43 @@ mod tests {
             text.matches("--").count() >= 6,
             "encoder cells past the page's param count must render blank, not \
              a malformed cell; got: {text}"
+        );
+    }
+
+    /// TK2.1 C4 (D10, closes BUG-040 §1): an unresolved cell (a composite
+    /// param with no matching cap-doc entry — `min`/`max` are the 0..1
+    /// last-resort fallback) renders dimmed so the condition is visible.
+    #[test]
+    fn unresolvable_param_falls_back_and_renders_dim() {
+        let backend = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Param(0), 1);
+        data.encoder_cells = vec![
+            Some(EncoderCell {
+                name: "mystery".into(),
+                value: 0.5,
+                min: 0.0,
+                max: 1.0,
+                resolved: false,
+            }),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ];
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let row = find_row(&terminal, 24, 100, "mystery");
+        let line = buffer_row_text(&terminal, row, 100);
+        let col = line.find('m').expect("the cell's name must render") as u16;
+        let fg = terminal.backend().buffer().get(col, row).fg;
+        assert_eq!(
+            fg,
+            Color::DarkGray,
+            "an unresolved cell must render dimmed, not the normal white"
         );
     }
 

@@ -291,15 +291,18 @@ impl TheotokosApp {
         let encoder_params = self.model.resolve_encoder_params();
         let encoder_cells: Vec<Option<render::EncoderCell>> = (0..8)
             .map(|i| {
-                encoder_params.get(i).map(|(nid, pid, name, min, max)| {
-                    let value = self.model.read_param_value(bus, *nid, *pid);
-                    render::EncoderCell {
-                        name: name.clone(),
-                        value,
-                        min: *min,
-                        max: *max,
-                    }
-                })
+                encoder_params
+                    .get(i)
+                    .map(|(nid, pid, name, min, max, _stepped, resolved)| {
+                        let value = self.model.read_param_value(bus, *nid, *pid);
+                        render::EncoderCell {
+                            name: name.clone(),
+                            value,
+                            min: *min,
+                            max: *max,
+                            resolved: *resolved,
+                        }
+                    })
             })
             .collect();
         for (i, cell) in encoder_cells.iter().enumerate() {
@@ -959,7 +962,7 @@ impl TheotokosApp {
                         None => {
                             self.model.cmdline_error = Some(format!("no encoder {}", col + 1));
                         }
-                        Some((node_id, param_id, _name, min, max)) => {
+                        Some((node_id, param_id, _name, min, max, stepped, _resolved)) => {
                             let track = self.model.active_track;
                             let tracker = &mut self.encoder_trackers[col];
                             let held = match tracker.repeat(now, tick_ms) {
@@ -969,8 +972,17 @@ impl TheotokosApp {
                                     0
                                 }
                             };
-                            let range = max - min;
-                            let delta = self.tuning.jog_step(range, held, mag);
+                            // TK2.1 C4 (D10): a stepped param (an integer
+                            // selector) moves exactly one unit per press,
+                            // ignoring range/magnitude/ramp — held is still
+                            // tracked above so the ramp resumes correctly
+                            // if the user later reaches an unstepped param.
+                            let delta = if stepped {
+                                self.tuning.jog_step_stepped()
+                            } else {
+                                let range = max - min;
+                                self.tuning.jog_step(range, held, mag)
+                            };
                             let signed = match dir {
                                 Dir::Next => delta,
                                 Dir::Prev => -delta,
@@ -1506,11 +1518,42 @@ mod tests {
     use crate::model::{Screen, SlotBinding, TrackInfo};
     use crossterm::event::{KeyCode, KeyModifiers};
     use paraclete_node_api::{
-        CapabilityDocument, PageRef, ParamDescriptor, ParamUnit, Rule, StateBusValue,
+        AffordanceHint, CapabilityDocument, PageRef, ParamDescriptor, ParamUnit, Rule,
+        StateBusValue,
     };
+    use paraclete_view_assembly::{CompositeParam, CompositePage};
     use std::borrow::Cow;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    /// TK2.1 C4: a one-page, one-param composite view — the shape
+    /// `resolve_encoder_params` must resolve against `Model::caps` rather
+    /// than the `0.0, 1.0` placeholder (BUG-040).
+    fn composite_view_with_param(node_id: u32, param_id: u32) -> CompositeView {
+        CompositeView {
+            engine_node_id: node_id,
+            engine_name: "Test".into(),
+            display_name: "Test".into(),
+            pages: vec![CompositePage {
+                id: "p1".into(),
+                label: "P1".into(),
+                params: vec![CompositeParam {
+                    node_id,
+                    param_id,
+                    name: "param".into(),
+                    label: "Param".into(),
+                    affordance: AffordanceHint::None,
+                    env_group: None,
+                    slot: 0,
+                    routing: None,
+                }],
+                envelopes: vec![],
+                macros: vec![],
+            }],
+            chain: vec![],
+            routes: vec![],
+        }
+    }
 
     fn test_bus() -> BusHandle {
         Rc::new(RefCell::new(StateBusHandle::default()))
@@ -2384,6 +2427,105 @@ mod tests {
         assert_eq!(app.pending[0].type_id, CMD_SET_LOCK_TARGET);
         assert_eq!(app.pending[1].type_id, CMD_SET_STEP_LOCK);
         assert_eq!(app.pending[1].arg0, 3, "step arg must be the focused step");
+    }
+
+    /// TK2.1 C4 (D10, closes BUG-040 §1): a composite page's encoder cell
+    /// must resolve the real cap-doc range, not the `0.0, 1.0` placeholder.
+    #[test]
+    fn encoder_uses_descriptor_range_on_composite_pages() {
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        let param_id = ParamDescriptor::id_for_name("cutoff");
+        app.model.caps.get_mut(&100).unwrap().params.push(ParamDescriptor {
+            id: param_id,
+            name: "cutoff".into(),
+            min: 20.0,
+            max: 20000.0,
+            default: 1000.0,
+            stepped: false,
+            unit: ParamUnit::Generic,
+            display: None,
+        });
+        app.model.composite = vec![composite_view_with_param(100, param_id)];
+
+        let params = app.model.resolve_encoder_params();
+        assert_eq!(params.len(), 1);
+        let (_, _, _, min, max, stepped, resolved) = params[0].clone();
+        assert!(resolved, "must resolve against the cap-doc, not fall back");
+        assert_eq!(min, 20.0);
+        assert_eq!(max, 20000.0);
+        assert!(!stepped);
+    }
+
+    /// TK2.1 C4 (D10, closes BUG-040 §2): a stepped param (an integer
+    /// selector) jogs by exactly one unit, ignoring its (possibly wide)
+    /// range entirely.
+    #[test]
+    fn stepped_param_jogs_by_exactly_one() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        let param_id = ParamDescriptor::id_for_name("waveform");
+        app.model.caps.get_mut(&100).unwrap().params.push(ParamDescriptor {
+            id: param_id,
+            name: "waveform".into(),
+            min: 0.0,
+            max: 4.0,
+            default: 0.0,
+            stepped: true,
+            unit: ParamUnit::Generic,
+            display: None,
+        });
+        app.model.composite = vec![composite_view_with_param(100, param_id)];
+
+        app.handle_keys(&bus, &[func_trig('q')]); // EncoderJog{col:0, dir:Next}
+
+        let bump = app
+            .pending
+            .iter()
+            .find(|c| c.type_id == paraclete_node_api::CMD_BUMP_PARAM)
+            .expect("must emit CMD_BUMP_PARAM");
+        assert_eq!(
+            bump.arg1, 1.0,
+            "a stepped param must jog by exactly one, ignoring its range"
+        );
+    }
+
+    /// TK2.1 C4 (D10, closes BUG-040 §1): the step-focus p-lock clamp must
+    /// use the real resolved range, not the `0.0, 1.0` fallback that
+    /// silently truncated a lock on a wide-range param to 1.0.
+    #[test]
+    fn plock_clamp_uses_real_range() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        let param_id = ParamDescriptor::id_for_name("cutoff");
+        app.model.caps.get_mut(&100).unwrap().params.push(ParamDescriptor {
+            id: param_id,
+            name: "cutoff".into(),
+            min: 20.0,
+            max: 20000.0,
+            default: 1000.0,
+            stepped: false,
+            unit: ParamUnit::Generic,
+            display: None,
+        });
+        app.model.composite = vec![composite_view_with_param(100, param_id)];
+        app.model.step_focus[0] = Some(0);
+        bus.borrow_mut()
+            .write("/node/100/param/cutoff", StateBusValue::Float(5000.0));
+
+        app.handle_keys(&bus, &[func_trig('q')]); // focused jog -> lock path
+
+        let lock_cmd = app
+            .pending
+            .iter()
+            .rev()
+            .find(|c| c.type_id == CMD_SET_STEP_LOCK)
+            .expect("must emit CMD_SET_STEP_LOCK");
+        assert!(
+            lock_cmd.arg1 > 1000.0,
+            "clamp must use the real range (20..20000), not fall back to \
+             0..1 and truncate; got {}",
+            lock_cmd.arg1
+        );
     }
 
     #[test]
