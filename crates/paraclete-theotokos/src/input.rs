@@ -57,7 +57,6 @@ pub enum PanelButton {
     PageNext,
     Song,
     Keybd,
-    Mute,
     /// TK2.1 C5a (D9): toggles ENC mode (default key `n`).
     Enc,
     /// TK2.1 C5b (D15): the shared p-lock target button (default key `m`
@@ -111,7 +110,6 @@ const BUTTON_NAMES: &[(&str, PanelButton)] = &[
     ("PageNext", PanelButton::PageNext),
     ("Song", PanelButton::Song),
     ("Keybd", PanelButton::Keybd),
-    ("Mute", PanelButton::Mute),
     ("Enc", PanelButton::Enc),
     ("Lock", PanelButton::Lock),
 ];
@@ -352,23 +350,40 @@ impl Keymap {
         serde_yml::to_string(&map).map_err(|e| e.to_string())
     }
 
-    /// TK2 C8 (D11/D14): the inverse of `to_yaml`. Any entry with an
-    /// unrecognized key/button name, or targeting an unbindable key (`:` —
-    /// D14), fails the whole parse (a malformed or tampered hand-edited
-    /// file should surface loudly, not silently drop or smuggle bindings —
+    /// TK2 C8 (D11)/TK2.1 C6 (D14): the inverse of `to_yaml`. Structurally
+    /// invalid YAML, or an entry targeting an unbindable key (`:` — D14),
+    /// still fails the whole parse (a malformed or tampered hand-edited
+    /// file smuggling a `:` binding should surface loudly, not silently —
     /// enforcing `is_unbindable` here, not just in the `:bind` verb parser,
-    /// closes a hand-edited-YAML loophole around the D14 guarantee found in
-    /// post-C8 hostile review).
-    pub fn from_yaml(text: &str) -> Result<Self, String> {
+    /// closes a hand-edited-YAML loophole found in post-C8 hostile
+    /// review). TK2.1 C6 (D14) softens the other two failure modes: an
+    /// entry naming an unrecognized key or button (e.g. a stale `m: Mute`
+    /// line after Mute's retirement) no longer rejects the whole file —
+    /// it's skipped, the rest of the file loads, and the skipped `"key:
+    /// button"` entries are returned for the caller to report (previously
+    /// one stale line would reject a user's entire keymap).
+    pub fn from_yaml(text: &str) -> Result<(Self, Vec<String>), String> {
         let map: BTreeMap<String, String> = serde_yml::from_str(text).map_err(|e| e.to_string())?;
         let mut bindings = HashMap::with_capacity(map.len());
+        let mut skipped = Vec::new();
         for (key_str, button_str) in map {
-            let code = key_from_name(&key_str).ok_or_else(|| format!("unknown key: {key_str}"))?;
+            let code = match key_from_name(&key_str) {
+                Some(c) => c,
+                None => {
+                    skipped.push(format!("{key_str}: {button_str}"));
+                    continue;
+                }
+            };
             if is_unbindable(code) {
                 return Err(format!("{key_str} is reserved and cannot be bound"));
             }
-            let button = button_from_name(&button_str)
-                .ok_or_else(|| format!("unknown button: {button_str}"))?;
+            let button = match button_from_name(&button_str) {
+                Some(b) => b,
+                None => {
+                    skipped.push(format!("{key_str}: {button_str}"));
+                    continue;
+                }
+            };
             bindings.insert(
                 KeyBinding {
                     code: normalize_code(code),
@@ -376,24 +391,29 @@ impl Keymap {
                 button,
             );
         }
-        Ok(Keymap { bindings })
+        Ok((Keymap { bindings }, skipped))
     }
 
     /// TK2 C8 (D11): merges two already-parsed YAML sources in load order —
     /// global first, then local (local wins on key collision, via
-    /// `HashMap::extend`'s overwrite semantics). Malformed sources are
-    /// skipped, not fatal: a broken `keymap.yaml` should degrade to
+    /// `HashMap::extend`'s overwrite semantics). Malformed (structurally
+    /// invalid, or containing an unbindable-key entry) sources are skipped
+    /// entirely, not fatal: a broken `keymap.yaml` should degrade to
     /// built-in defaults, not block startup. Split out from `load_startup`
     /// so the merge policy is testable without touching the filesystem
-    /// (`local_file_overrides_global`).
-    pub fn merge_sources(global: Option<&str>, local: Option<&str>) -> Self {
+    /// (`local_file_overrides_global`). Returns the merged keymap plus
+    /// every skipped-entry description (D14) across both sources, in load
+    /// order.
+    pub fn merge_sources(global: Option<&str>, local: Option<&str>) -> (Self, Vec<String>) {
         let mut merged = Keymap::default();
+        let mut skipped = Vec::new();
         for text in [global, local].into_iter().flatten() {
-            if let Ok(loaded) = Keymap::from_yaml(text) {
+            if let Ok((loaded, mut sk)) = Keymap::from_yaml(text) {
                 merged.bindings.extend(loaded.bindings);
+                skipped.append(&mut sk);
             }
         }
-        merged
+        (merged, skipped)
     }
 
     /// TK2 C8 (D11): startup load order — global
@@ -401,7 +421,7 @@ impl Keymap {
     /// "still overrides on load"). Missing files are not errors (most
     /// users have neither); this is the only place `:load-bindings` and
     /// `TheotokosApp::new` need to call.
-    pub fn load_startup() -> Self {
+    pub fn load_startup() -> (Self, Vec<String>) {
         let global = Self::global_path().and_then(|p| std::fs::read_to_string(p).ok());
         let local = std::fs::read_to_string("keymap.yaml").ok();
         Self::merge_sources(global.as_deref(), local.as_deref())
@@ -525,13 +545,21 @@ pub enum Hold {
     Lock,
 }
 
+/// TK2.1 C6 (D11): how close (in ms) two same-prefix sticky presses must
+/// land to be treated as one OS auto-repeat stream rather than two
+/// deliberate taps. *(tunable)*
+const REPEAT_GUARD_MS: u128 = 400;
+
 /// D6 hold-chord state, both branches: `kitty = true` selects the
 /// real-hold path (press arms, physical release disarms — wired to
 /// crossterm release events in C3); `kitty = false` (the common case,
 /// probed via `supports_keyboard_enhancement()` at startup) selects the
-/// one-shot sticky fallback this struct implements today, amended by §0
-/// A9 (a repeated same-prefix press is a no-op, not a toggle — auto-repeat
-/// streams indistinguishable synthetic presses without release events).
+/// one-shot sticky fallback this struct implements today. TK2.1 C6 (D11)
+/// reverses §0 A9's "repeated same-prefix press is a no-op": a genuine
+/// re-tap (outside `REPEAT_GUARD_MS` of the previous same-prefix press)
+/// now disarms, since without kitty release events that's the only
+/// "press it again to cancel" gesture available; a press *inside* the
+/// guard window is still treated as OS auto-repeat and ignored.
 #[derive(Debug, Default)]
 pub struct HeldState {
     pub kitty: bool,
@@ -540,6 +568,11 @@ pub struct HeldState {
     /// release event can tell which prefix to drop. Unused by the sticky
     /// fallback below; wired alongside kitty release handling in C3.
     pub pressed: HashSet<PanelButton>,
+    /// TK2.1 C6 (D11): which prefix armed on the most recent sticky-path
+    /// press, and when — lets a same-prefix re-press tell a deliberate
+    /// second tap (a real gap) from an OS auto-repeat pulse (clustered
+    /// within `REPEAT_GUARD_MS`).
+    last_prefix_press: Option<(Hold, std::time::Instant)>,
 }
 
 impl HeldState {
@@ -548,17 +581,20 @@ impl HeldState {
             kitty,
             armed: None,
             pressed: HashSet::new(),
+            last_prefix_press: None,
         }
     }
 
-    /// D6 (sticky fallback) + §0 A9: process one button PRESS. Returns
-    /// `true` if the press was consumed by prefix arm/disarm bookkeeping
-    /// itself (the caller must not also resolve an `Action` for it, since
-    /// `Trk`/`Ptn` on their own are not actions); `false` means the caller
-    /// should resolve the button normally via `button_to_action` — reading
-    /// `self.armed` as it stood *before* this call, since a completed
-    /// chord disarms as a side effect of the same press.
-    pub fn on_press(&mut self, button: PanelButton) -> bool {
+    /// D6 (sticky fallback) + TK2.1 C6 (D11): process one button PRESS,
+    /// timestamped by the caller so auto-repeat clustering can be judged
+    /// against `REPEAT_GUARD_MS`. Returns `true` if the press was consumed
+    /// by prefix arm/disarm bookkeeping itself (the caller must not also
+    /// resolve an `Action` for it, since `Trk`/`Ptn` on their own are not
+    /// actions); `false` means the caller should resolve the button
+    /// normally via `button_to_action` — reading `self.armed` as it stood
+    /// *before* this call, since a completed chord disarms as a side
+    /// effect of the same press.
+    pub fn on_press(&mut self, button: PanelButton, now: std::time::Instant) -> bool {
         match button {
             PanelButton::Trk | PanelButton::Ptn | PanelButton::Lock => {
                 let hold = match button {
@@ -566,16 +602,27 @@ impl HeldState {
                     PanelButton::Ptn => Hold::Ptn,
                     _ => Hold::Lock,
                 };
-                // §0 A9 supersedes D6's original "same key toggles off"
-                // wording: OS auto-repeat streams Press events for a
-                // still-held key, indistinguishable from a deliberate
-                // second tap without kitty release events — so re-pressing
-                // the SAME armed prefix is now a no-op. TK2.1 C5b: the
-                // "press Lock again clears an already-set target" case is
-                // intercepted by the caller before this runs (see `Hold`'s
-                // doc comment) — by the time we get here, Lock always just
-                // arms.
-                self.armed = Some(hold);
+                if self.armed == Some(hold) {
+                    // D11: already armed by this same prefix — a press
+                    // clustered within the guard window is OS auto-repeat
+                    // (ignored, stays armed); a press further out is a
+                    // deliberate re-tap (disarms). TK2.1 C5b: the "press
+                    // Lock again clears an already-set target" case is
+                    // intercepted by the caller before this runs (see
+                    // `Hold`'s doc comment), so Lock only ever reaches
+                    // this branch while merely *pending* — the same
+                    // guard/disarm logic still applies to that arm.
+                    let is_auto_repeat = self.last_prefix_press.is_some_and(|(h, t)| {
+                        h == hold && now.duration_since(t).as_millis() < REPEAT_GUARD_MS
+                    });
+                    self.last_prefix_press = Some((hold, now));
+                    if !is_auto_repeat {
+                        self.armed = None;
+                    }
+                } else {
+                    self.armed = Some(hold);
+                    self.last_prefix_press = Some((hold, now));
+                }
                 true
             }
             _ if trig_col(button).is_some() => {
@@ -765,11 +812,6 @@ pub fn button_to_action(
     }
 
     if let Some(col) = trig_col(button) {
-        // A16: trigs are always trigs on Grid/Param — the Mute screen
-        // retargets them to mute-toggle instead.
-        if matches!(screen.screen, Screen::Mute) {
-            return Action::ToggleMute(col);
-        }
         // TK2.1 C5b (D15): re-pressing the trig that set the current lock
         // target clears it (Grid mode only — the latched-arm case above
         // already handled the "not yet set" half of this toggle).
@@ -823,7 +865,6 @@ pub fn button_to_action(
         PanelButton::Pg5 => open_or_cycle_sub_page(screen, 4),
         PanelButton::Pg6 => open_or_cycle_sub_page(screen, 5),
         PanelButton::Song => Action::OpenScreen(Screen::Chain),
-        PanelButton::Mute => Action::OpenScreen(Screen::Mute),
         PanelButton::Tempo => Action::OpenScreen(Screen::Tempo),
         PanelButton::Settings => Action::OpenScreen(Screen::Settings),
         // TK2 C6 (D12): Tempo screen — YES taps, UP/DOWN nudge bpm (FUNC
@@ -854,8 +895,9 @@ pub fn button_to_action(
         // echo (unlike KIT).
         PanelButton::Sampling => Action::Noop,
         // §2/D12 name no "return to Grid" gesture anywhere — found live in
-        // the TK2 C7 agent smoke pass: Settings/Tempo/Param/Mute are dead
-        // ends with no specified way back. NO already has a specific
+        // the TK2 C7 agent smoke pass: Settings/Tempo/Param were dead
+        // ends with no specified way back (Mute was too, before its
+        // TK2.1 C6 retirement). NO already has a specific
         // meaning on Chain (clear, above, which wins since it's checked
         // first); everywhere else it's unclaimed, so it doubles as the
         // conventional "back" gesture rather than staying a pure no-op.
@@ -942,6 +984,7 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Trk),
             pressed: HashSet::new(),
+            last_prefix_press: None,
         };
         let action = button_to_action(&held, &default_grid(), PanelButton::Trig5, Mods::default());
         assert!(matches!(action, Action::SelectTrack(4)));
@@ -961,6 +1004,7 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Ptn),
             pressed: HashSet::new(),
+            last_prefix_press: None,
         };
         let mods = Mods {
             func: true,
@@ -979,6 +1023,7 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Ptn),
             pressed: HashSet::new(),
+            last_prefix_press: None,
         };
         let action = button_to_action(&held, &default_grid(), PanelButton::Trig3, Mods::default());
         assert!(matches!(action, Action::SelectPattern(2)));
@@ -992,6 +1037,7 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Trk),
             pressed: HashSet::new(),
+            last_prefix_press: None,
         };
         let mods = Mods {
             func: true,
@@ -999,22 +1045,6 @@ mod tests {
         };
         let action = button_to_action(&held, &default_grid(), PanelButton::Trig5, mods);
         assert!(matches!(action, Action::ToggleMute(4)));
-    }
-
-    /// A16 (TK2 C4): the Mute screen retargets trigs to mute-toggle
-    /// regardless of rec mode (unlike Grid/Param, where trigs stay
-    /// trigs).
-    #[test]
-    fn mute_screen_trigs_toggle_mutes() {
-        let held = HeldState::new(false);
-        let screen = ScreenState {
-            screen: Screen::Mute,
-            rec: RecMode::Grid,
-            enc: false,
-            lock_target_step: None,
-        };
-        let action = button_to_action(&held, &screen, PanelButton::Trig2, Mods::default());
-        assert!(matches!(action, Action::ToggleMute(1)));
     }
 
     /// D7 (TK2 C4): while TRK/PTN is held, FUNC+transport (REC/PLAY/STOP)
@@ -1025,6 +1055,7 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Trk),
             pressed: HashSet::new(),
+            last_prefix_press: None,
         };
         let mods = Mods {
             func: true,
@@ -1042,48 +1073,55 @@ mod tests {
     #[test]
     fn sticky_prefix_one_shot_then_disarms() {
         let mut held = HeldState::new(false);
-        held.on_press(PanelButton::Trk);
+        let t0 = std::time::Instant::now();
+        held.on_press(PanelButton::Trk, t0);
         assert_eq!(held.armed, Some(Hold::Trk));
-        held.on_press(PanelButton::Trig1);
+        held.on_press(PanelButton::Trig1, t0);
         assert_eq!(
             held.armed, None,
             "a trig chord is one-shot: it disarms the prefix"
         );
     }
 
+    /// TK2.1 C6 (D11): §0 A9 is reversed — a genuine re-tap of the same
+    /// armed prefix (well outside the auto-repeat guard window) now
+    /// disarms it, since without kitty release events "press it again" is
+    /// the only cancel gesture available.
     #[test]
-    fn sticky_prefix_same_key_is_a_noop_per_a9() {
-        // §0 A9 supersedes D6's original "same key toggles off" wording:
-        // OS auto-repeat streams Press events for a still-held key,
-        // indistinguishable (without kitty release events) from a
-        // deliberate second tap — so re-pressing the SAME armed prefix is
-        // now a no-op, not a toggle.
+    fn sticky_prefix_retap_disarms() {
         let mut held = HeldState::new(false);
-        held.on_press(PanelButton::Trk);
-        held.on_press(PanelButton::Trk);
+        let t0 = std::time::Instant::now();
+        held.on_press(PanelButton::Trk, t0);
+        assert_eq!(held.armed, Some(Hold::Trk));
+        let t1 = t0 + std::time::Duration::from_millis(REPEAT_GUARD_MS as u64 + 50);
+        held.on_press(PanelButton::Trk, t1);
         assert_eq!(
-            held.armed,
-            Some(Hold::Trk),
-            "§0 A9: a repeated same-prefix press is a no-op, not a toggle-off"
+            held.armed, None,
+            "D11: a deliberate re-tap outside the guard window disarms"
         );
     }
 
-    /// Named `..._toggles_off` to match the TK2 C2 spec's literal test
-    /// list (`design/phases/tk2-theotokos.md` §3) — kept findable under
-    /// that name even though §0 A9 rewrote the behavior it verifies to the
-    /// opposite of "toggle off" (review finding, post-C2 hostile review:
-    /// the name-only-matches-spec-text version was flagged as misleading
-    /// on its own). See `sticky_prefix_same_key_is_a_noop_per_a9` for the
-    /// accurately-named twin.
+    /// TK2.1 C6 (D11): a same-prefix press clustered inside the guard
+    /// window is OS auto-repeat, not a deliberate second tap — ignored,
+    /// stays armed.
     #[test]
-    fn sticky_prefix_same_key_toggles_off() {
-        sticky_prefix_same_key_is_a_noop_per_a9();
+    fn sticky_prefix_autorepeat_within_guard_does_not_disarm() {
+        let mut held = HeldState::new(false);
+        let t0 = std::time::Instant::now();
+        held.on_press(PanelButton::Trk, t0);
+        let t1 = t0 + std::time::Duration::from_millis(REPEAT_GUARD_MS as u64 - 50);
+        held.on_press(PanelButton::Trk, t1);
+        assert_eq!(
+            held.armed,
+            Some(Hold::Trk),
+            "D11: a press inside the guard window is auto-repeat, must stay armed"
+        );
     }
 
     #[test]
-    fn sticky_prefix_esc_disarms() {
+    fn sticky_prefix_esc_still_disarms() {
         let mut held = HeldState::new(false);
-        held.on_press(PanelButton::Ptn);
+        held.on_press(PanelButton::Ptn, std::time::Instant::now());
         held.on_esc();
         assert_eq!(held.armed, None);
     }
@@ -1091,8 +1129,9 @@ mod tests {
     #[test]
     fn nontrig_key_disarms_and_processes() {
         let mut held = HeldState::new(false);
-        held.on_press(PanelButton::Trk);
-        let consumed = held.on_press(PanelButton::Play);
+        let t0 = std::time::Instant::now();
+        held.on_press(PanelButton::Trk, t0);
+        let consumed = held.on_press(PanelButton::Play, t0);
         assert_eq!(held.armed, None, "a non-trig, non-prefix key disarms");
         assert!(!consumed, "and is still processed normally (not swallowed)");
     }
@@ -1233,6 +1272,7 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Trk),
             pressed: HashSet::new(),
+            last_prefix_press: None,
         };
         let screen = ScreenState {
             screen: Screen::Grid,
@@ -1308,6 +1348,7 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Lock),
             pressed: HashSet::new(),
+            last_prefix_press: None,
         };
         let screen = default_grid(); // rec: Grid
         let action = button_to_action(&held, &screen, PanelButton::Trig5, Mods::default());
@@ -1322,6 +1363,7 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Lock),
             pressed: HashSet::new(),
+            last_prefix_press: None,
         };
         let screen = ScreenState {
             screen: Screen::Grid,
@@ -1414,6 +1456,7 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Trk),
             pressed: HashSet::new(),
+            last_prefix_press: None,
         };
         let screen = ScreenState {
             screen: Screen::Grid,
@@ -1490,24 +1533,26 @@ mod tests {
         );
         keymap.bindings.insert(
             KeyBinding { code: KeyCode::Tab },
-            PanelButton::Mute,
+            PanelButton::Song,
         );
         keymap.bindings.insert(
             KeyBinding {
                 code: KeyCode::F(5),
             },
-            PanelButton::Song,
+            PanelButton::Enc,
         );
         let yaml = keymap.to_yaml().expect("serialize");
-        let restored = Keymap::from_yaml(&yaml).expect("deserialize");
+        let (restored, skipped) = Keymap::from_yaml(&yaml).expect("deserialize");
         assert_eq!(restored.bindings, keymap.bindings);
+        assert!(skipped.is_empty(), "every entry here is well-formed");
     }
 
     #[test]
     fn local_file_overrides_global() {
         let global_yaml = "q: Trig2\nw: Trig3\n";
         let local_yaml = "q: Trig5\n";
-        let merged = Keymap::merge_sources(Some(global_yaml), Some(local_yaml));
+        let (merged, skipped) = Keymap::merge_sources(Some(global_yaml), Some(local_yaml));
+        assert!(skipped.is_empty(), "every entry here is well-formed");
         assert_eq!(
             merged.bindings.get(&KeyBinding {
                 code: KeyCode::Char('q')
@@ -1653,5 +1698,37 @@ mod tests {
             err.contains("reserved"),
             "must reject a colon binding, got: {err}"
         );
+    }
+
+    /// TK2.1 C6 (D14): a stale entry naming a retired button (`Mute`,
+    /// gone this same commit) must not reject the whole file — it's
+    /// skipped, the rest of the file loads, and the skip is reported.
+    #[test]
+    fn keymap_with_retired_button_name_skips_only_that_binding() {
+        let yaml = "m: Mute\nq: Trig9\n";
+        let (keymap, skipped) = Keymap::from_yaml(yaml).expect("must not reject the whole file");
+        assert_eq!(
+            keymap.bindings.get(&KeyBinding { code: KeyCode::Char('q') }),
+            Some(&PanelButton::Trig9),
+            "the well-formed entry must still load"
+        );
+        assert!(
+            !keymap.bindings.contains_key(&KeyBinding { code: KeyCode::Char('m') }),
+            "the retired-button entry must not load"
+        );
+        assert_eq!(
+            skipped,
+            vec!["m: Mute".to_string()],
+            "the skipped entry must be reported back to the caller"
+        );
+    }
+
+    /// TK2.1 C6 (D12): `Mute` is no longer a valid `:bind`/`Keymap`
+    /// button name (the screen/button were retired this commit) — must be
+    /// rejected the same way any other unknown button name is.
+    #[test]
+    fn mute_button_name_is_rejected_by_bind() {
+        assert_eq!(button_from_name("Mute"), None);
+        assert_eq!(button_from_name("mute"), None);
     }
 }

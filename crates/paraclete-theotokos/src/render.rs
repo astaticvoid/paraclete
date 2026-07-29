@@ -103,7 +103,9 @@ pub struct RenderData {
     /// always read via the active track anyway).
     pub lock_target_step: Option<usize>,
     pub step_locks: Vec<Vec<usize>>,
-    /// TK2 C4 (D12): per-track mute state, shown on the Mute screen.
+    /// TK2 C4 (D12): per-track mute state, shown on the track indicator
+    /// (`render_track_indicator`) — the dedicated Mute screen this was
+    /// originally meant for was retired in TK2.1 C6.
     pub mute_states: Vec<bool>,
     pub slot_a_locked: bool,
     pub slot_b_locked: bool,
@@ -161,9 +163,6 @@ pub fn render(frame: &mut Frame, data: &RenderData) {
         match data.screen {
             Screen::Grid => render_track_context(frame, chunks[1], data),
             Screen::Param(_) => render_perf_window(frame, chunks[1], data),
-            // C0: Screen::Mute retargets here until C6 deletes the variant
-            // (D12) — the match must stay exhaustive in the meantime.
-            Screen::Mute => render_track_context(frame, chunks[1], data),
             Screen::Tempo => render_tempo_screen(frame, chunks[1], data),
             Screen::Settings => render_settings_screen(frame, chunks[1], data),
             Screen::Chain => render_chain_screen(frame, chunks[1], data),
@@ -249,7 +248,6 @@ fn screen_name(screen: Screen) -> &'static str {
         Screen::Tempo => "TEMPO",
         Screen::Chain => "CHAIN",
         Screen::Settings => "SETTINGS",
-        Screen::Mute => "MUTE",
     }
 }
 
@@ -268,9 +266,7 @@ enum LegendChip {
 
 /// TK2.1 C2 (D4)/C5 (D9): the declared per-screen priority list —
 /// truncates from the tail on overflow (`pack_two_lines`), never wraps/
-/// scrolls/moves. `Screen::Mute` (temporary until C6 deletes it) reuses
-/// Grid's list, since trigs still retarget through the same panel while
-/// it exists. TK2.1 C5 fulfills the `[n] ENC`/`[m] LOCK` entries C2
+/// scrolls/moves. TK2.1 C5 fulfills the `[n] ENC`/`[m] LOCK` entries C2
 /// deferred: `enc` true overrides the per-screen list entirely ("any
 /// screen, ENC on" — reaching a knob no longer depends on which screen is
 /// open, so neither does the legend); the Param row otherwise gets its
@@ -294,7 +290,7 @@ fn legend_chips_for_screen(screen: Screen, enc: bool) -> Vec<LegendChip> {
     }
 
     match screen {
-        Screen::Grid | Screen::Mute => vec![
+        Screen::Grid => vec![
             Dynamic(Trk, "TRK"),
             Dynamic(Ptn, "PTN"),
             Dynamic(Rec, "REC"),
@@ -670,8 +666,8 @@ fn render_trig_row<'a>(
     Line::from(spans)
 }
 
-/// TK2.1 C0: the contextual window for `Screen::Grid` (and, temporarily,
-/// `Screen::Mute` until C6) — header `{display_name} — {engine_name}`,
+/// TK2.1 C0: the contextual window for `Screen::Grid` — header
+/// `{display_name} — {engine_name}`,
 /// then the active page's first 4 params *(tunable)* as name/value/bar
 /// (reusing the already-resolved `encoder_cells`), then the existing
 /// envelope section. A track with no page params (no composite view, no
@@ -887,7 +883,8 @@ fn render_help(frame: &mut Frame, area: Rect, data: &RenderData) {
         ("arrows", "navigation"),
         ("- / =", "step-page window prev / next"),
         ("o", "SONG (opens Chain)"),
-        ("m", "MUTE screen"),
+        ("n", "ENC — toggle encoder-jog mode"),
+        ("m", "LOCK — arm the next trig as the p-lock target"),
         ("v", "KEYBD (reserved)"),
     ] {
         lines.push(Line::styled(
@@ -1070,7 +1067,7 @@ fn render_status_line(frame: &mut Frame, area: Rect, data: &RenderData) {
         // TK2 C6 builds these screens; until then, no stale slot A/B info
         // next to the "not yet implemented" placeholder (review finding,
         // post-C3 hostile review).
-        Screen::Tempo | Screen::Chain | Screen::Settings | Screen::Mute => {}
+        Screen::Tempo | Screen::Chain | Screen::Settings => {}
     }
 
     let line = Line::from(spans);
@@ -1480,7 +1477,6 @@ mod tests {
             Screen::Tempo,
             Screen::Chain,
             Screen::Settings,
-            Screen::Mute,
         ] {
             let backend = ratatui::backend::TestBackend::new(80, 24);
             let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -1510,7 +1506,6 @@ mod tests {
             Screen::Tempo,
             Screen::Chain,
             Screen::Settings,
-            Screen::Mute,
         ] {
             let backend = ratatui::backend::TestBackend::new(80, 24);
             let mut terminal = ratatui::Terminal::new(backend).unwrap();

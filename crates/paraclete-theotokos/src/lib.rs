@@ -104,7 +104,7 @@ impl TheotokosApp {
     pub fn new(config: TheotokosConfig) -> Result<Self, String> {
         setup_keyboard_flags()?;
 
-        let model = Model::new(
+        let mut model = Model::new(
             config.clock_id,
             &config.seq_ids,
             &config.gen_ids,
@@ -127,6 +127,19 @@ impl TheotokosApp {
         let mut pending = Vec::with_capacity(64);
         pending.extend(Self::startup_commands(config.clock_id));
 
+        // TK2 C8 (D11): global→local YAML load at startup. TK2.1 C6
+        // (D14): a stale entry (e.g. a retired button name) no longer
+        // blocks the rest of the file — surface what got skipped, if
+        // anything, as the app's first status line.
+        let (keymap, skipped_bindings) = Keymap::load_startup();
+        if !skipped_bindings.is_empty() {
+            model.cmdline_status = Some(format!(
+                "keymap.yaml: skipped {} unknown binding(s): {}",
+                skipped_bindings.len(),
+                skipped_bindings.join(", ")
+            ));
+        }
+
         Ok(Self {
             model,
             pending,
@@ -141,8 +154,7 @@ impl TheotokosApp {
             encoder_trackers: std::array::from_fn(|_| JogTracker::new()),
             tap_times: Vec::new(),
             last_debug_event: None,
-            // TK2 C8 (D11): global→local YAML load at startup.
-            keymap: Keymap::load_startup(),
+            keymap,
             held: HeldState::new(kitty),
             momentary_lock: None,
         })
@@ -254,7 +266,9 @@ impl TheotokosApp {
         let step_locks: Vec<Vec<usize>> = (0..self.model.tracks.len())
             .map(|t| self.model.read_step_locks(bus, t))
             .collect();
-        // TK2 C4 (D12): the Mute screen renders every track's mute state.
+        // TK2 C4 (D12): per-track mute state, rendered on the track
+        // indicator — the dedicated Mute screen this was originally
+        // built for was retired in TK2.1 C6.
         let mute_states: Vec<bool> = self
             .model
             .tracks
@@ -471,6 +485,16 @@ impl TheotokosApp {
         let mut selected_changed = false;
         let mut lock_target_changed = false;
         for ev in key_events {
+            // TK2.1 C6 (D11, hostile review finding): a fresh timestamp
+            // per event, not the batch-level `now` above — `handle_keys`
+            // can receive several buffered events in one call (`tick()`
+            // drains the whole non-blocking poll queue before dispatching),
+            // and `on_press`'s auto-repeat guard window needs to see the
+            // real spacing between same-prefix presses, not a single
+            // frozen instant shared by the whole batch (which would judge
+            // every event in a multi-event batch as inside the guard
+            // window, regardless of actual spacing).
+            let event_now = Instant::now();
             // C6: while cmdline is open, capture ALL keys to the line editor
             if self.model.cmdline.is_some() {
                 self.handle_cmdline_key(ev);
@@ -548,32 +572,32 @@ impl TheotokosApp {
                     // below).
                     let lock_target_step_before = self.model.lock_step_for_active_track();
 
-                    // TK2.1 C5b (D15): Lock's "press again" cases need
-                    // `Model.lock_target`, which `HeldState` deliberately
-                    // doesn't know about — intercepted here, before the
-                    // generic arm-on-press machinery below (which handles
-                    // the "not yet set, not yet armed" case by arming
-                    // `Hold::Lock` exactly like Trk/Ptn).
+                    // TK2.1 C5b (D15): pressing Lock while a target is
+                    // already SET clears it — this needs `Model.lock_target`,
+                    // which `HeldState` deliberately doesn't know about, so
+                    // it's intercepted here rather than inside `on_press`.
+                    // The OTHER "press Lock again" case — cancelling a
+                    // still-*pending* arm (no target set yet) — is
+                    // deliberately NOT special-cased here (TK2.1 C6,
+                    // hostile review finding): it used to be, but that
+                    // bypassed `on_press`'s D11 auto-repeat guard entirely,
+                    // so an OS auto-repeat pulse while Lock was merely
+                    // held down would immediately cancel the pending arm —
+                    // exactly the failure D11 exists to prevent, and for
+                    // the highest-value use of this whole hold-chord
+                    // machinery (p-lock authoring). Falling through to the
+                    // generic arm-on-press machinery below routes the
+                    // pending-cancel case through the same guarded
+                    // same-prefix-re-tap logic Trk/Ptn already get.
                     if button == PanelButton::Lock
                         && matches!(ev.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+                        && self.model.lock_target.is_some()
                     {
-                        if self.model.lock_target.is_some() {
-                            self.model.lock_target = None;
-                            self.held.armed = None;
-                            lock_target_changed = true;
-                            dirty = true;
-                            continue;
-                        }
-                        if self.held.armed == Some(input::Hold::Lock) {
-                            // Pressed again while merely pending: cancel
-                            // the arm rather than re-arming it (§0 A9's
-                            // "repeated same-prefix press is a no-op"
-                            // applies to Trk/Ptn, not to Lock, which needs
-                            // a genuine cancel here).
-                            self.held.armed = None;
-                            dirty = true;
-                            continue;
-                        }
+                        self.model.lock_target = None;
+                        self.held.armed = None;
+                        lock_target_changed = true;
+                        dirty = true;
+                        continue;
                     }
 
                     // TK2.1 C5b (D15): Esc also clears an already-set
@@ -659,18 +683,15 @@ impl TheotokosApp {
                             _ => self.held.on_kitty_press(button),
                         }
                     } else {
-                        self.held.on_press(button)
+                        self.held.on_press(button, event_now)
                     };
                     if consumed {
                         dirty = true;
                         continue;
                     }
 
-                    let held_for_resolution = HeldState {
-                        kitty: self.held.kitty,
-                        armed: armed_before,
-                        pressed: Default::default(),
-                    };
+                    let mut held_for_resolution = HeldState::new(self.held.kitty);
+                    held_for_resolution.armed = armed_before;
                     let screen_state = input::ScreenState {
                         screen: self.model.screen,
                         rec: self.model.rec,
@@ -1446,11 +1467,18 @@ impl TheotokosApp {
             // replacing the runtime keymap outright (not merged with
             // whatever the session had bound since launch).
             CmdlineVerb::LoadBindings => {
-                self.keymap = Keymap::load_startup();
-                self.model.cmdline_status = Some(format!(
-                    "loaded {} binding(s)",
-                    self.keymap.bindings.len()
-                ));
+                let (keymap, skipped) = Keymap::load_startup();
+                self.keymap = keymap;
+                self.model.cmdline_status = Some(if skipped.is_empty() {
+                    format!("loaded {} binding(s)", self.keymap.bindings.len())
+                } else {
+                    format!(
+                        "loaded {} binding(s); skipped {}: {}",
+                        self.keymap.bindings.len(),
+                        skipped.len(),
+                        skipped.join(", ")
+                    )
+                });
             }
         }
     }
@@ -2656,6 +2684,37 @@ mod tests {
         assert_eq!(app.model.lock_target, None, "Esc must clear an already-set target");
     }
 
+    /// TK2.1 C6 (D11, hostile review finding): pressing Lock again while
+    /// it's merely PENDING (no target set yet) used to cancel the arm
+    /// unconditionally — a `lib.rs`-level special case that bypassed
+    /// `on_press`'s D11 auto-repeat guard entirely, so an OS auto-repeat
+    /// pulse while Lock was held down would wipe the pending arm before
+    /// the user ever reached a trig. Two presses back to back (as fast as
+    /// this test can drive them — far inside `REPEAT_GUARD_MS`) must now
+    /// be tolerated exactly like Trk/Ptn: the arm survives, and a trig
+    /// pressed afterward still sets the target.
+    #[test]
+    fn lock_key_rapid_repress_does_not_cancel_pending_arm() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.rec = RecMode::Grid;
+
+        app.handle_keys(&bus, &[kc('m')]); // Lock: arm
+        app.handle_keys(&bus, &[kc('m')]); // rapid re-press: must not cancel
+        assert_eq!(
+            app.held.armed,
+            Some(input::Hold::Lock),
+            "a same-prefix press inside the guard window must not cancel the pending arm"
+        );
+
+        app.handle_keys(&bus, &[kc('q')]); // Trig1: the arm must still be live
+        assert_eq!(
+            app.model.lock_target,
+            Some((0, 0)),
+            "the pending arm must have survived to set the target"
+        );
+    }
+
     /// TK2.1 C5b (D15, momentary path): on a kitty terminal, physically
     /// holding a trig in Grid mode sets the lock target for the duration
     /// of the hold, independent of the Lock key.
@@ -3152,19 +3211,14 @@ mod tests {
     }
 
     /// §2/D12 name no "return to Grid" gesture anywhere — Settings,
-    /// Tempo, Param, and Mute were dead ends with no way back except
-    /// quitting. Found live in the TK2 C7 agent smoke pass; NO doubles as
-    /// the conventional "back" gesture everywhere it isn't already
-    /// claimed (Chain's clear, tested separately, still wins there).
+    /// Tempo, and Param were dead ends with no way back except quitting.
+    /// Found live in the TK2 C7 agent smoke pass; NO doubles as the
+    /// conventional "back" gesture everywhere it isn't already claimed
+    /// (Chain's clear, tested separately, still wins there).
     #[test]
     fn esc_returns_to_grid_from_other_screens() {
         let bus = test_bus();
-        for screen in [
-            Screen::Settings,
-            Screen::Tempo,
-            Screen::Param(0),
-            Screen::Mute,
-        ] {
+        for screen in [Screen::Settings, Screen::Tempo, Screen::Param(0)] {
             let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
             app.model.screen = screen;
             app.handle_keys(&bus, &[esc_key()]);
@@ -3589,14 +3643,14 @@ mod tests {
         setup_bus_with_params(&bus, 200, 100, true);
 
         app.handle_keys(&bus, &[colon_key()]);
-        cmdline_type(&mut app, &bus, "bind w mute");
+        cmdline_type(&mut app, &bus, "bind w song");
         app.handle_keys(&bus, &[enter_key()]);
 
         assert!(app.model.cmdline.is_none(), "cmdline closes on success");
         assert_eq!(
             crate::input::key_to_button(&app.keymap, kc('w')),
-            Some(crate::input::PanelButton::Mute),
-            "'w' must now resolve to Mute, not the default Trig2"
+            Some(crate::input::PanelButton::Song),
+            "'w' must now resolve to Song, not the default Trig2"
         );
 
         // `:unbind` removes it — 'w' falls back to the built-in default.
@@ -3658,7 +3712,7 @@ mod tests {
         setup_bus_with_params(&bus, 200, 100, true);
 
         app.handle_keys(&bus, &[colon_key()]);
-        cmdline_type(&mut app, &bus, "bind w mute");
+        cmdline_type(&mut app, &bus, "bind w song");
         app.handle_keys(&bus, &[enter_key()]);
         assert!(!app.keymap.bindings.is_empty());
 
@@ -3729,7 +3783,7 @@ mod tests {
                 crate::input::KeyBinding {
                     code: KeyCode::Char('w'),
                 },
-                crate::input::PanelButton::Mute,
+                crate::input::PanelButton::Song,
             );
 
             app.handle_keys(
@@ -3754,7 +3808,7 @@ mod tests {
             setup_bus_with_params(&bus, 200, 100, true);
 
             app.handle_keys(&bus, &[colon_key()]);
-            cmdline_type(&mut app, &bus, "bind w mute");
+            cmdline_type(&mut app, &bus, "bind w song");
             app.handle_keys(&bus, &[enter_key()]);
 
             app.handle_keys(&bus, &[colon_key()]);
@@ -3770,8 +3824,41 @@ mod tests {
             app.handle_keys(&bus, &[enter_key()]);
             assert_eq!(
                 crate::input::key_to_button(&app.keymap, kc('w')),
-                Some(crate::input::PanelButton::Mute),
+                Some(crate::input::PanelButton::Song),
                 "load-bindings must restore the saved binding"
+            );
+        });
+    }
+
+    /// TK2.1 C6 (D14, hostile review finding): the skip-report plumbing
+    /// (`Keymap::from_yaml`'s `Vec<String>`) is unit-tested at the
+    /// `Keymap` level, but nothing previously exercised the end-to-end
+    /// path — a real `keymap.yaml` with a stale entry, loaded through
+    /// `:load-bindings`, actually surfacing the skip via `cmdline_status`.
+    #[test]
+    fn load_bindings_reports_skipped_entries_in_cmdline_status() {
+        with_scratch_home("load-skip-report", || {
+            let bus = test_bus();
+            let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+            setup_bus_with_params(&bus, 200, 100, true);
+
+            let path = crate::input::Keymap::global_path().expect("HOME is set");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, "q: Trig9\nm: Mute\n").unwrap();
+
+            app.handle_keys(&bus, &[colon_key()]);
+            cmdline_type(&mut app, &bus, "load-bindings");
+            app.handle_keys(&bus, &[enter_key()]);
+
+            assert_eq!(
+                crate::input::key_to_button(&app.keymap, kc('q')),
+                Some(crate::input::PanelButton::Trig9),
+                "the well-formed entry must still load"
+            );
+            let status = app.model.cmdline_status.as_deref().unwrap_or_default();
+            assert!(
+                status.contains("m: Mute"),
+                "cmdline_status must report the skipped stale entry, got: {status:?}"
             );
         });
     }

@@ -6,6 +6,9 @@ use paraclete_view_assembly::CompositeView;
 use std::collections::HashMap;
 
 /// TK2 C3 (D12): replaces `Mode` (deleted at the wiring flip, per §0 A4).
+/// TK2.1 C6 (D12): `Mute` retired — mute state has lived on the track
+/// indicator since C0, and `PanelButton::Mute`'s only reachable action was
+/// opening this now-dead screen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Screen {
     Grid,
@@ -13,7 +16,6 @@ pub enum Screen {
     Tempo,
     Chain,
     Settings,
-    Mute,
 }
 
 /// TK2.1 C1 (D5): replaces `grid_rec: bool`. `Off` (default) and `Live`
