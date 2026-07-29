@@ -58,6 +58,12 @@ pub enum PanelButton {
     Song,
     Keybd,
     Mute,
+    /// TK2.1 C5a (D9): toggles ENC mode (default key `n`).
+    Enc,
+    /// TK2.1 C5b (D15): the shared p-lock target button (default key `m`
+    /// — free since `Mute`'s default binding moved off it this same
+    /// commit; C6 formally retires the `Mute` screen/button per D12).
+    Lock,
 }
 
 /// TK2 C8 (D11): the `:bind`/`:unbind` verb vocabulary — every `PanelButton`
@@ -106,6 +112,8 @@ const BUTTON_NAMES: &[(&str, PanelButton)] = &[
     ("Song", PanelButton::Song),
     ("Keybd", PanelButton::Keybd),
     ("Mute", PanelButton::Mute),
+    ("Enc", PanelButton::Enc),
+    ("Lock", PanelButton::Lock),
 ];
 
 /// TK2 C8 (D11): canonical name for a `PanelButton`, as written by
@@ -210,8 +218,9 @@ pub fn trig_button(col: usize) -> Option<PanelButton> {
     TABLE.get(col).copied()
 }
 
-/// The inverse of `trig_button`: `None` for any non-trig button.
-fn trig_col(button: PanelButton) -> Option<usize> {
+/// The inverse of `trig_button`: `None` for any non-trig button. `pub`:
+/// `lib.rs` (TK2.1 C5b) needs it for the momentary lock-target path.
+pub fn trig_col(button: PanelButton) -> Option<usize> {
     use PanelButton::*;
     match button {
         Trig1 => Some(0),
@@ -294,8 +303,12 @@ const DEFAULT_BINDINGS: &[(KeyCode, PanelButton, bool)] = &[
     (KeyCode::Char('-'), PanelButton::PagePrev, true),
     (KeyCode::Char('='), PanelButton::PageNext, true),
     (KeyCode::Char('o'), PanelButton::Song, true),
-    (KeyCode::Char('m'), PanelButton::Mute, true),
+    // TK2.1 C5b: 'm' moves off Mute (no default key of its own until a
+    // user `:bind`s one — Mute's screen/button are formally retired in
+    // C6, per D12) onto Lock, the shared p-lock target button.
     (KeyCode::Char('v'), PanelButton::Keybd, true),
+    (KeyCode::Char('n'), PanelButton::Enc, true),
+    (KeyCode::Char('m'), PanelButton::Lock, true),
 ];
 
 /// A normalized key for the user keymap (D11) and the built-in §2 table:
@@ -497,12 +510,19 @@ pub fn key_label(keymap: &Keymap, button: PanelButton) -> Option<String> {
 /// only, so REC held + PLAY can resolve to `Action::EnterLiveRec`; the
 /// sticky fallback (`on_press`) never arms it (REC's own action fires on
 /// every press regardless, so unlike `Trk`/`Ptn` it never needs to wait
-/// for a release-less approximation of "held").
+/// for a release-less approximation of "held"). TK2.1 C5b (D15) adds
+/// `Lock` — arms on both paths exactly like `Trk`/`Ptn` (Lock's own press
+/// does nothing until a trig consumes it, so it's safe to consume/arm
+/// unconditionally); the "press Lock again to clear an already-set
+/// target" case is intercepted in `lib.rs::handle_keys` *before* this
+/// arming even runs, since that decision needs `Model.lock_target`, which
+/// `HeldState` deliberately doesn't know about.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hold {
     Trk,
     Ptn,
     Rec,
+    Lock,
 }
 
 /// D6 hold-chord state, both branches: `kitty = true` selects the
@@ -540,17 +560,21 @@ impl HeldState {
     /// chord disarms as a side effect of the same press.
     pub fn on_press(&mut self, button: PanelButton) -> bool {
         match button {
-            PanelButton::Trk | PanelButton::Ptn => {
-                let hold = if button == PanelButton::Trk {
-                    Hold::Trk
-                } else {
-                    Hold::Ptn
+            PanelButton::Trk | PanelButton::Ptn | PanelButton::Lock => {
+                let hold = match button {
+                    PanelButton::Trk => Hold::Trk,
+                    PanelButton::Ptn => Hold::Ptn,
+                    _ => Hold::Lock,
                 };
                 // §0 A9 supersedes D6's original "same key toggles off"
                 // wording: OS auto-repeat streams Press events for a
                 // still-held key, indistinguishable from a deliberate
                 // second tap without kitty release events — so re-pressing
-                // the SAME armed prefix is now a no-op.
+                // the SAME armed prefix is now a no-op. TK2.1 C5b: the
+                // "press Lock again clears an already-set target" case is
+                // intercepted by the caller before this runs (see `Hold`'s
+                // doc comment) — by the time we get here, Lock always just
+                // arms.
                 self.armed = Some(hold);
                 true
             }
@@ -584,11 +608,11 @@ impl HeldState {
     /// normally.
     pub fn on_kitty_press(&mut self, button: PanelButton) -> bool {
         match button {
-            PanelButton::Trk | PanelButton::Ptn => {
-                let hold = if button == PanelButton::Trk {
-                    Hold::Trk
-                } else {
-                    Hold::Ptn
+            PanelButton::Trk | PanelButton::Ptn | PanelButton::Lock => {
+                let hold = match button {
+                    PanelButton::Trk => Hold::Trk,
+                    PanelButton::Ptn => Hold::Ptn,
+                    _ => Hold::Lock,
                 };
                 self.pressed.insert(button);
                 self.armed = Some(hold);
@@ -620,6 +644,12 @@ impl HeldState {
 pub struct ScreenState {
     pub screen: Screen,
     pub rec: RecMode,
+    /// TK2.1 C5a (D9): explicit encoder-access mode.
+    pub enc: bool,
+    /// TK2.1 C5b (D15): whether a lock target is currently set **on the
+    /// active track**, and if so which step — pre-resolved by the caller
+    /// (`lib.rs`) so this stays pure/testable without a `Model` reference.
+    pub lock_target_step: Option<usize>,
 }
 
 /// FUNC (fixed Shift modifier, §0 A15 — not a `PanelButton`) and Ctrl
@@ -659,7 +689,7 @@ pub fn button_to_action(
         if mods.func {
             return match hold {
                 Hold::Trk => Action::ToggleMute(col),
-                Hold::Ptn | Hold::Rec => Action::Noop,
+                Hold::Ptn | Hold::Rec | Hold::Lock => Action::Noop,
             };
         }
         return match hold {
@@ -669,6 +699,18 @@ pub fn button_to_action(
             // press while REC is physically held (kitty) is not a thing
             // the reference box does; PLAY is REC's only chord partner.
             Hold::Rec => Action::Noop,
+            // TK2.1 C5b (D15): the latched path — Lock armed + the next
+            // trig sets the lock target. Only meaningful in Grid mode (a
+            // "step" only exists there — D6); elsewhere the trig still
+            // consumes the arm (matching Trk/Ptn's one-shot precedent)
+            // but there is nothing to target.
+            Hold::Lock => {
+                if screen.rec == RecMode::Grid {
+                    Action::SetLockTarget(col)
+                } else {
+                    Action::Noop
+                }
+            }
         };
     }
 
@@ -684,9 +726,33 @@ pub fn button_to_action(
         return Action::Noop;
     }
 
-    // D8/A10: encoder jog resolves only with no armed prefix. Top row
-    // (col < 8) is "up"; bottom row is the same encoder index, "down".
-    if held.armed.is_none() && mods.func {
+    // TK2.1 C5a (D9/A10): ENC mode — a bare trig resolves to an encoder
+    // jog on ANY screen, not only Param, while no prefix is armed. Bare =
+    // Normal, Ctrl = Fine, FUNC = Coarse (the first producer of
+    // `Mag::Coarse`). Checked before the D8 FUNC+trig path below, which
+    // stays the (only) way to jog while ENC is off.
+    if screen.enc && held.armed.is_none() {
+        if let Some(col) = trig_col(button) {
+            let dir = if col < 8 { Dir::Next } else { Dir::Prev };
+            let mag = if mods.func {
+                Mag::Coarse
+            } else if mods.ctrl {
+                Mag::Fine
+            } else {
+                Mag::Normal
+            };
+            return Action::EncoderJog {
+                col: col % 8,
+                dir,
+                mag,
+            };
+        }
+    }
+
+    // D8/A10: outside ENC mode, FUNC+trig is the only way to jog — encoder
+    // jog resolves only with no armed prefix. Top row (col < 8) is "up";
+    // bottom row is the same encoder index, "down".
+    if !screen.enc && held.armed.is_none() && mods.func {
         if let Some(col) = trig_col(button) {
             let dir = if col < 8 { Dir::Next } else { Dir::Prev };
             let mag = if mods.ctrl { Mag::Fine } else { Mag::Normal };
@@ -703,6 +769,12 @@ pub fn button_to_action(
         // retargets them to mute-toggle instead.
         if matches!(screen.screen, Screen::Mute) {
             return Action::ToggleMute(col);
+        }
+        // TK2.1 C5b (D15): re-pressing the trig that set the current lock
+        // target clears it (Grid mode only — the latched-arm case above
+        // already handled the "not yet set" half of this toggle).
+        if screen.rec == RecMode::Grid && screen.lock_target_step == Some(col) {
+            return Action::ClearLockTarget;
         }
         // TK2.1 C1 (D5/D6): Grid writes/clears steps of the selected
         // track; Off and Live are pad modes — a trig sounds and selects
@@ -789,6 +861,9 @@ pub fn button_to_action(
         // conventional "back" gesture rather than staying a pure no-op.
         // Flagged for design-log follow-up, not treated as a new feature.
         PanelButton::No => Action::OpenScreen(Screen::Grid),
+        // TK2.1 C5a (D9): bare ENC toggles the mode; FUNC+Enc has no
+        // defined meaning yet (a plain no-op via the catch-all below).
+        PanelButton::Enc if !mods.func => Action::ToggleEnc,
         _ => Action::Noop,
     }
 }
@@ -807,6 +882,8 @@ mod tests {
         ScreenState {
             screen: Screen::Grid,
             rec: RecMode::Grid,
+            enc: false,
+            lock_target_step: None,
         }
     }
 
@@ -933,6 +1010,8 @@ mod tests {
         let screen = ScreenState {
             screen: Screen::Mute,
             rec: RecMode::Grid,
+            enc: false,
+            lock_target_step: None,
         };
         let action = button_to_action(&held, &screen, PanelButton::Trig2, Mods::default());
         assert!(matches!(action, Action::ToggleMute(1)));
@@ -1085,6 +1164,189 @@ mod tests {
         ));
     }
 
+    // ── TK2.1 C5a: ENC mode (D9) ────────────────────────────────────────
+
+    #[test]
+    fn enc_toggle_switches_trig_rows() {
+        let held = HeldState::new(false);
+        let mut screen = default_grid();
+        screen.enc = false;
+        let off = button_to_action(&held, &screen, PanelButton::Trig1, Mods::default());
+        assert!(
+            matches!(off, Action::ToggleStep { col: 0 }),
+            "enc off: bare trig is a pad/step per D5/D6, got {off:?}"
+        );
+
+        screen.enc = true;
+        let on = button_to_action(&held, &screen, PanelButton::Trig1, Mods::default());
+        assert!(
+            matches!(
+                on,
+                Action::EncoderJog {
+                    col: 0,
+                    dir: Dir::Next,
+                    mag: Mag::Normal
+                }
+            ),
+            "enc on: bare trig is an encoder jog, got {on:?}"
+        );
+    }
+
+    #[test]
+    fn enc_mode_works_on_grid_screen_not_only_param() {
+        let held = HeldState::new(false);
+        let screen = ScreenState {
+            screen: Screen::Grid,
+            rec: RecMode::Off,
+            enc: true,
+            lock_target_step: None,
+        };
+        let action = button_to_action(&held, &screen, PanelButton::Trig3, Mods::default());
+        assert!(
+            matches!(action, Action::EncoderJog { col: 2, .. }),
+            "ENC must reach encoders on the Grid screen too, not only \
+             Param; got {action:?}"
+        );
+    }
+
+    #[test]
+    fn param_screen_with_enc_off_still_pads() {
+        let held = HeldState::new(false);
+        let screen = ScreenState {
+            screen: Screen::Param(0),
+            rec: RecMode::Off,
+            enc: false,
+            lock_target_step: None,
+        };
+        let action = button_to_action(&held, &screen, PanelButton::Trig1, Mods::default());
+        assert!(
+            matches!(action, Action::LiveTrig { col: 0 }),
+            "D6 invariant: with ENC off, a bare trig on Param is still a \
+             pad, got {action:?}"
+        );
+    }
+
+    /// §0 A10 regression: TRK armed still wins over ENC mode.
+    #[test]
+    fn enc_bare_trig_does_not_jog_while_trk_armed() {
+        let held = HeldState {
+            kitty: false,
+            armed: Some(Hold::Trk),
+            pressed: HashSet::new(),
+        };
+        let screen = ScreenState {
+            screen: Screen::Grid,
+            rec: RecMode::Off,
+            enc: true,
+            lock_target_step: None,
+        };
+        let action = button_to_action(&held, &screen, PanelButton::Trig5, Mods::default());
+        assert!(
+            matches!(action, Action::SelectTrack(4)),
+            "an armed TRK prefix must win over ENC mode, got {action:?}"
+        );
+    }
+
+    #[test]
+    fn enc_func_is_coarse_ctrl_is_fine() {
+        let held = HeldState::new(false);
+        let screen = ScreenState {
+            screen: Screen::Grid,
+            rec: RecMode::Off,
+            enc: true,
+            lock_target_step: None,
+        };
+        let coarse = button_to_action(
+            &held,
+            &screen,
+            PanelButton::Trig1,
+            Mods { func: true, ctrl: false },
+        );
+        assert!(matches!(coarse, Action::EncoderJog { mag: Mag::Coarse, .. }));
+
+        let fine = button_to_action(
+            &held,
+            &screen,
+            PanelButton::Trig1,
+            Mods { func: false, ctrl: true },
+        );
+        assert!(matches!(fine, Action::EncoderJog { mag: Mag::Fine, .. }));
+
+        let normal = button_to_action(&held, &screen, PanelButton::Trig1, Mods::default());
+        assert!(matches!(normal, Action::EncoderJog { mag: Mag::Normal, .. }));
+    }
+
+    /// Outside ENC mode, D8's original magnitude mapping stands: FUNC
+    /// alone is Normal, FUNC+Ctrl is Fine — `Mag::Coarse` is unreachable
+    /// without ENC.
+    #[test]
+    fn off_enc_fine_is_func_ctrl() {
+        let held = HeldState::new(false);
+        let screen = default_grid(); // enc: false
+        let normal = button_to_action(
+            &held,
+            &screen,
+            PanelButton::Trig1,
+            Mods { func: true, ctrl: false },
+        );
+        assert!(matches!(normal, Action::EncoderJog { mag: Mag::Normal, .. }));
+
+        let fine = button_to_action(
+            &held,
+            &screen,
+            PanelButton::Trig1,
+            Mods { func: true, ctrl: true },
+        );
+        assert!(matches!(fine, Action::EncoderJog { mag: Mag::Fine, .. }));
+    }
+
+    // ── TK2.1 C5b: the lock target (D15) ─────────────────────────────────
+
+    #[test]
+    fn lock_key_then_trig_sets_lock_target() {
+        let held = HeldState {
+            kitty: false,
+            armed: Some(Hold::Lock),
+            pressed: HashSet::new(),
+        };
+        let screen = default_grid(); // rec: Grid
+        let action = button_to_action(&held, &screen, PanelButton::Trig5, Mods::default());
+        assert!(matches!(action, Action::SetLockTarget(4)));
+    }
+
+    /// Lock-armed + a trig outside Grid mode consumes the arm (matching
+    /// Trk/Ptn's one-shot precedent) but has nothing to target.
+    #[test]
+    fn lock_armed_trig_outside_grid_is_noop() {
+        let held = HeldState {
+            kitty: false,
+            armed: Some(Hold::Lock),
+            pressed: HashSet::new(),
+        };
+        let screen = ScreenState {
+            screen: Screen::Grid,
+            rec: RecMode::Off,
+            enc: false,
+            lock_target_step: None,
+        };
+        let action = button_to_action(&held, &screen, PanelButton::Trig5, Mods::default());
+        assert!(matches!(action, Action::Noop));
+    }
+
+    /// Re-pressing the trig that set the current target clears it.
+    #[test]
+    fn retapping_the_locked_step_clears_it() {
+        let held = HeldState::new(false);
+        let screen = ScreenState {
+            screen: Screen::Grid,
+            rec: RecMode::Grid,
+            enc: false,
+            lock_target_step: Some(4),
+        };
+        let action = button_to_action(&held, &screen, PanelButton::Trig5, Mods::default());
+        assert!(matches!(action, Action::ClearLockTarget));
+    }
+
     /// TK2.1 C1 (D5): renamed from `rec_toggles_grid_recording` —
     /// `button_to_action` itself is state-independent (the actual
     /// Off/Grid/Live transition needs kitty + transport state, resolved in
@@ -1106,6 +1368,8 @@ mod tests {
         let screen = ScreenState {
             screen: Screen::Grid,
             rec: RecMode::Off,
+            enc: false,
+            lock_target_step: None,
         };
         let action = button_to_action(&held, &screen, PanelButton::Trig3, Mods::default());
         assert!(matches!(action, Action::LiveTrig { col: 2 }));
@@ -1113,6 +1377,8 @@ mod tests {
         let live_screen = ScreenState {
             screen: Screen::Grid,
             rec: RecMode::Live,
+            enc: false,
+            lock_target_step: None,
         };
         let action = button_to_action(&held, &live_screen, PanelButton::Trig3, Mods::default());
         assert!(
@@ -1152,6 +1418,8 @@ mod tests {
         let screen = ScreenState {
             screen: Screen::Grid,
             rec: RecMode::Off,
+            enc: false,
+            lock_target_step: None,
         };
         let action = button_to_action(&held, &screen, PanelButton::Trig5, Mods::default());
         assert!(matches!(action, Action::SelectTrack(4)));

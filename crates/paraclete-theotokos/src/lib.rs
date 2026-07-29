@@ -19,7 +19,7 @@ use ratatui::Terminal;
 use crate::action::{
     Action, Outcome, CMD_CHAIN_CLEAR, CMD_CHAIN_PUSH, CMD_CLEAR, CMD_CLEAR_STEP_LOCK,
     CMD_CLOCK_START, CMD_CLOCK_STOP, CMD_SET_LOCK_TARGET, CMD_SET_PATTERN, CMD_SET_STEP_LOCK,
-    CMD_TRIG_NOW, GRID_STEPS, PATTERN_BANK_SIZE,
+    CMD_TRIG_NOW, PATTERN_BANK_SIZE,
 };
 use crate::input::{
     button_to_action, key_label, key_to_button, trig_button, HeldState, Keymap, Mods, PanelButton,
@@ -72,6 +72,13 @@ pub struct TheotokosApp {
     keymap: Keymap,
     /// TK2 C3 (D6): TRK/PTN hold-chord state — kitty-probed at startup.
     held: HeldState,
+    /// TK2.1 C5b (D15, hostile review finding): the `(track, col)` a
+    /// physically-held trig set as the momentary lock target, captured at
+    /// press time — release must clear `Model.lock_target` using THIS
+    /// stored pair, not a fresh `(active_track, col)` recompute, since
+    /// `active_track` (or `lock_target` itself, via an intervening Lock-
+    /// latched set) can change between a trig's press and release.
+    momentary_lock: Option<(usize, usize)>,
 }
 
 impl TheotokosApp {
@@ -137,6 +144,7 @@ impl TheotokosApp {
             // TK2 C8 (D11): global→local YAML load at startup.
             keymap: Keymap::load_startup(),
             held: HeldState::new(kitty),
+            momentary_lock: None,
         })
     }
 
@@ -243,7 +251,6 @@ impl TheotokosApp {
                 })
         };
 
-        let step_focuses = self.model.step_focus.clone();
         let step_locks: Vec<Vec<usize>> = (0..self.model.tracks.len())
             .map(|t| self.model.read_step_locks(bus, t))
             .collect();
@@ -320,7 +327,7 @@ impl TheotokosApp {
         let mut slot_a_locked = false;
         let mut slot_b_locked = false;
         let mut slot_c_locked = false;
-        if let Some(focus) = step_focuses.get(self.model.active_track).copied().flatten() {
+        if let Some(focus) = self.model.lock_step_for_active_track() {
             if let Some(ref s) = self.model.slot_a {
                 let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
                 slot_a_locked = self
@@ -363,6 +370,8 @@ impl TheotokosApp {
             PanelButton::Settings,
             PanelButton::Yes,
             PanelButton::No,
+            PanelButton::Enc,
+            PanelButton::Lock,
         ]
         .into_iter()
         .filter_map(|b| key_label(&self.keymap, b).map(|k| (b, k)))
@@ -374,6 +383,8 @@ impl TheotokosApp {
             armed_prefix: match self.held.armed {
                 Some(input::Hold::Trk) => Some("TRK…".to_string()),
                 Some(input::Hold::Ptn) => Some("PTN…".to_string()),
+                // TK2.1 C5b: Lock armed and waiting for the next trig.
+                Some(input::Hold::Lock) => Some("LOCK…".to_string()),
                 // REC has its own three-state transport/status indicator
                 // (D5) — it isn't an "armed prefix" chip like TRK/PTN.
                 Some(input::Hold::Rec) | None => None,
@@ -403,7 +414,8 @@ impl TheotokosApp {
             live_env_level,
             live_lfo_phase,
             debug_event: self.last_debug_event.take(),
-            step_focuses,
+            enc: self.model.enc,
+            lock_target_step: self.model.lock_step_for_active_track(),
             step_locks,
             mute_states,
             slot_a_locked,
@@ -457,6 +469,7 @@ impl TheotokosApp {
 
         let mut dirty = false;
         let mut selected_changed = false;
+        let mut lock_target_changed = false;
         for ev in key_events {
             // C6: while cmdline is open, capture ALL keys to the line editor
             if self.model.cmdline.is_some() {
@@ -521,6 +534,102 @@ impl TheotokosApp {
                         ctrl: ev.modifiers.contains(KeyModifiers::CONTROL),
                     };
 
+                    // TK2.1 C5b (D15): snapshot BEFORE the Lock/Esc/
+                    // momentary blocks below mutate `lock_target` — the
+                    // eventual `button_to_action` resolution (the retap-
+                    // clears check in particular) must see the state as it
+                    // stood before THIS press, or a kitty trig press that
+                    // just armed the momentary target would immediately
+                    // read back its own just-set value as "already
+                    // targeted" and resolve as a clear instead of the
+                    // pad/step action it should still also produce (the
+                    // same "resolve against the state before this press"
+                    // principle `armed_before` already applies to TRK/PTN
+                    // below).
+                    let lock_target_step_before = self.model.lock_step_for_active_track();
+
+                    // TK2.1 C5b (D15): Lock's "press again" cases need
+                    // `Model.lock_target`, which `HeldState` deliberately
+                    // doesn't know about — intercepted here, before the
+                    // generic arm-on-press machinery below (which handles
+                    // the "not yet set, not yet armed" case by arming
+                    // `Hold::Lock` exactly like Trk/Ptn).
+                    if button == PanelButton::Lock
+                        && matches!(ev.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+                    {
+                        if self.model.lock_target.is_some() {
+                            self.model.lock_target = None;
+                            self.held.armed = None;
+                            lock_target_changed = true;
+                            dirty = true;
+                            continue;
+                        }
+                        if self.held.armed == Some(input::Hold::Lock) {
+                            // Pressed again while merely pending: cancel
+                            // the arm rather than re-arming it (§0 A9's
+                            // "repeated same-prefix press is a no-op"
+                            // applies to Trk/Ptn, not to Lock, which needs
+                            // a genuine cancel here).
+                            self.held.armed = None;
+                            dirty = true;
+                            continue;
+                        }
+                    }
+
+                    // TK2.1 C5b (D15): Esc also clears an already-set
+                    // lock target — a side effect layered on top of Esc's
+                    // ordinary resolution (back to Grid, Chain clear,
+                    // ...), not a replacement for it, so this does not
+                    // `continue`.
+                    if button == PanelButton::No
+                        && matches!(ev.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+                        && self.model.lock_target.is_some()
+                    {
+                        self.model.lock_target = None;
+                        lock_target_changed = true;
+                        dirty = true;
+                    }
+
+                    // TK2.1 C5b (D15, momentary path): on a kitty
+                    // terminal, physically holding a trig in Grid mode
+                    // sets the lock target for the duration of the hold —
+                    // independent of the Lock key/latched path above (the
+                    // reference gesture: hold a step, turn an encoder).
+                    // Gated on no armed prefix (§0 A10 precedent, hostile
+                    // review finding): without this, holding TRK and
+                    // tapping a trig to switch tracks would spuriously arm
+                    // a p-lock target as a pure side effect of selection.
+                    if self.held.kitty && self.held.armed.is_none() && self.model.rec == RecMode::Grid {
+                        if let Some(col) = input::trig_col(button) {
+                            match ev.kind {
+                                KeyEventKind::Press => {
+                                    // Captured once, at press time (hostile
+                                    // review finding): release must clear
+                                    // using THIS pair, not a fresh
+                                    // `(active_track, col)` recompute —
+                                    // active_track (or lock_target itself,
+                                    // via an intervening Lock-latched set)
+                                    // can change before the release arrives.
+                                    let target = (self.model.active_track, col);
+                                    self.momentary_lock = Some(target);
+                                    self.model.lock_target = Some(target);
+                                    lock_target_changed = true;
+                                    dirty = true;
+                                }
+                                KeyEventKind::Release
+                                    if self.momentary_lock.is_some_and(|(_, c)| c == col)
+                                        && self.model.lock_target == self.momentary_lock =>
+                                {
+                                    self.model.lock_target = None;
+                                    self.momentary_lock = None;
+                                    lock_target_changed = true;
+                                    dirty = true;
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+
                     // D6: resolve against the hold state as it stood
                     // BEFORE this press — a completed chord (on_press /
                     // on_kitty_press already disarmed it as a side effect)
@@ -565,6 +674,8 @@ impl TheotokosApp {
                     let screen_state = input::ScreenState {
                         screen: self.model.screen,
                         rec: self.model.rec,
+                        enc: self.model.enc,
+                        lock_target_step: lock_target_step_before,
                     };
                     button_to_action(&held_for_resolution, &screen_state, button, mods)
                 }
@@ -631,7 +742,7 @@ impl TheotokosApp {
                 }
                 Action::Jog { slot, dir, mag } => {
                     let track = self.model.active_track;
-                    if let Some(step) = self.model.step_focus[track] {
+                    if let Some(step) = self.model.lock_step_for_active_track() {
                         let binding = match slot {
                             Slot::A => &self.model.slot_a,
                             Slot::B => &self.model.slot_b,
@@ -721,11 +832,9 @@ impl TheotokosApp {
                         _ => {}
                     }
                 }
-                Action::ToggleStep { col } => {
+                Action::ToggleStep { .. } => {
                     let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
                     let pw = self.model.page_windows[self.model.active_track];
-                    let global_step = pw * GRID_STEPS + col;
-                    self.model.last_step[self.model.active_track] = Some(global_step);
                     let outcome = action.execute(self.model.clock_id, seq_id, pw, playing);
                     match outcome {
                         Outcome::Command(cmd) => self.pending.push(cmd),
@@ -733,22 +842,9 @@ impl TheotokosApp {
                     }
                 }
                 Action::Noop => {}
-                Action::FocusStep => {
-                    let track = self.model.active_track;
-                    if self.model.step_focus[track].is_some() {
-                        self.model.step_focus[track] = None;
-                    } else if let Some(ls) = self.model.last_step[track] {
-                        self.model.step_focus[track] = Some(ls);
-                    }
-                    dirty = true;
-                }
-                Action::ReleaseFocus => {
-                    self.model.step_focus[self.model.active_track] = None;
-                    dirty = true;
-                }
                 Action::ClearAllLocks => {
                     let track = self.model.active_track;
-                    if let Some(step) = self.model.step_focus[track] {
+                    if let Some(step) = self.model.lock_step_for_active_track() {
                         let seq_id = self.model.tracks[track].sequencer_id;
                         self.pending.push(NodeCommand {
                             target_id: seq_id,
@@ -761,7 +857,7 @@ impl TheotokosApp {
                 }
                 Action::ClearSlotLocks => {
                     let track = self.model.active_track;
-                    if let Some(step) = self.model.step_focus[track] {
+                    if let Some(step) = self.model.lock_step_for_active_track() {
                         let seq_id = self.model.tracks[track].sequencer_id;
                         if let Some(ref slot) = self.model.slot_a {
                             self.pending.push(NodeCommand {
@@ -987,7 +1083,7 @@ impl TheotokosApp {
                                 Dir::Next => delta,
                                 Dir::Prev => -delta,
                             };
-                            if let Some(step) = self.model.step_focus[track] {
+                            if let Some(step) = self.model.lock_step_for_active_track() {
                                 let seq_id = self.model.tracks[track].sequencer_id;
                                 let current = self
                                     .model
@@ -1091,6 +1187,24 @@ impl TheotokosApp {
                     self.model.cmdline_error = Some(msg.to_string());
                     dirty = true;
                 }
+                // TK2.1 C5a (D9).
+                Action::ToggleEnc => {
+                    self.model.enc = !self.model.enc;
+                    dirty = true;
+                }
+                // TK2.1 C5b (D15): the latched-arm case (Lock armed, this
+                // trig consumes it) and the re-tap-clears case both land
+                // here via `button_to_action`.
+                Action::SetLockTarget(col) => {
+                    self.model.lock_target = Some((self.model.active_track, col));
+                    lock_target_changed = true;
+                    dirty = true;
+                }
+                Action::ClearLockTarget => {
+                    self.model.lock_target = None;
+                    lock_target_changed = true;
+                    dirty = true;
+                }
             }
         }
         drop(bus_ref);
@@ -1102,6 +1216,18 @@ impl TheotokosApp {
                     paraclete_node_api::StateBusValue::Int(track.sequencer_id as i64),
                 );
             }
+        }
+        // TK2.1 C5b (D15): published alongside `/script/theotokos/selected`
+        // — the state a future cross-surface lock capture (ADR-045,
+        // parked) will consume. -1 means "no lock target".
+        if lock_target_changed {
+            let mut bus_mut = bus.borrow_mut();
+            bus_mut.write(
+                "/script/theotokos/lock_step",
+                paraclete_node_api::StateBusValue::Int(
+                    self.model.lock_target.map(|(_, s)| s as i64).unwrap_or(-1),
+                ),
+            );
         }
         dirty
     }
@@ -1157,12 +1283,43 @@ impl TheotokosApp {
                 value,
             } => {
                 let param_id = paraclete_node_api::ParamDescriptor::id_for_name(&param_name);
-                self.pending.push(paraclete_node_api::NodeCommand {
-                    target_id: node_id,
-                    type_id: paraclete_node_api::CMD_SET_PARAM,
-                    arg0: param_id as i64,
-                    arg1: value,
-                });
+                // TK2.1 C5b (D15): while a lock target is set ON THE
+                // ACTIVE TRACK, Theotokos's own parameter motion routes to
+                // that track's sequencer lock commands instead of the live
+                // bank — gated the same way Action::Jog/EncoderJog are
+                // (hostile review finding: this previously routed to the
+                // lock target's OWN track unconditionally, so setting a
+                // lock on track A, switching to track B, then `:set`ting a
+                // param on B wrote a lock command to A's sequencer
+                // referencing B's node — nonsensical engine-side). `:set`'s
+                // `node_id` is always resolved against the active track,
+                // never the locked one, so the active track's own
+                // sequencer is the only sequencer that can be correct here.
+                match self.model.lock_step_for_active_track().zip(tracks.get(track)) {
+                    Some((step, active)) => {
+                        let seq_id = active.sequencer_id;
+                        self.pending.push(paraclete_node_api::NodeCommand {
+                            target_id: seq_id,
+                            type_id: CMD_SET_LOCK_TARGET,
+                            arg0: node_id as i64,
+                            arg1: param_id as f64,
+                        });
+                        self.pending.push(paraclete_node_api::NodeCommand {
+                            target_id: seq_id,
+                            type_id: CMD_SET_STEP_LOCK,
+                            arg0: step as i64,
+                            arg1: value,
+                        });
+                    }
+                    None => {
+                        self.pending.push(paraclete_node_api::NodeCommand {
+                            target_id: node_id,
+                            type_id: paraclete_node_api::CMD_SET_PARAM,
+                            arg0: param_id as i64,
+                            arg1: value,
+                        });
+                    }
+                }
             }
             CmdlineVerb::Bpm(val) => {
                 let bpm_id = paraclete_node_api::ParamDescriptor::id_for_name("bpm");
@@ -1223,7 +1380,7 @@ impl TheotokosApp {
                 }
             }
             CmdlineVerb::LockClear => {
-                if let Some(step) = self.model.step_focus[track] {
+                if let Some(step) = self.model.lock_step_for_active_track() {
                     let seq_id = tracks[track].sequencer_id;
                     self.pending.push(paraclete_node_api::NodeCommand {
                         target_id: seq_id,
@@ -1674,6 +1831,7 @@ mod tests {
             last_debug_event: None,
             keymap: Keymap::default(),
             held: HeldState::new(false),
+            momentary_lock: None,
         }
     }
 
@@ -2344,6 +2502,7 @@ mod tests {
             last_debug_event: None,
             keymap: Keymap::default(),
             held: HeldState::new(false),
+            momentary_lock: None,
         };
         let decay_id = ParamDescriptor::id_for_name("decay");
         let tune_id = ParamDescriptor::id_for_name("tune");
@@ -2420,13 +2579,199 @@ mod tests {
     fn encoder_jog_routes_to_lock_when_step_focused() {
         let bus = test_bus();
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
-        app.model.step_focus[0] = Some(3);
+        app.model.lock_target = Some((0, 3));
 
         app.handle_keys(&bus, &[func_trig('q')]);
         assert_eq!(app.pending.len(), 2, "focused jog must emit target + lock");
         assert_eq!(app.pending[0].type_id, CMD_SET_LOCK_TARGET);
         assert_eq!(app.pending[1].type_id, CMD_SET_STEP_LOCK);
         assert_eq!(app.pending[1].arg0, 3, "step arg must be the focused step");
+    }
+
+    /// TK2.1 C5b (D15): named to match the phase spec's literal test list.
+    #[test]
+    fn jog_with_lock_target_emits_lock_pair_not_bump() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.lock_target = Some((0, 5));
+
+        app.handle_keys(&bus, &[func_trig('q')]);
+        assert!(
+            app.pending.iter().any(|c| c.type_id == CMD_SET_LOCK_TARGET),
+            "a set lock target must route the jog to CMD_SET_LOCK_TARGET"
+        );
+        assert!(
+            app.pending.iter().any(|c| c.type_id == CMD_SET_STEP_LOCK),
+            "a set lock target must route the jog to CMD_SET_STEP_LOCK"
+        );
+        assert!(
+            !app.pending
+                .iter()
+                .any(|c| c.type_id == paraclete_node_api::CMD_BUMP_PARAM),
+            "must not also bump the live bank"
+        );
+    }
+
+    /// TK2.1 C5b (D15): named to match the phase spec's literal test list.
+    #[test]
+    fn jog_without_lock_target_emits_bump() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        assert!(app.model.lock_target.is_none());
+
+        app.handle_keys(&bus, &[func_trig('q')]);
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.type_id == paraclete_node_api::CMD_BUMP_PARAM),
+            "with no lock target, the jog must bump the live bank"
+        );
+        assert!(
+            !app.pending.iter().any(|c| c.type_id == CMD_SET_STEP_LOCK),
+            "must not emit a step lock with no target set"
+        );
+    }
+
+    /// TK2.1 C5b (D15): the latched path (`m` arms, a Grid-mode trig
+    /// sets), a re-tap clears, and Esc also clears — end to end through
+    /// `handle_keys`.
+    #[test]
+    fn lock_target_clears_on_esc_and_on_retap() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.rec = RecMode::Grid;
+
+        app.handle_keys(&bus, &[kc('m')]); // Lock: arm
+        app.handle_keys(&bus, &[kc('q')]); // Trig1: sets (0, 0)
+        assert_eq!(app.model.lock_target, Some((0, 0)));
+
+        app.handle_keys(&bus, &[kc('q')]); // retap: clears
+        assert_eq!(app.model.lock_target, None, "retapping the locked step must clear it");
+
+        app.handle_keys(&bus, &[kc('m')]);
+        app.handle_keys(&bus, &[kc('q')]);
+        assert_eq!(app.model.lock_target, Some((0, 0)));
+
+        app.handle_keys(&bus, &[KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)]);
+        assert_eq!(app.model.lock_target, None, "Esc must clear an already-set target");
+    }
+
+    /// TK2.1 C5b (D15, momentary path): on a kitty terminal, physically
+    /// holding a trig in Grid mode sets the lock target for the duration
+    /// of the hold, independent of the Lock key.
+    #[test]
+    fn kitty_trig_hold_sets_lock_target_for_the_hold() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.held.kitty = true;
+        app.model.rec = RecMode::Grid;
+
+        app.handle_keys(&bus, &[kc('q')]); // press (default kind)
+        assert_eq!(
+            app.model.lock_target,
+            Some((0, 0)),
+            "holding a trig in Grid mode must set the momentary target"
+        );
+        assert!(
+            app.pending.iter().any(|c| c.type_id == crate::action::CMD_TOGGLE_STEP),
+            "the held trig's own ordinary action (ToggleStep) must still \
+             fire alongside the momentary set, not be suppressed by it"
+        );
+
+        let release =
+            KeyEvent::new_with_kind(KeyCode::Char('q'), KeyModifiers::NONE, KeyEventKind::Release);
+        app.handle_keys(&bus, &[release]);
+        assert_eq!(
+            app.model.lock_target, None,
+            "releasing the held trig must clear the momentary target"
+        );
+    }
+
+    /// TK2.1 C5b (D15, hostile review finding): holding TRK (a chord
+    /// prefix) and tapping a trig to switch tracks must not spuriously arm
+    /// a p-lock target as a side effect of selection — the momentary path
+    /// only applies with no armed prefix (§0 A10 precedent).
+    #[test]
+    fn momentary_lock_does_not_arm_during_a_trk_chord() {
+        let bus = test_bus();
+        let mut app = test_app(
+            1,
+            vec![200, 201],
+            vec![100, 101],
+            vec!["T1".into(), "T2".into()],
+        );
+        app.held.kitty = true;
+        app.model.rec = RecMode::Grid;
+
+        let trk_press = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
+        app.handle_keys(&bus, &[trk_press]); // arms Hold::Trk
+        app.handle_keys(&bus, &[kc('w')]); // Trig2 -> selects track 1
+        assert_eq!(app.model.active_track, 1);
+        assert_eq!(
+            app.model.lock_target, None,
+            "a TRK+trig track-select chord must not arm a lock target"
+        );
+    }
+
+    /// TK2.1 C5b (D15, hostile review finding): a momentary hold's release
+    /// must clear using the (track, col) pair captured at press time, not
+    /// a fresh recompute against whatever the active track is by the time
+    /// the release arrives — otherwise a track switch mid-hold leaves the
+    /// target stuck.
+    #[test]
+    fn momentary_lock_release_uses_the_press_time_track() {
+        let bus = test_bus();
+        let mut app = test_app(
+            1,
+            vec![200, 201],
+            vec![100, 101],
+            vec!["T1".into(), "T2".into()],
+        );
+        app.held.kitty = true;
+        app.model.rec = RecMode::Grid;
+
+        app.handle_keys(&bus, &[kc('q')]); // hold Trig1 on track 0
+        assert_eq!(app.model.lock_target, Some((0, 0)));
+
+        // Active track changes while the trig is still physically held
+        // (e.g. via a `:track` command) — the release below must still
+        // clear the target captured at press time.
+        app.model.select_track(1);
+
+        let release =
+            KeyEvent::new_with_kind(KeyCode::Char('q'), KeyModifiers::NONE, KeyEventKind::Release);
+        app.handle_keys(&bus, &[release]);
+        assert_eq!(
+            app.model.lock_target, None,
+            "release must clear using the press-time track, not the \
+             (now different) active track"
+        );
+    }
+
+    /// TK2.1 C5b (D15): published alongside `/script/theotokos/selected`.
+    #[test]
+    fn lock_target_is_published_to_the_bus() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.rec = RecMode::Grid;
+
+        app.handle_keys(&bus, &[kc('m')]);
+        app.handle_keys(&bus, &[kc('w')]); // Trig2 -> col 1
+
+        let published = bus.borrow().read("/script/theotokos/lock_step").cloned();
+        assert_eq!(
+            published,
+            Some(paraclete_node_api::StateBusValue::Int(1)),
+            "the lock step must publish to the bus when set"
+        );
+
+        app.handle_keys(&bus, &[kc('w')]); // retap clears
+        let published_after_clear = bus.borrow().read("/script/theotokos/lock_step").cloned();
+        assert_eq!(
+            published_after_clear,
+            Some(paraclete_node_api::StateBusValue::Int(-1)),
+            "clearing the target must publish -1"
+        );
     }
 
     /// TK2.1 C4 (D10, closes BUG-040 §1): a composite page's encoder cell
@@ -2508,7 +2853,7 @@ mod tests {
             display: None,
         });
         app.model.composite = vec![composite_view_with_param(100, param_id)];
-        app.model.step_focus[0] = Some(0);
+        app.model.lock_target = Some((0, 0));
         bus.borrow_mut()
             .write("/node/100/param/cutoff", StateBusValue::Float(5000.0));
 
@@ -2635,6 +2980,7 @@ mod tests {
             last_debug_event: None,
             keymap: Keymap::default(),
             held: HeldState::new(false),
+            momentary_lock: None,
         };
 
         // 10 params split into 2 sub-pages (8 + 2).
@@ -2902,7 +3248,7 @@ mod tests {
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         setup_bus_with_params(&bus, 200, 100, true);
 
-        app.model.step_focus[0] = Some(3);
+        app.model.lock_target = Some((0, 3));
         app.handle_keys(&bus, &[backspace_key()]);
 
         assert_eq!(app.pending.len(), 1);
@@ -2918,7 +3264,7 @@ mod tests {
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         setup_bus_with_params(&bus, 200, 100, true);
 
-        app.model.step_focus[0] = Some(5);
+        app.model.lock_target = Some((0, 5));
         app.handle_keys(&bus, &[shift_backspace_key()]);
 
         assert_eq!(app.pending.len(), 2, "Shift+Backspace emits pair");
@@ -3023,6 +3369,62 @@ mod tests {
                 c.type_id == paraclete_node_api::CMD_SET_PARAM && (c.arg1 - 0.8).abs() < 0.01
             }),
             "must emit CMD_SET_PARAM decay=0.8"
+        );
+    }
+
+    /// TK2.1 C5b (D15): `:set` routes to the lock target when it's on the
+    /// active track.
+    #[test]
+    fn set_routes_to_lock_when_active_track_is_locked() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+        app.model.lock_target = Some((0, 3));
+
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "set dec 0.8");
+        app.handle_keys(&bus, &[enter_key()]);
+
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.type_id == CMD_SET_LOCK_TARGET && c.target_id == 200),
+            "must route to the active track's own sequencer's lock target"
+        );
+        assert!(
+            app.pending.iter().any(|c| c.type_id == CMD_SET_STEP_LOCK
+                && c.arg0 == 3
+                && (c.arg1 - 0.8).abs() < 0.01),
+            "must write the step lock at the locked step with the set value"
+        );
+    }
+
+    /// TK2.1 C5b (D15, hostile review finding): `:set` must fall back to
+    /// the live bank when the lock target is on a DIFFERENT track than
+    /// the one `:set`'s node actually belongs to — `:set`'s node_id is
+    /// always resolved against the active track, never the locked one, so
+    /// routing to the locked track's sequencer here would write a lock
+    /// command referencing the wrong node entirely.
+    #[test]
+    fn set_falls_back_to_live_when_lock_target_is_on_a_different_track() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+        app.model.lock_target = Some((5, 2)); // a different track
+
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "set dec 0.8");
+        app.handle_keys(&bus, &[enter_key()]);
+
+        assert!(
+            app.pending.iter().any(|c| c.type_id == paraclete_node_api::CMD_SET_PARAM
+                && c.target_id == 100
+                && (c.arg1 - 0.8).abs() < 0.01),
+            "must fall back to the live bank on the resolved node"
+        );
+        assert!(
+            !app.pending.iter().any(|c| c.type_id == CMD_SET_LOCK_TARGET),
+            "must not emit a lock-target command for a lock on another track"
         );
     }
 

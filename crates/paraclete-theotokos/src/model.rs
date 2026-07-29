@@ -75,6 +75,10 @@ pub struct Model {
     /// `Off` (D5): the reference box boots with pads live, not grid-rec
     /// armed, reversing TK2's "on by default" choice.
     pub rec: RecMode,
+    /// TK2.1 C5a (D9): explicit encoder-access mode — while true (and no
+    /// TRK/PTN prefix armed, §0 A10), a bare trig resolves to an encoder
+    /// jog instead of its pad/step meaning, on any screen.
+    pub enc: bool,
     pub active_track: usize,
     pub tracks: Vec<TrackInfo>,
     pub clock_id: u32,
@@ -102,8 +106,15 @@ pub struct Model {
     /// TK2 C6 (D12): which pattern (0-7) the Chain screen's bank-row
     /// cursor points at — YES pushes this one onto the chain.
     pub chain_cursor: usize,
-    pub step_focus: Vec<Option<usize>>,
-    pub last_step: Vec<Option<usize>>,
+    /// TK2.1 C5b (D15): the shared p-lock target — replaces `step_focus`
+    /// (deleted; its only reader, `Action::FocusStep`, was unreachable
+    /// dead code — nothing has mapped a key to it since the TK2 C3 wiring
+    /// flip). Latched via `PanelButton::Lock` or momentary (kitty trig
+    /// hold); while `Some`, Theotokos's own parameter motion (ENC jog,
+    /// numpad slots, `:set`) routes to `CMD_SET_LOCK_TARGET`/
+    /// `CMD_SET_STEP_LOCK` on that track's sequencer instead of the live
+    /// bank. Published to `/script/theotokos/lock_step`.
+    pub lock_target: Option<(usize, usize)>,
     /// TK1 C6: command line editor state (None = closed).
     pub cmdline: Option<String>,
     /// TK1 C6: error message from last command execution (shown in red).
@@ -219,12 +230,11 @@ impl Model {
             .collect();
         let track_count = tracks.len();
         let page_windows: Vec<usize> = vec![0; track_count];
-        let step_focus: Vec<Option<usize>> = vec![None; track_count];
-        let last_step: Vec<Option<usize>> = vec![None; track_count];
         let fuzzy_index = Self::build_fuzzy_index(&caps, &tracks);
         let mut model = Self {
             screen: Screen::Grid,
             rec: RecMode::Off,
+            enc: false,
             active_track: 0,
             tracks,
             clock_id,
@@ -238,8 +248,7 @@ impl Model {
             encoder_cursor: 0,
             sub_page: 0,
             chain_cursor: 0,
-            step_focus,
-            last_step,
+            lock_target: None,
             cmdline: None,
             cmdline_error: None,
             cmdline_status: None,
@@ -260,6 +269,14 @@ impl Model {
             self.active_track = i;
             self.bind_page();
         }
+    }
+
+    /// TK2.1 C5b (D15): `lock_target`'s step, but only if it's on the
+    /// active track — the shape every value-routing call site needs
+    /// (`lock_target` itself doesn't move when the selection does).
+    pub fn lock_step_for_active_track(&self) -> Option<usize> {
+        self.lock_target
+            .and_then(|(t, s)| if t == self.active_track { Some(s) } else { None })
     }
 
     pub fn select_perf_page(&mut self, idx: usize) {

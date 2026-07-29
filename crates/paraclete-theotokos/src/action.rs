@@ -31,15 +31,11 @@ pub enum Action {
     SelectTrack(usize),
     ToggleStep { col: usize },
     PageWindow(Dir),
-    /// Kept for TK2 C5+ (D8's encoder bank reuses this dispatch/ramp
-    /// machinery); unreachable from any key since the TK2 C3 wiring flip
-    /// retired the TK1 arrow-jog trigger (§2 removed-bindings list).
+    /// D8's encoder bank reuses this dispatch/ramp machinery; unreachable
+    /// from any key since the TK2 C3 wiring flip retired the TK1 arrow-jog
+    /// trigger (§2 removed-bindings list) — numpad slots A/B/C only.
     Jog { slot: Slot, dir: Dir, mag: Mag },
     ToggleMute(usize),
-    /// Kept for TK2 C5+ (D8: "existing TK1 step-focus path"); unreachable
-    /// since Enter now resolves to `Yes` (§2), not `FocusStep`.
-    FocusStep,
-    ReleaseFocus,
     ClearAllLocks,
     ClearSlotLocks,
     Colon,
@@ -93,6 +89,16 @@ pub enum Action {
     MoveChainCursor(Dir),
     /// D12: KIT echoes `reserved (kit)` — no screen exists for it in TK2.
     Echo(&'static str),
+
+    // ── TK2.1 C5 (D9/D15) ──
+    /// C5a: bare ENC toggles `Model.enc`.
+    ToggleEnc,
+    /// C5b: the latched path — Lock armed + the next Grid-mode trig sets
+    /// `(active_track, col)` as the lock target.
+    SetLockTarget(usize),
+    /// C5b: re-pressing the trig that set the target, pressing Lock again
+    /// while a target is set, or Esc — all clear it.
+    ClearLockTarget,
 }
 
 #[derive(Debug)]
@@ -110,8 +116,6 @@ impl Action {
             Action::SelectTrack(_)
             | Action::PageWindow(_)
             | Action::Jog { .. }
-            | Action::FocusStep
-            | Action::ReleaseFocus
             | Action::ClearAllLocks
             | Action::ClearSlotLocks
             | Action::Colon
@@ -136,7 +140,10 @@ impl Action {
             | Action::ChainPush
             | Action::ChainClear
             | Action::MoveChainCursor(_)
-            | Action::Echo(_) => Outcome::StateOnly,
+            | Action::Echo(_)
+            | Action::ToggleEnc
+            | Action::SetLockTarget(_)
+            | Action::ClearLockTarget => Outcome::StateOnly,
             Action::PlayToggle => {
                 if playing {
                     Outcome::Command(NodeCommand {

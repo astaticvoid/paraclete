@@ -95,7 +95,13 @@ pub struct RenderData {
     pub live_env_level: Option<f64>,
     pub live_lfo_phase: Option<f64>,
     pub debug_event: Option<String>,
-    pub step_focuses: Vec<Option<usize>>,
+    /// TK2.1 C5a (D9): explicit encoder-access mode — shown on the status
+    /// line.
+    pub enc: bool,
+    /// TK2.1 C5b (D15): the lock target's step, but only if it's on the
+    /// active track — replaces `step_focuses` (the per-track vec was
+    /// always read via the active track anyway).
+    pub lock_target_step: Option<usize>,
     pub step_locks: Vec<Vec<usize>>,
     /// TK2 C4 (D12): per-track mute state, shown on the Mute screen.
     pub mute_states: Vec<bool>,
@@ -260,15 +266,33 @@ enum LegendChip {
     Literal(&'static str, &'static str),
 }
 
-/// TK2.1 C2 (D4): the declared per-screen priority list — truncates from
-/// the tail on overflow (`pack_two_lines`), never wraps/scrolls/moves.
-/// `Screen::Mute` (temporary until C6 deletes it) reuses Grid's list,
-/// since trigs still retarget through the same panel while it exists.
-/// The Param row omits `[n] ENC`/`[m] LOCK`: those land in TK2.1 C5 with
-/// the real `PanelButton::Enc`/`Lock` — `m` currently still means `Mute`.
-fn legend_chips_for_screen(screen: Screen) -> Vec<LegendChip> {
+/// TK2.1 C2 (D4)/C5 (D9): the declared per-screen priority list —
+/// truncates from the tail on overflow (`pack_two_lines`), never wraps/
+/// scrolls/moves. `Screen::Mute` (temporary until C6 deletes it) reuses
+/// Grid's list, since trigs still retarget through the same panel while
+/// it exists. TK2.1 C5 fulfills the `[n] ENC`/`[m] LOCK` entries C2
+/// deferred: `enc` true overrides the per-screen list entirely ("any
+/// screen, ENC on" — reaching a knob no longer depends on which screen is
+/// open, so neither does the legend); the Param row otherwise gets its
+/// own `[n] ENC`/`[m] LOCK` pair.
+fn legend_chips_for_screen(screen: Screen, enc: bool) -> Vec<LegendChip> {
     use LegendChip::{Dynamic, Literal};
-    use PanelButton::{No, Play, Ptn, Rec, Settings, Song, Stop, Tempo, Trk, Yes};
+    use PanelButton::{Enc, Lock, No, Play, Ptn, Rec, Settings, Song, Stop, Tempo, Trk, Yes};
+
+    if enc {
+        return vec![
+            Literal("trigs", "ENCODER ±"),
+            Literal("Ctrl", "FINE"),
+            Literal("FUNC", "COARSE"),
+            Dynamic(Enc, "ENC off"),
+            Dynamic(Lock, "LOCK"),
+            Dynamic(No, "BACK"),
+            Literal(":", "CMD"),
+            Literal("?", "HELP"),
+            Literal("^C", "QUIT"),
+        ];
+    }
+
     match screen {
         Screen::Grid | Screen::Mute => vec![
             Dynamic(Trk, "TRK"),
@@ -288,6 +312,8 @@ fn legend_chips_for_screen(screen: Screen) -> Vec<LegendChip> {
             Literal("^C", "QUIT"),
         ],
         Screen::Param(_) => vec![
+            Dynamic(Enc, "ENC"),
+            Dynamic(Lock, "LOCK"),
             Literal("1-6", "PAGE"),
             Dynamic(No, "BACK"),
             Dynamic(Trk, "TRK"),
@@ -362,7 +388,7 @@ fn pack_two_lines(chip_texts: &[String], width: usize) -> (Vec<usize>, Vec<usize
 /// from the declared per-screen priority list, replacing the grey run-on
 /// hint line.
 fn render_legend(frame: &mut Frame, area: Rect, data: &RenderData) {
-    let chips: Vec<(String, &'static str)> = legend_chips_for_screen(data.screen)
+    let chips: Vec<(String, &'static str)> = legend_chips_for_screen(data.screen, data.enc)
         .into_iter()
         .filter_map(|chip| match chip {
             LegendChip::Dynamic(button, label) => data
@@ -548,7 +574,7 @@ fn render_track_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
 /// drop.
 fn render_trig_strip(frame: &mut Frame, area: Rect, data: &RenderData) {
     let track = data.active_track;
-    let focus = data.step_focuses.get(track).copied().flatten();
+    let focus = data.lock_target_step;
     let locks: std::collections::HashSet<usize> = data
         .step_locks
         .get(track)
@@ -973,8 +999,18 @@ fn render_status_line(frame: &mut Frame, area: Rect, data: &RenderData) {
         },
     ];
 
-    if let Some(sf) = data.step_focuses.get(data.active_track).copied().flatten() {
-        spans.push(Span::raw(format!("F:s{} ", sf)));
+    // TK2.1 C5b: "L:" (Lock), not "F:" (Focus) — the status line is
+    // showing the lock target now, not the retired step_focus concept.
+    if let Some(sf) = data.lock_target_step {
+        spans.push(Span::raw(format!("L:s{} ", sf)));
+    }
+
+    // TK2.1 C5a (D9): status line shows ENC when on.
+    if data.enc {
+        spans.push(Span::styled(
+            "ENC ",
+            Style::default().fg(Color::Cyan),
+        ));
     }
 
     if let Some(ref prefix) = data.armed_prefix {
@@ -1064,6 +1100,8 @@ impl RenderData {
             PanelButton::Settings,
             PanelButton::Yes,
             PanelButton::No,
+            PanelButton::Enc,
+            PanelButton::Lock,
         ]
         .into_iter()
         .filter_map(|b| crate::input::key_label(&keymap, b).map(|k| (b, k)))
@@ -1093,7 +1131,8 @@ impl RenderData {
             live_env_level: None,
             live_lfo_phase: None,
             debug_event: None,
-            step_focuses: vec![None; track_count],
+            enc: false,
+            lock_target_step: None,
             step_locks: vec![vec![]; track_count],
             mute_states: vec![false; track_count],
             slot_a_locked: false,
@@ -1164,7 +1203,8 @@ mod tests {
             live_env_level: None,
             live_lfo_phase: None,
             debug_event: None,
-            step_focuses: vec![None; 2],
+            enc: false,
+            lock_target_step: None,
             step_locks: vec![vec![]; 2],
             mute_states: vec![false; 2],
             slot_a_locked: false,
@@ -1247,7 +1287,8 @@ mod tests {
             live_env_level: Some(0.73),
             live_lfo_phase: None,
             debug_event: None,
-            step_focuses: vec![None; 1],
+            enc: false,
+            lock_target_step: None,
             step_locks: vec![vec![]; 1],
             mute_states: vec![false; 1],
             slot_a_locked: false,
@@ -1693,6 +1734,34 @@ mod tests {
                 "legend must render {expected:?}; got: {text}"
             );
         }
+    }
+
+    /// TK2.1 C5: fulfills the `[n] ENC`/`[m] LOCK` entries C2 deferred —
+    /// with ENC on, the legend shows the "any screen" ENC row regardless
+    /// of which screen is open, and the ENC chip's label reflects state
+    /// (`ENC off`, not `ENC`, since a second press turns it off).
+    #[test]
+    fn enc_legend_overrides_the_per_screen_list() {
+        let backend = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.enc = true;
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("[m] LOCK"),
+            "ENC-on legend must show the LOCK chip; got: {text}"
+        );
+        assert!(
+            text.contains("ENC off"),
+            "the ENC chip's label must reflect the current state; got: {text}"
+        );
+        assert!(
+            !text.contains("[Tab] TRK"),
+            "the ENC-on legend replaces the per-screen list entirely; \
+             got: {text}"
+        );
     }
 
     /// D4: "on overflow it truncates from the tail of that list. It never
