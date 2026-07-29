@@ -6,8 +6,8 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ## Status (2026-07-28)
 
-**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, BUG-038 (Theotokos: D13 arrow-cursor nav and numpad slot jog speced but never wired), **BUG-039** (InternalClock auto-starts the transport on every surface — worked around surface-side by ADR-044 D7), **BUG-040** (Theotokos encoder jog invents a 0..1 range on composite pages and ignores `stepped` — fix is TK2.1 C4), **BUG-042** (live_rec can double-trigger the synth when a live trig quantizes onto an imminent step boundary — low severity, scoped out of TK2.1 C3b, fix direction filed).
-**Fixed 2026-07-28:** BUG-041 (`f2576f4`) — `CMD_CLOCK_STOP` now emits a `global_stop` transport event on the net transition to stopped; gated on final playing state (not a mid-batch flag) so a STOP reversed later in the same batch doesn't emit a spurious stop (hostile-review finding, folded before commit). Regression test drives a real `InternalClock` → `Sequencer` pair.
+**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, BUG-038 (Theotokos: D13 arrow-cursor nav and numpad slot jog speced but never wired), **BUG-039** (InternalClock auto-starts the transport on every surface — worked around surface-side by ADR-044 D7), **BUG-042** (live_rec can double-trigger the synth when a live trig quantizes onto an imminent step boundary — low severity, scoped out of TK2.1 C3b, fix direction filed).
+**Fixed 2026-07-28:** BUG-041 (`f2576f4`) — `CMD_CLOCK_STOP` now emits a `global_stop` transport event on the net transition to stopped; gated on final playing state (not a mid-batch flag) so a STOP reversed later in the same batch doesn't emit a spurious stop (hostile-review finding, folded before commit). Regression test drives a real `InternalClock` → `Sequencer` pair. **BUG-040** (`87fcbcc`, TK2.1 C4) — encoder resolution now reads real cap-doc `min`/`max`/`stepped` instead of faking `0..1`; p-lock clamp and jog step-size both fixed.
 **Fixed, code-complete (pending hardware-verification):** BUG-012.
 **Trigger-based (fix when named trigger fires):** BUG-003 (updated — StateBusHandle already moved to L2; remaining violation is NodeExecutor/RuntimeCounters in audio.rs).
 **Resolved in this session:** INFRA-011 (recovery code removed — pipewire-alsa + wireplumber no-suspend fixes root cause).
@@ -1540,6 +1540,21 @@ surface today (a chain node reached through the composite branch) the
 range is already faked to 1.0, so the real symptom is a `1/128` step, not
 `range/128`. The defect and its fix direction are unchanged; only the
 worked example was wrong.
+
+**Fixed 2026-07-28 (`87fcbcc`, TK2.1 C4):** `resolve_encoder_params`'s
+composite branch now resolves each `(node_id, param_id)` against
+`Model::caps` via a new `resolve_param_descriptor` helper for the real
+`min`/`max`/`stepped`, returned as `(node_id, param_id, name, min, max,
+stepped, resolved)`; unresolvable params keep the 0..1 fallback with
+`resolved: false` and `render_encoder_cell` renders such a cell dimmed.
+Closes §1: the step-focus p-lock clamp (`lib.rs`) now clamps against the
+same real range, not the fake 0..1. Closes §2: a new `Tuning::jog_step_stepped`
+(a separate method, not a `jog_step` signature change, so its 8 existing
+tests stay untouched) makes a stepped param move by exactly one unit
+regardless of magnitude/ramp. The numpad slot A/B/C jog path
+(`resolve_page_params_n`) is a separate, still-unfixed resolver —
+explicitly out of C4's scope, not touched. Hostile review found no
+defects in this commit.
 
 ---
 

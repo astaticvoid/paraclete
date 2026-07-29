@@ -3,26 +3,21 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-28 (later still). **TK2.1 C0–C3b shipped**
-> (`e9328f8`, `2028f9d`, `f3053fb`, `c8a9b5b`), **BUG-041 fixed**
-> (`f2576f4`, ahead of its scheduled C3a landing spot — independently
-> unblocked). Seven fixed render regions + one-track trig strip + track
-> indicator (D2 windowing) + display_name/engine_name split (C0);
-> `RecMode{Off,Grid,Live}` replacing `grid_rec: bool`, default `Off`, REC
-> toggle/fallback/REC+PLAY chord (D5), pad-mode trig selects-and-sounds
-> (D6), silent-launch `CMD_CLOCK_STOP` push (D7) (C1); `DEFAULT_BINDINGS`-
-> driven key chips + rewritten `[key] NAME` legend with tail-truncation
-> (D3/D4), Param row's `[n] ENC`/`[m] LOCK` deliberately deferred to C5
-> (C2); engine-side `live_rec` — nearest-step quantization + micro-timing
-> on a consumed `CMD_TRIG_NOW`, Theotokos arms/disarms it entering/leaving
-> `RecMode::Live` (D8, ADR-039 decision 7) (C3b). Every commit's
-> pre-commit hostile review caught and fixed at least one real defect
-> before landing (see each commit message); C3b's review also surfaced
-> **BUG-042** (low-severity, filed, not blocking). **Next: TK2.1 C4 → C7**
-> (C3a already shipped as part of the standalone BUG-041 fix).
-> Previous: 2026-07-28 (later). BUG-041 fixed (`f2576f4`); TK2.1 C0
-> shipped (`e9328f8`); TK2.1 C1 shipped (`2028f9d`) — see prior revisions
-> of this file for the full per-commit narrative.
+> **Last updated:** 2026-07-28 (later still). **TK2.1 C0–C4 shipped**
+> (`e9328f8`, `2028f9d`, `f3053fb`, `c8a9b5b`, `87fcbcc`); **BUG-041**
+> (`f2576f4`) **and BUG-040** (`87fcbcc`) **fixed** — both independently
+> unblocked/closed ahead of or as part of their scheduled commits (C3a,
+> C4). Fixed regions + trig strip + track indicator + display_name split
+> (C0); `RecMode{Off,Grid,Live}` + REC gestures + pad-mode trig + silent
+> launch (D5-D7, C1); key chips + rewritten legend (D3/D4, C2, `[n]
+> ENC`/`[m] LOCK` deferred to C5); engine-side `live_rec` (D8, C3b,
+> **BUG-042** filed — low severity, not blocking); descriptor-accurate
+> encoder range/stepped resolution (D10, C4). Every commit's pre-commit
+> hostile review caught and fixed at least one real defect before landing
+> except C4 (verified clean) — see each commit message for specifics, not
+> re-narrated here. **Next: TK2.1 C5 → C7.**
+> Previous revisions of this file carry the full per-commit narrative back
+> through BUG-041/ADR-044 ratification.
 > Previous: 2026-07-28. **ADR-044 ✅ RATIFIED — TK2.1
 > implementation unlocked.** All six questions settled: R1 live rec
 > degrades to a transport-derived rule where key releases are unavailable;
