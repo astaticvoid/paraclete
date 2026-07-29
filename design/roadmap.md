@@ -3,21 +3,23 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-28 (later still). **TK2.1 C0–C2 shipped**
-> (`e9328f8`, `2028f9d`, `f3053fb`), **BUG-041 fixed** (`f2576f4`, ahead of
-> its scheduled C3a landing spot — it was independently unblocked). Seven
-> fixed render regions + one-track trig strip + track indicator (D2
-> windowing) + display_name/engine_name split (C0); `RecMode{Off,Grid,Live}`
-> replacing `grid_rec: bool`, default `Off`, REC toggle/fallback/REC+PLAY
-> chord (D5), pad-mode trig selects-and-sounds (D6), silent-launch
-> `CMD_CLOCK_STOP` push (D7) (C1); `DEFAULT_BINDINGS`-driven key chips on
-> the trig strip/track indicator and the rewritten `[key] NAME` legend
-> strip with tail-truncation (D3/D4), the Param row's `[n] ENC`/`[m] LOCK`
-> deliberately deferred to C5 (C2). Every commit's pre-commit hostile
-> review caught and fixed at least one real defect before landing (see
-> each commit message; nothing summarized here to keep this short).
-> **Next: TK2.1 C3b → C7** (C3a already shipped as part of the standalone
-> BUG-041 fix).
+> **Last updated:** 2026-07-28 (later still). **TK2.1 C0–C3b shipped**
+> (`e9328f8`, `2028f9d`, `f3053fb`, `c8a9b5b`), **BUG-041 fixed**
+> (`f2576f4`, ahead of its scheduled C3a landing spot — independently
+> unblocked). Seven fixed render regions + one-track trig strip + track
+> indicator (D2 windowing) + display_name/engine_name split (C0);
+> `RecMode{Off,Grid,Live}` replacing `grid_rec: bool`, default `Off`, REC
+> toggle/fallback/REC+PLAY chord (D5), pad-mode trig selects-and-sounds
+> (D6), silent-launch `CMD_CLOCK_STOP` push (D7) (C1); `DEFAULT_BINDINGS`-
+> driven key chips + rewritten `[key] NAME` legend with tail-truncation
+> (D3/D4), Param row's `[n] ENC`/`[m] LOCK` deliberately deferred to C5
+> (C2); engine-side `live_rec` — nearest-step quantization + micro-timing
+> on a consumed `CMD_TRIG_NOW`, Theotokos arms/disarms it entering/leaving
+> `RecMode::Live` (D8, ADR-039 decision 7) (C3b). Every commit's
+> pre-commit hostile review caught and fixed at least one real defect
+> before landing (see each commit message); C3b's review also surfaced
+> **BUG-042** (low-severity, filed, not blocking). **Next: TK2.1 C4 → C7**
+> (C3a already shipped as part of the standalone BUG-041 fix).
 > Previous: 2026-07-28 (later). BUG-041 fixed (`f2576f4`); TK2.1 C0
 > shipped (`e9328f8`); TK2.1 C1 shipped (`2028f9d`) — see prior revisions
 > of this file for the full per-commit narrative.

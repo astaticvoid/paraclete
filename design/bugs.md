@@ -6,7 +6,7 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ## Status (2026-07-28)
 
-**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, BUG-038 (Theotokos: D13 arrow-cursor nav and numpad slot jog speced but never wired), **BUG-039** (InternalClock auto-starts the transport on every surface — worked around surface-side by ADR-044 D7), **BUG-040** (Theotokos encoder jog invents a 0..1 range on composite pages and ignores `stepped` — fix is TK2.1 C4).
+**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, BUG-038 (Theotokos: D13 arrow-cursor nav and numpad slot jog speced but never wired), **BUG-039** (InternalClock auto-starts the transport on every surface — worked around surface-side by ADR-044 D7), **BUG-040** (Theotokos encoder jog invents a 0..1 range on composite pages and ignores `stepped` — fix is TK2.1 C4), **BUG-042** (live_rec can double-trigger the synth when a live trig quantizes onto an imminent step boundary — low severity, scoped out of TK2.1 C3b, fix direction filed).
 **Fixed 2026-07-28:** BUG-041 (`f2576f4`) — `CMD_CLOCK_STOP` now emits a `global_stop` transport event on the net transition to stopped; gated on final playing state (not a mid-batch flag) so a STOP reversed later in the same batch doesn't emit a spurious stop (hostile-review finding, folded before commit). Regression test drives a real `InternalClock` → `Sequencer` pair.
 **Fixed, code-complete (pending hardware-verification):** BUG-012.
 **Trigger-based (fix when named trigger fires):** BUG-003 (updated — StateBusHandle already moved to L2; remaining violation is NodeExecutor/RuntimeCounters in audio.rs).
@@ -1598,3 +1598,43 @@ net transition instead. `clock_stop_emits_global_stop` and
 `InternalClock` → `Sequencer` pair per the fix direction above;
 `clock_stop_reversed_in_same_batch_does_not_emit_global_stop`
 (`internal_clock.rs`) pins the review finding.
+
+---
+
+### BUG-042 — `live_rec` can double-trigger the synth when a live trig quantizes onto an imminent step boundary
+
+**Severity:** Low — an audible artifact only in the specific case of
+recording exactly on or very near a step's natural boundary; recording
+itself (the pattern data written) is correct either way.
+**Phase found:** TK2.1 C3b hostile review (2026-07-28), reading the
+`sequencer_live_rec.yaml` test-driver scenario's own debug-event log.
+**Description:** `record_live_trig` (`sequencer.rs`) writes
+`steps[nearest].active = true` at the top of `process()`, before this
+window's transport-tick loop (and possibly before a later window's) runs
+the ordinary step-boundary fire path. When the quantized `nearest` step's
+natural boundary lands in that same or the very next window — the common
+case, since "nearest" is by construction close to "now" — the step fires
+twice: once immediately via `emit_live_trig` (the live sound) and again
+moments later via the ordinary boundary path, because nothing suppresses
+the second fire. Unlike the analogous negative-micro-offset "pulled
+early" case, which `early_fired` (`sequencer.rs:231`) explicitly guards
+against re-firing at the boundary, no equivalent guard exists for a step
+that was *just recorded* live. Reproduced concretely via
+`tools/test-driver/tests/sequencer_live_rec.yaml`'s debug-event output:
+two `step_fired`/`voice_trigger` pairs ~17 samples apart right after
+recording, then a single clean fire on the next loop pass.
+**Location:** `crates/paraclete-nodes/src/sequencer.rs` —
+`record_live_trig`, the `pending_live_trig` consumption block in
+`process()`, and the boundary-fire logic in `handle_transport`
+(`early_fired`'s existing suppression pattern, `:987-1018`).
+**Fix direction:** Extend (or add a parallel field to) `early_fired`-style
+suppression so a step written by `record_live_trig` this pass is not
+re-fired by the ordinary boundary path if its natural onset lands within
+the same window the recording happened in. Needs care: `early_fired`'s
+existing checks are specific to the "next step, pulled early" case
+(negative `micro_offset`); this is a different trigger condition (a step
+just marked active, non-negative or zero offset) and touches the same
+delicate boundary-crossing logic, so it is scoped out of C3b rather than
+risked under review-cycle time pressure. A regression test analogous to
+`early_fired_note_keeps_its_gate_length` (`sequencer.rs:3930`) should pin
+whichever suppression mechanism lands.
