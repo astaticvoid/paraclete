@@ -3,21 +3,32 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-28 (later still). **TK2.1 C0–C4 shipped**
-> (`e9328f8`, `2028f9d`, `f3053fb`, `c8a9b5b`, `87fcbcc`); **BUG-041**
-> (`f2576f4`) **and BUG-040** (`87fcbcc`) **fixed** — both independently
-> unblocked/closed ahead of or as part of their scheduled commits (C3a,
-> C4). Fixed regions + trig strip + track indicator + display_name split
-> (C0); `RecMode{Off,Grid,Live}` + REC gestures + pad-mode trig + silent
-> launch (D5-D7, C1); key chips + rewritten legend (D3/D4, C2, `[n]
-> ENC`/`[m] LOCK` deferred to C5); engine-side `live_rec` (D8, C3b,
-> **BUG-042** filed — low severity, not blocking); descriptor-accurate
-> encoder range/stepped resolution (D10, C4). Every commit's pre-commit
-> hostile review caught and fixed at least one real defect before landing
-> except C4 (verified clean) — see each commit message for specifics, not
-> re-narrated here. **Next: TK2.1 C5 → C7.**
+> **Last updated:** 2026-07-29. **TK2.1 C0–C5 shipped**
+> (`e9328f8`, `2028f9d`, `f3053fb`, `c8a9b5b`, `87fcbcc`, `311cbad`);
+> **BUG-041** (`f2576f4`) **and BUG-040** (`87fcbcc`) **fixed** — both
+> independently unblocked/closed ahead of or as part of their scheduled
+> commits (C3a, C4). Fixed regions + trig strip + track indicator +
+> display_name split (C0); `RecMode{Off,Grid,Live}` + REC gestures +
+> pad-mode trig + silent launch (D5-D7, C1); key chips + rewritten legend
+> (D3/D4, C2, `[n] ENC`/`[m] LOCK` deferred to C5); engine-side `live_rec`
+> (D8, C3b, **BUG-042** filed — low severity, not blocking);
+> descriptor-accurate encoder range/stepped resolution (D10, C4); ENC
+> mode + `lock_target` (latched + momentary), replacing the dead
+> `step_focus` field, with value routing (ENC jog/numpad/`:set`) now
+> pointed at the lock's `CMD_SET_LOCK_TARGET`/`CMD_SET_STEP_LOCK` pair
+> (D9/D15, C5, fulfills C2's deferred legend entries). Every commit's
+> pre-commit hostile review caught and fixed at least one real defect
+> before landing except C4 (verified clean) — C5's review caught two HIGH
+> findings (`:set` routing to the wrong track's sequencer when the lock
+> target diverged from the active track; a TRK-chord track switch
+> spuriously arming a p-lock) plus a MEDIUM (momentary release using a
+> stale recomputed track instead of the press-time one) and a cosmetic
+> label — see each commit message for specifics, not re-narrated here.
+> **Next: TK2.1 C6 → C7.**
 > Previous revisions of this file carry the full per-commit narrative back
 > through BUG-041/ADR-044 ratification.
+> Previous: 2026-07-28 (later still). See prior revision for the C0–C4
+> narrative.
 > Previous: 2026-07-28. **ADR-044 ✅ RATIFIED — TK2.1
 > implementation unlocked.** All six questions settled: R1 live rec
 > degrades to a transport-derived rule where key releases are unavailable;
