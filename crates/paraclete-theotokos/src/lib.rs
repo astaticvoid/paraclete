@@ -851,7 +851,8 @@ impl TheotokosApp {
                 // Grid while stopped) since it has no release event to
                 // build a REC+PLAY chord from.
                 Action::ToggleRec => {
-                    self.model.rec = if self.model.rec == RecMode::Live {
+                    let was_live = self.model.rec == RecMode::Live;
+                    self.model.rec = if was_live {
                         RecMode::Off
                     } else if self.held.kitty {
                         match self.model.rec {
@@ -868,11 +869,24 @@ impl TheotokosApp {
                     } else {
                         RecMode::Grid
                     };
+                    // TK2.1 C3b (D8): leaving Live disarms engine-side
+                    // recording on every track; the no-kitty fallback's
+                    // own path into Live (no separate EnterLiveRec chord
+                    // exists there — see D5) must arm it just the same,
+                    // or live record silently does nothing on exactly the
+                    // terminals that need the fallback (hostile review
+                    // finding).
+                    if was_live {
+                        self.set_live_rec_for_all_tracks(0.0);
+                    } else if self.model.rec == RecMode::Live {
+                        self.set_live_rec_for_all_tracks(1.0);
+                    }
                     dirty = true;
                 }
                 // TK2.1 C1 (D5/D8): REC held + PLAY (kitty only) — arms
-                // Live and starts the transport (D8's live_rec keys off
-                // this, engine-side, from TK2.1 C3).
+                // Live and starts the transport. TK2.1 C3b (D8): also arms
+                // engine-side `live_rec` on every track sequencer — no
+                // step computation happens on the surface.
                 Action::EnterLiveRec => {
                     self.model.rec = RecMode::Live;
                     self.pending.push(NodeCommand {
@@ -881,6 +895,7 @@ impl TheotokosApp {
                         arg0: 0,
                         arg1: 0.0,
                     });
+                    self.set_live_rec_for_all_tracks(1.0);
                     dirty = true;
                 }
                 Action::OpenScreen(screen) => {
@@ -1268,6 +1283,23 @@ impl TheotokosApp {
                     self.keymap.bindings.len()
                 ));
             }
+        }
+    }
+
+    /// TK2.1 C3b (D8, ADR-039 decision 7): arms/disarms engine-side
+    /// `live_rec` on every track sequencer. No step computation happens
+    /// here or anywhere on the surface — the sequencer quantizes a
+    /// consumed `CMD_TRIG_NOW` to the nearest step itself while this flag
+    /// is set and the transport is running.
+    fn set_live_rec_for_all_tracks(&mut self, value: f64) {
+        let live_rec_id = paraclete_node_api::ParamDescriptor::id_for_name("live_rec");
+        for track in &self.model.tracks {
+            self.pending.push(NodeCommand {
+                target_id: track.sequencer_id,
+                type_id: paraclete_node_api::CMD_SET_PARAM,
+                arg0: live_rec_id as i64,
+                arg1: value,
+            });
         }
     }
 
@@ -1924,6 +1956,62 @@ mod tests {
         assert_eq!(app.model.rec, RecMode::Off);
     }
 
+    /// TK2.1 C3b (D8): entering Live sends `CMD_SET_PARAM live_rec = 1.0`
+    /// to every track's sequencer — no step computation on the surface.
+    #[test]
+    fn entering_live_arms_live_rec_on_every_track() {
+        let bus = test_bus();
+        let mut app = test_app(
+            1,
+            vec![200, 201],
+            vec![100, 101],
+            vec!["T1".into(), "T2".into()],
+        );
+        app.held.kitty = true;
+        let live_rec_id = paraclete_node_api::ParamDescriptor::id_for_name("live_rec");
+
+        app.handle_keys(&bus, &[KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE)]);
+        app.handle_keys(&bus, &[KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)]);
+
+        for seq_id in [200, 201] {
+            assert!(
+                app.pending.iter().any(|c| c.target_id == seq_id
+                    && c.type_id == paraclete_node_api::CMD_SET_PARAM
+                    && c.arg0 == live_rec_id as i64
+                    && c.arg1 == 1.0),
+                "entering Live must arm live_rec on sequencer {seq_id}"
+            );
+        }
+    }
+
+    /// TK2.1 C3b (D8): leaving Live sends `CMD_SET_PARAM live_rec = 0.0`
+    /// to every track's sequencer.
+    #[test]
+    fn leaving_live_disarms_live_rec() {
+        let bus = test_bus();
+        let mut app = test_app(
+            1,
+            vec![200, 201],
+            vec![100, 101],
+            vec!["T1".into(), "T2".into()],
+        );
+        app.model.rec = RecMode::Live;
+        let live_rec_id = paraclete_node_api::ParamDescriptor::id_for_name("live_rec");
+
+        app.handle_keys(&bus, &[kc('z')]); // bare REC: Live -> Off
+
+        assert_eq!(app.model.rec, RecMode::Off);
+        for seq_id in [200, 201] {
+            assert!(
+                app.pending.iter().any(|c| c.target_id == seq_id
+                    && c.type_id == paraclete_node_api::CMD_SET_PARAM
+                    && c.arg0 == live_rec_id as i64
+                    && c.arg1 == 0.0),
+                "leaving Live must disarm live_rec on sequencer {seq_id}"
+            );
+        }
+    }
+
     /// TK2.1 C1 (D5): the REC/PLAY cycle's pass-through hazard — an
     /// ordinary PLAY press must never silently convert Grid into Live.
     #[test]
@@ -1940,7 +2028,11 @@ mod tests {
     }
 
     /// TK2.1 C1 (D5): no-kitty fallback — REC while the transport is
-    /// running arms Live directly (no chord needed).
+    /// running arms Live directly (no chord needed). TK2.1 C3b (D8,
+    /// hostile review finding): this path has no separate `EnterLiveRec`
+    /// chord to arm `live_rec` for it — `ToggleRec` itself must, or live
+    /// record silently does nothing on exactly the terminals (no kitty
+    /// support) that need this fallback.
     #[test]
     fn fallback_rec_while_running_arms_live() {
         let bus = test_bus();
@@ -1951,6 +2043,15 @@ mod tests {
         );
         app.handle_keys(&bus, &[kc('z')]);
         assert_eq!(app.model.rec, RecMode::Live);
+
+        let live_rec_id = paraclete_node_api::ParamDescriptor::id_for_name("live_rec");
+        assert!(
+            app.pending.iter().any(|c| c.target_id == 200
+                && c.type_id == paraclete_node_api::CMD_SET_PARAM
+                && c.arg0 == live_rec_id as i64
+                && c.arg1 == 1.0),
+            "the fallback entry into Live must also arm live_rec"
+        );
     }
 
     /// TK2.1 C1 (D5): no-kitty fallback — REC while stopped arms Grid.

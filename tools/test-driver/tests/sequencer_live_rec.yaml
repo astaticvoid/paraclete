@@ -1,0 +1,45 @@
+# TK2.1 C3b (D8, ADR-039 decision 7): a CMD_TRIG_NOW consumed while
+# live_rec is armed and the transport is playing quantizes itself into
+# the active pattern — proven here by the audible consequence (the
+# recorded step sounding again, unprompted, on the pattern's next loop
+# pass), since the step bitfield publishes as Text and this vocabulary's
+# assertions are numeric state-bus + audio only (crate tests carry the
+# structural assertions: exact step index, note, micro-timing).
+#
+# Default instrument.yaml: bpm 140, kick sequencer id 10, pattern_length
+# 16 @ ticks_per_step 240 (16th notes) -> ~0.1071s/step, ~1.714s/loop.
+# Caveat (AGENTS.md): timeline actions dispatch on wall clock, so leave
+# margin — assertion windows here are deliberately wide rather than
+# tightly following the ~1.714s loop-period estimate.
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 3.2
+output: /tmp/sequencer_live_rec.wav
+play: false
+
+timeline:
+  - at: 0.02
+    set_param: { target: kick, param: decay, value: 0.15 }
+  - at: 0.03
+    clear: { target: "10" }
+  - at: 0.1
+    set_param: { target: "10", param: live_rec, value: 1.0 }
+  - at: 0.2
+    trig_now: { target: "10", note: 36, velocity: 0.9 }
+  - at: 0.3
+    set_param: { target: "10", param: live_rec, value: 0.0 }
+
+assert:
+  # Silence once the manually-triggered hit's decay has settled and well
+  # before the loop wraps back around — proves the next assertion isn't
+  # just hearing that same hit's tail.
+  - at: 1.3
+    peak_lt: 0.01
+    window_ms: 200
+  # The recorded step must sound again on its own, one loop later
+  # (~0.2 + 1.714s), with no further trig_now/set_step from the timeline.
+  # Wide window (from just after the silence check to the end of the
+  # capture) to absorb wall-clock dispatch jitter.
+  - at: 3.1
+    peak_gte: 0.01
+    window_ms: 1800

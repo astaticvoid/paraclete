@@ -1088,6 +1088,43 @@ impl Sequencer {
         self.bank.get(ParamDescriptor::id_for_name("mute")) >= 0.5
     }
 
+    /// TK2.1 C3b (D8): armed by Theotokos on entering `RecMode::Live`
+    /// (`CMD_SET_PARAM live_rec = 1.0` to every track), disarmed on
+    /// leaving it.
+    fn is_live_recording(&self) -> bool {
+        self.bank.get(ParamDescriptor::id_for_name("live_rec")) >= 0.5
+    }
+
+    /// TK2.1 C3b (D8, ADR-039 decision 7): quantizes a live trig to the
+    /// nearest step of the active pattern and writes it in — step-active,
+    /// note, velocity, and the signed distance to the grid as the step's
+    /// micro-timing. Formula (stated so nobody invents one): with `pos` =
+    /// the sequencer's tick position within the pattern (`current_step`/
+    /// `step_tick`) and `period` = the speed-scaled ticks-per-step the
+    /// existing step-advance path already computes (`step_period`) —
+    /// `nearest = round(pos / period) mod pattern_length`;
+    /// `delta_ticks = pos − nearest × period`;
+    /// `micro = clamp(round(delta_ticks / (TICKS_PER_BEAT / 96)), −47, 47)`.
+    /// `StepTiming::micro_offset` is in 1/96-beat units, not ticks — with
+    /// `TICKS_PER_BEAT = 960` one unit is 10 ticks. Caller gates on
+    /// `is_live_recording() && self.playing`; a stopped transport records
+    /// nothing (the trig still sounds — `emit_live_trig` gates on mute
+    /// only, independently of recording).
+    fn record_live_trig(&mut self, note: u8, velocity: u16) {
+        let pat = self.active_index();
+        let pattern_length = self.patterns[pat].length.max(1) as f64;
+        let period = self.step_period.max(1) as f64;
+        let pos = self.current_step as f64 * period + self.step_tick as f64;
+        let nearest_unwrapped = (pos / period).round();
+        let nearest = nearest_unwrapped.rem_euclid(pattern_length) as usize;
+        let delta_ticks = pos - nearest_unwrapped * period;
+        let micro_unit_ticks = TICKS_PER_BEAT as f64 / 96.0;
+        let micro = (delta_ticks / micro_unit_ticks).round().clamp(-47.0, 47.0) as i8;
+
+        self.set_step(nearest, note, velocity, true);
+        self.patterns[pat].steps[nearest].timing.micro_offset = micro;
+    }
+
     fn emit_note_on_at(&mut self, step_idx: usize, sample_offset: u32, output: &mut ProcessOutput) {
         if self.is_muted() {
             return;
@@ -1269,6 +1306,20 @@ impl Node for Sequencer {
                     unit: ParamUnit::Generic,
                     display: None,
                 },
+                // TK2.1 C3b (D8, ADR-039 decision 7): a record-arm, not a
+                // sound param — trig-gate shaped like `mute`. Exclude from
+                // kit membership when ADR-039 amendment 1's opt-in flag
+                // lands (P11 inherits this note).
+                ParamDescriptor {
+                    id: ParamDescriptor::id_for_name("live_rec"),
+                    name: "live_rec".into(),
+                    min: 0.0,
+                    max: 1.0,
+                    default: 0.0,
+                    stepped: true,
+                    unit: ParamUnit::Generic,
+                    display: None,
+                },
             ],
             extensions: vec!["paraclete.sequencer".into()],
             view: None,
@@ -1320,6 +1371,23 @@ impl Node for Sequencer {
         // offset 0, independent of transport (works while stopped) and
         // ahead of the transport-event loop below.
         if let Some((note, velocity)) = self.pending_live_trig.take() {
+            // TK2.1 C3b (D8): recorded independently of mute — a muted
+            // track's live_rec still writes the step, it just doesn't
+            // sound right now (emit_live_trig gates mute on its own).
+            // Known bound (noted for the phase report): this runs before
+            // this window's own transport events are handled below, so
+            // `pos` can lag by up to one block.
+            // Known bound, filed BUG-042 (hostile review, not in the
+            // spec's own bound above): if `nearest` quantizes to a step
+            // whose natural boundary lands in this same or the very next
+            // window, that step's ordinary boundary-fire path (below/in a
+            // later call) is not suppressed the way a negative-micro-
+            // offset early fire suppresses itself via `early_fired` — the
+            // synth can double-trigger a few samples apart. Scoped out of
+            // C3b; see BUG-042 for the fix direction.
+            if self.playing && self.is_live_recording() {
+                self.record_live_trig(note, velocity);
+            }
             self.emit_live_trig(note, velocity, output);
         }
 
@@ -4884,6 +4952,112 @@ mod tests {
         run_seq_with_cmds(&mut seq, &[trig_now_cmd(64, 0.5)]);
         assert_eq!(seq.steps_bitfield(), before_bits);
         assert_eq!(seq.patterns[0].length, before_len);
+    }
+
+    // ── TK2.1 C3b (D8, ADR-039 decision 7): live_rec ──────────────────────
+
+    #[test]
+    fn live_rec_records_trig_now_at_nearest_step() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        seq.bank.set(ParamDescriptor::id_for_name("live_rec"), 1.0);
+        assert!(seq.playing, "sanity: global_start must have armed playing");
+
+        // step_period defaults to 240 (TICKS_PER_BEAT/4); step_tick=200 is
+        // past its midpoint (120), so the nearest step is 4, not 3 —
+        // proving this genuinely rounds rather than recording at
+        // current_step.
+        seq.current_step = 3;
+        seq.step_tick = 200;
+        run_seq_with_cmds_events(&mut seq, &[trig_now_cmd(70, 0.9)]);
+
+        assert!(
+            !seq.patterns[0].steps[3].active,
+            "must not record at current_step when it rounds to a neighbor"
+        );
+        assert!(
+            seq.patterns[0].steps[4].active,
+            "must record at the nearest step (4), not current_step (3)"
+        );
+        assert_eq!(seq.patterns[0].steps[4].note, 70);
+    }
+
+    #[test]
+    fn live_rec_writes_micro_timing_in_96th_units() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        seq.bank.set(ParamDescriptor::id_for_name("live_rec"), 1.0);
+
+        // period=240, step_tick=50 -> nearest=3 (round(770/240)=3),
+        // delta_ticks=770-720=50, micro=round(50/(960/96))=round(50/10)=5.
+        seq.current_step = 3;
+        seq.step_tick = 50;
+        run_seq_with_cmds_events(&mut seq, &[trig_now_cmd(70, 0.9)]);
+
+        assert!(seq.patterns[0].steps[3].active);
+        assert_eq!(
+            seq.patterns[0].steps[3].timing.micro_offset, 5,
+            "50 ticks late at 10 ticks/unit (TICKS_PER_BEAT=960) must \
+             quantize to +5 in 1/96-beat units"
+        );
+    }
+
+    #[test]
+    fn live_rec_ignores_trig_now_while_stopped() {
+        let mut seq = Sequencer::new();
+        assert!(!seq.playing, "sanity: a fresh sequencer is stopped");
+        seq.bank.set(ParamDescriptor::id_for_name("live_rec"), 1.0);
+        let before_bits = seq.steps_bitfield();
+
+        let events = run_seq_with_cmds_events(&mut seq, &[trig_now_cmd(70, 0.9)]);
+
+        assert_eq!(
+            seq.steps_bitfield(), before_bits,
+            "a stopped transport must record nothing, even with live_rec armed"
+        );
+        assert!(
+            events.iter().any(is_note_on),
+            "the trig must still sound while stopped (recording and \
+             sounding are independent)"
+        );
+    }
+
+    #[test]
+    fn live_rec_off_leaves_pattern_untouched() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        // live_rec left at its default (0.0) — armed nowhere.
+        let before_bits = seq.steps_bitfield();
+
+        let events = run_seq_with_cmds_events(&mut seq, &[trig_now_cmd(70, 0.9)]);
+
+        assert_eq!(
+            seq.steps_bitfield(), before_bits,
+            "playing with live_rec off must not record anything"
+        );
+        assert!(events.iter().any(is_note_on), "the trig must still sound");
+    }
+
+    #[test]
+    fn live_rec_trig_still_sounds_when_recording() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        seq.bank.set(ParamDescriptor::id_for_name("live_rec"), 1.0);
+
+        let events = run_seq_with_cmds_events(&mut seq, &[trig_now_cmd(70, 0.9)]);
+
+        assert!(
+            events.iter().any(is_note_on),
+            "recording a live trig must not suppress its sound"
+        );
+        assert!(
+            seq.patterns[0].steps.iter().any(|s| s.active),
+            "sanity: the trig must also have been recorded"
+        );
     }
 
     /// Review finding (post-C1 hostile review): the live gate's close was
