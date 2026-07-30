@@ -299,7 +299,35 @@ key will do** (the legibility lesson from sessions s1/s2).
 
 ## §5. Rendering & real-time visualization
 
-### 5.1 Layout — **REOPENED 2026-07-27** (session #2, `theotokos-2.md`)
+### 5.1 Layout — **DETERMINED 2026-07-29** (TK2.1 C0–C7, against ADR-044)
+
+Rewritten against the ratified ADR-044 (D1/D2), which is what session
+#2's reopening (below, kept for history) actually resolved to. Seven
+fixed-height regions, top to bottom, **never re-laid-out per screen** —
+only the contextual window's content changes (`region_heights_are_identical_across_screens`):
+
+```
+┌ transport: BPM · ▶/■ · display_name — engine_name · position ──┐
+│ contextual window (Min(0)) — content varies by screen           │
+├ track indicator: one line, all tracks, `‹`/`›` windowed ────────┤
+├ trig strip: 2×8, SELECTED track only, key chips ─────────────────┤
+├ legend: `[key] NAME` chips, per-screen priority list ────────────┤
+├ echo area: messages, confirms, `:` command line ─────────────────┤
+└ status line: rec/enc/lock state, armed prefix ───────────────────┘
+```
+
+This is a genuine correction of the shipped-vs-intended gap session #2
+found (below), not a new design: **one** always-visible 2×8 trig strip
+for the *selected* track only (never the all-tracks-stacked grid), a
+one-line track indicator carrying names, mute markers and selection with
+`‹`/`›` windowing when the track list is too wide to fit (D2), a
+genuinely separate contextual window above it whose content is the only
+thing that changes per screen, and a labeled `[key] NAME` legend strip
+(resolved live through the `Keymap`, so remapping stays honest) replacing
+the old scrolling grey hint line. Key chips are drawn on whichever cells
+the keys currently act on. Implementation: `crates/paraclete-theotokos/src/render.rs`.
+
+### 5.1 (session #2 reopening, 2026-07-27) — superseded by the DETERMINED note above
 
 Session #2 found the shipped GRID screen renders **all tracks
 simultaneously**, stacked as repeated per-track blocks — a literal reading
@@ -332,7 +360,18 @@ shipped.
 The mode line is the legibility contract (s1/s2 lesson): current bindings
 and values are always on screen.
 
-### 5.2 Graphics from data we already have — **REOPENED 2026-07-27** (session #2)
+### 5.2 Graphics from data we already have — **DETERMINED 2026-07-29** (TK2.1 C0–C7, against ADR-044)
+
+Scoped down to the selected track only, per §5.1: the trig strip's two
+rows (steps 1–8, 9–16) render **one track — the active one** — not one
+block per track. Value bars/meters, envelope curves and LFO/filter
+shapes (below) are unaffected by the redesign; the step grid entry below
+is what needed the correction. Encoder access is a separate explicit ENC
+mode (`n`, ADR-044 D9), reachable from any screen, not a Param-screen-only
+concern — see `design/phases/tk2.1-theotokos.md` C5 for the encoder-bank
+and p-lock (D15) rendering detail this section doesn't repeat.
+
+### 5.2 (session #2 reopening, 2026-07-27) — superseded by the DETERMINED note above
 
 The "two rows per track" step-grid line below is what produced the
 all-tracks-stacked rendering session #2 rejected — see §5.1's reopening
@@ -585,6 +624,42 @@ layout (TRK/PTN physical feel, encoder ergonomics, numpad fate).
 
 ---
 
+## Stage 5 — 2026-07-29 — TK2.1 implementation converges §5.1/§5.2
+
+Closes out Stage 4's redesign call. `design/adr/ADR-044-theotokos-fixed-panel.md`
+(✅ accepted 2026-07-28) froze the redesign; `design/phases/tk2.1-theotokos.md`
+C0–C7 implemented it (`e9328f8` … `7e42c0f`, `d1ed585`). §5.1/§5.2
+above are rewritten as **DETERMINED** in the same commit that adds this
+stage, replacing the REOPENED status Stage 4 left them in.
+
+- **§5.1/§5.2 DETERMINED** against the shipped code, not merely the
+  ADR's target: fixed seven-region layout, one-track trig strip,
+  windowed track indicator, live legend chips.
+- **§3.A points 3–4 gap closed:** `RecMode{Off,Grid,Live}` ships with
+  `Off` as the default (pads live, trig N = track N); REC arms
+  step-entry; no auto-play on launch; REC held + PLAY escalates to live
+  record (ADR-039 decision 7's engine-side slice, pulled forward).
+- **§0 A9 reversed** (TK2.1 D11): sticky-prefix re-tap disarms, behind a
+  400 ms auto-repeat guard — see the TK2 spec's own §0 append note.
+- **OQ-T22 resolved:** the Mute screen is retired outright (TK2.1 C6,
+  D12); the TRK+FUNC+trig chord is the only mute-toggle gesture now,
+  not one of two.
+- **OQ-T24 still open, now unconstrained:** D9's ENC mode gives the
+  encoder bank a modifier-free bare-trig path, discharging §0 A7's
+  condition for keeping the numpad slots. The numpad-slot cluster's fate
+  is a free choice again, reserved for session #3 (BUG-038's
+  disposition — descoped, not implemented, in `bugs.md`).
+- **New since Stage 4, not previously open questions:** an explicit ENC
+  mode (D9, not held-FUNC or screen-as-mode) and a shared p-lock
+  `lock_target` — latched (`m`) or momentary (kitty trig hold) — giving
+  p-lock authoring a gesture for the first time (D15, closes OQ-T27).
+
+**Next:** usability session #3 (TK2.1 C8, user-paired, no code) —
+produces `design/sessions/theotokos-3.md` + `design/phases/tk2.1-report.md`'s
+sign-off, per §5 of the phase spec.
+
+---
+
 ## Open Questions
 
 | # | Question | Status | Where decided |
@@ -612,6 +687,16 @@ layout (TRK/PTN physical feel, encoder ergonomics, numpad fate).
 ---
 
 ## Amendment log
+
+**2026-07-29 — TK2.1 C0–C7 shipped; §5.1/§5.2 rewritten as DETERMINED.**
+See Stage 5 above for the full closeout. §5.1/§5.2's REOPENED sections
+(Stage 4) are now superseded-in-place by DETERMINED rewrites reflecting
+the shipped code, with the REOPENED text kept below each as history, per
+this log's own never-delete convention. BUG-038 formally descoped (its
+arrow-cursor half made moot by D9's ENC mode, not merely left unwired;
+its numpad half stays open as OQ-T24, reserved for session #3). The TK2
+spec's own §0 gained an appended note (never rewritten) marking A9/A16
+superseded, A14 half-stale, and A7's condition discharged by D9.
 
 **2026-07-27 (later) — TK2.1 redesign drafted (ADR-044 🟡 proposed).**
 The redesign pass Stage 4 called for is drafted, not yet ratified:

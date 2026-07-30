@@ -32,19 +32,25 @@ if connected and are skipped otherwise.
 ### Theotokos (keyboard-first performance: `--theotokos`)
 
 `cargo run -- --theotokos` starts the keyboard-first performance terminal.
-Trig-first 16-pad grid, TRK/PTN hold-chords for track/pattern select, an
-8-encoder parameter bank (FUNC+trig to jog), and dedicated Tempo/Settings/
-Chain/Mute screens.
+A fixed seven-region panel (ADR-044 D1) with one always-visible 2×8 trig
+strip for the *selected* track, TRK/PTN hold-chords for track/pattern
+select, an explicit ENC mode for the 8-encoder parameter bank, a shared
+p-lock target (latched or momentary), and dedicated Tempo/Settings/Chain
+screens. There is no dedicated Mute screen — mute state lives on the
+always-visible track indicator; TRK+FUNC+trig toggles it.
 
-**Grid + transport:**
+**Pads + rec:**
 
 | Key | Action |
 |---|---|
 | `q w e r t y u i` | Trig 1–8 (top row) |
 | `a s d f g h j k` | Trig 9–16 (bottom row) |
-| `Tab` (hold) + trig | select track |
+| bare trig (REC off/Live) | play + select that track |
+| `Tab` (hold) + trig | select track silently |
 | `p` (hold) + trig | select pattern |
-| `z` / `x` / `c` | REC / PLAY / STOP (`Space` = PLAY alias) |
+| `z` | REC — toggles `Off ↔ Grid` (step-entry); bare trig writes/clears a step in `Grid` |
+| `z` (hold) + `x` | REC + PLAY — escalates to `Live` (engine-side live record) and starts the transport |
+| `x` / `c` | PLAY / STOP (`Space` = PLAY alias) |
 | `Shift+z` / `Shift+x` / `Shift+c` | copy / clear / paste the active lane |
 | `-` / `=` | previous / next 16-step page window |
 
@@ -57,19 +63,28 @@ Chain/Mute screens.
 | `8` | SETTINGS (read-only: bpm, kitty status, track/pattern counts, version) |
 | `0` | TEMPO (`Enter` taps tempo) |
 | `o` | SONG — opens the Chain screen |
-| `m` | MUTE screen |
 | `v` | KEYBD (reserved, chromatic input) |
-| `Esc` | NO — also returns to the Grid screen from any other screen |
-| arrows | navigate the current screen (Tempo: ±bpm; Chain: cursor — no-op elsewhere, see BUG-038) |
+| `Esc` | NO — also returns to the Grid screen from any other screen, and clears a set p-lock target |
+| arrows | navigate the current screen (Tempo: ±bpm; Chain: cursor — no-op elsewhere) |
 
-**Parameter jog:**
+**Encoder mode + p-lock (ADR-044 D9/D15):**
 
 | Key | Action |
 |---|---|
-| `Shift` (FUNC) + top/bottom-row key *n* | jog encoder *n* up / down |
-| `Ctrl` + FUNC jog | fine jog |
+| `n` | toggle ENC mode — while on, a bare trig jogs encoder *n* (top row up, bottom row down) on **any** screen |
+| `Ctrl` / `Shift` (FUNC) + trig, in ENC mode | fine / coarse jog |
+| `Shift` (FUNC) + top/bottom-row key *n*, ENC off | jog encoder *n* up / down (`Ctrl+FUNC` = fine) |
+| `m` (hold) + trig, in `Grid` | arm a p-lock target (latched — same trig again, `m` again, or `Esc` clears it) |
+| hold a trig in `Grid` (kitty terminals) | set the p-lock target for the duration of the hold (momentary) |
 
-Numpad slot A/B/C jog is speced (D13) but not yet wired — see `design/bugs.md` BUG-038.
+While a p-lock target is set, encoder jog / numpad slots / `:set` write a
+per-step lock instead of the live value.
+
+Numpad slot A/B/C jog remains unwired — formally descoped, not merely
+deferred; ADR-044 D9's ENC mode gives the encoder bank its own
+modifier-free path, so the numpad cluster's fate is an open question for
+a future usability session, not a wiring gap. See `design/bugs.md`
+BUG-038.
 
 **Other:**
 

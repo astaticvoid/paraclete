@@ -191,6 +191,19 @@ amended:
 
 bugs.md dormant #2 re-pointed (temp save no longer arms it).
 
+## Note — 2026-07-29 (TK2.1 C7)
+
+**Decision 7's `live_rec` slice shipped early**, as part of TK2.1 C3b
+(`c8a9b5b`), pulled forward out of the full P11 phase per ADR-044 R2 —
+the TK2.1 redesign needed engine-side live record to give REC+PLAY
+somewhere real to write. It is implemented **as decision 7 describes it
+here**, not superseded: the `live_rec` bank param, Midi2-note-on
+quantization to the nearest step with micro-timing captured from the
+event's sample offset, and TK2 C1's `CMD_TRIG_NOW` recording itself the
+same way when `live_rec` is on, all landed unchanged. The rest of this
+ADR (kits, temp save, perform mode, prepared mutes, mute tiers beyond
+what TK2.1 needed) remains P11-scoped and unimplemented.
+
 ## Implementation note (to be added when implemented)
 
 ```text

@@ -4,10 +4,11 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ---
 
-## Status (2026-07-28)
+## Status (2026-07-29)
 
-**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, BUG-038 (Theotokos: D13 arrow-cursor nav and numpad slot jog speced but never wired), **BUG-039** (InternalClock auto-starts the transport on every surface — worked around surface-side by ADR-044 D7), **BUG-042** (live_rec can double-trigger the synth when a live trig quantizes onto an imminent step boundary — low severity, scoped out of TK2.1 C3b, fix direction filed).
+**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, **BUG-039** (InternalClock auto-starts the transport on every surface — worked around surface-side by ADR-044 D7), **BUG-042** (live_rec can double-trigger the synth when a live trig quantizes onto an imminent step boundary — low severity, scoped out of TK2.1 C3b, fix direction filed).
 **Fixed 2026-07-28:** BUG-041 (`f2576f4`) — `CMD_CLOCK_STOP` now emits a `global_stop` transport event on the net transition to stopped; gated on final playing state (not a mid-batch flag) so a STOP reversed later in the same batch doesn't emit a spurious stop (hostile-review finding, folded before commit). Regression test drives a real `InternalClock` → `Sequencer` pair. **BUG-040** (`87fcbcc`, TK2.1 C4) — encoder resolution now reads real cap-doc `min`/`max`/`stepped` instead of faking `0..1`; p-lock clamp and jog step-size both fixed.
+**Descoped 2026-07-29 (TK2.1 C7):** BUG-038 — the arrow-cursor half was made moot by ENC mode (D9) and its dead code deleted; the numpad-slot half stays an explicit open question (OQ-T24) reserved for usability session #3, not silently dropped.
 **Fixed, code-complete (pending hardware-verification):** BUG-012.
 **Trigger-based (fix when named trigger fires):** BUG-003 (updated — StateBusHandle already moved to L2; remaining violation is NodeExecutor/RuntimeCounters in audio.rs).
 **Resolved in this session:** INFRA-011 (recovery code removed — pipewire-alsa + wireplumber no-suspend fixes root cause).
@@ -1469,6 +1470,21 @@ formally descope D13's numpad clause and drop the cursor language from the
 spec if session #2 usability findings don't need it. Tracked so it isn't
 silently reintroduced as "already done" — TK2 C7's README/AGENTS.md pass
 was caught overclaiming this exact gap before it shipped.
+**Descoped 2026-07-29 (TK2.1 C7, `design/adr/ADR-044-theotokos-fixed-panel.md`'s
+implementation note):** formally descoped rather than wired. (1) The
+arrow-cursor half was made moot, not just unimplemented, by TK2.1 C5's ENC
+mode (D9): every encoder now has a direct physical (key) address, so
+there is nothing left for a cursor to navigate between — the dead
+`Model::encoder_cursor` field and the permanently-stuck `>` marker it drove
+(always cell 0, since nothing ever moved it) were deleted in the same
+commit. (2) The numpad-slot half stays formally open, not resolved — its
+fate (OQ-T24) is explicitly reserved for the live usability session #3
+(TK2.1 C8) as a free choice, now that D9 discharges the TK2 spec's §0 A7
+modifier-floor condition that used to constrain it; wiring it here would
+have preempted that decision rather than implemented a spec. `Action::Jog`
+and the slot A/B/C plumbing it drives remain live, tested, engine-side
+code (now also reachable via the lock-target routing TK2.1 C5b added) —
+only a numpad key that produces it is missing.
 
 ---
 

@@ -662,6 +662,32 @@ discharged §0 A7; D10 recorded ADR-041 amendment 3's ownership; D13 (the
 dead p-lock path) and D14 were added; BUG-041 was filed and D7/D8's stopped-transport claims were bounded
 by it; the dropped FUNC+transport session verdict became R5.
 
+## Implementation — 2026-07-29 (TK2.1 C7)
+
+C0–C7 shipped (`e9328f8`, `2028f9d`, `f3053fb`, `c8a9b5b`, `87fcbcc`,
+`311cbad`, `7e42c0f`, `d1ed585`) — every decision D1–D15 is
+implemented as ratified above, with two exceptions:
+
+- **D13's numpad-slot half was formally descoped**, not implemented —
+  see BUG-038's resolution in `bugs.md` and the dropped cursor/numpad
+  language in `design/theotokos/design.md` §5.1/§5.2. D9's ENC-mode
+  redesign (this same ADR, the p-lock revision above) made the
+  arrow-cursor half of D13 moot before it was ever built: every encoder
+  now has a direct physical (key) address, so there is nothing left for
+  a cursor to navigate between. The numpad-slot cluster's fate (OQ-T24)
+  was always deferred to session #3 as a free choice (§6, D9 discharges
+  §0 A7's modifier-floor condition) — wiring it now would have preempted
+  that live decision, not merely implemented a spec.
+- **Cross-surface lock capture (R6/OQ-T28)** remains deferred to
+  ADR-045, as ratified.
+
+Every commit's pre-commit hostile review caught and fixed at least one
+real defect before landing except C4 (verified clean) — see each
+commit's message and `design/roadmap.md` for the per-commit findings,
+not re-narrated here. `design/theotokos/design.md` §5.1/§5.2 are
+rewritten as DETERMINED against this ADR in the same commit that adds
+this note. Session #3 (TK2.1 C8, user-paired, no code) is next.
+
 ## Cross-references
 
 - `design/sessions/theotokos-2.md`, `design/phases/tk2-report.md` — evidence

@@ -3,34 +3,22 @@
 > **Living document.** Replace this file when a phase completes or significant
 > planning changes occur. Keep it short — current state only.
 >
-> **Last updated:** 2026-07-29 (later). **TK2.1 C0–C6 shipped**
-> (`e9328f8`, `2028f9d`, `f3053fb`, `c8a9b5b`, `87fcbcc`, `311cbad`,
-> `7e42c0f`); **BUG-041** (`f2576f4`) **and BUG-040** (`87fcbcc`)
-> **fixed** — both independently unblocked/closed ahead of or as part of
-> their scheduled commits (C3a, C4). Fixed regions + trig strip + track
-> indicator + display_name split (C0); `RecMode{Off,Grid,Live}` + REC
-> gestures + pad-mode trig + silent launch (D5-D7, C1); key chips +
-> rewritten legend (D3/D4, C2, `[n] ENC`/`[m] LOCK` deferred to C5);
-> engine-side `live_rec` (D8, C3b, **BUG-042** filed — low severity, not
-> blocking); descriptor-accurate encoder range/stepped resolution (D10,
-> C4); ENC mode + `lock_target` (latched + momentary), replacing the dead
-> `step_focus` field, with value routing (ENC jog/numpad/`:set`) now
-> pointed at the lock's `CMD_SET_LOCK_TARGET`/`CMD_SET_STEP_LOCK` pair
-> (D9/D15, C5, fulfills C2's deferred legend entries); sticky-prefix
-> re-tap reversed (a genuine re-press now disarms Trk/Ptn/Lock, an
-> auto-repeat-speed press doesn't, D11), `PanelButton`/`Screen::Mute`
-> deleted outright (mute state has lived on the track indicator since
-> C0, D12), `Keymap::from_yaml` degrades a stale entry instead of
-> rejecting the whole file (D14, C6). Every commit's pre-commit hostile
-> review caught and fixed at least one real defect before landing except
-> C4 (verified clean) — C6's review caught a HIGH finding (Lock's
-> pending-arm cancel was still an unguarded lib.rs-level bypass, so an
-> auto-repeat pulse could wipe a pending p-lock arm before D11's guard
-> ever saw it) plus a MEDIUM (the auto-repeat guard's clock was captured
-> once per key-event batch, not per event) and two stale-comment/test-
-> coverage nits — see each commit message for specifics, not re-narrated
-> here. **Next: TK2.1 C7 (docs, smoke gate, BUG-038 disposition — final
-> commit before the live-paired C8 usability session).**
+> **Last updated:** 2026-07-29 (still later). **TK2.1 CODE-COMPLETE —
+> C0–C7 shipped** (`e9328f8`, `2028f9d`, `f3053fb`, `c8a9b5b`, `87fcbcc`,
+> `311cbad`, `7e42c0f`, `d1ed585`); **BUG-041** (`f2576f4`) **and
+> BUG-040** (`87fcbcc`) **fixed**, **BUG-038 formally descoped** (its
+> arrow-cursor half made moot by C5's ENC mode, dead code deleted; its
+> numpad half stays open as OQ-T24, reserved for session #3). Full
+> per-commit narrative, hostile-review findings, BUG-038's reasoning, and
+> the doc sweep are in **`design/phases/tk2.1-report.md`** — not
+> re-narrated here. `design/theotokos/design.md` §5.1/§5.2 rewritten as
+> DETERMINED against the accepted ADR-044 (Stage 5). **Next: usability
+> session #3 (TK2.1 C8, user-paired, no code)** — produces
+> `design/sessions/theotokos-3.md`; the phase does not close until that
+> session's verdict lands in the report above. C7's own smoke pass was
+> environment-limited (no interactive TTY available this session) — see
+> the report's "Agent smoke run" section; the ~40-test render suite
+> substituted but does not replace a live pass.
 > Previous revisions of this file carry the full per-commit narrative back
 > through BUG-041/ADR-044 ratification.
 > Previous: 2026-07-29. See prior revision for the C0–C5 narrative.

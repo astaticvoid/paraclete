@@ -101,6 +101,40 @@
   `040a45f`). Lesson recorded: grep for duplicated constants before
   asserting "no change needed".
 
+> **Appended 2026-07-29 (TK2.1 C7).** Superseded/stale by the TK2.1
+> redesign (`design/adr/ADR-044-theotokos-fixed-panel.md`,
+> `design/phases/tk2.1-theotokos.md`) — recorded here, not rewritten
+> above, per this section's own append-only rule:
+> - **A9 is superseded.** TK2.1 D11 reverses it: a genuine same-prefix
+>   re-tap now disarms TRK/PTN/Lock, behind a 400 ms auto-repeat guard
+>   that does the job A9's blanket no-op used to (distinguishing a
+>   deliberate second tap from an OS auto-repeat pulse).
+> - **A16 is superseded.** TK2.1 D9 makes encoder access an explicit ENC
+>   mode (`n`), not a screen — "trigs are always trigs [on Grid/Param]"
+>   no longer needs the Param-screen qualification A16 added, since ENC
+>   mode (not which screen is open) now decides whether a trig is a pad
+>   or an encoder jog, on any screen. The Mute-screen retarget half of
+>   A16 is moot: TK2.1 C6 retired the Mute screen outright (D12).
+> - **A14 is half-stale.** "MUTE is not a hold" still holds — TRK+FUNC+
+>   trig remains the only mute-toggle gesture — but its parenthetical
+>   ("it is a screen + the TRK-held chord") is half wrong now: the
+>   screen half was retired in TK2.1 C6 (D12); only the chord half
+>   survives.
+> - **A7's condition is discharged by D9.** A7 made the numpad slots'
+>   modifier-free floor a *load-bearing* reason to keep them (the
+>   encoder bank needed a held modifier, so retiring the numpad would
+>   have left no modifier-free jog path at all). TK2.1 D9's ENC mode
+>   gives the encoder bank its own modifier-free bare-trig path, so A7's
+>   condition no longer applies — the numpad slot cluster's fate
+>   (OQ-T24) is a free choice again, not a constrained one. Still an
+>   **open** question, reserved for usability session #3 (TK2.1 C8).
+> - **D13 (numpad + arrow cursor), separately:** the arrow-cursor half
+>   was made moot (not merely unimplemented) by the same D9 change —
+>   every encoder now has a direct physical address, so there is nothing
+>   for a cursor to navigate between. Formally descoped; see BUG-038's
+>   resolution in `bugs.md`. The numpad-jog half remains open per A7's
+>   note above, not descoped.
+
 ---
 
 ## §1. Decisions frozen by this spec (D5–D14)
