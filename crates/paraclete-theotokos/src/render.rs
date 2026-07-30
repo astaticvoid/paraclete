@@ -112,6 +112,11 @@ pub struct RenderData {
     /// active track — replaces `step_focuses` (the per-track vec was
     /// always read via the active track anyway).
     pub lock_target_step: Option<usize>,
+    /// TK2.2 C4 (E5): the param name the last encoder jog moved. Whether
+    /// `render_status_line` reads this as "wrote a lock" or "wrote the
+    /// live value" is decided from `lock_target_step` at render time, not
+    /// stored alongside this name — so the two stay in lockstep.
+    pub last_jog_param: Option<String>,
     pub step_locks: Vec<Vec<usize>>,
     /// TK2 C4 (D12): per-track mute state, shown on the track indicator
     /// (`render_track_indicator`) — the dedicated Mute screen this was
@@ -1040,6 +1045,19 @@ fn render_status_line(frame: &mut Frame, area: Rect, data: &RenderData) {
         spans.push(Span::raw(format!("L:s{} ", sf)));
     }
 
+    // TK2.2 C4 (E5): "a jog says what it is writing" — names the last
+    // jogged param and, read from the *current* lock target (not a
+    // frozen copy from jog time), whether it wrote a lock or the live
+    // value. This is why the locked-step naming clears the instant the
+    // target itself clears, in lockstep, rather than on the next jog.
+    if let Some(ref name) = data.last_jog_param {
+        let text = match data.lock_target_step {
+            Some(step) => format!("J:{name}→s{step} "),
+            None => format!("J:{name}→live "),
+        };
+        spans.push(Span::styled(text, Style::default().fg(Color::Magenta)));
+    }
+
     // TK2.1 C5a (D9): status line shows ENC when on.
     if data.enc {
         spans.push(Span::styled(
@@ -1168,6 +1186,7 @@ impl RenderData {
             debug_event: None,
             enc: false,
             lock_target_step: None,
+            last_jog_param: None,
             step_locks: vec![vec![]; track_count],
             mute_states: vec![false; track_count],
             slot_a_locked: false,
@@ -1239,6 +1258,7 @@ mod tests {
             debug_event: None,
             enc: false,
             lock_target_step: None,
+            last_jog_param: None,
             step_locks: vec![vec![]; 2],
             mute_states: vec![false; 2],
             slot_a_locked: false,
@@ -1322,6 +1342,7 @@ mod tests {
             debug_event: None,
             enc: false,
             lock_target_step: None,
+            last_jog_param: None,
             step_locks: vec![vec![]; 1],
             mute_states: vec![false; 1],
             slot_a_locked: false,
@@ -1704,6 +1725,96 @@ mod tests {
         assert!(
             text.contains("TRK"),
             "an armed TRK prefix must appear in the status line; got: {text}"
+        );
+    }
+
+    /// TK2.2 C4 (E5): with a lock target armed, the status line names
+    /// which step the last jog wrote — not just that some step is
+    /// locked, which parameter.
+    #[test]
+    fn jog_indicator_names_the_locked_step_when_target_armed() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.last_jog_param = Some("cutoff".to_string());
+        data.lock_target_step = Some(3);
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("J:cutoff→s3"),
+            "with a target armed the panel must name the locked step and \
+             param; got: {text}"
+        );
+    }
+
+    /// TK2.2 C4 (E5): with no lock target, the same jog reads as writing
+    /// the live value, not a step.
+    #[test]
+    fn jog_indicator_shows_live_when_no_target() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.last_jog_param = Some("cutoff".to_string());
+        data.lock_target_step = None;
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("J:cutoff→live"),
+            "with no target the panel must show the live parameter; \
+             got: {text}"
+        );
+        assert!(
+            !text.contains("→s"),
+            "with no target nothing must read as a step write; got: {text}"
+        );
+    }
+
+    /// TK2.2 C4 (E5 test): "the indicator clears with the target" — the
+    /// locked-step naming must track the CURRENT lock target, not a
+    /// snapshot from jog time, so it reverts to live-framing the instant
+    /// the target itself clears (e.g. on Esc), not on the next jog.
+    #[test]
+    fn jog_indicator_locked_naming_clears_with_the_target() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.last_jog_param = Some("cutoff".to_string());
+        data.lock_target_step = Some(3);
+        terminal.draw(|f| render(f, &data)).unwrap();
+        assert!(buffer_text(&terminal).contains("J:cutoff→s3"));
+
+        // The target clears (e.g. Esc) — no new jog has happened, but the
+        // step-naming must already be gone on this same render.
+        data.lock_target_step = None;
+        terminal.draw(|f| render(f, &data)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(
+            !text.contains("→s3"),
+            "the locked-step naming must clear the instant the target \
+             does, not linger until the next jog; got: {text}"
+        );
+        assert!(
+            text.contains("J:cutoff→live"),
+            "it must fall back to live-framing for the same last-jogged \
+             param, not vanish entirely; got: {text}"
+        );
+    }
+
+    /// TK2.2 C4 (E5): with no jog yet, nothing is shown — there is
+    /// nothing to name.
+    #[test]
+    fn jog_indicator_absent_before_any_jog() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let data = RenderData::for_test(Screen::Grid, 1);
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(
+            !text.contains("J:"),
+            "with no jog yet, no jog indicator must render; got: {text}"
         );
     }
 

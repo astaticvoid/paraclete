@@ -66,6 +66,15 @@ pub struct TheotokosApp {
     /// screen, YES). Oldest dropped once full.
     tap_times: Vec<Instant>,
     last_debug_event: Option<String>,
+    /// TK2.2 C4 (E5): the name of the param the last `Action::EncoderJog`
+    /// moved — persists across frames (not one-shot) until a later jog
+    /// replaces it, so the panel keeps naming a jog's destination rather
+    /// than flashing it for one frame. Whether that destination reads as
+    /// a locked step or the live value is decided at render time from the
+    /// *current* `lock_target_step` (see `render_status_line`), not
+    /// stored here — so the locked-step naming clears the instant the
+    /// target itself does, in lockstep, not on the next jog.
+    last_jog_param: Option<String>,
     /// TK2 C3/C8 (D11): flat user keymap. Loaded global→local at startup
     /// (`Keymap::load_startup`); `:bind`/`:unbind`/`:reset-bindings` edit
     /// it at runtime; `:save-bindings` is the only write-to-disk path.
@@ -147,6 +156,7 @@ impl TheotokosApp {
             encoder_trackers: std::array::from_fn(|_| JogTracker::new()),
             tap_times: Vec::new(),
             last_debug_event: None,
+            last_jog_param: None,
             keymap,
             held: HeldState::new(kitty),
         })
@@ -422,6 +432,7 @@ impl TheotokosApp {
             debug_event: self.last_debug_event.take(),
             enc: self.model.enc,
             lock_target_step: self.model.lock_step_for_active_track(),
+            last_jog_param: self.last_jog_param.clone(),
             step_locks,
             mute_states,
             slot_a_locked,
@@ -1044,7 +1055,13 @@ impl TheotokosApp {
                         None => {
                             self.model.cmdline_error = Some(format!("no encoder {}", col + 1));
                         }
-                        Some((node_id, param_id, _name, min, max, stepped, _resolved)) => {
+                        Some((node_id, param_id, name, min, max, stepped, _resolved)) => {
+                            // TK2.2 C4 (E5): record what this jog is about
+                            // to write, independent of which branch below
+                            // it lands in — the destination (locked step
+                            // vs. live) is read from current state at
+                            // render time, not stored here.
+                            self.last_jog_param = Some(name);
                             let track = self.model.active_track;
                             let tracker = &mut self.encoder_trackers[col];
                             let held = match tracker.repeat(now, tick_ms) {
@@ -1822,6 +1839,7 @@ mod tests {
             encoder_trackers: std::array::from_fn(|_| JogTracker::new()),
             tap_times: Vec::new(),
             last_debug_event: None,
+            last_jog_param: None,
             keymap: Keymap::default(),
             held: HeldState::new(false),
         }
@@ -2583,6 +2601,7 @@ mod tests {
             encoder_trackers: std::array::from_fn(|_| JogTracker::new()),
             tap_times: Vec::new(),
             last_debug_event: None,
+            last_jog_param: None,
             keymap: Keymap::default(),
             held: HeldState::new(false),
         };
@@ -2668,6 +2687,58 @@ mod tests {
         assert_eq!(app.pending[0].type_id, CMD_SET_LOCK_TARGET);
         assert_eq!(app.pending[1].type_id, CMD_SET_STEP_LOCK);
         assert_eq!(app.pending[1].arg0, 3, "step arg must be the focused step");
+    }
+
+    /// TK2.2 C4 (E5): a resolved jog records the name of the param it
+    /// moved, regardless of whether it landed as a lock or a live bump —
+    /// `render_status_line` decides that framing separately, from the
+    /// current lock target, not from anything stored here.
+    #[test]
+    fn jog_records_the_last_jogged_param_name() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        assert!(app.last_jog_param.is_none(), "sanity: no jog yet");
+
+        let expected_name = app.model.resolve_encoder_params()[0].2.clone();
+        app.handle_keys(&bus, &[func_trig('q')]);
+
+        assert_eq!(
+            app.last_jog_param.as_deref(),
+            Some(expected_name.as_str()),
+            "a resolved jog must record the name of the param it moved"
+        );
+    }
+
+    /// TK2.2 C4 (E5): clearing the lock target must NOT clear the
+    /// recorded jog — the panel keeps naming the last-jogged param and
+    /// only its lock/live framing changes (`render_status_line` derives
+    /// that from the current target each frame). This is the mechanism
+    /// behind "the indicator clears with the target": the *step naming*
+    /// clears because the target is gone, not because this field was
+    /// reset.
+    #[test]
+    fn jog_record_survives_lock_target_clearing() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.rec = RecMode::Grid;
+        app.model.lock_target = Some((0, 0));
+
+        app.handle_keys(&bus, &[func_trig('q')]);
+        assert!(
+            app.last_jog_param.is_some(),
+            "sanity: the jog must have recorded a param name"
+        );
+        let recorded = app.last_jog_param.clone();
+
+        app.handle_keys(&bus, &[KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)]);
+        assert_eq!(
+            app.model.lock_target, None,
+            "sanity: Esc must have cleared the target"
+        );
+        assert_eq!(
+            app.last_jog_param, recorded,
+            "clearing the lock target must not clear the recorded jog"
+        );
     }
 
     /// TK2.1 C5b (D15): named to match the phase spec's literal test list.
@@ -2999,6 +3070,7 @@ mod tests {
             encoder_trackers: std::array::from_fn(|_| JogTracker::new()),
             tap_times: Vec::new(),
             last_debug_event: None,
+            last_jog_param: None,
             keymap: Keymap::default(),
             held: HeldState::new(false),
         };
