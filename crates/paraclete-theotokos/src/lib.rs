@@ -450,7 +450,6 @@ impl TheotokosApp {
             }),
             help_visible: self.model.help_visible,
             encoder_cells,
-            encoder_cursor: self.model.encoder_cursor,
             encoder_flash,
             kitty: self.held.kitty,
             pattern_bank_size: PATTERN_BANK_SIZE,

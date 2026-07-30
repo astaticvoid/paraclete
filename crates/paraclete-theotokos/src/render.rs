@@ -123,8 +123,6 @@ pub struct RenderData {
     /// TK2 C5 (D8): the active page's params in `Rule` order, up to 8 —
     /// `None` past the page's param count.
     pub encoder_cells: Vec<Option<EncoderCell>>,
-    /// TK2 C5 (D8/D13): which encoder cell the arrow-key cursor highlights.
-    pub encoder_cursor: usize,
     pub encoder_flash: Vec<bool>,
     /// TK2 C6 (D12): whether kitty keyboard-enhancement is active — shown
     /// on the Settings screen.
@@ -731,10 +729,12 @@ fn render_perf_window(frame: &mut Frame, area: Rect, data: &RenderData) {
     }
 }
 
-/// TK2 C5 (D8): 8 encoder cells, 2×4, name + bar + value. The cursor
-/// (D13, arrow navigation — wiring deferred, see roadmap) highlights one
-/// cell; a param page with fewer than 8 params shows blank cells past its
-/// count rather than a malformed one.
+/// TK2 C5 (D8): 8 encoder cells, 2×4, name + bar + value. A param page
+/// with fewer than 8 params shows blank cells past its count rather than
+/// a malformed one. D13's arrow-cursor navigation (BUG-038) was formally
+/// descoped in TK2.1 C7 — D9's ENC mode gives every encoder a direct
+/// physical (key) address, so there is nothing left for a cursor to
+/// navigate between.
 fn render_encoder_bank(frame: &mut Frame, area: Rect, data: &RenderData) {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(area);
     for (row, row_area) in rows.iter().enumerate() {
@@ -747,7 +747,6 @@ fn render_encoder_bank(frame: &mut Frame, area: Rect, data: &RenderData) {
 }
 
 fn render_encoder_cell(frame: &mut Frame, area: Rect, data: &RenderData, idx: usize) {
-    let cursor = if data.encoder_cursor == idx { ">" } else { " " };
     let cell = data.encoder_cells.get(idx).and_then(|c| c.as_ref());
     let line = match cell {
         Some(c) => {
@@ -767,14 +766,11 @@ fn render_encoder_cell(frame: &mut Frame, area: Rect, data: &RenderData, idx: us
                 Color::White
             };
             Line::styled(
-                format!("{cursor}{} {} {:.2}", c.name, bar, c.value),
+                format!("{} {} {:.2}", c.name, bar, c.value),
                 Style::default().fg(color),
             )
         }
-        None => Line::styled(
-            format!("{cursor}--"),
-            Style::default().fg(Color::DarkGray),
-        ),
+        None => Line::styled("--", Style::default().fg(Color::DarkGray)),
     };
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -872,23 +868,32 @@ fn render_help(frame: &mut Frame, area: Rect, data: &RenderData) {
     for (key, desc) in &[
         ("q w e r t y u i", "Trig1-8 (top row)"),
         ("a s d f g h j k", "Trig9-16 (bottom row)"),
-        ("Tab (hold)", "TRK — + trig: select track"),
+        ("trig (REC off/Live)", "play + select that track"),
+        ("trig (REC Grid)", "write/clear a step"),
+        ("Tab (hold)", "TRK — + trig: select track silently"),
         ("p (hold)", "PTN — + trig: select pattern"),
-        ("z / x / c", "REC / PLAY / STOP (Space = PLAY)"),
-        ("FUNC (Shift)", "encoder plane + secondary chords"),
-        ("FUNC+trig", "encoder jog (top row up, bottom row down)"),
+        ("z", "REC — Off<->Grid toggle (kitty); no-kitty: Grid if stopped, Live if playing"),
+        ("z (hold)+x, kitty", "REC+PLAY — escalate to Live (record) + start transport"),
+        ("x / c", "PLAY / STOP (Space = PLAY)"),
+        ("FUNC (Shift)", "coarse jog (ENC on) / secondary chords"),
+        ("n", "ENC — toggle encoder-jog mode (bare trig jogs, any screen)"),
+        ("FUNC+trig", "encoder jog, ENC off (top row up, bottom row down)"),
+        ("m(hold)+trig, Grid", "LOCK — arm the trig's step as the p-lock target"),
+        ("hold trig, kitty", "Grid: momentary p-lock target for the hold"),
         ("1-6", "page select (TRIG SRC FLTR AMP FX MOD)"),
         ("7 / 8 / 9 / 0", "KIT / SETTINGS / SAMPLING / TEMPO"),
-        ("Enter / Esc", "YES / NO"),
+        ("Enter / Esc", "YES / NO (Esc also clears a set p-lock target)"),
         ("arrows", "navigation"),
         ("- / =", "step-page window prev / next"),
         ("o", "SONG (opens Chain)"),
-        ("n", "ENC — toggle encoder-jog mode"),
-        ("m", "LOCK — arm the next trig as the p-lock target"),
         ("v", "KEYBD (reserved)"),
     ] {
+        // Widened to 20 (from 16): "trig (REC off/Live)" and a couple of
+        // other TK2.1 entries run longer than the old single-key/short-chord
+        // labels this used to size for (post-C7 hostile review finding —
+        // column misalignment from the longer new labels).
         lines.push(Line::styled(
-            format!("  {:16}  {}", key, desc),
+            format!("  {:20}  {}", key, desc),
             Style::default().fg(Color::White),
         ));
     }
@@ -1147,7 +1152,6 @@ impl RenderData {
             sub_page: 0,
             sub_page_count: 1,
             encoder_cells: vec![None; 8],
-            encoder_cursor: 0,
             encoder_flash: vec![false; 8],
             kitty: false,
             pattern_bank_size: 8,
@@ -1219,7 +1223,6 @@ mod tests {
             sub_page: 0,
             sub_page_count: 1,
             encoder_cells: vec![None; 8],
-            encoder_cursor: 0,
             encoder_flash: vec![false; 8],
             kitty: false,
             pattern_bank_size: 8,
@@ -1303,7 +1306,6 @@ mod tests {
             sub_page: 0,
             sub_page_count: 1,
             encoder_cells: vec![None; 8],
-            encoder_cursor: 0,
             encoder_flash: vec![false; 8],
             kitty: false,
             pattern_bank_size: 8,

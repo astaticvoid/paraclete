@@ -93,12 +93,6 @@ pub struct Model {
     pub slot_b: Option<SlotBinding>,
     /// TK2 C5 (D13): numpad slot C — extends the TK1 2-slot jog to 3.
     pub slot_c: Option<SlotBinding>,
-    /// TK2 C5 (D8/D13): which of the 8 encoder cells the Param screen's
-    /// arrow-key cursor highlights (row-major, 2×4). Field exists and
-    /// renders (a real highlight, not a stub), but arrow-key navigation
-    /// to MOVE it is not yet wired — it always shows cell 0 until a later
-    /// commit adds the Up/Down/Left/Right dispatch (D13).
-    pub encoder_cursor: usize,
     /// TK2 C5 (§0 A11): which 8-wide slot window of the active page the
     /// encoder bank shows. Pages with more than 8 params split into
     /// sub-pages; the same Pg key pressed again while already on that
@@ -247,7 +241,6 @@ impl Model {
             slot_a: None,
             slot_b: None,
             slot_c: None,
-            encoder_cursor: 0,
             sub_page: 0,
             chain_cursor: 0,
             lock_target: None,
