@@ -1,7 +1,9 @@
 mod surface;
 mod terminal;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use self::terminal::{key_to_target, KeyTarget, CONTROL_BASE, SCENE_BASE};
@@ -49,7 +51,14 @@ impl EmuMode {
 /// Implements `Node` (emitting `SurfaceEvent`s into the graph) and
 /// `Surface` (declaring its surface, receiving LED feedback at P2).
 ///
-/// Terminal input is polled non-blocking in `process()` on the audio thread.
+/// Terminal input (INFRA-008: crossterm I/O must never run on the audio
+/// thread) is read on a dedicated background thread spawned in
+/// `activate()`, which pushes raw `crossterm::event::Event`s into
+/// `input_queue`. `process()` only ever does a non-blocking `try_lock` +
+/// drain — mirrors `LaunchpadNode`'s `incoming` pattern for MIDI input
+/// (a callback thread owned by the MIDI library feeds a `Mutex<VecDeque>`;
+/// here the thread is our own, since crossterm has no callback API, but
+/// the audio-thread-side contract is identical).
 /// Raw mode is enabled in `activate()` (main thread) and restored in `deactivate()`.
 /// Rendering is debounced to at most once per 16 ms.
 ///
@@ -68,10 +77,16 @@ pub struct LaunchpadEmulator {
     held: HashMap<KeyCode, u32>,
     /// Currently pressed control ids — used for terminal rendering.
     pressed: HashSet<u32>,
-    /// Events buffered between poll_keyboard() and process() drain.
+    /// Events buffered between event handling and process() drain.
     pending: Vec<SurfaceEvent>,
     last_render: Option<Instant>,
     raw_mode_active: bool,
+    /// Raw terminal events read by the background poll thread; drained
+    /// non-blockingly in `process()` (INFRA-008).
+    input_queue: Arc<Mutex<VecDeque<crossterm::event::Event>>>,
+    /// Signals the background poll thread to exit. Cleared in
+    /// `deactivate()`; the thread checks it once per poll timeout.
+    running: Arc<AtomicBool>,
 }
 
 impl LaunchpadEmulator {
@@ -91,6 +106,8 @@ impl LaunchpadEmulator {
             pending: Vec::new(),
             last_render: None,
             raw_mode_active: false,
+            input_queue: Arc::new(Mutex::new(VecDeque::new())),
+            running: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -139,65 +156,113 @@ impl LaunchpadEmulator {
         }
     }
 
-    /// Non-blocking poll of crossterm keyboard events.
-    fn poll_keyboard(&mut self) {
-        while let Ok(true) = crossterm::event::poll(Duration::ZERO) {
-            let Ok(event) = crossterm::event::read() else {
-                break;
-            };
-            match event {
-                // Esc or Ctrl-C: restore terminal then exit.
-                // In raw mode Ctrl-C is a raw key event, not SIGINT.
-                crossterm::event::Event::Key(KeyEvent {
-                    code: KeyCode::Esc,
-                    kind: KeyEventKind::Press,
-                    ..
-                })
-                | crossterm::event::Event::Key(KeyEvent {
-                    code: KeyCode::Char('c'),
-                    modifiers: KeyModifiers::CONTROL,
-                    kind: KeyEventKind::Press,
-                    ..
-                }) => {
-                    self.deactivate();
-                    std::process::exit(0);
-                }
+    /// Handle one terminal event. Pure application logic — no I/O — so it
+    /// stays safe to run on the audio thread; only the reading of events
+    /// (`spawn_poll_thread`) had to move off it (INFRA-008).
+    fn handle_event(&mut self, event: crossterm::event::Event) {
+        match event {
+            // Esc or Ctrl-C: restore terminal then exit.
+            // In raw mode Ctrl-C is a raw key event, not SIGINT.
+            crossterm::event::Event::Key(KeyEvent {
+                code: KeyCode::Esc,
+                kind: KeyEventKind::Press,
+                ..
+            })
+            | crossterm::event::Event::Key(KeyEvent {
+                code: KeyCode::Char('c'),
+                modifiers: KeyModifiers::CONTROL,
+                kind: KeyEventKind::Press,
+                ..
+            }) => {
+                self.deactivate();
+                std::process::exit(0);
+            }
 
-                // Tab cycles the input mode.
-                crossterm::event::Event::Key(KeyEvent {
-                    code: KeyCode::Tab,
-                    kind: KeyEventKind::Press,
-                    ..
-                }) => {
-                    self.mode = self.mode.next();
-                }
+            // Tab cycles the input mode.
+            crossterm::event::Event::Key(KeyEvent {
+                code: KeyCode::Tab,
+                kind: KeyEventKind::Press,
+                ..
+            }) => {
+                self.mode = self.mode.next();
+            }
 
-                crossterm::event::Event::Key(KeyEvent {
-                    code,
-                    kind: KeyEventKind::Press,
-                    ..
-                }) => {
-                    // Grid is the only active mode at Commit 1.
-                    if self.mode == EmuMode::Grid {
-                        if let Some(target) = key_to_target(code) {
-                            self.apply_press(code, target);
-                        }
+            crossterm::event::Event::Key(KeyEvent {
+                code,
+                kind: KeyEventKind::Press,
+                ..
+            }) => {
+                // Grid is the only active mode at Commit 1.
+                if self.mode == EmuMode::Grid {
+                    if let Some(target) = key_to_target(code) {
+                        self.apply_press(code, target);
                     }
                 }
+            }
 
-                crossterm::event::Event::Key(KeyEvent {
-                    code,
-                    kind: KeyEventKind::Release,
-                    ..
-                }) => {
-                    // Release regardless of current mode — a key held from Grid
-                    // mode must release even if the mode changed meanwhile.
-                    self.apply_release(code);
-                }
+            crossterm::event::Event::Key(KeyEvent {
+                code,
+                kind: KeyEventKind::Release,
+                ..
+            }) => {
+                // Release regardless of current mode — a key held from Grid
+                // mode must release even if the mode changed meanwhile.
+                self.apply_release(code);
+            }
 
-                _ => {}
+            _ => {}
+        }
+    }
+
+    /// Drain events the background poll thread has queued so far — a
+    /// non-blocking `try_lock`, never a blocking `lock` (INFRA-008: this
+    /// runs on the audio thread from `process()`, which must never block).
+    /// A held lock (the poll thread mid-push) just means this cycle sees
+    /// nothing new; the next cycle catches up.
+    fn drain_input_queue(&mut self) {
+        // Hard constraint 1 (AGENTS.md): process() must never allocate.
+        // Popping one event per lock acquisition — rather than collecting
+        // into an intermediate Vec — avoids that: `handle_event` needs
+        // `&mut self`, which conflicts with holding the `input_queue`
+        // guard for the whole drain, so each iteration re-locks, takes
+        // one event, and drops the guard before calling it. `pop_front`
+        // itself never allocates.
+        loop {
+            let event = match self.input_queue.try_lock() {
+                Ok(mut q) => q.pop_front(),
+                Err(_) => return,
+            };
+            match event {
+                Some(event) => self.handle_event(event),
+                None => return,
             }
         }
+    }
+
+    /// Spawn the background thread that owns all crossterm I/O
+    /// (INFRA-008). Blocking `poll`/`read` are fine here — this is not
+    /// the audio thread. Exits once `running` is cleared (`deactivate()`);
+    /// bounded by one `poll` timeout, so shutdown is prompt but not
+    /// instantaneous.
+    fn spawn_poll_thread(&mut self) {
+        self.running.store(true, Ordering::SeqCst);
+        let running = Arc::clone(&self.running);
+        let queue = Arc::clone(&self.input_queue);
+        std::thread::spawn(move || {
+            while running.load(Ordering::Relaxed) {
+                match crossterm::event::poll(Duration::from_millis(30)) {
+                    Ok(true) => {
+                        if let Ok(event) = crossterm::event::read() {
+                            if let Ok(mut q) = queue.lock() {
+                                q.push_back(event);
+                            }
+                        }
+                    }
+                    Ok(false) => {}
+                    Err(_) => break,
+                }
+            }
+        });
     }
 
     fn maybe_render(&mut self) {
@@ -239,10 +304,16 @@ impl Node for LaunchpadEmulator {
                 crossterm::cursor::MoveTo(0, 0),
                 crossterm::cursor::Hide,
             );
+            // INFRA-008: raw mode must be enabled before the poll thread
+            // starts reading, so start it last.
+            self.spawn_poll_thread();
         }
     }
 
     fn deactivate(&mut self) {
+        // INFRA-008: stop the poll thread first — it reads via crossterm,
+        // which needs the terminal still in raw mode to decode correctly.
+        self.running.store(false, Ordering::SeqCst);
         if self.raw_mode_active {
             let _ = crossterm::execute!(
                 std::io::stdout(),
@@ -256,7 +327,7 @@ impl Node for LaunchpadEmulator {
     }
 
     fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
-        self.poll_keyboard();
+        self.drain_input_queue();
         self.maybe_render();
 
         for event in self.pending.drain(..) {
@@ -281,6 +352,48 @@ impl Surface for LaunchpadEmulator {
 mod tests {
     use super::*;
     use paraclete_node_api::Control;
+
+    /// INFRA-008: `process()` no longer reads crossterm directly — it
+    /// drains `input_queue`, which the background poll thread fills. This
+    /// pins the queue → `handle_event` plumbing without spawning a real
+    /// thread or touching the terminal: push a raw event exactly as the
+    /// poll thread would, then drain.
+    #[test]
+    fn drain_input_queue_applies_queued_key_events() {
+        let mut emu = LaunchpadEmulator::new();
+        let press =
+            crossterm::event::Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        emu.input_queue.lock().unwrap().push_back(press);
+
+        emu.drain_input_queue();
+
+        assert!(
+            matches!(
+                emu.pending.as_slice(),
+                [SurfaceEvent::PadPressed { id: 0, .. }]
+            ),
+            "queued Press('q') must resolve to the same PadPressed(0) \
+             apply_press would produce directly; got: {:?}",
+            emu.pending
+        );
+    }
+
+    /// A queue drain must not leave anything behind for the next cycle to
+    /// re-apply — otherwise a step would toggle twice.
+    #[test]
+    fn drain_input_queue_empties_the_queue() {
+        let mut emu = LaunchpadEmulator::new();
+        let press =
+            crossterm::event::Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        emu.input_queue.lock().unwrap().push_back(press);
+
+        emu.drain_input_queue();
+
+        assert!(
+            emu.input_queue.lock().unwrap().is_empty(),
+            "drain must consume every queued event, not leave a residue"
+        );
+    }
 
     #[test]
     fn surface_has_64_grid_8_scene_8_control() {
