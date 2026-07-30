@@ -15,6 +15,7 @@ use paraclete_app::builder::{build_from_instrument, load_instrument_definition};
 use paraclete_node_api::capability::ParamDescriptor;
 use paraclete_node_api::state_bus::StateBusHandle;
 use paraclete_node_api::{NodeCommand, StateBusValue, CMD_BUMP_PARAM, CMD_SET_PARAM, CMD_TRIGGER};
+use paraclete_nodes::internal_clock::CMD_CLOCK_START;
 use paraclete_nodes::sequencer::Sequencer;
 use paraclete_runtime::NodeConfigurator;
 
@@ -330,12 +331,26 @@ fn build_context(
 
     let mut conf = NodeConfigurator::new(sample_rate, block_size);
     let libraries = HashMap::new();
-    let _ids = build_from_instrument(def, &mut conf, &libraries)
+    let ids = build_from_instrument(def, &mut conf, &libraries)
         .map_err(|e| format!("failed to build graph: {}", e))?;
 
     let bus_handle = conf.state_bus_handle();
     let executor = Arc::new(Mutex::new(conf.build_executor()));
     executor.lock().unwrap().set_debug_log_enabled(true);
+
+    // ADR-046 T3: InternalClock now boots `playing: false` — every surface
+    // (including this headless harness) must start the transport itself.
+    // Scenarios were authored against the old auto-start default; sending
+    // this once here, rather than requiring every scenario YAML to carry
+    // an explicit start action, keeps the whole existing corpus and its
+    // ADR-035 baselines meaningful unchanged.
+    conf.send_command(NodeCommand {
+        target_id: ids.clock,
+        type_id: CMD_CLOCK_START,
+        arg0: 0,
+        arg1: 0.0,
+    })
+    .map_err(|_| "command ring buffer full sending initial clock start".to_string())?;
     let capture = Arc::new(CaptureRing::new(CAPTURE_RING_CAPACITY));
     let running = Arc::new(AtomicBool::new(true));
 
@@ -1202,10 +1217,20 @@ fn render_deterministic(scenario: &TestScenario) -> Result<Vec<f32>, String> {
 
     let mut conf = NodeConfigurator::new(sample_rate, block_size);
     let libraries = HashMap::new();
-    build_from_instrument(&def, &mut conf, &libraries)
+    let ids = build_from_instrument(&def, &mut conf, &libraries)
         .map_err(|e| format!("failed to build graph: {}", e))?;
     let mut executor = conf.build_executor();
     executor.set_debug_log_enabled(true);
+
+    // ADR-046 T3: see the matching comment in `build_context` — this is the
+    // separate deterministic-render path baseline mode uses.
+    conf.send_command(NodeCommand {
+        target_id: ids.clock,
+        type_id: CMD_CLOCK_START,
+        arg0: 0,
+        arg1: 0.0,
+    })
+    .map_err(|_| "command ring buffer full sending initial clock start".to_string())?;
 
     let mut timeline: Vec<(usize, ResolvedActionKind)> = scenario
         .timeline

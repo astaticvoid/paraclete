@@ -21,6 +21,13 @@
 //   SEQ_EDIT press = return to trigger mode.
 
 fn on_load() {
+    // ADR-046 T3: InternalClock now boots `playing: false` — every surface
+    // must start the transport itself (Theotokos does the same in its own
+    // `new()`). Without this, the emulator/Launchpad fallback path is
+    // silently dead: trigger mode still fires CMD_TRIGGER directly, but
+    // sequence mode's steps never advance.
+    send_cmd(CLOCK_ID, 16, 0, 0.0); // CMD_CLOCK_START
+
     state_write("/script/lp/mode",     "trigger");
     // Numeric twin of /script/lp/mode (0 = trigger, 1 = sequence): the
     // Antiphon state mirror carries numbers only, and Theoria clients need
