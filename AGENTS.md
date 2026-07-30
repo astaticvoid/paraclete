@@ -8,11 +8,13 @@
 
 **Implementing? The active phase is named in `design/handoff.md`'s
 "▶ START HERE" block at the top of that file — read it before touching
-code.** It names the phase spec, its design authority, the per-commit
-process gate, and the places in the current phase where making the tests
-pass is the *wrong* instinct. As of 2026-07-29 that phase is **TK2.2**
-(`design/phases/tk2.2-theotokos.md`, C0–C5), the fix pass after Theotokos
-usability session #3.
+code.** It names the phase spec, where to start in it, its design
+authority, the per-commit process gate, and the places in the current
+phase where making the tests pass is the *wrong* instinct.
+
+The phase name lives **only** in `handoff.md` — deliberately not repeated
+here, so a phase transition updates one file and cannot go half-stale (see
+"Phase transitions" under Commit workflow).
 
 `CLAUDE.md` is a symlink to this file, so Claude Code loads it
 automatically; keep the content here, not there.
@@ -367,11 +369,42 @@ suggestion. Keep-current set (with what changes in each):
 | `design/adr/*` | a decision is **implemented** — update its `Status:` line and add an implementation note. The decision/context/alternatives body stays append-only (see below) |
 | phase reports (`design/phases/*`) | a phase commit lands (append-only) |
 | `AGENTS.md` | a workflow, command, tool mode, node ID, or convention changes (e.g. a new test-driver mode) |
-| `design/handoff.md` | task routing or a model-tier guardrail changes |
+| `design/handoff.md` | task routing or a model-tier guardrail changes — **and whenever the active phase changes** (see "Phase transitions" below). Its "▶ START HERE" block is the single place a cold-start agent learns what to work on; if it names a finished phase, the next session starts on the wrong work |
 
 If a change touches code *and* the tool/tracker/roadmap that describe it, all of
 those are in scope in the same session — a code commit that leaves the tracker
 stale is an incomplete session.
+
+### Phase transitions (the pointer that goes stale on its own)
+
+Everything above fires when *work* changes. This step fires when **which work
+is active** changes, which is a different event and is the one that gets
+missed — nothing about finishing a phase forces the "what next" pointer to
+move, so it silently keeps naming the finished phase.
+
+**Whenever a phase becomes code-complete, is closed, is superseded, or a new
+phase spec lands, update `design/handoff.md`'s "▶ START HERE" block in the
+same session** — before the session closes, not "next time". It must name:
+
+1. the active phase spec and where to start in it (which commit),
+2. its design authority (ADRs, and any amended by a session),
+3. anything deliberately parked, so it does not read as an oversight,
+4. the places in *this* phase where making the tests pass is the wrong
+   instinct — tests that encode the bug being fixed, invariants that must
+   survive.
+
+Keep the phase *name* in `handoff.md` only. `AGENTS.md` says where to look,
+never what the phase is — otherwise the same staleness recurs in two files
+instead of one.
+
+**Precedent:** this was found the hard way on 2026-07-29. TK2.1 went
+code-complete, session #3 closed its report, TK2.2 was specced — and
+`handoff.md` still read "TK2.1 is the active implementation phase. Start at
+`design/phases/tk2.1-theotokos.md` C0". A cold-start agent following the
+documented reading order would have begun re-implementing a finished phase.
+The same audit found that project instructions were not reaching Claude Code
+at all, because the repo had only `AGENTS.md` and Claude Code loads
+`CLAUDE.md` (now a symlink to this file).
 
 ## Design documents
 
