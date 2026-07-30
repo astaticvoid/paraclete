@@ -28,6 +28,16 @@ fn chip_key_display(label: &str) -> String {
     }
 }
 
+/// TK2.2 C3 (E1): `[key]` for a button with an on-screen referent — empty
+/// if the button has no resolvable key right now (unbound/shadowed), same
+/// omission rule the legend already applies to its own `Dynamic` chips.
+fn inline_chip(data: &RenderData, button: PanelButton) -> String {
+    data.legend_key_labels
+        .get(&button)
+        .map(|k| format!("[{}]", chip_key_display(k)))
+        .unwrap_or_default()
+}
+
 /// TK2 C5 (D8): one of the 8 encoder bank cells on the Param screen.
 #[derive(Clone)]
 pub struct EncoderCell {
@@ -262,16 +272,19 @@ enum LegendChip {
     Literal(&'static str, &'static str),
 }
 
-/// TK2.1 C2 (D4)/C5 (D9): the declared per-screen priority list —
-/// truncates from the tail on overflow (`pack_two_lines`), never wraps/
-/// scrolls/moves. TK2.1 C5 fulfills the `[n] ENC`/`[m] LOCK` entries C2
-/// deferred: `enc` true overrides the per-screen list entirely ("any
-/// screen, ENC on" — reaching a knob no longer depends on which screen is
-/// open, so neither does the legend); the Param row otherwise gets its
-/// own `[n] ENC`/`[m] LOCK` pair.
+/// TK2.2 C3 (E1): the declared per-screen priority list — truncates from
+/// the tail on overflow (`pack_two_lines`), never wraps/scrolls/moves
+/// (unchanged from TK2.1 C2/C5). Membership is E1's "residual legend":
+/// only affordances with **no on-screen referent** live here. `Trk`/`Ptn`/
+/// `Rec`/`Play`/`Stop`/`Tempo` are rendered inline on the panel element
+/// they act on instead (`render_transport`/`render_track_indicator`) and
+/// so never appear in any list below, including the `enc` override.
+/// `Enc`/`Lock` have no referent anywhere on the panel and so appear on
+/// **every** screen's own list, Grid included (this closes F8: `[m]` LOCK
+/// is a `Grid`-only gesture that used to be advertised only off `Grid`).
 fn legend_chips_for_screen(screen: Screen, enc: bool) -> Vec<LegendChip> {
     use LegendChip::{Dynamic, Literal};
-    use PanelButton::{Enc, Lock, No, Play, Ptn, Rec, Settings, Song, Stop, Tempo, Trk, Yes};
+    use PanelButton::{Enc, Lock, No, Settings, Song, Yes};
 
     if enc {
         return vec![
@@ -289,15 +302,11 @@ fn legend_chips_for_screen(screen: Screen, enc: bool) -> Vec<LegendChip> {
 
     match screen {
         Screen::Grid => vec![
-            Dynamic(Trk, "TRK"),
-            Dynamic(Ptn, "PTN"),
-            Dynamic(Rec, "REC"),
-            Dynamic(Play, "PLAY"),
-            Dynamic(Stop, "STOP"),
+            Dynamic(Enc, "ENC"),
+            Dynamic(Lock, "LOCK"),
             Literal("1-6", "PAGE"),
             Literal("-/=", "WIN"),
             Dynamic(Song, "SONG"),
-            Dynamic(Tempo, "TEMPO"),
             Dynamic(Settings, "SET"),
             Dynamic(Yes, "YES"),
             Dynamic(No, "NO"),
@@ -310,9 +319,6 @@ fn legend_chips_for_screen(screen: Screen, enc: bool) -> Vec<LegendChip> {
             Dynamic(Lock, "LOCK"),
             Literal("1-6", "PAGE"),
             Dynamic(No, "BACK"),
-            Dynamic(Trk, "TRK"),
-            Dynamic(Rec, "REC"),
-            Dynamic(Play, "PLAY"),
             Literal(":", "CMD"),
             Literal("?", "HELP"),
             Literal("^C", "QUIT"),
@@ -441,7 +447,17 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
     let page = data.page_window + 1;
     let page_count = data.step_state.page_count.max(1);
 
-    let prefix = format!(" {:.1} BPM  {}  ", data.bpm, play_sym);
+    // TK2.2 C3 (E1): [z]/[x]/[0] move onto the glyph/readout they act on
+    // instead of the legend strip — the glyph/readout IS the referent.
+    // [c] STOP is deliberately absent here until ADR-046 lands (C5).
+    let tempo_chip = inline_chip(data, PanelButton::Tempo);
+    let play_chip = inline_chip(data, PanelButton::Play);
+    let rec_chip = inline_chip(data, PanelButton::Rec);
+
+    let prefix = format!(
+        " {tempo_chip}{:.1} BPM  {play_chip}{}  ",
+        data.bpm, play_sym
+    );
     let suffix = format!(
         "  {}  P{}/{}  Step:{}  Len:{}",
         track_name,
@@ -453,6 +469,7 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
 
     let line = Line::from(vec![
         Span::styled(prefix, Style::default().fg(Color::White)),
+        Span::styled(rec_chip, Style::default().fg(Color::White)),
         Span::styled(rec_sym, Style::default().fg(rec_color)),
         Span::styled(suffix, Style::default().fg(Color::White)),
     ]);
@@ -468,7 +485,13 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
 /// `‹`/`›` markers rather than truncating silently.
 fn render_track_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
     let narrow = area.width < 60;
-    let ptn_text = format!("PTN P{}", data.active_pattern + 1);
+    // TK2.2 C3 (E1): [Tab] TRK moves onto the track line's own head — the
+    // track line IS the track selector — and [p] PTN onto the pattern
+    // field it names. Both are unconditional: TRK-hold and PTN-hold
+    // select silently in every mode, not just pad modes.
+    let trk_chip = inline_chip(data, PanelButton::Trk);
+    let ptn_chip = inline_chip(data, PanelButton::Ptn);
+    let ptn_text = format!("{ptn_chip}PTN P{}", data.active_pattern + 1);
     let entries: Vec<(String, Color)> = data
         .display_names
         .iter()
@@ -483,15 +506,20 @@ fn render_track_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
                 Color::Gray
             };
             // D3: the track-line chip appears only in pad modes (Off/Live)
-            // — a bare trig doesn't select a track in Grid mode.
+            // — a bare trig doesn't select a track in Grid mode. TK2.2 C3
+            // (E2): a hidden chip still reserves its width — the same
+            // label the pad mode would render, blanked — so no column
+            // shifts when RecMode changes (closes F3).
+            let chip_would_be = data
+                .track_key_labels
+                .get(i)
+                .and_then(|o| o.as_deref())
+                .map(|k| format!("[{}]", chip_key_display(k)))
+                .unwrap_or_default();
             let chip = if matches!(data.rec, RecMode::Off | RecMode::Live) {
-                data.track_key_labels
-                    .get(i)
-                    .and_then(|o| o.as_deref())
-                    .map(|k| format!("[{}]", chip_key_display(k)))
-                    .unwrap_or_default()
+                chip_would_be
             } else {
-                String::new()
+                " ".repeat(chip_would_be.chars().count())
             };
             let text = if narrow {
                 format!("{marker}{chip}{}{mute_glyph}  ", i + 1)
@@ -502,7 +530,11 @@ fn render_track_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
         })
         .collect();
 
-    let mut spans: Vec<Span> = Vec::with_capacity(entries.len() * 2 + 2);
+    let mut spans: Vec<Span> = Vec::with_capacity(entries.len() * 2 + 3);
+    spans.push(Span::styled(
+        trk_chip.clone(),
+        Style::default().fg(Color::White),
+    ));
     if entries.is_empty() {
         spans.push(Span::styled(ptn_text, Style::default().fg(Color::DarkGray)));
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -510,7 +542,9 @@ fn render_track_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
     }
 
     let entries_width: usize = entries.iter().map(|(t, _)| t.chars().count()).sum();
-    let budget = (area.width as usize).saturating_sub(ptn_text.chars().count());
+    let budget = (area.width as usize)
+        .saturating_sub(trk_chip.chars().count())
+        .saturating_sub(ptn_text.chars().count());
     let active = data.active_track.min(entries.len() - 1);
 
     if entries_width <= budget {
@@ -1421,6 +1455,40 @@ mod tests {
         );
     }
 
+    /// TK2.2 C3 audit (spec: "verify, don't assume" `render_trig_row` is
+    /// stable against the E2 reflow class): the trig strip's `[k]g` cell
+    /// format is fixed at 5 columns (tk2.1-theotokos.md §3) and the chip
+    /// is shown — bright or dim — in every `RecMode`, never hidden, so
+    /// unlike the track line there is no mode-dependent column shift to
+    /// fix here. This pins that finding as a regression test.
+    #[test]
+    fn trig_strip_cells_do_not_shift_between_off_and_grid() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+
+        data.rec = RecMode::Off;
+        terminal.draw(|f| render(f, &data)).unwrap();
+        let indicator_row = find_row(&terminal, 24, 80, "PTN P");
+        let off_row1 = buffer_row_text(&terminal, indicator_row + 1, 80);
+
+        data.rec = RecMode::Grid;
+        terminal.draw(|f| render(f, &data)).unwrap();
+        let grid_row1 = buffer_row_text(&terminal, indicator_row + 1, 80);
+
+        let off_col = off_row1
+            .find("[q]")
+            .expect("Trig1's cell must render in Off");
+        let grid_col = grid_row1
+            .find("[q]")
+            .expect("Trig1's cell must render in Grid");
+        assert_eq!(
+            off_col, grid_col,
+            "the trig strip's cells must not shift between Off and Grid; \
+             Off: {off_row1:?}, Grid: {grid_row1:?}"
+        );
+    }
+
     /// TK2.1 C0 (D2): the track line lists every track with its display
     /// name and a mute marker for muted tracks.
     #[test]
@@ -1697,6 +1765,82 @@ mod tests {
         );
     }
 
+    /// TK2.2 C3 (E2 regression, closes F3): a hidden chip still reserves
+    /// its width — the track line's columns must be identical whether the
+    /// per-track chip renders (Off) or is blanked (Grid).
+    #[test]
+    fn track_line_columns_are_identical_in_off_and_grid() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+
+        data.rec = RecMode::Off;
+        terminal.draw(|f| render(f, &data)).unwrap();
+        let row = find_row(&terminal, 24, 80, "PTN P");
+        let off_line = buffer_row_text(&terminal, row, 80);
+
+        data.rec = RecMode::Grid;
+        terminal.draw(|f| render(f, &data)).unwrap();
+        let grid_line = buffer_row_text(&terminal, row, 80);
+
+        let off_name_col = off_line.find(" T1").expect("track name must render in Off");
+        let grid_name_col = grid_line
+            .find(" T1")
+            .expect("track name must render in Grid");
+        assert_eq!(
+            off_name_col, grid_name_col,
+            "the track name must land in the same column in Off and Grid; \
+             Off: {off_line:?}, Grid: {grid_line:?}"
+        );
+
+        let off_ptn_col = off_line
+            .find("PTN P")
+            .expect("PTN field must render in Off");
+        let grid_ptn_col = grid_line
+            .find("PTN P")
+            .expect("PTN field must render in Grid");
+        assert_eq!(
+            off_ptn_col, grid_ptn_col,
+            "the pattern field must land in the same column in Off and \
+             Grid; Off: {off_line:?}, Grid: {grid_line:?}"
+        );
+    }
+
+    /// TK2.2 C3 (E2 caution): `chip_key_display` can yield a multi-char
+    /// label under ADR-037 remapping (e.g. "Tab") — the reserved width
+    /// when the chip is hidden must be computed from that same label, not
+    /// a hardcoded single-character assumption.
+    #[test]
+    fn remapped_multichar_track_key_does_not_reflow() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.track_key_labels = vec![Some("tab".to_string())];
+
+        data.rec = RecMode::Off;
+        terminal.draw(|f| render(f, &data)).unwrap();
+        let row = find_row(&terminal, 24, 80, "PTN P");
+        let off_line = buffer_row_text(&terminal, row, 80);
+        assert!(
+            off_line.contains("[Tab]"),
+            "sanity: the remapped chip must title-case in Off; got: {off_line:?}"
+        );
+
+        data.rec = RecMode::Grid;
+        terminal.draw(|f| render(f, &data)).unwrap();
+        let grid_line = buffer_row_text(&terminal, row, 80);
+
+        let off_col = off_line.find(" T1").expect("track name must render in Off");
+        let grid_col = grid_line
+            .find(" T1")
+            .expect("track name must render in Grid");
+        assert_eq!(
+            off_col, grid_col,
+            "a multi-char remapped chip must reserve the same width when \
+             hidden; Off: {off_line:?}, Grid: {grid_line:?}"
+        );
+    }
+
     /// D3 "no chip without an action": with only one discovered track, no
     /// entry (and so no chip) exists for the keys addressing tracks 2-16.
     #[test]
@@ -1724,7 +1868,17 @@ mod tests {
         terminal.draw(|f| render(f, &data)).unwrap();
 
         let text = buffer_text(&terminal);
-        for expected in ["[Tab] TRK", "[p] PTN", "[z] REC", "[x] PLAY"] {
+        // TK2.2 C3 (E1): Trk/Ptn/Rec/Play moved inline onto the panel
+        // elements they act on and left the legend — only affordances
+        // with no on-screen referent remain here.
+        for expected in [
+            "[n] ENC",
+            "[m] LOCK",
+            "[o] SONG",
+            "[8] SET",
+            "[Enter] YES",
+            "[Esc] NO",
+        ] {
             assert!(
                 text.contains(expected),
                 "legend must render {expected:?}; got: {text}"
@@ -1772,7 +1926,7 @@ mod tests {
 
         let text = buffer_text(&terminal);
         assert!(
-            text.contains("[Tab] TRK"),
+            text.contains("[n] ENC"),
             "the highest-priority chip must always survive; got: {text}"
         );
         assert!(
@@ -1808,6 +1962,32 @@ mod tests {
         );
     }
 
+    /// TK2.2 C3 (E1 regression): z/x/p/Tab/0 all moved onto panel elements
+    /// (transport/track line) — they legitimately appear elsewhere on
+    /// screen now, so this isolates the legend's own two rows rather than
+    /// searching the whole buffer.
+    #[test]
+    fn legend_contains_no_inlined_chips() {
+        let backend = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let data = RenderData::for_test(Screen::Grid, 1);
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let legend_row0 = find_row(&terminal, 24, 100, "[n] ENC");
+        let legend_text = format!(
+            "{}{}",
+            buffer_row_text(&terminal, legend_row0, 100),
+            buffer_row_text(&terminal, legend_row0 + 1, 100),
+        );
+        for absent in ["[z]", "[x]", "[p]", "[Tab]", "[0]"] {
+            assert!(
+                !legend_text.contains(absent),
+                "the legend must not advertise {absent:?} — it moved \
+                 inline; got: {legend_text:?}"
+            );
+        }
+    }
+
     /// D3: chip casing is display-only — multi-character key names
     /// title-case (`[Tab]`, not `[tab]`), single characters stay as typed
     /// (`[q]`, not `[Q]`). The keymap storage form (`key_name`) is
@@ -1821,11 +2001,11 @@ mod tests {
 
         let text = buffer_text(&terminal);
         assert!(
-            text.contains("[Tab] TRK"),
+            text.contains("[Tab]"),
             "multi-char key names must title-case; got: {text}"
         );
         assert!(
-            !text.contains("[tab] TRK"),
+            !text.contains("[tab]"),
             "must not render the lowercase storage form; got: {text}"
         );
         assert!(
