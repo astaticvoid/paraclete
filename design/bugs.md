@@ -6,7 +6,7 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ## Status (2026-07-30)
 
-**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, **BUG-042** (live_rec can double-trigger the synth when a live trig quantizes onto an imminent step boundary — low severity, scoped out of TK2.1 C3b, fix direction filed), **BUG-047** (a full-velocity kick hit genuinely clips ~2% of samples in the default instrument — confirmed real via raw-sample inspection, not a test-driver detector false positive; root node not yet isolated, no fix attempted pending a listening judgment call on intended kick character; see entry below).
+**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), **BUG-042** (live_rec can double-trigger the synth when a live trig quantizes onto an imminent step boundary — low severity, scoped out of TK2.1 C3b, fix direction filed), **BUG-047** (a full-velocity kick hit genuinely clips ~2% of samples in the default instrument — confirmed real via raw-sample inspection, not a test-driver detector false positive; root node not yet isolated, no fix attempted pending a listening judgment call on intended kick character; see entry below).
 **Fixed 2026-07-30:** INFRA-008 (`0d0dca7`) — see entry below.
 **Fixed 2026-07-30 (TK2.2 C0–C5, `9f62cef`…`8595db6` + follow-up `4fe3f5f`):** BUG-043, BUG-044, BUG-045, BUG-046 (see entries below) and **BUG-039** (`InternalClock` now boots `playing: false` at the source — ADR-046 T3 — closing this at the root rather than the ADR-044 D7 surface-side workaround, which is retired in the same phase).
 **Fixed 2026-07-28:** BUG-041 (`f2576f4`) — `CMD_CLOCK_STOP` now emits a `global_stop` transport event on the net transition to stopped; gated on final playing state (not a mid-batch flag) so a STOP reversed later in the same batch doesn't emit a spurious stop (hostile-review finding, folded before commit). Regression test drives a real `InternalClock` → `Sequencer` pair. **BUG-040** (`87fcbcc`, TK2.1 C4) — encoder resolution now reads real cap-doc `min`/`max`/`stepped` instead of faking `0..1`; p-lock clamp and jog step-size both fixed.
@@ -1341,6 +1341,19 @@ case); superseded functionally by the TK2 panel rework (mute moves to
 TRK+FUNC+trig) — the normalization rule is TK2 C2 scope; test variants
 must feed uppercase+SHIFT and uppercase-no-SHIFT.
 
+**RESOLVED** (found already fixed, 2026-07-30 doc sweep): `input.rs`'s
+`func_held()` case-folds exactly as prescribed — SHIFT is inferred from
+an uppercase letter arriving with the flag cleared (kitty alternate-keys),
+in addition to the flag itself (legacy terminals). `Action::ToggleMute`
+is reached through it via the TK2 TRK+FUNC+trig chord this entry's own
+note anticipated. `func_held_case_folds_and_infers_from_letter_case`
+feeds all three real shapes A1 names (legacy Shift+letter, kitty
+Shift+letter, plain key) plus the shifted-punctuation carve-out — not the
+synthetic lowercase+SHIFT event this entry originally flagged as a false
+pass. No commit reference: this was fixed at an unrecorded point during
+TK2's implementation, not as a standalone change; this note only closes
+the paper trail.
+
 ### BUG-036 — Theotokos `:` command line bound to `Char(';')+SHIFT`, which legacy terminals do not emit
 
 **Filed:** 2026-07-23 (hostile design review, surface report finding 6).
@@ -1355,6 +1368,14 @@ line was exercised in TK1; the delivering event shape there is unknown).
 `lib.rs:1418-1420` (synthetic event, false pass).
 **Fix direction:** accept both `Char(':')` (any modifiers) and the legacy
 `Char(';')+SHIFT` arm; TK2 D14's unbindable entry is `Char(':')`.
+
+**RESOLVED** (found already fixed, 2026-07-30 doc sweep): `is_unbindable()`
+matches `Char(':')` directly, exactly as TK2 D14 specifies, and
+`key_to_button`/the keymap layer resolve it as the sole unbindable escape
+hatch. Pinned by `is_unbindable(KeyCode::Char(':'))` in the test suite.
+No commit reference: fixed at an unrecorded point during TK2's
+implementation, not as a standalone change; this note only closes the
+paper trail.
 
 ### BUG-037 — FmEngine `to_rule` declares one machine-invariant page set that mismatches its machines' docs
 
@@ -1387,6 +1408,19 @@ case); superseded functionally by the TK2 panel rework (mute moves to
 TRK+FUNC+trig) — the normalization rule is TK2 C2 scope; test variants
 must feed uppercase+SHIFT and uppercase-no-SHIFT.
 
+**RESOLVED** (found already fixed, 2026-07-30 doc sweep): `input.rs`'s
+`func_held()` case-folds exactly as prescribed — SHIFT is inferred from
+an uppercase letter arriving with the flag cleared (kitty alternate-keys),
+in addition to the flag itself (legacy terminals). `Action::ToggleMute`
+is reached through it via the TK2 TRK+FUNC+trig chord this entry's own
+note anticipated. `func_held_case_folds_and_infers_from_letter_case`
+feeds all three real shapes A1 names (legacy Shift+letter, kitty
+Shift+letter, plain key) plus the shifted-punctuation carve-out — not the
+synthetic lowercase+SHIFT event this entry originally flagged as a false
+pass. No commit reference: this was fixed at an unrecorded point during
+TK2's implementation, not as a standalone change; this note only closes
+the paper trail.
+
 ### BUG-036 — Theotokos `:` command line bound to `Char(';')+SHIFT`, which legacy terminals do not emit
 
 **Filed:** 2026-07-23 (hostile design review, surface report finding 6).
@@ -1401,6 +1435,14 @@ line was exercised in TK1; the delivering event shape there is unknown).
 `lib.rs:1418-1420` (synthetic event, false pass).
 **Fix direction:** accept both `Char(':')` (any modifiers) and the legacy
 `Char(';')+SHIFT` arm; TK2 D14's unbindable entry is `Char(':')`.
+
+**RESOLVED** (found already fixed, 2026-07-30 doc sweep): `is_unbindable()`
+matches `Char(':')` directly, exactly as TK2 D14 specifies, and
+`key_to_button`/the keymap layer resolve it as the sole unbindable escape
+hatch. Pinned by `is_unbindable(KeyCode::Char(':'))` in the test suite.
+No commit reference: fixed at an unrecorded point during TK2's
+implementation, not as a standalone change; this note only closes the
+paper trail.
 
 ### BUG-037 — FmEngine `to_rule` declares one machine-invariant page set that mismatches its machines' docs
 
