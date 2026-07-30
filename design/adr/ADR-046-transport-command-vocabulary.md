@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | ✅ **Accepted (2026-07-29)** |
+| **Status** | ✅ **Accepted (2026-07-29) — Implemented (TK2.2 C5, `8595db6`, 2026-07-30; blast-radius follow-up `4fe3f5f` same day)** |
 | **Author** | Agent (drafted from Theotokos usability session #3 evidence) |
 | **Ratification** | **R1–R4 settled as recommended, 2026-07-29** — see "Ratification" below. No accepted ADR is superseded; ADR-044 D7 keeps its intent and loses its workaround (T3) |
 | **Scope** | `paraclete-nodes` (`internal_clock`, `sequencer` reset path), `paraclete-theotokos` (transport actions), no new crate, no audio-thread allocation |
@@ -214,3 +214,34 @@ fires its entry step exactly once (the BUG-001 regression must survive).
 - `design/phases/tk2.2-theotokos.md` — the commit that implements this
 - ADR-044 D7 (no transport at launch), ADR-031 (Antiphon), ADR-039
   (performance state)
+
+## Implementation note (2026-07-30)
+
+T1–T5 landed as decided, with no deviations from this ADR's text. The
+ratification hazard note's required decomposition (`sequencer.rs`'s old
+`global_start` branch split into: position-reset on `global_rewind`,
+independent of `playing`; `playing` derived from the transport's own flag,
+symmetric with `global_stop`; the BUG-001 entry-step fire gated on the
+transition into playing, not on rewind) was implemented exactly as
+specified and is pinned by three tests (rewind while stopped: silent,
+relocates; rewind while running: relocates without double-firing; normal
+start: fires its entry step exactly once).
+
+**One gap in this ADR's own migration inventory, found by hostile review
+after C5 landed, not before:** the "only Theotokos and tests command the
+clock" claim (Context, "Migration cost is small") missed two consumers
+that never sent a command at all — they relied on `InternalClock`'s old
+`playing: true` boot default implicitly. `tools/test-driver` (ADR-033)
+and the legacy `--emulator` `launchpad.rhai` profile both went silently
+dead when T3 landed (one ADR-035 regression baseline, `plock_authoring`,
+hard-failed all 10 checks). Fixed same-day in a follow-up commit
+(`4fe3f5f`) — both surfaces now send an explicit `CMD_CLOCK_START` at
+startup, matching what every command-driven surface already had to do.
+Lesson for future ADRs in this family: "which surfaces command the clock"
+undercounts the real migration surface — "which surfaces have ever
+observed the clock running without commanding it" is the question that
+would have caught this, per AGENTS.md's design-process-learning #2
+("verify dependency behavior, not existence").
+
+BUG-039 closes as a direct consequence of T3 — see its resolution note in
+`design/bugs.md`. BUG-043 closes per T5's Theotokos wiring.

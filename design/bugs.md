@@ -4,13 +4,14 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ---
 
-## Status (2026-07-29)
+## Status (2026-07-30)
 
-**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, **BUG-039** (InternalClock auto-starts the transport on every surface — worked around surface-side by ADR-044 D7), **BUG-042** (live_rec can double-trigger the synth when a live trig quantizes onto an imminent step boundary — low severity, scoped out of TK2.1 C3b, fix direction filed).
+**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — **gate now lifted**, Theotokos has been the default surface since TK0/TK1; ready to fix, not yet started), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, **BUG-042** (live_rec can double-trigger the synth when a live trig quantizes onto an imminent step boundary — low severity, scoped out of TK2.1 C3b, fix direction filed), **BUG-047** (`kick_reverb_clean.yaml` dropout assertion fails — pre-existing, found incidentally during TK2.2 C5's regression sweep, unrelated to ADR-046; see entry below).
+**Fixed 2026-07-30 (TK2.2 C0–C5, `9f62cef`…`8595db6` + follow-up `4fe3f5f`):** BUG-043, BUG-044, BUG-045, BUG-046 (see entries below) and **BUG-039** (`InternalClock` now boots `playing: false` at the source — ADR-046 T3 — closing this at the root rather than the ADR-044 D7 surface-side workaround, which is retired in the same phase).
 **Fixed 2026-07-28:** BUG-041 (`f2576f4`) — `CMD_CLOCK_STOP` now emits a `global_stop` transport event on the net transition to stopped; gated on final playing state (not a mid-batch flag) so a STOP reversed later in the same batch doesn't emit a spurious stop (hostile-review finding, folded before commit). Regression test drives a real `InternalClock` → `Sequencer` pair. **BUG-040** (`87fcbcc`, TK2.1 C4) — encoder resolution now reads real cap-doc `min`/`max`/`stepped` instead of faking `0..1`; p-lock clamp and jog step-size both fixed.
 **Descoped 2026-07-29 (TK2.1 C7):** BUG-038 — the arrow-cursor half was made moot by ENC mode (D9) and its dead code deleted; the numpad-slot half stays an explicit open question (OQ-T24), *not* silently dropped. It was reserved for usability session #3, which was held 2026-07-29 but did not reach it — and it is **not testable as built** (the numpad input side is unwired), so it carries to session #4 as a decision rather than an experiment.
 
-**Filed 2026-07-29 (Theotokos usability session #3, `design/sessions/theotokos-3.md`):** **BUG-043** (transport has neither pause nor stop — `c` is inert and `x` always rewinds; **High**, and needs a cross-surface decision rather than a patch because the engine has no "resume" vocabulary), **BUG-044** (live pad trig sounds two octaves above the same track's sequenced steps — `sequencer.rs:809` hardcodes note 60 over the track's `default_note`; **High**, one-line fix but the existing test is structurally blind to it), **BUG-045** (a hand-written step inherits stale micro-timing from an erased live-recorded step; **Medium**), **BUG-046** (holding a trig in `Grid` rapid-toggles it — auto-repeat is suppressed for `PanelButton::Rec` only; **Med-High**, and a prerequisite for any coherent hold-a-trig gesture). BUG-043 is the **same transport-semantics area as BUG-039** — `first_tick`/`playing` and who decides a rewind — so the two should be fixed together, not independently.
+**Filed 2026-07-29 (Theotokos usability session #3, `design/sessions/theotokos-3.md`):** BUG-043, BUG-044, BUG-045, BUG-046 — all **RESOLVED 2026-07-30**, see entries below.
 **Fixed, code-complete (pending hardware-verification):** BUG-012.
 **Trigger-based (fix when named trigger fires):** BUG-003 (updated — StateBusHandle already moved to L2; remaining violation is NodeExecutor/RuntimeCounters in audio.rs).
 **Resolved in this session:** INFRA-011 (recovery code removed — pipewire-alsa + wireplumber no-suspend fixes root cause).
@@ -1513,6 +1514,22 @@ any surface auto-start, and who decides, the clock node or the app? — is
 owned rather than lost in prose. Candidate answer: an app/instrument-level
 `transport.autostart` decision, with the node defaulting to stopped.
 
+**RESOLVED** (ADR-046 T3, TK2.2 C5, `8595db6`, 2026-07-30): `InternalClock`
+now boots `playing: false` at the source. This entry's own fix direction
+predicted the blast radius precisely — `tools/test-driver` and the ADR-035
+baselines *did* assume a running clock, and going stopped-at-construction
+broke them exactly as forecast (confirmed only after the fact, by a
+hostile review of the C5 commit, not caught by the migration inventory
+written alongside ADR-046). Fixed same-day in follow-up `4fe3f5f`: both of
+test-driver's engine-build paths now send an explicit `CMD_CLOCK_START`
+after building the executor, and `profiles/launchpad.rhai` (the
+`--emulator` fallback, the other surface that had relied on auto-start)
+does the same in its `on_load()`. ADR-044 D7's surface-side workaround
+(Theotokos's own startup `CMD_CLOCK_STOP` push) is retired in the same
+change — one mechanism for the invariant, not two. `paraclete-clap`'s
+CLAP-host transport bridging was unaffected (it drives the clock via host
+transport override, not `InternalClock`'s own boot state).
+
 ---
 
 ### BUG-040 — Theotokos encoder jog invents a 0..1 range on composite pages and ignores `stepped`
@@ -1730,6 +1747,25 @@ semantics for every surface that drives the clock** — Theoria, the
 implementation, not a local patch. Until STOP does something, the legend
 should not advertise it.
 
+**RESOLVED** (ADR-046, TK2.2 C5, `8595db6`, 2026-07-30): the three-command
+split landed as specced. `CMD_CLOCK_START` only sets `playing = true`, no
+implicit rewind; `CMD_CLOCK_STOP` unchanged; new `CMD_CLOCK_REWIND` sets
+position independent of `playing` (valid while running, R3). Theotokos's
+`Action::Stop` (bare `c`) emits `CMD_CLOCK_STOP` then `CMD_CLOCK_REWIND`;
+`x` (`PlayToggle`) now genuinely pauses in place and resumes from where it
+stopped, since starting no longer implies a rewind. `sequencer.rs`'s old
+`global_start` branch (this entry's own root-cause chain, `:925-931`) was
+decomposed per the ADR's ratification hazard note: `playing` now derives
+from the transport's own flag (symmetric with how `global_stop` clears
+it), position-reset lives on `global_rewind`, and the BUG-001 entry-step
+fire is gated on the transition into playing rather than on rewind —
+regression tests pin all three cases (rewind while stopped is silent and
+relocates; rewind while running relocates without double-firing; a normal
+start still fires its entry step exactly once). `[c]` STOP rejoins the
+transport line's legend/chips now that it does something. A same-day
+follow-up (`4fe3f5f`) fixed a blast-radius miss the ADR's own migration
+inventory didn't catch — see BUG-039's resolution note.
+
 ### BUG-044 — a live pad trig sounds two octaves above the same track's sequenced steps
 
 **Severity:** High — affects the primary performance gesture (bare trig =
@@ -1763,6 +1799,12 @@ would be 36 on a configured track.
 configure a non-60 `default_note` and assert the live trig matches the
 track's sequenced steps, otherwise it re-admits the same blind spot.
 
+**RESOLVED** (TK2.2 C0, `9f62cef`, 2026-07-30): `CMD_TRIG_NOW` now
+resolves `arg0 <= 0` to `self.default_note`. The structurally-blind test
+was rewritten against a configured (non-60) `default_note` and a second
+case at a third value, so neither the old nor a new hardcode can pass;
+verified non-vacuous by reverting the fix and confirming both tests fail.
+
 ### BUG-045 — a hand-written step inherits stale micro-timing from an erased live-recorded step
 
 **Severity:** Medium — silently produces off-grid steps that look
@@ -1790,6 +1832,17 @@ interacts with OQ-T29 (quantization control): if a quantize mode lands,
 "hand-written steps are always on-grid" may become a setting rather than
 an invariant.
 
+**RESOLVED** (TK2.2 C2, `7238e31`, 2026-07-30): `CMD_TOGGLE_STEP` and
+`CMD_SET_STEP` now zero `timing.micro_offset` when a step transitions to
+active. **Ruling on the design question above:** `CMD_CLEAR` also resets
+micro-timing across the lane — micro-timing is the step's own placement,
+not an attached lock, and a "cleared" lane that stays crooked cannot be
+explained to a user. §0 A8 ("locks survive a clear") stands unchanged:
+`param_locks`/`cv_locks` are untouched by any of the three sites. Does not
+preempt OQ-T29 — the reset lives in the same three sites the phase spec
+named, not a new abstraction, so a later quantization-mode change stays
+local.
+
 ### BUG-046 — holding a trig in `Grid` rapid-toggles the step via OS auto-repeat
 
 **Severity:** Medium-High — destroys pattern data under a perfectly
@@ -1813,3 +1866,50 @@ any coherent hold-a-trig gesture, so it should land with (or before) the
 p-lock authoring decision (OQ-T27, reopened by session #3) rather than
 independently. A regression test analogous to C1's repeat test
 (`lib.rs:2124-2140`) should pin it.
+
+**RESOLVED** (TK2.2 C1, `eca103d`, 2026-07-30): `KeyEventKind::Repeat` is
+now consumed for trig buttons too, not just `Rec` — a held trig
+(Press + N×Repeat + Release) toggles its step exactly once, verified by
+reverting the fix and confirming 4 toggles fire instead of 1. Landed
+together with E4 (momentary p-lock retired entirely, not gated) per the
+phase spec's explicit ordering requirement: fixing repeat without also
+removing momentary would have made the momentary gesture *more*
+reachable, since it also relies on a sustained hold. OQ-T27's p-lock
+authoring decision therefore resolved as "latched only" for this phase,
+not deferred alongside this fix as originally suggested.
+
+---
+
+### BUG-047 — `kick_reverb_clean.yaml` dropout assertion fails: a 140ms held-sample run right at the window boundary
+
+**Severity:** Low-Medium — a test-driver scenario regression gate is
+currently red; unclear yet whether it's a real audio artifact or a
+detector/scenario-margin issue
+**Phase found:** TK2.2 C5 hostile review (2026-07-30), while sweeping for
+other consumers of `InternalClock`'s old auto-start default
+**Description:** `tools/test-driver/tests/kick_reverb_clean.yaml` asserts
+`dropout_lt_ms: 5.0` over `from: 0.8` to `until: 1.2` (capture time) —
+no run of bitwise-identical samples longer than 5ms in the post-trigger
+window. It fails: `held-sample run of 140.43ms (6193 samples) starting at
+0.8000s`. **Confirmed pre-existing and unrelated to ADR-046/TK2.2:**
+reproduced identically by checking out commit `390e176` (the last commit
+before this session's TK2.2 work began) into an isolated `git worktree`
+and running the scenario there — same failure. The scenario's own comment
+already documents a wall-clock/capture-time skew ("the trigger at wall
+1.0s lands around capture ~0.7s; windows leave margin") and the run
+length is not perfectly deterministic across repeated runs (140.43ms
+twice, 152.04ms once, observed in three runs at HEAD, always starting at
+exactly 0.8000s) — consistent with either a real intermittent artifact
+right at the reverb's spin-up, or the assertion window's margin being
+too tight for how this scenario actually lands in capture time.
+**Location:** `tools/test-driver/tests/kick_reverb_clean.yaml`; the
+audio path under test is mix → reverb (`crates/paraclete-nodes/src/mix.rs`,
+`reverb.rs`) for the default instrument's kick voice.
+**Fix direction:** Not investigated. First step: determine whether the
+held run is genuine silence (a legitimate quiet stretch before the kick's
+reverb tail becomes audible, which a naive "identical samples = dropout"
+detector would misclassify) or an actual repeated-sample artifact — dump
+the flagged window's raw values. If genuine silence, the fix is a scenario
+margin/assertion adjustment, not an engine fix; do not touch DSP without
+first ruling that out (same discipline as BUG-023/BUG-027's speaker-
+artifact investigations).

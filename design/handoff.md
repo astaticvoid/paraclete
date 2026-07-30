@@ -4,46 +4,49 @@
 > were front-loaded. Read this before starting any commit if you are not the
 > model/author that wrote the specs.
 
-## ▶ START HERE — active implementation phase (2026-07-29)
+## ▶ START HERE — active implementation phase (2026-07-30)
 
-**TK2.2 — the Theotokos fix pass. Start at
-`design/phases/tk2.2-theotokos.md` C0 and work forward.**
-Execution-ready C0–C5; C6 is a user-paired session (no code). Read
-`design/sessions/theotokos-3.md` first for the evidence behind it.
+**TK2.2 is CODE-COMPLETE (C0–C5 shipped `9f62cef`…`8595db6`, plus same-day
+follow-up `4fe3f5f`) but NOT CLOSED.** Do not re-implement any of C0–C5 —
+read `design/phases/tk2.2-theotokos.md`'s "Implementation report" section
+(appended 2026-07-30, at the end of the file) before touching this phase
+at all. The only remaining step is **C6 — usability session #4**, a
+user-paired session with no code component. If you are a cold-start agent
+and no user session is in progress, there is **no autonomous next-phase
+work queued** in this track; see "If you have no user session" below.
 
-Design authority: ADR-044 (✅ accepted, **amended** by session #3 — see its
-"Session #3 outcome" note), ADR-046 (✅ accepted 2026-07-29, R1–R4 settled)
-for C5.
+Design authority (both now **implemented**, not just accepted): ADR-044
+(amended by session #3 — see its "Session #3 outcome" note), ADR-046 (C5;
+see its own "Implementation note" appended 2026-07-30 — it documents one
+real gap the ADR's migration inventory missed, found and fixed same-day).
 
-**Five places where making the tests pass is the *wrong* instinct** — every
-one is a test or invariant that currently encodes the bug:
-1. **C0** — `trig_now_uses_default_note_and_velocity_when_zero` passes
-   *because* of BUG-044 (it builds a bare `Sequencer::new()` whose default
-   *is* the hardcoded value). Rewrite it to assert live trig == sequenced
-   step; do not adapt it.
-2. **C1** — grep `momentary` to **zero** in `paraclete-theotokos`; delete
-   the C5b press-time-capture regressions rather than adapting them, since
-   they exist only to protect a retired gesture.
-3. **C2** — the `CMD_CLEAR` micro-timing ruling must be stated in the commit
-   message, and TK2 §0 A8 ("locks survive a clear") pinned in the same test.
-4. **C3** — the required new regression asserts the track line occupies
-   **identical columns** in `Off` and `Grid`. That is the test that would
-   have caught F3.
-5. **C5** — `sequencer.rs:925`'s `global_start` branch bundles four
-   behaviours including the **BUG-001 entry-step fire**. A mechanical rename
-   makes a rewind start playback and emit a note; R3 permits rewind while
-   running, so it would also double-fire. Decomposition and tests are
-   spelled out in ADR-046 and C5.
+**If you have no user session:** do not invent Theotokos work. Options,
+in priority order: (1) INFRA-008 (`design/bugs.md`) — gate confirmed
+lifted 2026-07-30 (Theotokos has been the default surface since TK0/TK1),
+fix direction is concrete (move `LaunchpadEmulator`'s keyboard poll off
+the audio thread into a main-thread-ticked handle, mirroring the existing
+`SurfaceOutputHandle` pattern), not yet started; (2) BUG-042 (live_rec
+double-trigger) — fix direction filed, touches the same delicate
+`early_fired` boundary logic as BUG-004, so budget care not speed;
+(3) BUG-047 (`kick_reverb_clean.yaml` dropout) — not yet investigated
+even at the "is this real" level, start there before touching DSP. None
+of these are Theotokos/TK2.2 work — do not fold them into this phase's
+commit sequence.
 
-Per-commit process is unchanged and non-optional: `cargo test --workspace`
-green, clippy clean on touched crates, **a fresh-context hostile review on
-every staged commit**, code and doc changes in separate commits. On TK2.1
-that gate caught a real defect on every commit but one.
+**Historical note, kept for the next hostile-review cycle in this
+family:** every one of C0–C5's reviews found something, from a wording
+nit to (at C5) a real blast-radius miss — the ADR's own "migration cost is
+small" claim missed two consumers (`tools/test-driver`, `launchpad.rhai`)
+that had never sent a clock command at all, relying on the old auto-start
+default implicitly. The gate caught it after the commit landed, not
+before — a reminder that "who commands X" is not the same question as
+"who currently depends on X's default behavior without commanding it"
+(AGENTS.md design-process-learning #2).
 
 **Deliberately parked, not forgotten:** ADR-045 (cross-surface lock
 capture) — its premise was empirically confirmed by session #3, but session
 #4 should first judge whether TK2.2 E4's latched-only p-lock suffices in
-play. Do not unpark it as part of this phase.
+play. Do not unpark it until C6 happens.
 
 ## The situation
 
@@ -70,8 +73,11 @@ the panel layout and the default mode model (`theotokos-2.md`,
 and is **code-complete C0–C7**; usability **session #3 held 2026-07-29**
 signed off the redesign but found four bugs and two structural design
 collisions inside it (`design/sessions/theotokos-3.md`,
-`design/phases/tk2.1-report.md` — that report is **closed**).
-**→ The active phase is TK2.2. See "START HERE" at the top of this file.**
+`design/phases/tk2.1-report.md` — that report is **closed**). **TK2.2**
+(ADR-046, accepted + implemented 2026-07-30) fixed those four bugs and the
+legend/chip/jog-feedback follow-ups and is **code-complete C0–C5**; only
+usability session #4 (C6) remains.
+**→ See "START HERE" at the top of this file — do not re-implement C0–C5.**
 
 ## Task routing by tier
 

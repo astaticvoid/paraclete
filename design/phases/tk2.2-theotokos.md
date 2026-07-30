@@ -385,3 +385,39 @@ user time. Hard constraints learned there:
 | OQ-T21 | KEYBD chromatic grammar | Open — TK3 |
 | OQ-T12 | WT convergence | Open — interacts with **TKW** route (b), a near-identical animal |
 | F1 | Does the panel survive 16 named tracks? | Open — untestable until such an instrument exists |
+
+---
+
+## Implementation report — C0–C5 (2026-07-30)
+
+**Code-complete, not closed.** C0–C5 shipped exactly as specced, each
+hostile-reviewed clean on its own commit before the next landed (house
+process, AGENTS.md). C6 (usability session #4) is the only remaining
+step — see `design/handoff.md` for what a cold-start agent should and
+should not do until it happens.
+
+| Commit | Delivers |
+|---|---|
+| `9f62cef` | C0 — BUG-044: `CMD_TRIG_NOW` resolves to `self.default_note`, not a hardcoded 60. Test rewritten against a configured (non-60) default note, not `Sequencer::new()`'s coincidental 60. |
+| `eca103d` | C1 — BUG-046 + E4: `KeyEventKind::Repeat` consumed for trig buttons; momentary p-lock removed entirely (not gated) — landed together per the ordering hazard the spec called out. |
+| `ecf74e4` | Doc-only nit from C1's own hostile review (a comment still said "momentary" after the mechanism was gone). |
+| `7238e31` | C2 — BUG-045: `CMD_TOGGLE_STEP`/`CMD_SET_STEP` zero `micro_offset` on activation; `CMD_CLEAR` ruled to also reset micro-timing (locks still survive, §0 A8 unchanged). |
+| `11503de` | C3 — E1/E2/E3: legend/chip placement revision. Residual legend (only off-referent affordances); hidden chips reserve their width (closes F3); verified `render_trig_row`/`render_encoder_cell` have no equivalent reflow class rather than assuming. |
+| `478cc6b` | C4 — E5: a jog names the param it moved and whether it wrote a lock or the live value, derived from current state at render time (not frozen at jog time) so the locked-step naming clears in lockstep with the target. |
+| `8595db6` | C5 — BUG-043/ADR-046: three-command transport split, the required `sequencer.rs` decomposition, `[c]` STOP wired end to end. |
+| `4fe3f5f` | Same-day follow-up: C5's hostile review found ADR-046's own migration inventory had missed two consumers of the old auto-start default (`tools/test-driver`, `launchpad.rhai`) — fixed, verified against the `plock_authoring` ADR-035 baseline with zero regeneration. |
+
+**Process note for future phases:** every one of C0–C5's hostile reviews
+found something — a wording nit at minimum, a real blast-radius miss at
+C5. The gate did its job every time; do not skip it under time pressure.
+
+**New bug filed, not fixed here:** BUG-047 (`kick_reverb_clean.yaml`
+dropout assertion) — found incidentally during C5's regression sweep,
+confirmed pre-existing (reproduces identically on the pre-TK2.2 baseline
+commit), unrelated to this phase. See `design/bugs.md`.
+
+**What C6 owes a verdict on:** this phase's own five hypotheses (§5)
+*plus* the items session #3 didn't reach (H8 stepped-jog proportionality,
+H9 sticky re-tap/repeat-guard judged *after* C1, H10 FUNC+transport
+ergonomics, H11 TRK/PTN physical feel) — all still open, carried
+unchanged by this implementation pass.
