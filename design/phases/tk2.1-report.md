@@ -1,9 +1,14 @@
 # TK2.1 — Theotokos Panel Redesign: Report
 
-**Status:** Code-complete (C0–C7). **NOT yet signed off** — usability
-session #3 (C8, user-paired, no code) is next; this report closes when
-`design/sessions/theotokos-3.md` lands with a converged / revise / park
-verdict per hypothesis (§5 of the phase spec).
+**Status:** Code-complete (C0–C7). Usability session #3 **held 2026-07-29**
+(`design/sessions/theotokos-3.md`). **The redesign is signed off; the phase
+is not.** The panel, mode model, REC grammar, finger-drumming and live
+record all converged on first contact — session #2's reopening of
+`design.md` §5.1/§5.2 is discharged — but the session found **four bugs
+(BUG-043…046)** and **two structural design collisions** inside the
+shipped work, and covered 7 of 11 hypotheses before stopping at the
+user's direction. Sequence from here: **fix pass → decide OQ-T27's
+bare-trig ownership → session #4**. See "Session #3 outcome" below.
 **Spec:** `design/phases/tk2.1-theotokos.md`
 **Design authority:** ADR-044 (✅ accepted 2026-07-28)
 **Baseline:** TK2 code-complete (C0–C9, `be565b9`), reopened by usability
@@ -34,8 +39,8 @@ findings in `design/roadmap.md` — not re-narrated here.
 | `cargo test --workspace` green after every commit | ✅ (160 theotokos tests at C6; workspace fully green throughout) |
 | Pre-commit hostile review on every staged commit | ✅ — caught and fixed at least one real defect on every commit except C4 (verified clean) |
 | BUG-038 resolved or formally descoped | ✅ **Descoped** (C7) — see below |
-| Agent smoke run | ⚠️ **Partial** — see below |
-| Usability session #3 sign-off | ❌ Not yet held — this report is not a convergence claim |
+| Agent smoke run | ⚠️ **Partial** at C7 — **superseded 2026-07-29**: session #3 ran the real render loop in kitty for the first time (see below) |
+| Usability session #3 sign-off | ⚠️ **Held, partial** — redesign converged; 7 of 11 hypotheses judged; 4 bugs + 2 structural collisions found. Phase stays open pending a fix pass and session #4 |
 
 ## Hostile review findings by commit (summary; see each commit message for detail)
 
@@ -122,14 +127,63 @@ pass that didn't happen.
   rec-mode toggle, pad-mode bare-trig behavior, ENC mode, LOCK, no Mute
   screen.
 
+## Session #3 outcome (C8, 2026-07-29)
+
+Full record in `design/sessions/theotokos-3.md`; summary only here.
+
+**Converged by play:** D1/D2 fixed panel, D5 REC toggle + REC-hold+PLAY, D6
+pads/finger-drumming, D7 silent launch, D8 live record at 140 BPM. The panel
+was endorsed as "digital, hardcore… weird unix and hacker culture" — note this
+is a **terminal-native** endorsement, not the hardware-mimicry D1 literally
+asked for, which redirects future work away from skeuomorphism.
+
+**Needs a second pass:** D3/D4's legend and chip model — key hints should sit
+adjacent to their referent with the legend strip carrying only off-screen
+affordances (F2); pad chips should vanish in `Grid` without reflowing the track
+line (F3, `render.rs:487-495`); `[n] ENC`/`[m] LOCK` are missing from the Grid
+legend, and `[m]` is a Grid-*only* gesture advertised only off-Grid (F8,
+`render.rs:272`).
+
+**Two structural collisions, one root cause** — D9 makes trigs *be* the
+encoders while D15 uses trigs as *step selectors*, so they cannot share the bare
+trig:
+- **F7:** in `Grid`+ENC, one trig press both arms a momentary p-lock and jogs,
+  so the jog writes a lock and never the live value (`lib.rs:626` is not gated
+  on `enc`; routing at `lib.rs:1106`). ENC's *direction* converged ("much
+  improved over chord"); the implementation is unusable in `Grid`.
+- **F11:** momentary p-lock cannot express p-locking encoder *N* on step *N* —
+  both are the same key. Latched (`m`+trig, release, then jog) has no such hole
+  and is strictly more expressive. **Recommendation: retire D15's momentary
+  path.** OQ-T27 is reopened.
+
+**Bugs filed:** BUG-043 (no pause, no stop — needs an engine-level decision, as
+`CMD_CLOCK_START` always rewinds and there is no resume vocabulary), BUG-044
+(live pad trig two octaves high — `sequencer.rs:809` hardcodes note 60 over the
+track's `default_note`), BUG-045 (hand-written steps inherit stale
+micro-timing), BUG-046 (holding a trig rapid-toggles it — auto-repeat suppressed
+for `Rec` only).
+
+**New open questions:** OQ-T29 (quantization control for live record), OQ-T30
+(multi-surface transport/state agreement).
+
+**Agent smoke run, retrospectively closed:** C7 could only report a partial,
+environment-limited smoke pass (no TTY). Session #3 ran the real interactive
+render loop in kitty 0.48.1 with agent observation via `kitty @ get-text`, which
+is the first time the TK2.1 redesign has been exercised key-by-key in a real
+terminal. Two of the four bugs above (BUG-043, BUG-046) are exactly the class the
+`TestBackend` suites cannot see, which is the C7 report's own stated caveat
+coming true.
+
 ## Open questions after C7
 
 | OQ | Status |
 |---|---|
 | OQ-T22 (mute chord vs. screen) | **Resolved** — screen retired (C6), chord is the only gesture |
-| OQ-T24 (numpad slot cluster fate) | **Still open**, now unconstrained (A7 discharged by D9) — session #3 |
-| OQ-T27 (p-lock authoring gesture) | **Resolved** — ADR-044 D15, shipped C5b |
-| OQ-T23b (tap tempo behind a screen) | Open — session #3 |
+| OQ-T24 (numpad slot cluster fate) | **Still open** — not reached by session #3, and not testable as built (input side unwired); a decision, not an experiment. Session #4 |
+| OQ-T27 (p-lock authoring gesture) | ~~Resolved — ADR-044 D15, shipped C5b~~ **REOPENED by session #3** (F7/F11): latched works, momentary cannot express the diagonal case and is recommended for retirement; bare-trig ownership under ENC undecided |
+| OQ-T23b (tap tempo behind a screen) | Open — not reached by session #3; session #4 |
+| **OQ-T29 (quantization control for live record)** | **Open — new, session #3.** Live rec is always record-as-played (micro-timing in 96th units); no hard-quantize path exists |
+| **OQ-T30 (multi-surface transport/state agreement)** | **Open — new, session #3.** Bidirectional engine listeners across concurrent surfaces (terminal + web); same seam BUG-043 exposes. Spans W4, OQ-T28/ADR-045, TKW route (b) |
 | OQ-T28 (cross-surface lock capture) | Deferred — ADR-045 (parked, not TK2.1 scope) |
 | OQ-T4 (design.md §4.2 step-size scaler) | Open, unchanged by this phase |
 | OQ-T21 (KEYBD chromatic grammar) | Open — TK3 |

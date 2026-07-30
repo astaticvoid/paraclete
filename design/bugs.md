@@ -8,7 +8,9 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 **Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — fix gated on the Theotokos track, ADR-036), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, **BUG-039** (InternalClock auto-starts the transport on every surface — worked around surface-side by ADR-044 D7), **BUG-042** (live_rec can double-trigger the synth when a live trig quantizes onto an imminent step boundary — low severity, scoped out of TK2.1 C3b, fix direction filed).
 **Fixed 2026-07-28:** BUG-041 (`f2576f4`) — `CMD_CLOCK_STOP` now emits a `global_stop` transport event on the net transition to stopped; gated on final playing state (not a mid-batch flag) so a STOP reversed later in the same batch doesn't emit a spurious stop (hostile-review finding, folded before commit). Regression test drives a real `InternalClock` → `Sequencer` pair. **BUG-040** (`87fcbcc`, TK2.1 C4) — encoder resolution now reads real cap-doc `min`/`max`/`stepped` instead of faking `0..1`; p-lock clamp and jog step-size both fixed.
-**Descoped 2026-07-29 (TK2.1 C7):** BUG-038 — the arrow-cursor half was made moot by ENC mode (D9) and its dead code deleted; the numpad-slot half stays an explicit open question (OQ-T24) reserved for usability session #3, not silently dropped.
+**Descoped 2026-07-29 (TK2.1 C7):** BUG-038 — the arrow-cursor half was made moot by ENC mode (D9) and its dead code deleted; the numpad-slot half stays an explicit open question (OQ-T24), *not* silently dropped. It was reserved for usability session #3, which was held 2026-07-29 but did not reach it — and it is **not testable as built** (the numpad input side is unwired), so it carries to session #4 as a decision rather than an experiment.
+
+**Filed 2026-07-29 (Theotokos usability session #3, `design/sessions/theotokos-3.md`):** **BUG-043** (transport has neither pause nor stop — `c` is inert and `x` always rewinds; **High**, and needs a cross-surface decision rather than a patch because the engine has no "resume" vocabulary), **BUG-044** (live pad trig sounds two octaves above the same track's sequenced steps — `sequencer.rs:809` hardcodes note 60 over the track's `default_note`; **High**, one-line fix but the existing test is structurally blind to it), **BUG-045** (a hand-written step inherits stale micro-timing from an erased live-recorded step; **Medium**), **BUG-046** (holding a trig in `Grid` rapid-toggles it — auto-repeat is suppressed for `PanelButton::Rec` only; **Med-High**, and a prerequisite for any coherent hold-a-trig gesture). BUG-043 is the **same transport-semantics area as BUG-039** — `first_tick`/`playing` and who decides a rewind — so the two should be fixed together, not independently.
 **Fixed, code-complete (pending hardware-verification):** BUG-012.
 **Trigger-based (fix when named trigger fires):** BUG-003 (updated — StateBusHandle already moved to L2; remaining violation is NodeExecutor/RuntimeCounters in audio.rs).
 **Resolved in this session:** INFRA-011 (recovery code removed — pipewire-alsa + wireplumber no-suspend fixes root cause).
@@ -1669,3 +1671,137 @@ delicate boundary-crossing logic, so it is scoped out of C3b rather than
 risked under review-cycle time pressure. A regression test analogous to
 `early_fired_note_keeps_its_gate_length` (`sequencer.rs:3930`) should pin
 whichever suppression mechanism lands.
+
+### BUG-043 — Theotokos transport has neither pause nor stop: `c` is inert and `x` always rewinds
+
+**Severity:** High — the transport is the most-used control on the panel,
+one of its two advertised gestures does nothing at all, and the other
+cannot resume. Found by the user within minutes of picking the panel up.
+**Phase found:** TK2.1 C8, usability session #3 (2026-07-29). Reported by
+the user, then measured and root-caused in-session.
+**Description:** Two symptoms, one gap.
+*`c` (STOP) is a no-op.* Measured by sampling the transport line while
+driving keys over kitty remote control: sent twice while playing, the
+transport stayed `▶` and steps kept advancing (9.33 steps/s = 16ths at
+140 BPM, i.e. genuinely running).
+*`x` pauses but resuming rewinds.* `x` while playing froze the panel at
+`■ Step:12` for 3.5 s; the next `x` resumed from step ~1, not 12. (The
+user's "restarts the loop after a few steps" is not a third symptom — a
+16-step pattern at 140 BPM wraps every 1.7 s.)
+Chain: `input.rs:857` has no arm for a bare `PanelButton::Stop` — its
+comment says so outright ("Bare STOP has no meaning yet") — so `c`
+resolves to `Action::Noop`, and no `Action::Stop` variant exists in
+`action.rs` at all. Meanwhile `x` = `Action::PlayToggle` (`action.rs:147`)
+emits `CMD_CLOCK_START`/`CMD_CLOCK_STOP`; `CMD_CLOCK_START` sets
+`first_tick = true` (`internal_clock.rs:150-154`), which becomes
+`global_start: true` on the next transport event (`:117`), and on
+`global_start` the sequencer does `current_step = wstart; step_tick = 0`
+(`sequencer.rs:925-931`). So the only transport gesture available is
+"halt / start-from-zero": pause-in-place is not expressible *to the
+engine*, and STOP is advertised by the legend strip, the `?` overlay, and
+README while doing nothing.
+**Location:** `crates/paraclete-theotokos/src/input.rs:857`,
+`action.rs:147`; `crates/paraclete-nodes/src/internal_clock.rs:150-154`,
+`:117`; `crates/paraclete-nodes/src/sequencer.rs:925-931`. Advertised in
+`render.rs::legend_chips_for_screen` (`Dynamic(Stop, "STOP")`),
+`render.rs::render_help`, and `README.md`.
+**Related:** **BUG-039** (`InternalClock` constructs with `playing: true`,
+so every surface auto-starts) is the same transport-semantics area — both
+are about `first_tick`/`playing` and who decides a rewind. Fix them
+together; a resume vocabulary added here is also what lets BUG-039's
+surface-side D7 workaround become unnecessary. See also **OQ-16/OQ-T30**
+(multi-surface state agreement).
+**Fix direction:** Not a missing match arm — the engine has no "resume"
+vocabulary, because `CMD_CLOCK_STOP` never rewinds and `CMD_CLOCK_START`
+always does. Needs either a new clock command (`CMD_CLOCK_RESUME`, or a
+rewind command that STOP issues) or splitting the rewind decision out of
+the `playing` transition. Target grammar, per the reference box: PLAY =
+start / pause in place, STOP = halt + rewind. **This changes transport
+semantics for every surface that drives the clock** — Theoria, the
+`launchpad.rhai` profile, CLAP — so it wants a decision recorded before
+implementation, not a local patch. Until STOP does something, the legend
+should not advertise it.
+
+### BUG-044 — a live pad trig sounds two octaves above the same track's sequenced steps
+
+**Severity:** High — affects the primary performance gesture (bare trig =
+play the track) on every track whose `default_note` is not 60, which is
+every track in the default instrument.
+**Phase found:** TK2.1 C8, usability session #3 (2026-07-29). User: "the
+kick sound is different than what gets step seq (very high pitch). Trig
+sound should be default pitch of track."
+**Description:** `theotokos/lib.rs:960-962` sends `CMD_TRIG_NOW` with
+`arg0: 0`, deliberately delegating the note choice to the sequencer's
+default. `sequencer.rs:805-813` resolves `arg0 <= 0` to a **hardcoded
+`60`** rather than to `self.default_note`. The default instrument
+configures `default_note: 36` on all four sequencers
+(`instrument.yaml`), so a live pad fires exactly 24 semitones — two
+octaves — above the same track's sequenced steps. The field and the
+correct behaviour already exist: `default_note` (`sequencer.rs:277`) is
+set via `with_default_note` (`:398`) and used correctly for pattern steps
+(`:412`) and pads (`:1764`); only `CMD_TRIG_NOW` bypasses it. Note
+`instrument.yaml`'s own comment claims this case was handled ("so a
+toggled step and a live pad trigger fire the same pitch (BUG-022)") — the
+hardcoded 60 defeats that intent.
+**Why the suites missed it:** `trig_now_uses_default_note_and_velocity_
+when_zero` (`sequencer.rs:4870`) builds a bare `Sequencer::new()`, whose
+`default_note` *is* 60 (`:490`), so the hardcoded constant passes. The
+test never calls `with_default_note`, so it structurally cannot detect
+the divergence — and its own assertion message claims it checks
+"`Step::empty()`'s defaults", which route through `self.default_note` and
+would be 36 on a configured track.
+**Location:** `crates/paraclete-nodes/src/sequencer.rs:809`.
+**Fix direction:** `60` → `self.default_note`. The regression test must
+configure a non-60 `default_note` and assert the live trig matches the
+track's sequenced steps, otherwise it re-admits the same blind spot.
+
+### BUG-045 — a hand-written step inherits stale micro-timing from an erased live-recorded step
+
+**Severity:** Medium — silently produces off-grid steps that look
+identical to on-grid ones on the panel; the user hit it immediately after
+erasing a live take and step-recording over it.
+**Phase found:** TK2.1 C8, usability session #3 (2026-07-29). User:
+"after erasing live rec steps when i step record new ones they have
+microtiming offset. step rec should be fully quantized."
+**Description:** Every manual step-write path ignores
+`timing.micro_offset`, so an offset written by live record survives
+erase-and-rewrite: `CMD_TOGGLE_STEP` (`sequencer.rs:601`) flips `active`
+only; `CMD_SET_STEP` (`:608`) writes `note` + `active` only; `CMD_CLEAR`
+(`:620`) sets `active = false` across the lane and leaves every offset in
+place, so even a lane clear does not restore the grid.
+`CMD_SET_STEP_TIMING` (`:631`) is the sole writer of the field.
+**Location:** `crates/paraclete-nodes/src/sequencer.rs:601`, `:608`,
+`:620`.
+**Fix direction:** Activating a step by hand should zero `micro_offset`.
+**One design question to settle first:** §0 A8 establishes that
+`CMD_CLEAR` deliberately *preserves* per-step data (locks survive a
+clear), so does micro-timing belong with locks (survives) or with steps
+(cleared)? The user's rule — "step rec should be fully quantized" —
+settles the toggle-on case; the lane-clear case is still a choice. Also
+interacts with OQ-T29 (quantization control): if a quantize mode lands,
+"hand-written steps are always on-grid" may become a setting rather than
+an invariant.
+
+### BUG-046 — holding a trig in `Grid` rapid-toggles the step via OS auto-repeat
+
+**Severity:** Medium-High — destroys pattern data under a perfectly
+natural gesture (holding a step), and blocks the D15 momentary p-lock
+gesture, which depends on a sustained hold.
+**Phase found:** TK2.1 C8, usability session #3 (2026-07-29). User:
+"holding q makes it rapidly toggle."
+**Description:** `lib.rs:681` suppresses `KeyEventKind::Repeat` for
+**exactly one button** — `KeyEventKind::Repeat if button ==
+PanelButton::Rec => true` — so every other button, trigs included, passes
+OS/terminal auto-repeat pulses through to action resolution, re-firing
+`Action::ToggleStep` once per pulse. This app requests
+`REPORT_EVENT_TYPES`, so repeats do arrive on the kitty path. C1's
+hostile review found this exact defect class for `ToggleRec` and fixed it
+only for `Rec`; the same reasoning ("once per physical press, not once
+per repeat pulse") applies verbatim to trigs.
+**Location:** `crates/paraclete-theotokos/src/lib.rs:681`.
+**Fix direction:** Consume `Repeat` for trig buttons as well, so a step
+toggle is once-per-physical-press. Note this is a **prerequisite** for
+any coherent hold-a-trig gesture, so it should land with (or before) the
+p-lock authoring decision (OQ-T27, reopened by session #3) rather than
+independently. A regression test analogous to C1's repeat test
+(`lib.rs:2124-2140`) should pin it.
