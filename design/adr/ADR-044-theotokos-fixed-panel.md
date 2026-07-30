@@ -688,8 +688,71 @@ not re-narrated here. `design/theotokos/design.md` §5.1/§5.2 are
 rewritten as DETERMINED against this ADR in the same commit that adds
 this note. Session #3 (TK2.1 C8, user-paired, no code) is next.
 
+## Session #3 outcome — 2026-07-29 (amendments, not corrections)
+
+Usability session #3 (`design/sessions/theotokos-3.md`) judged this ADR as
+built. Per the project's own stance — a ratified ADR is a frontloaded
+hypothesis, not a contract — the following are **amendments on new
+evidence**, appended rather than rewritten, per this document's convention.
+
+**Confirmed by play, closed:** D1/D2, D5, D6, D7 (intent), D8. Session #2's
+reopening of `design.md` §5.1/§5.2 is discharged.
+
+**D1 confirmed, but its stated goal is redirected.** The panel converged
+because it reads as a *terminal* — "digital, hardcore… weird unix and
+hacker culture" — not because it reads as a hardware front panel, which is
+what D1 literally asked for. Future layout work should stop treating
+hardware skeuomorphism as the target. This also bears on the **TKW**
+roadmap track: a rasterised native window imitating hardware moves away
+from what the user values; a WASM/browser host preserves the text
+character.
+
+**D3/D4 — placement model replaced (mechanism kept).** Chips work, but key
+hints must sit *adjacent to their referent*, with the legend strip carrying
+only affordances that have no on-screen referent; and hidden chips must
+reserve their columns, because D1 guaranteed fixed region *heights* and
+never column stability. Superseded by TK2.2 E1/E2/E3. Concrete defects
+behind this: `render.rs:487-495` drops `[k]` outright in `Grid`, reflowing
+the track line; `render.rs:272` omits `[n] ENC` and `[m] LOCK` from the
+`Grid` legend, so `[m]` — a `Grid`-*only* gesture — is advertised only on
+screens where it does not apply.
+
+**D9 — direction confirmed, implementation unusable in `Grid`.** "Much
+improved over chord." But `lib.rs:626` is not gated on ENC, so in
+`Grid`+ENC one trig press both arms a momentary p-lock and jogs; the jog
+then routes to the lock (`lib.rs:1106`) and never to the live value, and
+bare trig stops writing steps. Superseded by TK2.2 E4.
+
+**D15 — the momentary half is RETIRED.** Not gated: removed. To p-lock
+encoder *N* on step *N* the hand must hold trig *N* and jog encoder *N* —
+the same physical key — so the gesture has a hole in its domain that no
+gating or timing fix reaches. Latched `[m]` has no such hole and is
+strictly more expressive. **This ADR predicted the cause itself in
+ADR-045's context section** ("in ENC mode the trig rows *are* the encoders,
+so the holding hand has nowhere to be"); session #3 confirmed it by play,
+which is an argument for unparking ADR-045 as the real answer.
+**OQ-T27 is reopened.**
+
+**D7 — intent stands, mechanism changes.** Boot-silent was verified on a
+pristine launch. But it is implemented as a surface-side workaround for
+BUG-039; ADR-046 T3 fixes that at the source and retires the startup
+`CMD_CLOCK_STOP`.
+
+**Bugs found inside the shipped work:** BUG-043 (transport has neither
+pause nor stop — the panel's most-used control; needs ADR-046, not a
+patch), BUG-044 (live pad trig two octaves high), BUG-045 (hand-written
+steps inherit stale micro-timing), BUG-046 (holding a trig rapid-toggles
+it). Two of the four are exactly the class the `TestBackend` render suites
+cannot see — the C7 report's own caveat coming true.
+
+**Implemented by:** `design/phases/tk2.2-theotokos.md` (C0–C4 execution-
+ready; C5 gated on ADR-046).
+
 ## Cross-references
 
+- `design/sessions/theotokos-3.md` — session #3 evidence and verdicts;
+  `design/phases/tk2.2-theotokos.md` — the fix-pass blueprint; ADR-046
+  (transport vocabulary, 🟡)
 - `design/sessions/theotokos-2.md`, `design/phases/tk2-report.md` — evidence
 - `design/phases/tk2.1-theotokos.md` — the commit blueprint
 - ADR-036 (Theotokos), ADR-037 (key remapping), ADR-038 (Elektron

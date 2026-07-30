@@ -51,3 +51,4 @@ but cannot resolve them without this index.
 | ADR-043 | `ADR-043-fm-voice.md` | FM voice — four-operator melodic FM, P14 model (accepted, 2026-07-23) |
 | ADR-044 | `ADR-044-theotokos-fixed-panel.md` | Theotokos fixed panel + trig-first mode model — TK2.1 redesign (accepted, 2026-07-28) |
 | ADR-045 | `ADR-045-cross-surface-lock-capture.md` | Cross-surface parameter-lock capture — any surface's value write becomes a p-lock while a step is armed (🟡 proposed) |
+| ADR-046 | `ADR-046-transport-command-vocabulary.md` | Transport command vocabulary — pause, stop, and who owns the rewind; closes BUG-043/BUG-039 (🟡 proposed) |

@@ -7,8 +7,13 @@ record all converged on first contact — session #2's reopening of
 `design.md` §5.1/§5.2 is discharged — but the session found **four bugs
 (BUG-043…046)** and **two structural design collisions** inside the
 shipped work, and covered 7 of 11 hypotheses before stopping at the
-user's direction. Sequence from here: **fix pass → decide OQ-T27's
-bare-trig ownership → session #4**. See "Session #3 outcome" below.
+user's direction. Sequence from here: **TK2.2 (the fix pass) → session
+#4**. See "Session #3 outcome" below.
+
+**This report is closed for TK2.1.** The follow-on work has its own spec —
+`design/phases/tk2.2-theotokos.md`, execution-ready for C0–C4, with C5
+gated on ADR-046 (🟡 proposed). A fresh session should start there and read
+`design/sessions/theotokos-3.md` for the evidence behind it.
 **Spec:** `design/phases/tk2.1-theotokos.md`
 **Design authority:** ADR-044 (✅ accepted 2026-07-28)
 **Baseline:** TK2 code-complete (C0–C9, `be565b9`), reopened by usability

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | 🟡 Proposed (2026-07-28) |
+| **Status** | 🟡 Proposed (2026-07-28) — **premise empirically confirmed 2026-07-29** by Theotokos usability session #3; recommend unparking (see "Session #3 evidence" below) |
 | **Author** | Agent (drafted at user request) |
 | **Ratification** | Awaits user decision on R1–R3 below |
 | **Scope** | `paraclete-app` (main-loop command drain), `paraclete-theotokos`, `paraclete-scripting` (one state-bus path), no engine change |
@@ -37,6 +37,30 @@ not have to come from the keyboard at all:
 - A future controller with real encoders is the eventual shape, but see
   "Hardware reality" — it does not exist here yet, and this decision does
   not depend on it.
+
+### Session #3 evidence — 2026-07-29
+
+**This document's central claim was confirmed by play**, independently and
+before this note was written. The paragraph above predicted that "on a
+keyboard the two hands compete for the same rows — in ENC mode the trig
+rows *are* the encoders, so the holding hand has nowhere to be." In session
+#3 the user reached exactly that conclusion unprompted, from the keyboard:
+*"how would holding q for plock? how would you jog q on step q?"*
+
+The sharpened form: to p-lock encoder *N* on step *N*, the hand must hold
+trig *N* (to address the step) and jog encoder *N* (`Shift`+trig *N* with
+ENC off, bare trig *N* with ENC on) — **the same physical key**. The
+momentary gesture therefore has a hole in its domain, not a tuning problem.
+ADR-044 D15's momentary half is consequently **retired** in TK2.2 E4, and
+latched `[m]` becomes the only keyboard-local p-lock gesture. **OQ-T27 is
+reopened**, which is what this ADR would close properly: the value does not
+have to come from the keyboard at all.
+
+Recommendation: unpark on this evidence. It is no longer a speculative
+ergonomics improvement — it is the only route that restores the reference
+workflow the keyboard structurally cannot express. See
+`design/sessions/theotokos-3.md` (F7/F11) and
+`design/phases/tk2.2-theotokos.md` §6 OQ-T27.
 
 The blocker is structural, not ergonomic. A surface's parameter write is
 addressed to the **engine node** (`CMD_BUMP_PARAM` → node 20's `decay`).
