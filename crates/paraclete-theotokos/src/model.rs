@@ -105,8 +105,11 @@ pub struct Model {
     /// TK2.1 C5b (D15): the shared p-lock target — replaces `step_focus`
     /// (deleted; its only reader, `Action::FocusStep`, was unreachable
     /// dead code — nothing has mapped a key to it since the TK2 C3 wiring
-    /// flip). Latched via `PanelButton::Lock` or momentary (kitty trig
-    /// hold); while `Some`, Theotokos's own parameter motion (ENC jog,
+    /// flip). Latched via `PanelButton::Lock` — the only p-lock gesture as
+    /// of TK2.2 E4; a momentary (kitty trig-hold) path existed briefly and
+    /// was retired (BUG-046: the domain hole where the target trig and its
+    /// own jog collapse onto one key has no gating fix). While `Some`,
+    /// Theotokos's own parameter motion (ENC jog,
     /// numpad slots, `:set`) routes to `CMD_SET_LOCK_TARGET`/
     /// `CMD_SET_STEP_LOCK` on that track's sequencer instead of the live
     /// bank. Published to `/script/theotokos/lock_step`.

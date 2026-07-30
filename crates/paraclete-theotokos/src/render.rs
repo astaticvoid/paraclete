@@ -879,7 +879,6 @@ fn render_help(frame: &mut Frame, area: Rect, data: &RenderData) {
         ("n", "ENC — toggle encoder-jog mode (bare trig jogs, any screen)"),
         ("FUNC+trig", "encoder jog, ENC off (top row up, bottom row down)"),
         ("m(hold)+trig, Grid", "LOCK — arm the trig's step as the p-lock target"),
-        ("hold trig, kitty", "Grid: momentary p-lock target for the hold"),
         ("1-6", "page select (TRIG SRC FLTR AMP FX MOD)"),
         ("7 / 8 / 9 / 0", "KIT / SETTINGS / SAMPLING / TEMPO"),
         ("Enter / Esc", "YES / NO (Esc also clears a set p-lock target)"),

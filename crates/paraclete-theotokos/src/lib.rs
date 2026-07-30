@@ -72,13 +72,6 @@ pub struct TheotokosApp {
     keymap: Keymap,
     /// TK2 C3 (D6): TRK/PTN hold-chord state — kitty-probed at startup.
     held: HeldState,
-    /// TK2.1 C5b (D15, hostile review finding): the `(track, col)` a
-    /// physically-held trig set as the momentary lock target, captured at
-    /// press time — release must clear `Model.lock_target` using THIS
-    /// stored pair, not a fresh `(active_track, col)` recompute, since
-    /// `active_track` (or `lock_target` itself, via an intervening Lock-
-    /// latched set) can change between a trig's press and release.
-    momentary_lock: Option<(usize, usize)>,
 }
 
 impl TheotokosApp {
@@ -156,7 +149,6 @@ impl TheotokosApp {
             last_debug_event: None,
             keymap,
             held: HeldState::new(kitty),
-            momentary_lock: None,
         })
     }
 
@@ -557,18 +549,13 @@ impl TheotokosApp {
                         ctrl: ev.modifiers.contains(KeyModifiers::CONTROL),
                     };
 
-                    // TK2.1 C5b (D15): snapshot BEFORE the Lock/Esc/
-                    // momentary blocks below mutate `lock_target` — the
-                    // eventual `button_to_action` resolution (the retap-
-                    // clears check in particular) must see the state as it
-                    // stood before THIS press, or a kitty trig press that
-                    // just armed the momentary target would immediately
-                    // read back its own just-set value as "already
-                    // targeted" and resolve as a clear instead of the
-                    // pad/step action it should still also produce (the
-                    // same "resolve against the state before this press"
-                    // principle `armed_before` already applies to TRK/PTN
-                    // below).
+                    // TK2.1 C5b (D15): snapshot BEFORE the Lock/Esc blocks
+                    // below mutate `lock_target` — the eventual
+                    // `button_to_action` resolution (the retap-clears check
+                    // in particular) must see the state as it stood before
+                    // THIS press (the same "resolve against the state
+                    // before this press" principle `armed_before` already
+                    // applies to TRK/PTN below).
                     let lock_target_step_before = self.model.lock_step_for_active_track();
 
                     // TK2.1 C5b (D15): pressing Lock while a target is
@@ -613,46 +600,6 @@ impl TheotokosApp {
                         dirty = true;
                     }
 
-                    // TK2.1 C5b (D15, momentary path): on a kitty
-                    // terminal, physically holding a trig in Grid mode
-                    // sets the lock target for the duration of the hold —
-                    // independent of the Lock key/latched path above (the
-                    // reference gesture: hold a step, turn an encoder).
-                    // Gated on no armed prefix (§0 A10 precedent, hostile
-                    // review finding): without this, holding TRK and
-                    // tapping a trig to switch tracks would spuriously arm
-                    // a p-lock target as a pure side effect of selection.
-                    if self.held.kitty && self.held.armed.is_none() && self.model.rec == RecMode::Grid {
-                        if let Some(col) = input::trig_col(button) {
-                            match ev.kind {
-                                KeyEventKind::Press => {
-                                    // Captured once, at press time (hostile
-                                    // review finding): release must clear
-                                    // using THIS pair, not a fresh
-                                    // `(active_track, col)` recompute —
-                                    // active_track (or lock_target itself,
-                                    // via an intervening Lock-latched set)
-                                    // can change before the release arrives.
-                                    let target = (self.model.active_track, col);
-                                    self.momentary_lock = Some(target);
-                                    self.model.lock_target = Some(target);
-                                    lock_target_changed = true;
-                                    dirty = true;
-                                }
-                                KeyEventKind::Release
-                                    if self.momentary_lock.is_some_and(|(_, c)| c == col)
-                                        && self.model.lock_target == self.momentary_lock =>
-                                {
-                                    self.model.lock_target = None;
-                                    self.momentary_lock = None;
-                                    lock_target_changed = true;
-                                    dirty = true;
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-
                     // D6: resolve against the hold state as it stood
                     // BEFORE this press — a completed chord (on_press /
                     // on_kitty_press already disarmed it as a side effect)
@@ -678,7 +625,24 @@ impl TheotokosApp {
                             // Repeats are consumed silently; `armed` is
                             // already `Some(Hold::Rec)` from the initial
                             // press and stays that way.
-                            KeyEventKind::Repeat if button == PanelButton::Rec => true,
+                            //
+                            // TK2.2 C1 (BUG-046): trig buttons need the same
+                            // treatment. `on_kitty_press` returns `false`
+                            // for a trig (it isn't a hold prefix), so
+                            // without this arm a physical hold would
+                            // resolve `button_to_action` on every repeat
+                            // pulse — a held `Grid` trig rapid-toggling the
+                            // step it's sitting on. A step write is
+                            // once-per-physical-press; only the initial
+                            // `Press` (which falls through to
+                            // `on_kitty_press` below and is NOT consumed)
+                            // should ever resolve an action.
+                            KeyEventKind::Repeat
+                                if button == PanelButton::Rec
+                                    || input::trig_col(button).is_some() =>
+                            {
+                                true
+                            }
                             _ => self.held.on_kitty_press(button),
                         }
                     } else {
@@ -946,10 +910,12 @@ impl TheotokosApp {
                 }
                 // TK2.1 C1 (D6): a trig in a pad mode (Off/Live) sounds
                 // AND selects track `col` — arg0/arg1 = 0 resolve to the
-                // engine's defaults (note 60, velocity 0.5). A column past
-                // the discovered track count is a silent no-op (no echo —
-                // D3 also gives those columns no chip); order is
-                // normative, selection lands before the trig command.
+                // track's own default_note and velocity 0.5 (BUG-044: this
+                // must match what that track's own sequenced steps sound,
+                // not a fixed constant). A column past the discovered track
+                // count is a silent no-op (no echo — D3 also gives those
+                // columns no chip); order is normative, selection lands
+                // before the trig command.
                 Action::LiveTrig { col } => {
                     if col < self.model.tracks.len() {
                         self.model.select_track(col);
@@ -1858,7 +1824,6 @@ mod tests {
             last_debug_event: None,
             keymap: Keymap::default(),
             held: HeldState::new(false),
-            momentary_lock: None,
         }
     }
 
@@ -2145,6 +2110,97 @@ mod tests {
             RecMode::Grid,
             "auto-repeat pulses while REC stays physically held must not \
              re-toggle the mode"
+        );
+    }
+
+    /// TK2.2 C1 (BUG-046): a held trig on a kitty terminal streams
+    /// `KeyEventKind::Repeat` the same as REC (D5) — before this fix only
+    /// REC's repeats were consumed, so holding a trig in Grid mode re-fired
+    /// `Action::ToggleStep` once per repeat pulse and rapid-flipped the
+    /// step for as long as the key stayed physically down. A step write is
+    /// once-per-physical-press.
+    #[test]
+    fn held_trig_in_grid_toggles_step_exactly_once() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.held.kitty = true;
+        app.model.rec = RecMode::Grid;
+
+        app.handle_keys(&bus, &[kc('q')]); // press: Trig1 toggles step 0
+
+        let repeat =
+            KeyEvent::new_with_kind(KeyCode::Char('q'), KeyModifiers::NONE, KeyEventKind::Repeat);
+        app.handle_keys(&bus, &[repeat, repeat, repeat]);
+
+        let release = KeyEvent::new_with_kind(
+            KeyCode::Char('q'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        app.handle_keys(&bus, &[release]);
+
+        let toggles = app
+            .pending
+            .iter()
+            .filter(|c| c.type_id == crate::action::CMD_TOGGLE_STEP)
+            .count();
+        assert_eq!(
+            toggles, 1,
+            "a held trig (Press + N*Repeat + Release) must toggle the step \
+             exactly once, not once per repeat pulse"
+        );
+    }
+
+    /// TK2.2 C1 (E4): the bare trig has exactly one owner per mode. With no
+    /// lock target armed, a bare trig in Grid with ENC on jogs the encoder
+    /// — it must not also, as a side effect, arm a p-lock target the way
+    /// the now-retired momentary path used to (BUG-046's root cause: the
+    /// two gestures shared one physical key with no way to disambiguate
+    /// them).
+    #[test]
+    fn bare_trig_in_grid_enc_on_jogs_and_leaves_lock_target_none() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.held.kitty = true;
+        app.model.rec = RecMode::Grid;
+        app.model.enc = true;
+
+        let param_id = ParamDescriptor::id_for_name("cutoff");
+        app.model
+            .caps
+            .get_mut(&100)
+            .unwrap()
+            .params
+            .push(ParamDescriptor {
+                id: param_id,
+                name: "cutoff".into(),
+                min: 20.0,
+                max: 20000.0,
+                default: 1000.0,
+                stepped: false,
+                unit: ParamUnit::Generic,
+                display: None,
+            });
+        app.model.composite = vec![composite_view_with_param(100, param_id)];
+
+        app.handle_keys(&bus, &[kc('q')]); // bare Trig1, ENC on
+
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.type_id == paraclete_node_api::CMD_BUMP_PARAM),
+            "ENC on must jog the live param"
+        );
+        assert!(
+            !app.pending
+                .iter()
+                .any(|c| c.type_id == crate::action::CMD_TOGGLE_STEP),
+            "ENC on owns the bare trig exclusively — no ToggleStep alongside the jog"
+        );
+        assert_eq!(
+            app.model.lock_target, None,
+            "a bare jog trig must not incidentally arm a p-lock target (E4: \
+             one owner per mode)"
         );
     }
 
@@ -2529,7 +2585,6 @@ mod tests {
             last_debug_event: None,
             keymap: Keymap::default(),
             held: HeldState::new(false),
-            momentary_lock: None,
         };
         let decay_id = ParamDescriptor::id_for_name("decay");
         let tune_id = ParamDescriptor::id_for_name("tune");
@@ -2711,98 +2766,6 @@ mod tests {
             app.model.lock_target,
             Some((0, 0)),
             "the pending arm must have survived to set the target"
-        );
-    }
-
-    /// TK2.1 C5b (D15, momentary path): on a kitty terminal, physically
-    /// holding a trig in Grid mode sets the lock target for the duration
-    /// of the hold, independent of the Lock key.
-    #[test]
-    fn kitty_trig_hold_sets_lock_target_for_the_hold() {
-        let bus = test_bus();
-        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
-        app.held.kitty = true;
-        app.model.rec = RecMode::Grid;
-
-        app.handle_keys(&bus, &[kc('q')]); // press (default kind)
-        assert_eq!(
-            app.model.lock_target,
-            Some((0, 0)),
-            "holding a trig in Grid mode must set the momentary target"
-        );
-        assert!(
-            app.pending.iter().any(|c| c.type_id == crate::action::CMD_TOGGLE_STEP),
-            "the held trig's own ordinary action (ToggleStep) must still \
-             fire alongside the momentary set, not be suppressed by it"
-        );
-
-        let release =
-            KeyEvent::new_with_kind(KeyCode::Char('q'), KeyModifiers::NONE, KeyEventKind::Release);
-        app.handle_keys(&bus, &[release]);
-        assert_eq!(
-            app.model.lock_target, None,
-            "releasing the held trig must clear the momentary target"
-        );
-    }
-
-    /// TK2.1 C5b (D15, hostile review finding): holding TRK (a chord
-    /// prefix) and tapping a trig to switch tracks must not spuriously arm
-    /// a p-lock target as a side effect of selection — the momentary path
-    /// only applies with no armed prefix (§0 A10 precedent).
-    #[test]
-    fn momentary_lock_does_not_arm_during_a_trk_chord() {
-        let bus = test_bus();
-        let mut app = test_app(
-            1,
-            vec![200, 201],
-            vec![100, 101],
-            vec!["T1".into(), "T2".into()],
-        );
-        app.held.kitty = true;
-        app.model.rec = RecMode::Grid;
-
-        let trk_press = KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE);
-        app.handle_keys(&bus, &[trk_press]); // arms Hold::Trk
-        app.handle_keys(&bus, &[kc('w')]); // Trig2 -> selects track 1
-        assert_eq!(app.model.active_track, 1);
-        assert_eq!(
-            app.model.lock_target, None,
-            "a TRK+trig track-select chord must not arm a lock target"
-        );
-    }
-
-    /// TK2.1 C5b (D15, hostile review finding): a momentary hold's release
-    /// must clear using the (track, col) pair captured at press time, not
-    /// a fresh recompute against whatever the active track is by the time
-    /// the release arrives — otherwise a track switch mid-hold leaves the
-    /// target stuck.
-    #[test]
-    fn momentary_lock_release_uses_the_press_time_track() {
-        let bus = test_bus();
-        let mut app = test_app(
-            1,
-            vec![200, 201],
-            vec![100, 101],
-            vec!["T1".into(), "T2".into()],
-        );
-        app.held.kitty = true;
-        app.model.rec = RecMode::Grid;
-
-        app.handle_keys(&bus, &[kc('q')]); // hold Trig1 on track 0
-        assert_eq!(app.model.lock_target, Some((0, 0)));
-
-        // Active track changes while the trig is still physically held
-        // (e.g. via a `:track` command) — the release below must still
-        // clear the target captured at press time.
-        app.model.select_track(1);
-
-        let release =
-            KeyEvent::new_with_kind(KeyCode::Char('q'), KeyModifiers::NONE, KeyEventKind::Release);
-        app.handle_keys(&bus, &[release]);
-        assert_eq!(
-            app.model.lock_target, None,
-            "release must clear using the press-time track, not the \
-             (now different) active track"
         );
     }
 
@@ -3038,7 +3001,6 @@ mod tests {
             last_debug_event: None,
             keymap: Keymap::default(),
             held: HeldState::new(false),
-            momentary_lock: None,
         };
 
         // 10 params split into 2 sub-pages (8 + 2).

@@ -217,7 +217,8 @@ pub fn trig_button(col: usize) -> Option<PanelButton> {
 }
 
 /// The inverse of `trig_button`: `None` for any non-trig button. `pub`:
-/// `lib.rs` (TK2.1 C5b) needs it for the momentary lock-target path.
+/// `lib.rs` needs it to gate the repeat-consumption guard on trig buttons
+/// (TK2.2 C1, BUG-046).
 pub fn trig_col(button: PanelButton) -> Option<usize> {
     use PanelButton::*;
     match button {
