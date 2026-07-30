@@ -4,6 +4,47 @@
 > were front-loaded. Read this before starting any commit if you are not the
 > model/author that wrote the specs.
 
+## ▶ START HERE — active implementation phase (2026-07-29)
+
+**TK2.2 — the Theotokos fix pass. Start at
+`design/phases/tk2.2-theotokos.md` C0 and work forward.**
+Execution-ready C0–C5; C6 is a user-paired session (no code). Read
+`design/sessions/theotokos-3.md` first for the evidence behind it.
+
+Design authority: ADR-044 (✅ accepted, **amended** by session #3 — see its
+"Session #3 outcome" note), ADR-046 (✅ accepted 2026-07-29, R1–R4 settled)
+for C5.
+
+**Five places where making the tests pass is the *wrong* instinct** — every
+one is a test or invariant that currently encodes the bug:
+1. **C0** — `trig_now_uses_default_note_and_velocity_when_zero` passes
+   *because* of BUG-044 (it builds a bare `Sequencer::new()` whose default
+   *is* the hardcoded value). Rewrite it to assert live trig == sequenced
+   step; do not adapt it.
+2. **C1** — grep `momentary` to **zero** in `paraclete-theotokos`; delete
+   the C5b press-time-capture regressions rather than adapting them, since
+   they exist only to protect a retired gesture.
+3. **C2** — the `CMD_CLEAR` micro-timing ruling must be stated in the commit
+   message, and TK2 §0 A8 ("locks survive a clear") pinned in the same test.
+4. **C3** — the required new regression asserts the track line occupies
+   **identical columns** in `Off` and `Grid`. That is the test that would
+   have caught F3.
+5. **C5** — `sequencer.rs:925`'s `global_start` branch bundles four
+   behaviours including the **BUG-001 entry-step fire**. A mechanical rename
+   makes a rewind start playback and emit a note; R3 permits rewind while
+   running, so it would also double-fire. Decomposition and tests are
+   spelled out in ADR-046 and C5.
+
+Per-commit process is unchanged and non-optional: `cargo test --workspace`
+green, clippy clean on touched crates, **a fresh-context hostile review on
+every staged commit**, code and doc changes in separate commits. On TK2.1
+that gate caught a real defect on every commit but one.
+
+**Deliberately parked, not forgotten:** ADR-045 (cross-surface lock
+capture) — its premise was empirically confirmed by session #3, but session
+#4 should first judge whether TK2.2 E4's latched-only p-lock suffices in
+play. Do not unpark it as part of this phase.
+
 ## The situation
 
 The current arc (P10 + the W-track) was designed and specified in full ahead
@@ -22,14 +63,15 @@ implementation follows in a separate commit.
 
 For the Theotokos performance-terminal track (ADR-036 **accepted
 2026-07-21**): `design/theotokos/problem.md` → `design/theotokos/design.md`
-→ the current phase spec. TK0 and TK1 shipped; **TK2 is code-complete
-(C0–C9) but did not sign off** — usability session #2 reopened the panel
-layout and the default mode model (`design/sessions/theotokos-2.md`,
-`design/phases/tk2-report.md`). **ADR-044 was ratified 2026-07-28; TK2.1 is the active
-implementation phase.** Start at `design/phases/tk2.1-theotokos.md` C0 and
-work forward — the spec is execution-ready and each commit lists the
-existing sites it must update to stay green. Design authority is
-`design/adr/ADR-044-theotokos-fixed-panel.md` (✅ accepted).
+→ the current phase spec. Track history: TK0 and TK1 shipped. **TK2** was
+code-complete (C0–C9) but did not sign off — usability session #2 reopened
+the panel layout and the default mode model (`theotokos-2.md`,
+`tk2-report.md`). **TK2.1** (ADR-044, ratified 2026-07-28) rebuilt the panel
+and is **code-complete C0–C7**; usability **session #3 held 2026-07-29**
+signed off the redesign but found four bugs and two structural design
+collisions inside it (`design/sessions/theotokos-3.md`,
+`design/phases/tk2.1-report.md` — that report is **closed**).
+**→ The active phase is TK2.2. See "START HERE" at the top of this file.**
 
 ## Task routing by tier
 

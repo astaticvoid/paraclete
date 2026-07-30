@@ -6,6 +6,17 @@
 `design/roadmap.md` (current sequence) → relevant phase spec in
 `design/phases/`.
 
+**Implementing? The active phase is named in `design/handoff.md`'s
+"▶ START HERE" block at the top of that file — read it before touching
+code.** It names the phase spec, its design authority, the per-commit
+process gate, and the places in the current phase where making the tests
+pass is the *wrong* instinct. As of 2026-07-29 that phase is **TK2.2**
+(`design/phases/tk2.2-theotokos.md`, C0–C5), the fix pass after Theotokos
+usability session #3.
+
+`CLAUDE.md` is a symlink to this file, so Claude Code loads it
+automatically; keep the content here, not there.
+
 ## Build/test gotchas
 
 ```bash
