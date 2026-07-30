@@ -803,11 +803,15 @@ impl Sequencer {
                     }
                 }
                 Self::CMD_TRIG_NOW => {
-                    // <= 0 (not just == 0) resolves to the default note: a
-                    // negative arg0 is malformed input, not a request for
-                    // MIDI note 0, so it must not silently become one.
+                    // <= 0 (not just == 0) resolves to the track's
+                    // default_note: a negative arg0 is malformed input, not
+                    // a request for MIDI note 0, so it must not silently
+                    // become one. Must match the note a sequenced step on
+                    // this track would sound (BUG-044) — a hardcoded value
+                    // here makes a live pad hit sound different from the
+                    // same track's own steps.
                     let note = if cmd.arg0 <= 0 {
-                        60
+                        self.default_note
                     } else {
                         cmd.arg0.clamp(0, 127) as u8
                     };
@@ -4868,14 +4872,35 @@ mod tests {
 
     #[test]
     fn trig_now_uses_default_note_and_velocity_when_zero() {
-        let mut seq = Sequencer::new();
+        // BUG-044: a live pad trig must sound the same note as this
+        // track's own sequenced steps, not a hardcoded constant — checked
+        // against a non-default `default_note` so a hardcode cannot pass.
+        let mut seq = Sequencer::new().with_default_note(36);
         let events = run_seq_with_cmds_events(&mut seq, &[trig_now_cmd(0, 0.0)]);
         let hit = note_on_pitch_velocity(&events);
         assert_eq!(
             hit,
-            Some((60, 32768)),
-            "arg0=0/arg1=0.0 must resolve to Step::empty()'s defaults (note 60, velocity 32768/65535)"
+            Some((36, 32768)),
+            "arg0=0/arg1=0.0 must resolve to this track's default_note (36), matching its sequenced steps"
         );
+    }
+
+    #[test]
+    fn trig_now_matches_sequenced_step_note_at_another_default() {
+        // A second value distinct from both the old hardcode (60) and the
+        // first case (36), so a future hardcode of either cannot pass.
+        let mut seq = Sequencer::new().with_default_note(48);
+        let live_events = run_seq_with_cmds_events(&mut seq, &[trig_now_cmd(0, 0.0)]);
+        let live_note = note_on_pitch_velocity(&live_events)
+            .expect("CMD_TRIG_NOW must emit a NoteOn")
+            .0;
+
+        let sequenced_note = seq.patterns[seq.active_pattern].steps[0].note;
+        assert_eq!(
+            live_note, sequenced_note,
+            "a live pad trig must sound the same note as this track's sequenced step 0"
+        );
+        assert_eq!(live_note, 48);
     }
 
     #[test]
