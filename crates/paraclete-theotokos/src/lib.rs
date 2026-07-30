@@ -2154,9 +2154,9 @@ mod tests {
     /// TK2.2 C1 (E4): the bare trig has exactly one owner per mode. With no
     /// lock target armed, a bare trig in Grid with ENC on jogs the encoder
     /// — it must not also, as a side effect, arm a p-lock target the way
-    /// the now-retired momentary path used to (BUG-046's root cause: the
-    /// two gestures shared one physical key with no way to disambiguate
-    /// them).
+    /// the now-retired hold-to-arm gesture used to (BUG-046's root cause:
+    /// the two gestures shared one physical key with no way to
+    /// disambiguate them).
     #[test]
     fn bare_trig_in_grid_enc_on_jogs_and_leaves_lock_target_none() {
         let bus = test_bus();
