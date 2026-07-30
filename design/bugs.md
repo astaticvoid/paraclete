@@ -6,7 +6,8 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ## Status (2026-07-30)
 
-**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), INFRA-008 (emulator polls keyboard on the audio thread — **gate now lifted**, Theotokos has been the default surface since TK0/TK1; ready to fix, not yet started), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, **BUG-042** (live_rec can double-trigger the synth when a live trig quantizes onto an imminent step boundary — low severity, scoped out of TK2.1 C3b, fix direction filed), **BUG-047** (`kick_reverb_clean.yaml` dropout assertion fails — pre-existing, found incidentally during TK2.2 C5's regression sweep, unrelated to ADR-046; see entry below).
+**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, **BUG-042** (live_rec can double-trigger the synth when a live trig quantizes onto an imminent step boundary — low severity, scoped out of TK2.1 C3b, fix direction filed), **BUG-047** (`kick_reverb_clean.yaml` dropout assertion fails — pre-existing, found incidentally during TK2.2 C5's regression sweep, unrelated to ADR-046; see entry below).
+**Fixed 2026-07-30:** INFRA-008 (`0d0dca7`) — see entry below.
 **Fixed 2026-07-30 (TK2.2 C0–C5, `9f62cef`…`8595db6` + follow-up `4fe3f5f`):** BUG-043, BUG-044, BUG-045, BUG-046 (see entries below) and **BUG-039** (`InternalClock` now boots `playing: false` at the source — ADR-046 T3 — closing this at the root rather than the ADR-044 D7 surface-side workaround, which is retired in the same phase).
 **Fixed 2026-07-28:** BUG-041 (`f2576f4`) — `CMD_CLOCK_STOP` now emits a `global_stop` transport event on the net transition to stopped; gated on final playing state (not a mid-batch flag) so a STOP reversed later in the same batch doesn't emit a spurious stop (hostile-review finding, folded before commit). Regression test drives a real `InternalClock` → `Sequencer` pair. **BUG-040** (`87fcbcc`, TK2.1 C4) — encoder resolution now reads real cap-doc `min`/`max`/`stepped` instead of faking `0..1`; p-lock clamp and jog step-size both fixed.
 **Descoped 2026-07-29 (TK2.1 C7):** BUG-038 — the arrow-cursor half was made moot by ENC mode (D9) and its dead code deleted; the numpad-slot half stays an explicit open question (OQ-T24), *not* silently dropped. It was reserved for usability session #3, which was held 2026-07-29 but did not reach it — and it is **not testable as built** (the numpad input side is unwired), so it carries to session #4 as a decision rather than an experiment.
@@ -1223,6 +1224,21 @@ of I/O. Theotokos (ADR-036) is designed around this — it reads keys on the
 main thread and is mutually exclusive with the emulator via `--theotokos` —
 so the fix is gated on the Theotokos track rather than blocking it. If Theotokos
 lands and the emulator stays as the no-hardware dev tool, fix it there.
+
+**RESOLVED** (`0d0dca7`, 2026-07-30): gate lifted (Theotokos has been the
+default surface since TK0/TK1). Landed differently than this entry's
+sketch: rather than a main-loop-ticked `EmulatorInputHandle`, the fix
+mirrors `LaunchpadNode`'s existing MIDI-input pattern more directly — a
+dedicated background thread owns all `crossterm` I/O and pushes raw
+events into an `Arc<Mutex<VecDeque<Event>>>`; `process()` drains it via a
+non-blocking `try_lock`, popping one event per lock acquisition (not
+`drain().collect()`, which would allocate on the audio thread — caught
+and fixed before commit). Chosen over the main-loop-tick sketch because
+crossterm has no callback API to hook into a `SurfaceOutputHandle`-style
+tick, and this needed its own thread regardless; the audio-thread-side
+contract (non-blocking drain, no I/O) is identical either way. All
+existing `apply_press`/`apply_release`/mode-cycling logic and tests are
+unchanged — only where the terminal is actually read moved.
 
 ---
 
