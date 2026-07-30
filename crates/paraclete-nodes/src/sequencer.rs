@@ -927,6 +927,23 @@ impl Sequencer {
             }
         }
 
+        // ADR-046 R2 (renamed from global_start): set position to the
+        // window start, independent of whether we are currently playing
+        // (R3 — a rewind is valid while running, "return to top"). This
+        // must NOT also set `playing` or fire the entry step: a mechanical
+        // rename that kept the old branch's four behaviours together would
+        // make CMD_CLOCK_REWIND start playback and emit a note, and since
+        // R3 permits rewind while running, a mid-play rewind would
+        // double-fire against the ordinary boundary path (ratification
+        // hazard note). Both are decomposed below, gated on the actual
+        // playing-state transition.
+        if k.flags.global_rewind {
+            let (wstart, _) = self.window();
+            self.current_step = wstart;
+            self.step_tick = 0;
+            self.reset_period();
+        }
+
         if k.flags.global_stop {
             self.playing = false;
             if self.gate_open {
@@ -944,25 +961,29 @@ impl Sequencer {
             return;
         }
 
-        if k.flags.global_start {
-            self.playing = true;
-            // Transport start enters the pattern at the page-loop window's
-            // first step (P10 C2) — step 0 for the default full window.
-            let (wstart, _) = self.window();
-            self.current_step = wstart;
-            self.step_tick = 0;
-            self.reset_period();
-            // Fire the entry step (BUG-001 fix): previously the first step
-            // was never emitted by the boundary path and only sounded via
-            // the bar-sync snap. The start event IS tick 0 of that step —
-            // return so it is not also counted as progress.
-            let step_active = self.patterns[pat].steps[wstart].active;
+        // ADR-046 hazard note: `playing` derives from the transport's own
+        // flag, symmetric with how global_stop clears it above — not from
+        // the rewind flag, which used to conflate the two.
+        let was_playing = self.playing;
+        self.playing = k.flags.playing;
+
+        // BUG-001 fix, decomposed: fire the entry step on the transition
+        // into playing, not on rewind — a rewind-while-stopped must stay
+        // silent, and a rewind-while-running must not double-fire against
+        // the ordinary boundary path below. Uses the CURRENT position,
+        // which the global_rewind branch above may have just relocated
+        // (a normal start with no rewind plays on from wherever the
+        // transport last stopped, per ADR-046 T1's "no implicit rewind").
+        if !was_playing && self.playing {
+            let step_active = self.patterns[pat].steps[self.current_step].active;
             if step_active {
-                let cond = self.patterns[pat].steps[wstart].condition.clone();
+                let cond = self.patterns[pat].steps[self.current_step]
+                    .condition
+                    .clone();
                 if cond.evaluate(&self.cycle_state, &mut self.rng) {
-                    let note_off = sample_offset + self.step_sample_offset(wstart, spb);
-                    self.emit_note_on_at(wstart, note_off, output);
-                    for lock in &self.patterns[pat].steps[wstart].param_locks {
+                    let note_off = sample_offset + self.step_sample_offset(self.current_step, spb);
+                    self.emit_note_on_at(self.current_step, note_off, output);
+                    for lock in &self.patterns[pat].steps[self.current_step].param_locks {
                         if !self.is_muted() {
                             output.events_out.push(TimedEvent::new(
                                 note_off,
@@ -976,6 +997,14 @@ impl Sequencer {
                     }
                 }
             }
+            return;
+        }
+
+        if k.flags.global_rewind {
+            // A rewind that wasn't also a transition into playing (already
+            // running, or still stopped) has nothing further to do this
+            // event — it repositioned above and must not fall into the
+            // per-tick advance below; this event is not a boundary tick.
             return;
         }
 
@@ -2056,7 +2085,7 @@ mod tests {
     fn transport_tick(
         tick: u32,
         playing: bool,
-        global_start: bool,
+        global_rewind: bool,
         global_stop: bool,
         sync_pulse: bool,
     ) -> TimedEvent {
@@ -2073,7 +2102,7 @@ mod tests {
                 time_sig_den: 4,
                 flags: TransportFlags {
                     playing,
-                    global_start,
+                    global_rewind,
                     global_stop,
                     sync_pulse,
                     ..TransportFlags::default()
@@ -2206,10 +2235,20 @@ mod tests {
 
     #[test]
     fn clock_stop_emits_global_stop() {
-        use crate::internal_clock::{InternalClock, CMD_CLOCK_STOP};
+        use crate::internal_clock::{InternalClock, CMD_CLOCK_START, CMD_CLOCK_STOP};
 
         let mut clock = InternalClock::new();
         clock.activate(44100.0, 512);
+
+        // ADR-046 T3: the clock boots stopped, so STOP must start from a
+        // playing state to actually transition (and so emit anything).
+        let start = NodeCommand {
+            target_id: 0,
+            type_id: CMD_CLOCK_START,
+            arg0: 0,
+            arg1: 0.0,
+        };
+        drive_clock(&mut clock, &[start]);
 
         let stop = NodeCommand {
             target_id: 0,
@@ -2615,15 +2654,92 @@ mod tests {
         })
     }
 
+    /// ADR-046: the BUG-001 entry-step fire lives on the transition into
+    /// playing, not on rewind (the ratification hazard note this phase's
+    /// decomposition exists to address) — so a normal start (`playing`
+    /// alone, no `global_rewind`) must still fire step 0 exactly once.
+    /// Replaces `sequencer_fires_step0_on_global_start`, which combined
+    /// `playing` and `global_rewind` on the same synthetic event and so
+    /// could not distinguish which flag actually caused the fire.
     #[test]
-    fn sequencer_fires_step0_on_global_start() {
+    fn normal_start_fires_entry_step_exactly_once() {
         let mut seq = Sequencer::new();
         seq.activate(44100.0, 64);
         seq.set_step(0, 60, 32768, true);
+        let out = run_seq(&mut seq, &[transport_tick(0, true, false, false, false)]);
+        let note_on_count = out
+            .iter()
+            .filter(|e| {
+                matches!(e, Event::Midi2(ump)
+                    if matches!(ump, UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_))))
+            })
+            .count();
+        assert_eq!(
+            note_on_count, 1,
+            "a normal start (playing alone, no rewind) must fire its entry \
+             step exactly once (BUG-001 regression)"
+        );
+        assert!(seq.playing, "playing must derive from the transport's flag");
+    }
+
+    /// ADR-046 R1/T2: rewind while stopped must relocate the sequencer's
+    /// position but stay silent — the entry-step fire is gated on the
+    /// transition into playing, which a rewind alone is not.
+    #[test]
+    fn rewind_while_stopped_is_silent_and_moves_position() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.set_step(0, 60, 32768, true);
+        seq.set_step(5, 62, 32768, true);
+        assert!(!seq.playing, "sanity: stopped");
+
+        // Move off step 0 first (as if a prior session had advanced),
+        // then rewind while stopped — playing:false throughout.
+        seq.current_step = 5;
+        let out = run_seq(&mut seq, &[transport_tick(0, false, true, false, false)]);
+
+        assert!(
+            !contains_note_on(&out),
+            "a rewind while stopped must not sound anything"
+        );
+        assert!(!seq.playing, "a rewind alone must not start playback");
+        assert_eq!(
+            seq.current_step, 0,
+            "a rewind must relocate to the window start even while stopped"
+        );
+    }
+
+    /// ADR-046 R3/ratification hazard note: rewind while running must
+    /// relocate without double-firing the entry step — a mechanical rename
+    /// that kept the old four-behaviour branch together would make a
+    /// mid-play rewind emit a note twice (once from the rewind, once from
+    /// the ordinary boundary path).
+    #[test]
+    fn rewind_while_running_relocates_without_double_firing() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        for i in 0..16 {
+            seq.set_step(i, 60, 32768, true);
+        }
+
+        // Start normally (no rewind needed — already at step 0) and let
+        // the transport carry it forward off step 0.
+        run_seq(&mut seq, &[transport_tick(0, true, false, false, false)]);
+        seq.current_step = 5;
+        assert!(seq.playing, "sanity: running");
+
         let out = run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
         assert!(
-            contains_note_on(&out),
-            "step 0 must fire on the global_start event (BUG-001 fix)"
+            !contains_note_on(&out),
+            "a rewind while running must not itself fire a note — it is \
+             not a transition into playing, so firing here would double-\
+             fire against the ordinary boundary path that plays the \
+             relocated step in due course"
+        );
+        assert!(seq.playing, "must still be playing after the rewind");
+        assert_eq!(
+            seq.current_step, 0,
+            "must have relocated to the window start"
         );
     }
 

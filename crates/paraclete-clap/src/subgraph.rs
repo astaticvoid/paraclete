@@ -215,7 +215,7 @@ fn build_machine_subgraph(
 
 /// Emit a transport event only on playing-state transitions.
 ///
-/// Returns `Some(global_start)` on false→true, `Some(global_stop)` on true→false,
+/// Returns `Some(global_rewind)` on false→true, `Some(global_stop)` on true→false,
 /// `None` on stable state. This prevents the Sequencer from resetting its step
 /// counter on every audio buffer.
 fn transport_transition_event(
@@ -233,7 +233,7 @@ fn transport_transition_event(
             time_sig_num: 4,
             time_sig_den: 4,
             flags: TransportFlags {
-                global_start: true,
+                global_rewind: true,
                 playing: true,
                 ..TransportFlags::default()
             },

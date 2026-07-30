@@ -855,8 +855,11 @@ pub fn button_to_action(
         PanelButton::Rec if !mods.func => Action::ToggleRec,
         // TK2 C4 (D7): FUNC+REC copies the active lane.
         PanelButton::Rec => Action::CopyLane,
-        // TK2 C4 (D7): FUNC+STOP pastes. Bare STOP has no meaning yet.
+        // TK2 C4 (D7): FUNC+STOP pastes.
         PanelButton::Stop if mods.func => Action::PasteLane,
+        // ADR-046 T5: bare STOP halts in place and rewinds to the window
+        // start — the reference box's "stop", distinct from PLAY's pause.
+        PanelButton::Stop => Action::Stop,
         PanelButton::PagePrev => Action::PageWindow(Dir::Prev),
         PanelButton::PageNext => Action::PageWindow(Dir::Next),
         PanelButton::Pg1 => open_or_cycle_sub_page(screen, 0),

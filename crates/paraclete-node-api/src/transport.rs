@@ -51,8 +51,11 @@ pub struct TransportFlags {
     pub loop_end: bool,
     /// Master transport stop. All TempoSource nodes respond regardless of domain.
     pub global_stop: bool,
-    /// Master transport start. All TempoSource nodes respond regardless of domain.
-    pub global_start: bool,
+    /// ADR-046 R2 (renamed from `global_start`): set position to the window
+    /// start. Independent of `playing` — a rewind can arrive while running
+    /// (R3, "return to top") or while stopped. Does NOT itself start or
+    /// stop the transport; that is `playing`'s job alone.
+    pub global_rewind: bool,
     /// Full position sync pulse. Emitted every bar by the TempoSource node.
     /// Downstream nodes should snap their internal position to this event.
     pub sync_pulse: bool,

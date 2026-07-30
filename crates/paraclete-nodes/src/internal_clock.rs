@@ -7,6 +7,10 @@ use paraclete_node_api::{
 
 pub const CMD_CLOCK_START: u32 = 16;
 pub const CMD_CLOCK_STOP:  u32 = 17;
+/// ADR-046 T1: set position to the window start, independent of `playing`
+/// (R3: valid while running too). Replaces the implicit rewind that used
+/// to ride along with `CMD_CLOCK_START`.
+pub const CMD_CLOCK_REWIND: u32 = 18;
 
 /// The internal clock master. Provides the primary clock domain in standalone mode.
 ///
@@ -29,9 +33,6 @@ pub struct InternalClock {
     /// Sub-sample accumulator. Advances by ticks_per_sample each frame.
     tick_accumulator: f64,
     sample_rate: f32,
-    /// True until the first TransportEvent is emitted — triggers global_start so
-    /// downstream nodes (Sequencer) know to begin playback.
-    first_tick: bool,
 }
 
 impl Default for InternalClock {
@@ -79,10 +80,15 @@ impl InternalClock {
             tick: 0,
             time_sig_num: 4,
             time_sig_den: 4,
-            playing: true,
+            // ADR-046 T3: boots stopped — closes BUG-039 at the source.
+            // Every surface used to auto-start; Theotokos's own
+            // startup CMD_CLOCK_STOP (ADR-044 D7) was a surface-side
+            // workaround for this and is retired in the same phase
+            // (TK2.2 C5) that lands this, not left as a second mechanism
+            // for the same invariant.
+            playing: false,
             tick_accumulator: 0.0,
             sample_rate: 44100.0,
-            first_tick: true,
         }
     }
 
@@ -97,8 +103,6 @@ impl InternalClock {
         output: &mut ProcessOutput,
     ) {
         let is_bar_start = self.beat == 0 && self.tick == 0;
-        let is_first = self.first_tick;
-        self.first_tick = false;
 
         output.events_out.push(TimedEvent::new(
             sample_offset,
@@ -114,7 +118,9 @@ impl InternalClock {
                 flags: TransportFlags {
                     playing: self.playing,
                     sync_pulse: is_bar_start,
-                    global_start: is_first,  // signals downstream nodes to begin
+                    // ADR-046 T1/T2: a natural per-sample tick is never a
+                    // rewind — only the dedicated `emit_rewind_event` carries
+                    // that flag, on an explicit CMD_CLOCK_REWIND.
                     ..TransportFlags::default()
                 },
             }),
@@ -133,31 +139,38 @@ impl InternalClock {
         }
     }
 
-    /// Returns whether a `CMD_CLOCK_STOP` transitioned `self.playing` from
-    /// true to false — the caller combines this with the *final*
-    /// `self.playing` (after commands AND
-    /// incoming events) to decide whether to emit `global_stop` (BUG-041),
-    /// so a STOP reversed later in the same batch — by a `CMD_CLOCK_START`
-    /// here or an incoming `global_start` event — does not emit a stale,
-    /// spurious stop (hostile review finding). Scoped to the command path
-    /// only: a bare incoming `global_stop` event (unreachable in today's
-    /// single-domain graph) is unchanged, matching BUG-041's fix direction.
-    fn handle_commands(&mut self, commands: &[NodeCommand]) -> bool {
+    /// Returns `(saw_stop_command, saw_rewind_command)`. The stop half:
+    /// whether a `CMD_CLOCK_STOP` transitioned `self.playing` from true to
+    /// false — the caller combines this with the *final* `self.playing`
+    /// (after commands AND incoming events) to decide whether to emit
+    /// `global_stop` (BUG-041), so a STOP reversed later in the same batch
+    /// — by a `CMD_CLOCK_START` here or an incoming `global_rewind` event —
+    /// does not emit a stale, spurious stop (hostile review finding).
+    /// Scoped to the command path only: a bare incoming `global_stop` event
+    /// (unreachable in today's single-domain graph) is unchanged, matching
+    /// BUG-041's fix direction.
+    ///
+    /// ADR-046 T1: `CMD_CLOCK_START` no longer implies a rewind — it only
+    /// ever sets `playing = true`. `CMD_CLOCK_REWIND` (R3: valid regardless
+    /// of `playing`) is tracked separately and always signalled via
+    /// `emit_rewind_event`, never folded into the natural tick stream.
+    fn handle_commands(&mut self, commands: &[NodeCommand]) -> (bool, bool) {
         let bpm_id = ParamDescriptor::id_for_name(Self::PARAM_BPM);
         let mut saw_stop_command = false;
+        let mut saw_rewind_command = false;
         for cmd in commands {
             match cmd.type_id {
                 CMD_CLOCK_START => {
-                    if !self.playing {
-                        self.playing = true;
-                        self.first_tick = true;
-                    }
+                    self.playing = true;
                 }
                 CMD_CLOCK_STOP => {
                     if self.playing {
                         saw_stop_command = true;
                     }
                     self.playing = false;
+                }
+                CMD_CLOCK_REWIND => {
+                    saw_rewind_command = true;
                 }
                 CMD_SET_PARAM => {
                     if cmd.arg0 as u32 == bpm_id {
@@ -172,11 +185,11 @@ impl InternalClock {
                 _ => {}
             }
         }
-        saw_stop_command
+        (saw_stop_command, saw_rewind_command)
     }
 
-    /// Mirror of `emit_transport`'s `global_start` emission (BUG-041): the one
-    /// event downstream nodes (Sequencer) need to clear their own `playing` flag.
+    /// Mirror of `emit_transport`'s emission (BUG-041): the one event
+    /// downstream nodes (Sequencer) need to clear their own `playing` flag.
     fn emit_stop_event(&mut self, output: &mut ProcessOutput) {
         output.events_out.push(TimedEvent::new(
             0,
@@ -192,6 +205,34 @@ impl InternalClock {
                 flags: TransportFlags {
                     playing: false,
                     global_stop: true,
+                    ..TransportFlags::default()
+                },
+            }),
+        ));
+    }
+
+    /// ADR-046 T1/R3: one immediate event carrying `global_rewind`,
+    /// regardless of `playing` — a rewind must relocate downstream nodes
+    /// even while stopped (silently: no note, since the entry-step fire is
+    /// gated on the transition into playing, not on rewind, at the
+    /// sequencer). `playing` on the event mirrors current state so a
+    /// rewind-while-running is distinguishable from a rewind-while-stopped
+    /// by any listener.
+    fn emit_rewind_event(&mut self, output: &mut ProcessOutput) {
+        output.events_out.push(TimedEvent::new(
+            0,
+            Event::Transport(TransportEvent {
+                domain_id: self.domain_id_val,
+                bar: self.bar,
+                beat: self.beat,
+                tick: self.tick,
+                ticks_per_beat: TICKS_PER_BEAT,
+                bpm: self.bpm,
+                time_sig_num: self.time_sig_num,
+                time_sig_den: self.time_sig_den,
+                flags: TransportFlags {
+                    playing: self.playing,
+                    global_rewind: true,
                     ..TransportFlags::default()
                 },
             }),
@@ -237,25 +278,36 @@ impl Node for InternalClock {
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
-        let saw_stop_command = self.handle_commands(input.commands);
+        let (saw_stop_command, saw_rewind_command) = self.handle_commands(input.commands);
 
+        // Cross-domain sync (unexercised in today's single-domain graph,
+        // out of ADR-046's scope — mechanically renamed only): an incoming
+        // global_rewind from another clock domain still also starts this
+        // one if it wasn't already playing, preserving prior behaviour.
         for timed in input.events {
             if let Event::Transport(te) = timed.event {
                 if te.flags.global_stop {
                     self.playing = false;
-                } else if te.flags.global_start && !self.playing {
+                } else if te.flags.global_rewind && !self.playing {
                     self.playing = true;
-                    self.first_tick = true;
                 }
             }
         }
 
         // BUG-041: gate on the FINAL playing state, not a mid-batch flag —
         // a STOP reversed later in the same batch (a CMD_CLOCK_START here,
-        // or an incoming global_start event) must not emit a spurious
+        // or an incoming global_rewind event) must not emit a spurious
         // global_stop the caller never asked for (hostile review finding).
         if saw_stop_command && !self.playing {
             self.emit_stop_event(output);
+        }
+
+        // ADR-046 T1/R3: a rewind is signalled regardless of `playing` —
+        // unlike the tick loop below, this must not be gated on
+        // `!self.playing { return; }`, or a rewind-while-stopped would
+        // never reach downstream nodes.
+        if saw_rewind_command {
+            self.emit_rewind_event(output);
         }
 
         if !self.playing { return; }
@@ -270,7 +322,6 @@ impl Node for InternalClock {
             self.tick_accumulator += tps;
 
             if self.tick_accumulator.floor() > prev_floor {
-                // emit_transport needs &mut self for first_tick flag — split borrows
                 let sample_offset = frame as u32;
                 let bpm = effective_bpm;
                 self.emit_transport(sample_offset, bpm, output);
@@ -305,10 +356,6 @@ mod tests {
         AudioBuffer, EventOutputBuffer, Event, ExtendedEventSlab, TransportInfo, Node,
         ProcessInput, ProcessOutput,
     };
-
-    fn run_internal_clock(node: &mut InternalClock, block_size: usize) -> Vec<Event> {
-        run_internal_clock_with_events(node, block_size, &[])
-    }
 
     fn run_internal_clock_with_events(
         node: &mut InternalClock,
@@ -362,7 +409,9 @@ mod tests {
     fn internal_clock_emits_transport_events_each_cycle() {
         let mut node = InternalClock::new();
         node.activate(44100.0, 512);
-        let events = run_internal_clock(&mut node, 512);
+        // ADR-046 T3: boots stopped — must be started explicitly.
+        let start = NodeCommand { target_id: 0, type_id: CMD_CLOCK_START, arg0: 0, arg1: 0.0 };
+        let events = run_internal_clock_with_commands(&mut node, 512, &[], &[start]);
         // At 120 BPM, 44100 Hz: ticks/sample = 120/60 * 960 / 44100 ≈ 0.0435
         // In 512 samples: ~22 ticks → should have ~22 TransportEvents
         assert!(!events.is_empty(), "expected transport events but got none");
@@ -374,9 +423,12 @@ mod tests {
         let mut node = InternalClock::new();
         node.activate(44100.0, 512);
 
-        // Run enough cycles to hit a bar start (bar=1, beat=0, tick=0 is the initial start)
-        // The very first tick emitted should have sync_pulse = true (it starts at bar 1, beat 0, tick 0)
-        let events = run_internal_clock(&mut node, 512);
+        // ADR-046 T3: boots stopped — must be started explicitly. Run
+        // enough cycles to hit a bar start (bar=1, beat=0, tick=0 is the
+        // initial start) — the very first tick emitted should have
+        // sync_pulse = true (it starts at bar 1, beat 0, tick 0).
+        let start = NodeCommand { target_id: 0, type_id: CMD_CLOCK_START, arg0: 0, arg1: 0.0 };
+        let events = run_internal_clock_with_commands(&mut node, 512, &[], &[start]);
         let has_sync = events.iter().any(|e| {
             if let Event::Transport(k) = e { k.flags.sync_pulse } else { false }
         });
@@ -416,7 +468,11 @@ mod tests {
         let mut node = InternalClock::new();
         node.activate(44100.0, 512);
 
-        let first = run_internal_clock(&mut node, 512);
+        // ADR-046 T3: boots stopped — must be started explicitly before
+        // this test's own premise ("clock must emit ticks before stop")
+        // holds.
+        let start = NodeCommand { target_id: 0, type_id: CMD_CLOCK_START, arg0: 0, arg1: 0.0 };
+        let first = run_internal_clock_with_commands(&mut node, 512, &[], &[start]);
         assert!(!first.is_empty(), "clock must emit ticks before stop");
 
         let stop_event = TimedEvent::new(0, Event::Transport(TransportEvent {
@@ -434,7 +490,7 @@ mod tests {
     }
 
     #[test]
-    fn internal_clock_resumes_after_global_stop_then_global_start() {
+    fn internal_clock_resumes_after_global_stop_then_global_rewind() {
         use paraclete_node_api::{TimedEvent, TransportEvent, TransportFlags, TICKS_PER_BEAT};
 
         let mut node = InternalClock::new();
@@ -449,16 +505,20 @@ mod tests {
         let silent = run_internal_clock_with_events(&mut node, 512, &[stop_event]);
         assert!(silent.is_empty(), "must be silent after stop");
 
-        let start_event = TimedEvent::new(0, Event::Transport(TransportEvent {
+        // ADR-046 (out-of-scope cross-domain path, mechanically renamed
+        // only, see `process()`'s comment): an incoming global_rewind with
+        // `playing: true` still also starts this clock if it wasn't
+        // already playing, preserving pre-ADR-046 behaviour for this path.
+        let rewind_event = TimedEvent::new(0, Event::Transport(TransportEvent {
             domain_id: 0, bar: 1, beat: 0, tick: 0,
             ticks_per_beat: TICKS_PER_BEAT, bpm: 120.0,
             time_sig_num: 4, time_sig_den: 4,
-            flags: TransportFlags { global_start: true, playing: true, ..TransportFlags::default() },
+            flags: TransportFlags { global_rewind: true, playing: true, ..TransportFlags::default() },
         }));
-        let resumed = run_internal_clock_with_events(&mut node, 512, &[start_event]);
+        let resumed = run_internal_clock_with_events(&mut node, 512, &[rewind_event]);
         assert!(
             !resumed.is_empty(),
-            "clock must emit ticks after GlobalStart following a stop"
+            "clock must emit ticks after an incoming global_rewind following a stop"
         );
     }
 
@@ -485,10 +545,22 @@ mod tests {
         );
     }
 
+    /// ADR-046 T1: `CMD_CLOCK_START` no longer implies a rewind — replaces
+    /// `clock_start_via_command_plays_and_resets_first_tick`, which
+    /// asserted the retired compound behaviour (the first tick after START
+    /// used to carry `global_start`). This is a statement about the new
+    /// semantics, not a green-at-any-cost patch.
     #[test]
-    fn clock_start_via_command_plays_and_resets_first_tick() {
+    fn clock_start_via_command_plays_without_rewinding() {
         let mut node = InternalClock::new();
         node.activate(44100.0, 512);
+
+        // ADR-046 T3: boots stopped, so establish a playing state first —
+        // STOP against an already-stopped clock is a no-op transition
+        // (see `clock_stop_is_idempotent`), not what this test is about.
+        let initial_start = NodeCommand { target_id: 0, type_id: CMD_CLOCK_START, arg0: 0, arg1: 0.0 };
+        run_internal_clock_with_commands(&mut node, 512, &[], &[initial_start]);
+        assert!(node.playing, "sanity: playing before the stop under test");
 
         let stop = NodeCommand { target_id: 0, type_id: CMD_CLOCK_STOP, arg0: 0, arg1: 0.0 };
         let stopped = run_internal_clock_with_commands(&mut node, 512, &[], &[stop]);
@@ -506,44 +578,45 @@ mod tests {
         assert!(!resumed.is_empty(), "must emit ticks after CMD_CLOCK_START");
         assert!(node.playing, "playing must be true after CMD_CLOCK_START");
 
+        assert!(
+            resumed
+                .iter()
+                .all(|e| matches!(e, Event::Transport(te) if !te.flags.global_rewind)),
+            "CMD_CLOCK_START must never emit a global_rewind — no implicit rewind (ADR-046 T1)"
+        );
         let first = &resumed[0];
         match first {
-            Event::Transport(te) => {
-                assert!(te.flags.global_start,
-                    "first tick after CMD_CLOCK_START must carry global_start flag");
-                assert!(te.flags.playing);
-            }
+            Event::Transport(te) => assert!(te.flags.playing),
             _ => panic!("expected Transport event, got {:?}", first),
         }
     }
 
+    /// ADR-046 T1: replaces `clock_start_is_idempotent_does_not_reset_first_tick`
+    /// — with rewind fully decoupled from starting, "idempotent" now means
+    /// a redundant START neither rewinds nor otherwise disturbs playback.
     #[test]
-    fn clock_start_is_idempotent_does_not_reset_first_tick() {
+    fn clock_start_is_idempotent_and_never_rewinds() {
         let mut node = InternalClock::new();
         node.activate(44100.0, 512);
 
         let start = NodeCommand { target_id: 0, type_id: CMD_CLOCK_START, arg0: 0, arg1: 0.0 };
         let first = run_internal_clock_with_commands(&mut node, 512, &[], &[start]);
         assert!(node.playing);
-
-        let has_global_start = first.iter().any(|e| {
-            matches!(e, Event::Transport(te) if te.flags.global_start)
-        });
-        assert!(has_global_start,
-            "first tick when auto-started must carry global_start");
-        let first_tick_before = node.first_tick;
-        assert!(!first_tick_before, "first_tick consumed by emit_transport during first block");
+        assert!(
+            first
+                .iter()
+                .all(|e| matches!(e, Event::Transport(te) if !te.flags.global_rewind)),
+            "an initial START must not emit global_rewind"
+        );
 
         let redundant = run_internal_clock_with_commands(&mut node, 512, &[], &[start]);
         assert!(!redundant.is_empty(), "still emits ticks");
-
-        let redundant_has_global_start = redundant.iter().any(|e| {
-            matches!(e, Event::Transport(te) if te.flags.global_start)
-        });
-        assert!(!redundant_has_global_start,
-            "redundant START must not re-emit global_start");
-        assert_eq!(node.first_tick, first_tick_before,
-            "redundant START must not reset first_tick");
+        assert!(
+            redundant
+                .iter()
+                .all(|e| matches!(e, Event::Transport(te) if !te.flags.global_rewind)),
+            "a redundant START must not emit global_rewind either"
+        );
     }
 
     #[test]
@@ -625,5 +698,121 @@ mod tests {
         let big_up = NodeCommand { target_id: 0, type_id: CMD_BUMP_PARAM, arg0: bpm_id as i64, arg1: 999.0 };
         run_internal_clock_with_commands(&mut node, 512, &[], &[big_up]);
         assert!((node.bpm - 300.0).abs() < 0.001, "must clamp at ceiling 300.0");
+    }
+
+    /// ADR-046 T3 (closes BUG-039): the clock boots stopped at the source
+    /// — no surface-side workaround (ADR-044 D7's startup CMD_CLOCK_STOP,
+    /// retired in the same phase) is needed to keep the instrument silent.
+    #[test]
+    fn internal_clock_boots_stopped() {
+        let node = InternalClock::new();
+        assert!(
+            !node.playing,
+            "a fresh InternalClock must boot stopped (BUG-039)"
+        );
+    }
+
+    /// ADR-046 T1/R3: a rewind while stopped must relocate (signal
+    /// downstream) but emit nothing audible — the entry-step fire lives at
+    /// the sequencer, gated on the transition into playing, not on
+    /// rewind. Here at the clock, "emits nothing audible" means the
+    /// emitted event carries `playing: false`, matching the stopped state.
+    #[test]
+    fn rewind_while_stopped_emits_one_event_with_playing_false() {
+        let mut node = InternalClock::new();
+        node.activate(44100.0, 512);
+        assert!(!node.playing, "sanity: boots stopped");
+
+        let rewind = NodeCommand { target_id: 0, type_id: CMD_CLOCK_REWIND, arg0: 0, arg1: 0.0 };
+        let events = run_internal_clock_with_commands(&mut node, 512, &[], &[rewind]);
+
+        assert_eq!(
+            events.len(),
+            1,
+            "a rewind while stopped must emit exactly one event, not start the tick stream"
+        );
+        match &events[0] {
+            Event::Transport(te) => {
+                assert!(te.flags.global_rewind, "the event must carry global_rewind");
+                assert!(
+                    !te.flags.playing,
+                    "must reflect the stopped state, not start it"
+                );
+            }
+            other => panic!("expected Transport event, got {:?}", other),
+        }
+        assert!(
+            !node.playing,
+            "CMD_CLOCK_REWIND alone must not start playback"
+        );
+    }
+
+    /// ADR-046 R3: rewind is valid while running — a musical "return to
+    /// top" that keeps playing, without stopping the tick stream.
+    #[test]
+    fn rewind_while_running_keeps_playing_and_relocates() {
+        let mut node = InternalClock::new();
+        node.activate(44100.0, 512);
+
+        let start = NodeCommand { target_id: 0, type_id: CMD_CLOCK_START, arg0: 0, arg1: 0.0 };
+        run_internal_clock_with_commands(&mut node, 512, &[], &[start]);
+        assert!(node.playing, "sanity: running");
+
+        let rewind = NodeCommand { target_id: 0, type_id: CMD_CLOCK_REWIND, arg0: 0, arg1: 0.0 };
+        let events = run_internal_clock_with_commands(&mut node, 512, &[], &[rewind]);
+
+        assert!(
+            node.playing,
+            "a rewind while running must not stop the clock"
+        );
+        let rewind_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, Event::Transport(te) if te.flags.global_rewind))
+            .collect();
+        assert_eq!(
+            rewind_events.len(),
+            1,
+            "exactly one rewind event, not a rewind per subsequent tick"
+        );
+        match rewind_events[0] {
+            Event::Transport(te) => assert!(te.flags.playing, "must reflect the running state"),
+            _ => unreachable!(),
+        }
+    }
+
+    /// ADR-046 T4/R4: clock-level `playing`, `bar`, `beat`, `tick` are
+    /// published so any surface can render the transport from state alone.
+    #[test]
+    fn published_state_includes_playing_and_position() {
+        let mut node = InternalClock::new();
+        node.activate(44100.0, 512);
+        let mut state = Vec::new();
+        node.published_state(&mut state);
+
+        let playing = state.iter().find(|(k, _)| k == "/transport/playing");
+        assert_eq!(
+            playing.map(|(_, v)| v.clone()),
+            Some(paraclete_node_api::StateBusValue::Bool(false)),
+            "a fresh clock must publish playing=false (T3)"
+        );
+        for path in ["/transport/bar", "/transport/beat", "/transport/tick"] {
+            assert!(
+                state.iter().any(|(k, _)| k == path),
+                "{path} must be published so a surface can render position from state alone"
+            );
+        }
+
+        let start = NodeCommand { target_id: 0, type_id: CMD_CLOCK_START, arg0: 0, arg1: 0.0 };
+        run_internal_clock_with_commands(&mut node, 512, &[], &[start]);
+        let mut state_after = Vec::new();
+        node.published_state(&mut state_after);
+        assert_eq!(
+            state_after
+                .iter()
+                .find(|(k, _)| k == "/transport/playing")
+                .map(|(_, v)| v.clone()),
+            Some(paraclete_node_api::StateBusValue::Bool(true)),
+            "published playing must track the actual state after a start"
+        );
     }
 }

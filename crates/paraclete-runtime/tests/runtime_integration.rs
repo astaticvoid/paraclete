@@ -1352,7 +1352,7 @@ fn transport_override_event_delivered_to_nodes() {
         time_sig_num: 4,
         time_sig_den: 4,
         flags: TransportFlags {
-            global_start: true,
+            global_rewind: true,
             ..TransportFlags::default()
         },
     };
@@ -1364,7 +1364,7 @@ fn transport_override_event_delivered_to_nodes() {
     let guard = received.lock().unwrap();
     let found = guard
         .iter()
-        .any(|e| matches!(e, Event::Transport(te) if te.flags.global_start));
+        .any(|e| matches!(e, Event::Transport(te) if te.flags.global_rewind));
     assert!(
         found,
         "set_transport_override event must reach nodes (not be cleared by incoming.clear())"

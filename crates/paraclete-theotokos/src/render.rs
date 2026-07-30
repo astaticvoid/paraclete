@@ -454,13 +454,16 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
 
     // TK2.2 C3 (E1): [z]/[x]/[0] move onto the glyph/readout they act on
     // instead of the legend strip — the glyph/readout IS the referent.
-    // [c] STOP is deliberately absent here until ADR-046 lands (C5).
+    // TK2.2 C5: [c] STOP rejoins them now that ADR-046 gives it a meaning
+    // (halt + rewind) — it sits directly on the play/pause glyph, the same
+    // element it and [x] both act on.
     let tempo_chip = inline_chip(data, PanelButton::Tempo);
     let play_chip = inline_chip(data, PanelButton::Play);
+    let stop_chip = inline_chip(data, PanelButton::Stop);
     let rec_chip = inline_chip(data, PanelButton::Rec);
 
     let prefix = format!(
-        " {tempo_chip}{:.1} BPM  {play_chip}{}  ",
+        " {tempo_chip}{:.1} BPM  {play_chip}{}{stop_chip}  ",
         data.bpm, play_sym
     );
     let suffix = format!(
@@ -2090,13 +2093,29 @@ mod tests {
             buffer_row_text(&terminal, legend_row0, 100),
             buffer_row_text(&terminal, legend_row0 + 1, 100),
         );
-        for absent in ["[z]", "[x]", "[p]", "[Tab]", "[0]"] {
+        for absent in ["[z]", "[x]", "[p]", "[Tab]", "[0]", "[c]"] {
             assert!(
                 !legend_text.contains(absent),
                 "the legend must not advertise {absent:?} — it moved \
                  inline; got: {legend_text:?}"
             );
         }
+    }
+
+    /// TK2.2 C5 (E1 completion, ADR-046): [c] STOP rejoins the transport
+    /// line's inline chips now that it has a meaning (halt + rewind).
+    #[test]
+    fn transport_line_shows_stop_chip() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let data = RenderData::for_test(Screen::Grid, 1);
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("[c]"),
+            "the transport line must advertise [c] STOP; got: {text}"
+        );
     }
 
     /// D3: chip casing is display-only — multi-character key names

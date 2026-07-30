@@ -3,6 +3,9 @@ use paraclete_node_api::NodeCommand;
 
 pub const CMD_CLOCK_START: u32 = 16;
 pub const CMD_CLOCK_STOP: u32 = 17;
+/// ADR-046 T1 (mirrors `InternalClock::CMD_CLOCK_REWIND`): set position to
+/// the window start, independent of `playing`.
+pub const CMD_CLOCK_REWIND: u32 = 18;
 pub const CMD_TOGGLE_STEP: u32 = 16;
 pub const GRID_STEPS: usize = 16;
 /// TK1 C5: lock command family (mirrors Sequencer constants).
@@ -99,6 +102,11 @@ pub enum Action {
     /// C5b: re-pressing the trig that set the target, pressing Lock again
     /// while a target is set, or Esc — all clear it.
     ClearLockTarget,
+
+    /// ADR-046 T5: bare STOP — halt in place, then rewind to the window
+    /// start (`CMD_CLOCK_STOP` + `CMD_CLOCK_REWIND`, in that order). This
+    /// is the reference box's "stop" grammar: PLAY alone only pauses.
+    Stop,
 }
 
 #[derive(Debug)]
@@ -139,6 +147,10 @@ impl Action {
             | Action::NudgeBpm(_)
             | Action::ChainPush
             | Action::ChainClear
+            // ADR-046 T5: dispatched directly in lib.rs — needs two
+            // commands (STOP + REWIND), which this enum's single-command
+            // `Outcome::Command` cannot represent.
+            | Action::Stop
             | Action::MoveChainCursor(_)
             | Action::Echo(_)
             | Action::ToggleEnc

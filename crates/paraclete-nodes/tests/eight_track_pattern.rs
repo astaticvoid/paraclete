@@ -15,7 +15,7 @@ use paraclete_nodes::{Sequencer, TRACKS};
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn mk_transport(tick: u32, playing: bool, global_start: bool) -> paraclete_node_api::TimedEvent {
+fn mk_transport(tick: u32, playing: bool, global_rewind: bool) -> paraclete_node_api::TimedEvent {
     paraclete_node_api::TimedEvent::new(
         0,
         Event::Transport(TransportEvent {
@@ -29,7 +29,7 @@ fn mk_transport(tick: u32, playing: bool, global_start: bool) -> paraclete_node_
             time_sig_den: 4,
             flags: TransportFlags {
                 playing,
-                global_start,
+                global_rewind,
                 ..TransportFlags::default()
             },
         }),
@@ -88,7 +88,7 @@ fn fired_steps(seq: &mut Sequencer, preset_steps: &[usize]) -> HashSet<usize> {
 
     let mut all_notes: Vec<u8> = Vec::new();
 
-    // global_start
+    // global_rewind
     let start_events = run_seq(seq, &[mk_transport(0, true, true)]);
     all_notes.extend(note_on_notes(&start_events));
 

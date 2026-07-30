@@ -124,8 +124,8 @@ fn bridge_make_set_param_command_correct() {
 }
 
 #[test]
-fn translate_transport_start_transition_emits_global_start() {
-    // prev_playing=false → playing=true: global_start event expected.
+fn translate_transport_start_transition_emits_global_rewind() {
+    // prev_playing=false → playing=true: global_rewind event expected.
     let flags = CLAP_TRANSPORT_IS_PLAYING | CLAP_TRANSPORT_HAS_BEATS_TIMELINE;
     let (info, event) = translate_transport(flags, 140.0, 0, false);
 
@@ -137,8 +137,8 @@ fn translate_transport_start_transition_emits_global_start() {
 
     let ev = event.expect("event should be Some on play-start transition");
     assert!(
-        ev.flags.global_start,
-        "global_start should be true on play-start transition"
+        ev.flags.global_rewind,
+        "global_rewind should be true on play-start transition"
     );
     assert!(
         !ev.flags.global_stop,
@@ -172,8 +172,8 @@ fn translate_transport_stop_transition_emits_global_stop() {
         "global_stop should be true on stop transition"
     );
     assert!(
-        !ev.flags.global_start,
-        "global_start should be false on stop"
+        !ev.flags.global_rewind,
+        "global_rewind should be false on stop"
     );
 }
 

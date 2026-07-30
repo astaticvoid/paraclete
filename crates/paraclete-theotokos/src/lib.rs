@@ -18,8 +18,8 @@ use ratatui::Terminal;
 
 use crate::action::{
     Action, Outcome, CMD_CHAIN_CLEAR, CMD_CHAIN_PUSH, CMD_CLEAR, CMD_CLEAR_STEP_LOCK,
-    CMD_CLOCK_START, CMD_CLOCK_STOP, CMD_SET_LOCK_TARGET, CMD_SET_PATTERN, CMD_SET_STEP_LOCK,
-    CMD_TRIG_NOW, PATTERN_BANK_SIZE,
+    CMD_CLOCK_REWIND, CMD_CLOCK_START, CMD_CLOCK_STOP, CMD_SET_LOCK_TARGET, CMD_SET_PATTERN,
+    CMD_SET_STEP_LOCK, CMD_TRIG_NOW, PATTERN_BANK_SIZE,
 };
 use crate::input::{
     button_to_action, key_label, key_to_button, trig_button, HeldState, Keymap, Mods, PanelButton,
@@ -84,25 +84,6 @@ pub struct TheotokosApp {
 }
 
 impl TheotokosApp {
-    /// TK2.1 C1 (D7): the command(s) issued once at startup, pushed onto
-    /// `pending` before the first drain — `Model::new` boots with
-    /// `rec: RecMode::Off`, but the clock itself (`InternalClock::new`,
-    /// BUG-039) still constructs `playing: true`, so this is what actually
-    /// makes the instrument boot silent. Honest bound: `main.rs` ticks the
-    /// executor before draining commands, so frame 1 still paints
-    /// `playing = true` — "boots stopped" holds from the first drain, not
-    /// the first frame. A free function (not a method) so both `new` and
-    /// the `new_pushes_clock_stop` test can build the same value without
-    /// duplicating the `NodeCommand` literal.
-    fn startup_commands(clock_id: u32) -> Vec<NodeCommand> {
-        vec![NodeCommand {
-            target_id: clock_id,
-            type_id: CMD_CLOCK_STOP,
-            arg0: 0,
-            arg1: 0.0,
-        }]
-    }
-
     pub fn new(config: TheotokosConfig) -> Result<Self, String> {
         setup_keyboard_flags()?;
 
@@ -126,8 +107,12 @@ impl TheotokosApp {
         // chord falls back to the sticky one-shot grammar (§0 A9).
         let kitty = crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false);
 
-        let mut pending = Vec::with_capacity(64);
-        pending.extend(Self::startup_commands(config.clock_id));
+        // ADR-046 T3: no startup command needed — `InternalClock` boots
+        // `playing: false` at the source (closes BUG-039). ADR-044 D7's
+        // startup `CMD_CLOCK_STOP` was a surface-side workaround for the
+        // clock's old `playing: true` construction and is retired here,
+        // not left as a second mechanism for the same invariant.
+        let pending = Vec::with_capacity(64);
 
         // TK2 C8 (D11): global→local YAML load at startup. TK2.1 C6
         // (D14): a stale entry (e.g. a retired button name) no longer
@@ -826,6 +811,25 @@ impl TheotokosApp {
                         Outcome::Quit => self.quit = true,
                         _ => {}
                     }
+                }
+                // ADR-046 T5: bare STOP = halt in place, then rewind to
+                // the window start. Two commands — outside `execute()`'s
+                // single-`Outcome::Command` shape, so dispatched directly
+                // here, same pattern as EnterLiveRec/CopyLane/PasteLane.
+                Action::Stop => {
+                    self.pending.push(NodeCommand {
+                        target_id: self.model.clock_id,
+                        type_id: CMD_CLOCK_STOP,
+                        arg0: 0,
+                        arg1: 0.0,
+                    });
+                    self.pending.push(NodeCommand {
+                        target_id: self.model.clock_id,
+                        type_id: CMD_CLOCK_REWIND,
+                        arg0: 0,
+                        arg1: 0.0,
+                    });
+                    dirty = true;
                 }
                 Action::ToggleStep { .. } => {
                     let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
@@ -1849,21 +1853,6 @@ mod tests {
         KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
     }
 
-    /// TK2.1 C1 (D7): `test_app` bypasses `TheotokosApp::new` (it runs
-    /// `setup_keyboard_flags`, unusable headless in CI), so this asserts
-    /// directly on the `startup_commands` seam `new` calls.
-    #[test]
-    fn new_pushes_clock_stop() {
-        let commands = TheotokosApp::startup_commands(7);
-        assert!(
-            commands
-                .iter()
-                .any(|c| c.target_id == 7 && c.type_id == CMD_CLOCK_STOP),
-            "startup must push a CMD_CLOCK_STOP for the clock node, so the \
-             first command drain boots the instrument silent (D7)"
-        );
-    }
-
     #[test]
     fn equals_increments_page_window() {
         let bus = test_bus();
@@ -2437,6 +2426,36 @@ mod tests {
             !app.pending.is_empty(),
             "FUNC+STOP must produce paste commands"
         );
+    }
+
+    /// ADR-046 T5: bare STOP is halt-in-place then rewind — two commands,
+    /// STOP before REWIND (the ordering the phase spec's decomposition
+    /// hazard note relies on: a stop-then-rewind pair applied to a running
+    /// InternalClock must land as "halted at the window start", not
+    /// "rewound then immediately restarted").
+    #[test]
+    fn bare_stop_emits_stop_then_rewind_in_order() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+
+        app.handle_keys(&bus, &[kc('c')]);
+
+        assert_eq!(
+            app.pending.len(),
+            2,
+            "bare STOP must emit exactly two commands; got: {:?}",
+            app.pending
+        );
+        assert_eq!(
+            app.pending[0].type_id, CMD_CLOCK_STOP,
+            "STOP must be emitted first"
+        );
+        assert_eq!(
+            app.pending[1].type_id, CMD_CLOCK_REWIND,
+            "REWIND must be emitted second"
+        );
+        assert_eq!(app.pending[0].target_id, app.model.clock_id);
+        assert_eq!(app.pending[1].target_id, app.model.clock_id);
     }
 
     #[test]

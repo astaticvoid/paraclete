@@ -9,9 +9,10 @@ use std::sync::{Arc, Mutex};
 
 use paraclete_node_api::{midi::ChannelVoice2, UmpMessage};
 use paraclete_node_api::{
-    CapabilityDocument, Event, Node, PortDescriptor, PortDirection, PortType, ProcessInput,
-    ProcessOutput,
+    CapabilityDocument, Event, Node, NodeCommand, PortDescriptor, PortDirection, PortType,
+    ProcessInput, ProcessOutput,
 };
+use paraclete_nodes::internal_clock::CMD_CLOCK_START;
 use paraclete_nodes::{InternalClock, Sequencer};
 use paraclete_runtime::NodeConfigurator;
 
@@ -81,6 +82,16 @@ fn run_harness() -> Vec<f64> {
     conf.connect(10, 2, 99, 0).expect("seq -> probe");
 
     let mut exec = conf.build_executor();
+    // ADR-046 T3: InternalClock now boots stopped (closes BUG-039) — this
+    // harness used to rely on the old `playing: true` default to start
+    // itself; it must now start explicitly, same as any other surface.
+    conf.send_command(NodeCommand {
+        target_id: 1,
+        type_id: CMD_CLOCK_START,
+        arg0: 0,
+        arg1: 0.0,
+    })
+    .expect("clock start command must send");
     // ~30 seconds of audio: plenty of onsets, negligible runtime.
     let cycles = (30.0 * SR as f64 / BLOCK as f64) as usize;
     let mut sink = vec![0.0f32; BLOCK * 2];

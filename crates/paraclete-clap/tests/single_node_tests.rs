@@ -12,7 +12,7 @@ fn playing_transport() -> TransportInfo {
     }
 }
 
-fn global_start_event() -> TimedEvent {
+fn global_rewind_event() -> TimedEvent {
     let te = TransportEvent {
         domain_id: 0,
         bar: 1,
@@ -23,7 +23,7 @@ fn global_start_event() -> TimedEvent {
         time_sig_num: 4,
         time_sig_den: 4,
         flags: TransportFlags {
-            global_start: true,
+            global_rewind: true,
             playing: true,
             ..TransportFlags::default()
         },
@@ -44,8 +44,8 @@ fn single_node_plugin_init_activate_deactivate_no_panic() {
 
 /// Spec: single_node_plugin_process_passes_transport_to_node
 ///
-/// Send a global_start TransportEvent to the plugin and verify no panic.
-/// The Sequencer responds to global_start by entering playing state; detailed
+/// Send a global_rewind TransportEvent to the plugin and verify no panic.
+/// The Sequencer responds to global_rewind by entering playing state; detailed
 /// sequencer output is covered by the runtime integration tests.
 #[test]
 fn single_node_plugin_process_passes_transport_to_node() {
@@ -53,7 +53,7 @@ fn single_node_plugin_process_passes_transport_to_node() {
     plugin.activate(44100.0, 512);
 
     let transport = playing_transport();
-    let events = [global_start_event()];
+    let events = [global_rewind_event()];
     let commands: [NodeCommand; 0] = [];
 
     // Must not panic.

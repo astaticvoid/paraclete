@@ -24,7 +24,7 @@ const CLAP_BEATTIME_FACTOR: i64 = 1 << 31;
 /// `prev_playing`   — whether the transport was playing in the previous process() call
 ///
 /// Returns `(TransportInfo, Option<TransportEvent>)`. The event is `Some` only on
-/// a state transition: `global_start` when `!prev_playing && playing`, `global_stop`
+/// a state transition: `global_rewind` when `!prev_playing && playing`, `global_stop`
 /// when `prev_playing && !playing`. Returns `None` if the playing state is unchanged.
 ///
 /// The caller extracts these scalar fields from the raw C struct so that this function
@@ -84,7 +84,7 @@ pub fn translate_transport(
                 playing,
                 recording,
                 looping,
-                global_start: true,
+                global_rewind: true,
                 ..TransportFlags::default()
             },
         })
