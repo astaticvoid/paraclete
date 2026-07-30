@@ -599,13 +599,22 @@ impl Sequencer {
             let pat = self.active_index();
             match cmd.type_id {
                 Self::CMD_TOGGLE_STEP => {
+                    // BUG-045: a hand-activated step must land on the
+                    // grid — a live-recorded micro_offset must not
+                    // survive erase-and-rewrite via toggle-off/toggle-on.
                     let idx = cmd.arg0 as usize;
                     let steps = &mut self.patterns[pat].steps;
                     if idx < steps.len() {
                         steps[idx].active = !steps[idx].active;
+                        if steps[idx].active {
+                            steps[idx].timing.micro_offset = 0;
+                        }
                     }
                 }
                 Self::CMD_SET_STEP => {
+                    // BUG-045: same as CMD_TOGGLE_STEP — activating by
+                    // hand zeroes the offset a prior live record may have
+                    // left in place.
                     let idx = cmd.arg0 as usize;
                     let steps = &mut self.patterns[pat].steps;
                     if idx < steps.len() {
@@ -614,12 +623,21 @@ impl Sequencer {
                         } else {
                             steps[idx].note = cmd.arg1 as u8;
                             steps[idx].active = true;
+                            steps[idx].timing.micro_offset = 0;
                         }
                     }
                 }
                 Self::CMD_CLEAR => {
+                    // BUG-045 ruling (TK2.2 C2): CMD_CLEAR resets
+                    // micro-timing across the lane — micro-timing is the
+                    // step's own placement, not an attached lock, and "clear
+                    // the lane" that leaves the grid crooked cannot be
+                    // explained to a user. Param/CV locks are NOT touched
+                    // here: TK2 §0 A8 established that CMD_CLEAR deliberately
+                    // preserves per-step lock data, and that stands.
                     for step in &mut self.patterns[pat].steps {
                         step.active = false;
+                        step.timing.micro_offset = 0;
                     }
                 }
                 Self::CMD_SET_FILL_A => {
@@ -2294,6 +2312,108 @@ mod tests {
             }],
         );
         assert!(seq.patterns[0].steps.iter().all(|s| !s.active));
+    }
+
+    #[test]
+    fn toggle_step_off_then_on_zeroes_a_live_recorded_offset() {
+        // BUG-045: a hand-written step must land on the grid — erasing and
+        // rewriting a step (toggle off, toggle on) must not let a prior
+        // live-recorded micro_offset survive.
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.set_step(3, 60, 32768, true);
+        seq.patterns[0].steps[3].timing.micro_offset = 20;
+
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_TOGGLE_STEP,
+                arg0: 3,
+                arg1: 0.0,
+            }],
+        );
+        assert!(!seq.patterns[0].steps[3].active, "sanity: toggled off");
+
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_TOGGLE_STEP,
+                arg0: 3,
+                arg1: 0.0,
+            }],
+        );
+        assert!(seq.patterns[0].steps[3].active, "sanity: toggled back on");
+        assert_eq!(
+            seq.patterns[0].steps[3].timing.micro_offset, 0,
+            "activating a step by hand must zero a live-recorded micro_offset"
+        );
+    }
+
+    #[test]
+    fn set_step_zeroes_a_previously_offset_steps_micro_offset() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.set_step(5, 60, 32768, true);
+        seq.patterns[0].steps[5].timing.micro_offset = -30;
+
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_SET_STEP,
+                arg0: 5,
+                arg1: 64.0,
+            }],
+        );
+        assert_eq!(seq.patterns[0].steps[5].note, 64);
+        assert_eq!(
+            seq.patterns[0].steps[5].timing.micro_offset, 0,
+            "CMD_SET_STEP on a previously-offset step must zero the offset"
+        );
+    }
+
+    #[test]
+    fn cmd_clear_resets_micro_timing_but_preserves_locks() {
+        // TK2.2 C2 ruling: CMD_CLEAR resets every step's micro-timing (the
+        // step's own placement) but must NOT touch param locks — TK2 §0 A8
+        // established that a clear deliberately preserves per-step lock
+        // data, and that stands unchanged by this ruling.
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        for i in 0..16 {
+            seq.set_step(i, 60, 32768, true);
+        }
+        seq.patterns[0].steps[2].timing.micro_offset = 15;
+        seq.patterns[0].steps[2].param_locks.push(StepParamLock {
+            node_id: 20,
+            param_id: 7,
+            value: 0.5,
+        });
+
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_CLEAR,
+                arg0: 0,
+                arg1: 0.0,
+            }],
+        );
+
+        assert!(
+            seq.patterns[0]
+                .steps
+                .iter()
+                .all(|s| s.timing.micro_offset == 0),
+            "CMD_CLEAR must reset micro-timing across the whole lane"
+        );
+        assert_eq!(
+            seq.patterns[0].steps[2].param_locks.len(),
+            1,
+            "CMD_CLEAR must preserve per-step param locks (TK2 §0 A8)"
+        );
     }
 
     #[test]
