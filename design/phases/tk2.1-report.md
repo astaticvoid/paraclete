@@ -11,8 +11,8 @@ user's direction. Sequence from here: **TK2.2 (the fix pass) → session
 #4**. See "Session #3 outcome" below.
 
 **This report is closed for TK2.1.** The follow-on work has its own spec —
-`design/phases/tk2.2-theotokos.md`, execution-ready for C0–C4, with C5
-gated on ADR-046 (🟡 proposed). A fresh session should start there and read
+`design/phases/tk2.2-theotokos.md`, execution-ready for C0–C5 (ADR-046
+✅ accepted 2026-07-29 lifted C5's gate). A fresh session should start there and read
 `design/sessions/theotokos-3.md` for the evidence behind it.
 **Spec:** `design/phases/tk2.1-theotokos.md`
 **Design authority:** ADR-044 (✅ accepted 2026-07-28)

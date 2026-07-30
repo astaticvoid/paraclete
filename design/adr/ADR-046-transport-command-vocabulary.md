@@ -2,9 +2,9 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | 🟡 Proposed (2026-07-29) |
+| **Status** | ✅ **Accepted (2026-07-29)** |
 | **Author** | Agent (drafted from Theotokos usability session #3 evidence) |
-| **Ratification** | Awaits user decision on R1–R4 below |
+| **Ratification** | **R1–R4 settled as recommended, 2026-07-29** — see "Ratification" below. No accepted ADR is superseded; ADR-044 D7 keeps its intent and loses its workaround (T3) |
 | **Scope** | `paraclete-nodes` (`internal_clock`, `sequencer` reset path), `paraclete-theotokos` (transport actions), no new crate, no audio-thread allocation |
 | **Related** | BUG-043 (no pause, no stop), BUG-039 (`InternalClock` boots `playing: true`), BUG-041 (`global_stop`, fixed), ADR-044 D7 (no transport at launch — a surface-side workaround this would retire), OQ-16/OQ-T30 (multi-surface state agreement), ADR-031 (Antiphon) |
 
@@ -122,7 +122,50 @@ This is the reference box's grammar and what the session expected. Until
 this lands, the legend strip should **not** advertise `[c] STOP` (see
 TK2.2).
 
-## Ratification questions
+## Ratification — 2026-07-29
+
+All four settled as recommended, by user decision:
+
+- **R1 → the three-command split.** `CMD_CLOCK_START` runs from the current
+  position, `CMD_CLOCK_STOP` halts in place, `CMD_CLOCK_REWIND` sets
+  position. The `CMD_CLOCK_RESUME` alternative is rejected: it would have
+  left `START` compound, which is the property that makes multi-surface
+  agreement hard.
+- **R2 → rename** `TransportFlags::global_start` to `global_rewind`.
+- **R3 → `CMD_CLOCK_REWIND` is valid while running** — a musical "return to
+  top" that keeps playing.
+- **R4 → publish clock-level `playing`/position in this ADR** (T4);
+  reconciliation policy for competing surfaces remains OQ-16.
+
+### Implementation hazard R2 creates — read before renaming
+
+`sequencer.rs:925`'s `global_start` branch currently does **four** things at
+once, and only one of them belongs to a rewind:
+
+1. `self.playing = true`
+2. position reset (`current_step = wstart`, `step_tick = 0`)
+3. `reset_period()`
+4. **fires the entry step** — the BUG-001 fix, which emits the note-on for
+   the step being entered
+
+A mechanical rename would therefore make `CMD_CLOCK_REWIND` start playback
+*and* emit a note; and because R3 permits rewind while running, a mid-play
+rewind would double-fire against the ordinary boundary path. Required
+decomposition:
+
+- **`playing`** derives from `flags.playing` (the clock's own state), not
+  from the rewind flag. `global_stop` already clears it at `:908-909`, so
+  the two sides must stay symmetric.
+- **Position reset + `reset_period()`** happen on `global_rewind`.
+- **The entry-step fire (BUG-001)** happens on the *transition into
+  playing*, not on rewind — otherwise rewind-while-stopped emits an audible
+  note from a stopped instrument, and rewind-while-running fires twice.
+
+Pin all three with tests: rewind while stopped is silent and moves position;
+rewind while running relocates without double-firing; a normal start still
+fires its entry step exactly once (the BUG-001 regression must survive).
+
+## Ratification questions *(historical — answered above)*
 
 - **R1** — Adopt T1's three-command split (recommended), or the
   lower-touch alternative: keep `CMD_CLOCK_START` compound and add

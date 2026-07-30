@@ -1,15 +1,18 @@
 # Paraclete — TK2.2 Theotokos Specification (Session #3 Fix Pass)
 
-> **EXECUTION-READY for C0–C4 — 2026-07-29.** C5 is gated on ADR-046's
-> ratification (R1–R4) and must not be started before it. Written so a
-> fresh-context session can implement without further design decisions:
+> **EXECUTION-READY for C0–C5 — 2026-07-29.** C5's gate is **lifted**:
+> ADR-046 was **accepted the same day** with R1–R4 settled as recommended
+> (three-command split; `global_start`→`global_rewind`; rewind valid while
+> running; clock state published here). Written so a fresh-context session
+> can implement without further design decisions:
 > every commit names its files, the current behaviour it changes, the sites
 > it must update to stay green, and its tests. Where a value is a tuning
 > knob the default is stated *(tunable)*.
 >
 > **Design authority:** `design/sessions/theotokos-3.md` (the evidence —
 > read it first), ADR-044 (accepted; amended by this phase, see §0),
-> ADR-046 (🟡 proposed — C5 only), ADR-045 (🟡 proposed — see §6 OQ-T27).
+> ADR-046 (✅ accepted 2026-07-29 — C5), ADR-045 (🟡 proposed, premise
+> confirmed but deliberately still parked — see §6 OQ-T27).
 > **Baseline:** TK2.1 C0–C7 code-complete (`7d3d6c2`), session #3 held
 > (`e364893`). `cargo test --workspace` green at baseline.
 > **Exit:** `cargo test --workspace` green after every commit; a real
@@ -280,18 +283,33 @@ affordance.
 **Tests:** with a target armed, the panel names the locked step; with none,
 it shows the live parameter; the indicator clears with the target.
 
-### C5 — BUG-043: pause and stop *(GATED on ADR-046 ratification)*
+### C5 — BUG-043: pause and stop *(ADR-046 accepted; gate lifted)*
 
-**Do not start this commit until ADR-046's R1–R4 are answered.** It changes
-transport semantics for every surface, and the ADR exists precisely so that
-decision is made once, deliberately.
+Implements ADR-046 T1–T5, with R1–R4 settled: add `CMD_CLOCK_REWIND`;
+`CMD_CLOCK_START` stops implying a rewind; rename
+`TransportFlags::global_start` → `global_rewind` (R2); rewind is valid
+while running (R3); `InternalClock` boots `playing: false` (closing BUG-039
+and retiring ADR-044 D7's startup `CMD_CLOCK_STOP` at
+`theotokos/lib.rs:98` — remove it, do not leave two mechanisms for one
+invariant); publish clock-level `playing`/position (R4/T4);
+`Action::Stop` (new variant) = `STOP` + `REWIND` on `c`; `[c]` STOP rejoins
+the transport line's inline chips (E1).
 
-Implements ADR-046 T1–T5: `CMD_CLOCK_REWIND`; `CMD_CLOCK_START` stops
-implying a rewind; `global_start`→rewind semantics (naming per R2);
-`InternalClock` boots `playing: false` (closing BUG-039 and retiring
-ADR-044 D7's startup `CMD_CLOCK_STOP` at `theotokos/lib.rs:98`);
-`Action::Stop` = `STOP` + `REWIND` on `c`; `[c]` STOP rejoins the transport
-line's inline chips (E1).
+**Read this before renaming anything — R2's hazard.**
+`sequencer.rs:925`'s `global_start` branch does **four** things, and only
+one belongs to a rewind: sets `self.playing = true`; resets position
+(`current_step = wstart`, `step_tick = 0`); calls `reset_period()`; and
+**fires the entry step** (the BUG-001 fix, emitting that step's note-on). A
+mechanical rename would make `CMD_CLOCK_REWIND` start playback and emit a
+note — and since R3 permits rewind while running, a mid-play rewind would
+double-fire against the ordinary boundary path. Decompose:
+
+- `playing` derives from `flags.playing`, not from the rewind flag
+  (`global_stop` already clears it at `:908-909`; keep the two sides
+  symmetric).
+- Position reset + `reset_period()` happen on `global_rewind`.
+- The entry-step fire happens on the **transition into playing**, not on
+  rewind.
 
 **Update to stay green — read each before changing it.** These tests are
 statements about semantics, so "make it green" is the wrong instinct:
@@ -299,7 +317,11 @@ statements about semantics, so "make it green" is the wrong instinct:
 
 **Tests:** pause mid-pattern then resume → position continues (not step 0),
 and micro-timing/page-window survive; `c` → halted **and** at the window
-start; a fresh `InternalClock` is stopped with no surface command.
+start; a fresh `InternalClock` is stopped with no surface command; **rewind
+while stopped moves position and emits nothing**; **rewind while running
+relocates without double-firing**; a normal start still fires its entry step
+**exactly once** (the BUG-001 regression must survive this commit — it is
+the reason the entry-step fire lives in that branch at all).
 
 ### C6 — Usability session #4 (user-paired, no code)
 

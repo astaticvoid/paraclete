@@ -1711,9 +1711,17 @@ are about `first_tick`/`playing` and who decides a rewind. Fix them
 together; a resume vocabulary added here is also what lets BUG-039's
 surface-side D7 workaround become unnecessary. See also **OQ-16/OQ-T30**
 (multi-surface state agreement).
-**Fix direction:** Not a missing match arm — the engine has no "resume"
-vocabulary, because `CMD_CLOCK_STOP` never rewinds and `CMD_CLOCK_START`
-always does. Needs either a new clock command (`CMD_CLOCK_RESUME`, or a
+**Fix direction — decided:** **ADR-046 ✅ accepted 2026-07-29** settles
+this; implemented by TK2.2 C5. Three commands with one meaning each
+(`START` runs from position, `STOP` halts in place, new `CMD_CLOCK_REWIND`
+sets position), `global_start` renamed `global_rewind`, engine boots
+stopped, clock `playing`/position published. **Hazard flagged there:**
+`sequencer.rs:925`'s branch bundles four behaviours including the BUG-001
+entry-step fire, so a mechanical rename would make a rewind start playback
+and emit a note.
+Original framing, retained: not a missing match arm — the engine has no
+"resume" vocabulary, because `CMD_CLOCK_STOP` never rewinds and
+`CMD_CLOCK_START` always does. Needs either a new clock command (`CMD_CLOCK_RESUME`, or a
 rewind command that STOP issues) or splitting the rewind decision out of
 the `playing` transition. Target grammar, per the reference box: PLAY =
 start / pause in place, STOP = halt + rewind. **This changes transport
