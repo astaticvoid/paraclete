@@ -6,7 +6,7 @@ Append-only. Add new bugs at the bottom. Mark resolved with **Fixed:** or **RESO
 
 ## Status (2026-07-30)
 
-**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, **BUG-042** (live_rec can double-trigger the synth when a live trig quantizes onto an imminent step boundary — low severity, scoped out of TK2.1 C3b, fix direction filed), **BUG-047** (`kick_reverb_clean.yaml` dropout assertion fails — pre-existing, found incidentally during TK2.2 C5's regression sweep, unrelated to ADR-046; see entry below).
+**Actively open:** INFRA-005 (device presence assumed — no dynamic surface registry), **INFRA-011 (recovery code is dead after system-level pipewire-alsa fix)**, **BUG-042** (live_rec can double-trigger the synth when a live trig quantizes onto an imminent step boundary — low severity, scoped out of TK2.1 C3b, fix direction filed), **BUG-047** (a full-velocity kick hit genuinely clips ~2% of samples in the default instrument — confirmed real via raw-sample inspection, not a test-driver detector false positive; root node not yet isolated, no fix attempted pending a listening judgment call on intended kick character; see entry below).
 **Fixed 2026-07-30:** INFRA-008 (`0d0dca7`) — see entry below.
 **Fixed 2026-07-30 (TK2.2 C0–C5, `9f62cef`…`8595db6` + follow-up `4fe3f5f`):** BUG-043, BUG-044, BUG-045, BUG-046 (see entries below) and **BUG-039** (`InternalClock` now boots `playing: false` at the source — ADR-046 T3 — closing this at the root rather than the ADR-044 D7 surface-side workaround, which is retired in the same phase).
 **Fixed 2026-07-28:** BUG-041 (`f2576f4`) — `CMD_CLOCK_STOP` now emits a `global_stop` transport event on the net transition to stopped; gated on final playing state (not a mid-batch flag) so a STOP reversed later in the same batch doesn't emit a spurious stop (hostile-review finding, folded before commit). Regression test drives a real `InternalClock` → `Sequencer` pair. **BUG-040** (`87fcbcc`, TK2.1 C4) — encoder resolution now reads real cap-doc `min`/`max`/`stepped` instead of faking `0..1`; p-lock clamp and jog step-size both fixed.
@@ -1898,9 +1898,8 @@ not deferred alongside this fix as originally suggested.
 
 ### BUG-047 — `kick_reverb_clean.yaml` dropout assertion fails: a 140ms held-sample run right at the window boundary
 
-**Severity:** Low-Medium — a test-driver scenario regression gate is
-currently red; unclear yet whether it's a real audio artifact or a
-detector/scenario-margin issue
+**Severity:** Medium — confirmed genuine audio clipping (see update below),
+not a detector/scenario-margin false positive as first suspected
 **Phase found:** TK2.2 C5 hostile review (2026-07-30), while sweeping for
 other consumers of `InternalClock`'s old auto-start default
 **Description:** `tools/test-driver/tests/kick_reverb_clean.yaml` asserts
@@ -1915,17 +1914,37 @@ already documents a wall-clock/capture-time skew ("the trigger at wall
 1.0s lands around capture ~0.7s; windows leave margin") and the run
 length is not perfectly deterministic across repeated runs (140.43ms
 twice, 152.04ms once, observed in three runs at HEAD, always starting at
-exactly 0.8000s) — consistent with either a real intermittent artifact
-right at the reverb's spin-up, or the assertion window's margin being
-too tight for how this scenario actually lands in capture time.
+exactly 0.8000s).
 **Location:** `tools/test-driver/tests/kick_reverb_clean.yaml`; the
 audio path under test is mix → reverb (`crates/paraclete-nodes/src/mix.rs`,
 `reverb.rs`) for the default instrument's kick voice.
-**Fix direction:** Not investigated. First step: determine whether the
-held run is genuine silence (a legitimate quiet stretch before the kick's
-reverb tail becomes audible, which a naive "identical samples = dropout"
-detector would misclassify) or an actual repeated-sample artifact — dump
-the flagged window's raw values. If genuine silence, the fix is a scenario
-margin/assertion adjustment, not an engine fix; do not touch DSP without
-first ruling that out (same discipline as BUG-023/BUG-027's speaker-
-artifact investigations).
+
+**Update (2026-07-30) — investigated, root cause identified, NOT a
+detector false positive:** dumped the raw i16 samples in the flagged
+window directly from the written WAV. The held run is **not silence** —
+it's the signal pinned at exactly `32767`/`-32768` (full-scale i16), i.e.
+genuine hard clipping, alternating between the two rails with the
+in-between samples forming clean linear ramps (a low-frequency component,
+consistent with a kick's pitch-swept fundamental, driving well past
+0 dBFS). `tools/test-driver/src/wav.rs::write_wav` does
+`s.clamp(-1.0, 1.0)` before the i16 conversion — the writer is behaving
+correctly; the *input* f32 samples it receives already exceed ±1.0 by a
+wide margin. Confirmed independent of reverb: a bare kick_rehit.yaml
+render (kick alone, `velocity: 1.0`, same default instrument, same full
+mix→reverb chain since every test-driver scenario goes through it)
+clips **2.10%** of all samples (max |sample| pinned at 32767). This is a
+genuine, reproducible gain-staging issue somewhere in the default
+instrument's kick voice or downstream mix stage, triggered by an ordinary
+full-velocity kick hit — not an artifact of this specific scenario.
+**Fix direction: not attempted.** Whether a hot/clipping kick at full
+velocity is a real defect or an intentional "driven" character choice
+(AnalogEngine-style engines sometimes clip by design for punch) is a
+judgment call this investigation deliberately did not make — the same
+discipline BUG-023/BUG-027 followed (measure before touching DSP, and
+for anything touching the instrument's sonic identity, that's a listening
+call, not a unilateral one). Next step: isolate which node's output
+actually exceeds ±1.0 (bypass reverb/mix with a minimal kick-only test
+instrument to localize it precisely — this investigation only established
+that the clipping survives with or without reverb in path, not which
+node introduces it), then get a human ear on whether the un-clipped
+signal is the intended kick character before changing any gain default.
