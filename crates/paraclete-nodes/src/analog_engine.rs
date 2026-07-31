@@ -10,7 +10,7 @@ use paraclete_node_api::{
     midi::ChannelVoice2, CMD_TRIGGER,
 };
 
-use crate::engine_dsp::{AdState, note_to_hz, soft_clip, svf_lp_sample, xorshift};
+use crate::engine_dsp::{AdState, note_to_hz, soft_clip, sub_blocks, svf_lp_sample, xorshift};
 
 fn ap(name: &str) -> u32 { ParamDescriptor::id_for_name(name) }
 
@@ -395,14 +395,37 @@ impl AnalogEngine {
 
     /// Render `[start, end)` with the current voice state, dispatched by
     /// machine. A no-op span (or inactive voice) leaves the zeroed buffer.
+    ///
+    /// MM-C7: the span is chunked into `LFO_SUB_BLOCK` pieces **relative to
+    /// `start`**, so a 100-sample span renders as 64 + 36 wherever it sits in
+    /// the block. `process_*` re-reads its params per chunk, which is what a
+    /// later commit's LFO needs and, with nothing modulating, changes no
+    /// sample: the same constant params give the same coefficients.
+    ///
+    /// The voice is **not** cut short when `active` goes false mid-span, and
+    /// `if !self.active { break; }` is not the free optimisation it looks
+    /// like. The skipped samples really would be silence — the buffers are
+    /// zeroed at the top of every block and an idle `AdState` returns 0.0 —
+    /// but `process_snare` and `process_hihat` advance an xorshift LFSR once
+    /// per sample (`self.noise_state`, `self.hihat_noise`). Skipping samples
+    /// skips those advances, so **every later note gets a different noise
+    /// sequence**.
+    ///
+    /// Measured, not reasoned: with the break in place the first hihat note is
+    /// bit-identical and `analog_machines` drifts from the *second* one
+    /// onward. Neither `kick_reverb_clean` nor `fm_machines` notices — no
+    /// noise in either voice — so the only thing standing between this and a
+    /// silent regression is that one baseline.
     fn render_span(&mut self, start: usize, end: usize) {
         if start >= end || !self.active {
             return;
         }
-        match self.machine {
-            AnalogMachine::Kick  => self.process_kick(start, end),
-            AnalogMachine::Snare => self.process_snare(start, end),
-            AnalogMachine::HiHat => self.process_hihat(start, end),
+        for (lo, hi) in sub_blocks(start, end) {
+            match self.machine {
+                AnalogMachine::Kick  => self.process_kick(lo, hi),
+                AnalogMachine::Snare => self.process_snare(lo, hi),
+                AnalogMachine::HiHat => self.process_hihat(lo, hi),
+            }
         }
         // Velocity is baked into the span at render time (review finding):
         // a whole-block output multiplier would rescale an earlier span —
@@ -974,6 +997,66 @@ mod tests {
         let out = run_engine(&mut eng, &[make_note_on(48)]);
         // Some audio expected from body oscillator.
         assert!(out.iter().any(|&s| s.abs() > 0.0), "snare with noise=0 should still have body");
+    }
+
+    /// MM-C7 is a pure restructure: `render_span` now calls `process_*` once
+    /// per 64-sample chunk instead of once per span. This asserts that
+    /// directly — one un-chunked call against the chunked sequence, from
+    /// identical state — rather than inferring it from the ADR-035 baselines.
+    /// The baselines prove it through the whole graph; this proves it per
+    /// machine, and says *which* machine broke when one does.
+    ///
+    /// Chosen span is 500, not 512: it is not a multiple of 64, so the last
+    /// chunk is a short one (7 x 64 + 52). A span that divided evenly would
+    /// not exercise the `.min(end)` clamp at all.
+    ///
+    /// **This test is expected to fail at MM-C9, and that is not a
+    /// regression.** Once an LFO ticks per sub-block, a chunked render
+    /// legitimately differs from an un-chunked one — that is the entire point
+    /// of the structure. Update it then, deliberately; do not weaken it now.
+    #[test]
+    fn chunked_render_is_identical_to_one_unchunked_call() {
+        for m in AnalogMachine::ALL {
+            let mut whole = AnalogEngine::new(m);
+            let mut chunked = AnalogEngine::new(m);
+            whole.activate(44100.0, 512);
+            chunked.activate(44100.0, 512);
+            whole.retrigger(60, 1.0);
+            chunked.retrigger(60, 1.0);
+
+            const END: usize = 500;
+            match m {
+                AnalogMachine::Kick => whole.process_kick(0, END),
+                AnalogMachine::Snare => whole.process_snare(0, END),
+                AnalogMachine::HiHat => whole.process_hihat(0, END),
+            }
+            for (lo, hi) in sub_blocks(0, END) {
+                match m {
+                    AnalogMachine::Kick => chunked.process_kick(lo, hi),
+                    AnalogMachine::Snare => chunked.process_snare(lo, hi),
+                    AnalogMachine::HiHat => chunked.process_hihat(lo, hi),
+                }
+            }
+
+            assert_eq!(
+                whole.render_l[..END],
+                chunked.render_l[..END],
+                "{m:?}: chunking changed the output — a `process_*` carries \
+                 per-span state the chunking broke. Find it; do not \
+                 re-fingerprint."
+            );
+            assert_eq!(
+                whole.active, chunked.active,
+                "{m:?}: voice liveness must not depend on the chunking"
+            );
+        }
+    }
+
+    /// The span really is cut, so the test above is comparing two different
+    /// call sequences rather than two identical ones.
+    #[test]
+    fn a_five_hundred_sample_span_is_eight_chunks() {
+        assert_eq!(sub_blocks(0, 500).count(), 8);
     }
 
     #[test]

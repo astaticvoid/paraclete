@@ -9,7 +9,7 @@ use paraclete_node_api::{
     midi::ChannelVoice2, CMD_TRIGGER,
 };
 
-use crate::engine_dsp::{AdState, note_to_hz, soft_clip};
+use crate::engine_dsp::{AdState, note_to_hz, soft_clip, sub_blocks};
 
 fn fp(name: &str) -> u32 { ParamDescriptor::id_for_name(name) }
 
@@ -356,14 +356,19 @@ impl FmEngine {
 
     /// Render `[start, end)` with the current voice state, dispatched by
     /// machine. A no-op span (or inactive voice) leaves the zeroed buffer.
+    /// MM-C7: chunked into `LFO_SUB_BLOCK` pieces relative to `start` — see
+    /// `AnalogEngine::render_span` for why relative, and for why a voice that
+    /// goes idle mid-span is deliberately not cut short.
     fn render_span(&mut self, start: usize, end: usize) {
         if start >= end || !self.active {
             return;
         }
-        match self.machine {
-            FmMachine::Kick => self.process_kick(start, end),
-            FmMachine::Bell => self.process_bell(start, end),
-            FmMachine::Bass => self.process_bass(start, end),
+        for (lo, hi) in sub_blocks(start, end) {
+            match self.machine {
+                FmMachine::Kick => self.process_kick(lo, hi),
+                FmMachine::Bell => self.process_bell(lo, hi),
+                FmMachine::Bass => self.process_bass(lo, hi),
+            }
         }
         // Velocity is baked into the span at render time (review finding):
         // a whole-block output multiplier would rescale an earlier span —
@@ -1182,6 +1187,46 @@ mod tests {
             assert_eq!(eng.machine, FmMachine::Kick, "a p-lock must never switch machines");
         }
         assert!(eng.switch_fade.is_none(), "and must not even arm a fade");
+    }
+
+    /// See `AnalogEngine`'s copy — same claim, same reasoning, and the same
+    /// note that MM-C9 will legitimately break it.
+    #[test]
+    fn chunked_render_is_identical_to_one_unchunked_call() {
+        for m in FmMachine::ALL {
+            let mut whole = FmEngine::new(m);
+            let mut chunked = FmEngine::new(m);
+            whole.activate(44100.0, 512);
+            chunked.activate(44100.0, 512);
+            whole.retrigger(60, 1.0);
+            chunked.retrigger(60, 1.0);
+
+            const END: usize = 500;
+            match m {
+                FmMachine::Kick => whole.process_kick(0, END),
+                FmMachine::Bell => whole.process_bell(0, END),
+                FmMachine::Bass => whole.process_bass(0, END),
+            }
+            for (lo, hi) in sub_blocks(0, END) {
+                match m {
+                    FmMachine::Kick => chunked.process_kick(lo, hi),
+                    FmMachine::Bell => chunked.process_bell(lo, hi),
+                    FmMachine::Bass => chunked.process_bass(lo, hi),
+                }
+            }
+
+            assert_eq!(
+                whole.render_l[..END],
+                chunked.render_l[..END],
+                "{m:?}: chunking changed the output — a `process_*` carries \
+                 per-span state the chunking broke. Find it; do not \
+                 re-fingerprint."
+            );
+            assert_eq!(
+                whole.active, chunked.active,
+                "{m:?}: voice liveness must not depend on the chunking"
+            );
+        }
     }
 
     #[test]
