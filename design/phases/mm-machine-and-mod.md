@@ -22,20 +22,36 @@ are decided here. Per `AGENTS.md` guardrail 1, where a spec is silent the
 boring option is taken and named as such — each of these is a place a
 reviewer should push back if the boring option is wrong.
 
-**D1 — Machine-switch declick is fade-out/switch/fade-in, not a crossfade.**
+**D1 — Machine-switch declick is a 5 ms fade-out, then swap. There is no
+fade-in.** *(amended by MM-C3's implementation — see below)*
+
 ADR-041 decision 4 says "~5 ms *(tunable)*" without saying between what.
 A true crossfade would require rendering both machines simultaneously
 through the switch, which means two live voice states and double the DSP
 for the duration. But decision 4 *also* says voice state resets on switch —
-so there is no "old voice" worth crossfading to. Boring option:
-`MACHINE_SWITCH_FADE_MS: f32 = 5.0`, split symmetrically — 2.5 ms ramp to
-silence on the old machine, swap + state reset at the zero point, 2.5 ms
-ramp up on the new one. Single voice state throughout.
+so there is no "old voice" worth crossfading to. `MACHINE_SWITCH_FADE_SECS
+= 0.005`, ramping the voice to silence before the swap.
 
-*Why this is safe to get wrong cheaply:* the fade is entirely inside
-`render_span`, and a machine switch mid-note is rare. If a session says the
-gap is audible, the constant moves or the shape changes without touching
-the param surface.
+*As written this said 2.5 ms out + 2.5 ms in. The fade-in is provably a
+no-op:* `apply_machine_switch` clears `active`, `render_span` early-returns
+while inactive, and the render buffers are zeroed at the top of every block —
+so the node emits exact zeros from the swap until the next `retrigger()`,
+which starts from zero anyway. There is nothing to fade in.
+
+**But do not read that as "the ramp is one-directional".** The fade-in half
+was covering something real, just not post-switch silence: a switch that is
+**cancelled or retargeted part-way** must return to unity *continuously*.
+Dropping the ramp on cancel snaps the gain from wherever it had reached back
+to 1.0 — the same click, in the other direction — and taking a fresh
+full-length fade on retarget does likewise. So `SwitchFade` carries a
+direction, and cancel/retarget preserve the elapsed portion.
+
+*Reachability of that second case, since it looks theoretical:* it needs the
+fade to span more than one block. At 44.1 kHz a 5 ms fade is 220 samples
+against a fixed 512-sample block, so it cannot — but it can at 176.4/192 kHz
+(cpal takes the device default rate; it is not pinned), and at **any** rate
+the moment the constant is raised, which decision 4's "*(tunable)*" and this
+very section invite. The guard tests run at 192 kHz for exactly that reason.
 
 **D2 — The 64-sample sub-block loop nests INSIDE event-split spans, and
 its boundaries are relative to the span start.** ADR-042 amendment 4 names
@@ -254,7 +270,28 @@ yet; this commit is green because it changes nothing.
 **Tests:** a `Rule` with empty `variants` assembles byte-identically to
 before (assert against the existing composite tests, unchanged).
 
-### MM-C3 — `AnalogEngine`: union bank, `machine` param, declick switch
+### MM-C3 — `AnalogEngine`: union bank, `machine` param, declick switch ✅ *(landed)*
+
+**Two consequences of this commit that a reader — or a paired session — must
+not mistake for regressions.**
+
+*The union range is live on the encoder until MM-C6, not just in the bar
+fill.* `resolve_encoder_params` takes `min`/`max` from the cap-doc descriptor
+(`theotokos/src/model.rs:459-461`), and Theotokos feeds `max - min` into
+`jog_step` and then clamps to it (`lib.rs:768`, `:1126`). So between MM-C3 and
+MM-C6, Kick's `tone` jogs ~2.25× coarser per detent and can be driven to
+18 kHz, and HiHat's `decay` to 2.0 s against its own 1.0 s ceiling. MM-C6
+item 3 is the fix — display and input clamp to the **active overlay** while
+storage stays union-ranged. **Do not hold a paired session between C3 and C6
+without saying this first**; the feel change is real and would read as a
+defect.
+
+*HiHat's SRC page loses `tune`, and gains a hole at slot 0.* HiHat never
+declared `tune` — the unconditional `tune` page ref was half of #47
+(BUG-037), showing a control the engine ignores. Per-machine pages remove it.
+The hole is deliberate: `tone` stays on the same encoder across all three
+machines, so switching machine does not shuffle the params under the
+performer's fingers.
 
 **Changes:** `crates/paraclete-nodes/src/analog_engine.rs`
 
@@ -492,13 +529,19 @@ BUG-037's successor**, so it lands here in three parts:
 2. **Overlay ids are unique within a variant.** `overlays` is a linear assoc
    list; duplicates are representable and precedence is undefined. Same shape
    as `PageRef::slot` being fiction until MM-C0 (design-process learning 9).
-3. **A param flagged `identity` in any variant is flagged in all of them.**
+3. **Shared ids agree on `name`, `unit` and `stepped` across machines.** The
+   union merge keeps the *first declarer's* non-range fields for a shared id
+   and silently drops the rest. Consistent in `AnalogEngine` today (`tone` is
+   Hz in all three, `decay` Seconds, `tune` Semitones) and therefore untested;
+   MM-C4 runs the same merge over `FmEngine`'s wider conflict set, where a
+   disagreement would show a param under the wrong unit with no diagnostic.
+4. **A param flagged `identity` in any variant is flagged in all of them.**
    `machine` exists on every machine of a host, so the flag has to be repeated
    per variant; miss one and lock rejection silently stops working *for that
    machine only* — "p-locking machine works on HiHat but not Kick", which no
    test catches by accident.
 
-Point 3 exists because the flag lives on the overlay per ADR-041 §0 A1. A
+Point 4 exists because the flag lives on the overlay per ADR-041 §0 A1. A
 `Rule`-level `identity_params` list would remove the hazard structurally
 rather than by assertion; that deviates from the ratified shape, so it is
 **not** taken without the user — but it is the better design if this
