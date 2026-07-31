@@ -2,19 +2,27 @@
 
 ## Quick-start reading order
 
-`AGENTS.md` → `design/handoff.md` (task routing and guardrails) →
-`design/roadmap.md` (current sequence) → relevant phase spec in
-`design/phases/`.
+`AGENTS.md` → **the open milestone on GitHub** (what to work on) →
+the phase spec in `design/phases/` → relevant ADRs in `design/adr/`.
 
-**Implementing? The active phase is named in `design/handoff.md`'s
-"▶ START HERE" block at the top of that file — read it before touching
-code.** It names the phase spec, where to start in it, its design
-authority, the per-commit process gate, and the places in the current
-phase where making the tests pass is the *wrong* instinct.
+**Implementing? Start here:**
 
-The phase name lives **only** in `handoff.md` — deliberately not repeated
-here, so a phase transition updates one file and cannot go half-stale (see
-"Phase transitions" under Commit workflow).
+```bash
+gh issue list --milestone TK2.2          # the active phase's remaining work
+gh issue list --state open --label bug   # what's actually broken
+gh issue list --state open --label open-question
+```
+
+**Live state lives in GitHub Issues, not in `design/`** (migrated
+2026-07-30 — see `design/README.md`). Open bugs, open questions, spec
+gaps, spikes and session carryover are issues. `design/` holds only
+append-only authority and record: ADRs, phase specs and reports, session
+notes, reviews, and `roadmap.md` (the phase *plan*, not its status).
+
+To resolve a `BUG-###` / `INFRA-###` from a code comment:
+`gh issue list --search "BUG-042 in:title" --state all`. The IDs are
+preserved verbatim in issue titles. `ADR-###` still resolves in-repo via
+`design/adr/INDEX.md`.
 
 `CLAUDE.md` is a symlink to this file, so Claude Code loads it
 automatically; keep the content here, not there.
@@ -344,7 +352,8 @@ untangle. Pushing to a remote still requires explicit user approval.
 
 Every commit: `cargo test --workspace` green, `cargo clippy --workspace` clean
 on touched crates. Design/doc changes in separate commits from code. Phase
-reports and `bugs.md` are append-only.
+reports and ADR bodies are append-only. Close the issue a commit resolves in
+that commit's message (`Fixes #N`).
 
 **After each implementation commit** (or logical batch of commits), the agent
 must pause and offer a **subagent code review** before proceeding to the next
@@ -358,65 +367,127 @@ uncommitted changes, or stale trackers. The working tree must be either clean
 or explicitly accounted for — never silent about dirt.
 
 After every implementation session, the agent must explicitly propose which
-design documents need updating, then update **all** that apply before the
-session is done — not just the obvious one. This is a mandatory check, not a
-suggestion. Keep-current set (with what changes in each):
+trackers and documents need updating, then update **all** that apply before
+the session is done — not just the obvious one. This is a mandatory check, not
+a suggestion. Keep-current set:
 
-| Doc | Update when… |
+| Where | Update when… |
 |-----|--------------|
-| `design/roadmap.md` | a phase/rank ships, is reprioritized, or a status changes |
-| `design/bugs.md` | a bug/INFRA item is found, resolved, or a gating assumption changes (append-only; also refresh the top Status block) |
+| **GitHub Issues** | a bug is found or fixed; an open question is answered; a spike concludes; a provisional implementation is replaced. Close the issue **in the commit that resolves it** (`Fixes #N` in the message), never in a later sweep |
+| **GitHub Milestones** | a phase completes — close its milestone and open the next one. The open milestone *is* the "what to work on next" pointer |
 | `design/adr/*` | a decision is **implemented** — update its `Status:` line and add an implementation note. The decision/context/alternatives body stays append-only (see below) |
 | phase reports (`design/phases/*`) | a phase commit lands (append-only) |
+| `design/roadmap.md` | the phase *sequence* or a design *gate* changes. **Not** for status — status is the milestone |
 | `AGENTS.md` | a workflow, command, tool mode, node ID, or convention changes (e.g. a new test-driver mode) |
-| `design/handoff.md` | task routing or a model-tier guardrail changes — **and whenever the active phase changes** (see "Phase transitions" below). Its "▶ START HERE" block is the single place a cold-start agent learns what to work on; if it names a finished phase, the next session starts on the wrong work |
 
-If a change touches code *and* the tool/tracker/roadmap that describe it, all of
-those are in scope in the same session — a code commit that leaves the tracker
-stale is an incomplete session.
+If a change touches code *and* an issue describing it, both are in scope in the
+same session — a code commit that leaves its issue open is an incomplete
+session.
 
-### Phase transitions (the pointer that goes stale on its own)
+### Phase transitions
 
-Everything above fires when *work* changes. This step fires when **which work
-is active** changes, which is a different event and is the one that gets
-missed — nothing about finishing a phase forces the "what next" pointer to
-move, so it silently keeps naming the finished phase.
+Everything above fires when *work* changes. This fires when **which work is
+active** changes — a different event, and historically the one that got missed.
 
-**Whenever a phase becomes code-complete, is closed, is superseded, or a new
-phase spec lands, update `design/handoff.md`'s "▶ START HERE" block in the
-same session** — before the session closes, not "next time". It must name:
+**Whenever a phase becomes code-complete, is closed, or is superseded: close
+its milestone and open the next one, in the same session.** The next agent
+reads the open milestone, so an unclosed milestone points them at finished
+work.
 
-1. the active phase spec and where to start in it (which commit),
+State that belongs on the milestone description, not in a doc:
+
+1. where to start in the phase spec (which commit),
 2. its design authority (ADRs, and any amended by a session),
 3. anything deliberately parked, so it does not read as an oversight,
 4. the places in *this* phase where making the tests pass is the wrong
    instinct — tests that encode the bug being fixed, invariants that must
    survive.
 
-Keep the phase *name* in `handoff.md` only. `AGENTS.md` says where to look,
-never what the phase is — otherwise the same staleness recurs in two files
-instead of one.
-
-**Precedent:** this was found the hard way on 2026-07-29. TK2.1 went
-code-complete, session #3 closed its report, TK2.2 was specced — and
-`handoff.md` still read "TK2.1 is the active implementation phase. Start at
+**Why this is structural now.** Until 2026-07-30 the pointer was a prose block
+in `design/handoff.md`, and nothing about finishing a phase forced it to move.
+On 2026-07-29 TK2.1 went code-complete, its report closed, TK2.2 was specced —
+and `handoff.md` still read "TK2.1 is the active implementation phase. Start at
 `design/phases/tk2.1-theotokos.md` C0". A cold-start agent following the
-documented reading order would have begun re-implementing a finished phase.
-The same audit found that project instructions were not reaching Claude Code
-at all, because the repo had only `AGENTS.md` and Claude Code loads
-`CLAUDE.md` (now a symlink to this file).
+documented reading order would have re-implemented a finished phase. A
+milestone cannot drift the same way: it is either open or closed, and its
+issues are either done or not.
+
+The same audit found project instructions were not reaching Claude Code at all,
+because the repo had only `AGENTS.md` and Claude Code loads `CLAUDE.md` (now a
+symlink to this file).
+
+## Task routing by tier
+
+Route by the **judgment density** of the task, not its size. When in doubt,
+one tier up.
+
+**Session orchestrator is Opus.** The orchestrator holds session context, makes
+delegation calls, verifies returned work for correctness, and writes gated
+commit messages and spec-conflict reconciliations — it is never delegated down.
+Delegate *to* a subagent with an explicit model param when there is a real
+batch to amortize the cold start (a spec'd test-stub list, a multi-file doc
+sweep); do trivial single actions inline.
+
+- **Sonnet-tier** — mechanical, fully specified, verifiable by tests: closing
+  issues from a commit diff, report drafting, doc sweeps, adding spec'd test
+  lists, deferred bugs when their triggers fire.
+- **Opus-tier** — multi-file integration, judgment *within* the spec: crate
+  introduction, data-model restructures, post-commit code review passes.
+- **Defer to the user** (with Opus, not a higher tier): protocol freezes; any
+  deviation from a spec contract; any new ADR; re-ordering a phase's commits
+  after a paired session.
+
+## Guardrails (all tiers)
+
+1. **Specs win.** If the spec and reality conflict, stop, record the conflict
+   in the phase report, and ask the user. Do not redesign inline. If a spec is
+   silent on a detail, choose the boring option and note it in the report.
+   **New tools/components outside existing phases: write an ADR first, get
+   approval, then implement. Never jump to code.**
+2. **Do not revisit named decisions** without the user: no tokio; no Web MIDI
+   as primary transport; wire names stay plain; relative-only encoders;
+   surfaces are device nodes; DAG + LoopBreakNode; ADR-019 naming contracts;
+   the five-layer/license boundaries.
+3. **Workflow discipline:** code review before every commit (subagent);
+   design/doc changes in separate commits from code; stop at integration-test
+   milestones to test with the user; append-only rules for ADRs and phase
+   reports.
+4. **Naming policy** (`design/interface-plan.md`): third-party marks never in
+   identifiers/features/UI strings; house names (Antiphon, Theoria, kerygma,
+   epiclesis, Ordo, Triptych) only in their assigned slots; wire/protocol and
+   standard concepts keep plain names.
+5. **Audio-thread rules are hard constraints:** no alloc/lock/block in
+   `process()`; JSON never touches the audio thread.
+6. **Universality check** (standing user directive): at every spec or
+   implementation pass, ask what is being hard-coded that the vision does not
+   require — fixed counts, surface-shaped engine caps, `&'static str` in
+   published APIs, single-purpose fields. Flag findings even unprompted; file
+   them before format freezes (serializers, wire protocol, crates.io APIs),
+   where limitations become permanent.
+7. **Defect-filing** (standing user directive): architectural defects found
+   during design or review work are **filed as GitHub issues against the
+   code** and the design is adjusted — never silently worked around in prose.
+8. **Every commit:** `cargo test --workspace` green (bare `cargo test` only
+   runs the app crate), clippy clean on touched crates, update the phase
+   report as you go — not at the end.
 
 ## Design documents
 
-- `design/handoff.md` — task routing by model tier; read before implementing
-- `design/roadmap.md` — current phase scope and sequence
-- `design/bugs.md` — append-only bug tracker
+- `design/README.md` — what lives in `design/` vs GitHub Issues, and how to
+  resolve a historical reference. **Read this first if a doc cites a file
+  that no longer exists.**
+- `design/roadmap.md` — phase sequence and design gates (the *plan*; status
+  lives on milestones)
 - `design/adr/` — Architecture Decision Records. The **decision/context/
   alternatives body is append-only** — never rewrite a past decision. The
   `Status:` line and an appended implementation note *are* updated when the ADR
   is implemented (e.g. ADR-033 `proposed → accepted`).
 - `design/review/` — post-phase code reviews and latent-issue audits
 - `design/phases/` — per-phase specs and implementation reports (append-only)
+- `design/sessions/` — paired usability session notes (append-only)
+
+Open bugs, open questions, spikes, spec gaps and carryover are **GitHub
+Issues** — see the reading order at the top of this file.
 
 `Hardware*` was renamed to `Surface*` in July 2026. Historical docs use old
 names — map accordingly; do not edit those documents.

@@ -83,8 +83,8 @@ per-step lock instead of the live value.
 Numpad slot A/B/C jog remains unwired — formally descoped, not merely
 deferred; ADR-044 D9's ENC mode gives the encoder bank its own
 modifier-free path, so the numpad cluster's fate is an open question for
-a future usability session, not a wiring gap. See `design/bugs.md`
-BUG-038.
+a future usability session, not a wiring gap. See BUG-038 —
+`gh issue list --search "BUG-038 in:title" --state all`.
 
 **Other:**
 
@@ -256,7 +256,8 @@ tools/
   test-driver/          — headless test/CI harness
 profiles/               — Rhai hardware profile scripts
 samples/                — WAV files (not committed)
-design/                 — architecture docs, ADRs, phase reports
+design/                 — architecture docs, ADRs, phase specs/reports
+                          (open bugs + questions are GitHub Issues)
 ```
 
 ---

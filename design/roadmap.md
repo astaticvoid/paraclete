@@ -1,781 +1,167 @@
 # Paraclete — Roadmap
 
-> **Living document.** Replace this file when a phase completes or significant
-> planning changes occur. Keep it short — current state only.
+> **Plan, not state.** This file holds the phase sequence, the design gates,
+> and the standing prioritization decisions. **Live state — open bugs, open
+> questions, spec gaps, spikes, provisional implementations — lives in GitHub
+> Issues**, not here. See `design/README.md` for the lookup commands.
 >
-> **Last updated:** 2026-07-29 (still later). **TK2.1 CODE-COMPLETE —
-> C0–C7 shipped** (`e9328f8`, `2028f9d`, `f3053fb`, `c8a9b5b`, `87fcbcc`,
-> `311cbad`, `7e42c0f`, `d1ed585`); **BUG-041** (`f2576f4`) **and
-> BUG-040** (`87fcbcc`) **fixed**, **BUG-038 formally descoped** (its
-> arrow-cursor half made moot by C5's ENC mode, dead code deleted; its
-> numpad half stays open as OQ-T24, reserved for session #3). Full
-> per-commit narrative, hostile-review findings, BUG-038's reasoning, and
-> the doc sweep are in **`design/phases/tk2.1-report.md`** — not
-> re-narrated here. `design/theotokos/design.md` §5.1/§5.2 rewritten as
-> DETERMINED against the accepted ADR-044 (Stage 5). **Next: usability
-> session #3 (TK2.1 C8, user-paired, no code)** — produces
-> `design/sessions/theotokos-3.md`; the phase does not close until that
-> session's verdict lands in the report above. C7's own smoke pass was
-> environment-limited (no interactive TTY available this session) — see
-> the report's "Agent smoke run" section; the ~40-test render suite
-> substituted but does not replace a live pass.
-> Previous revisions of this file carry the full per-commit narrative back
-> through BUG-041/ADR-044 ratification.
-> Previous: 2026-07-29. See prior revision for the C0–C5 narrative.
-> Previous: 2026-07-28. **ADR-044 ✅ RATIFIED — TK2.1
-> implementation unlocked.** All six questions settled: R1 live rec
-> degrades to a transport-derived rule where key releases are unavailable;
-> R2 pulls ADR-039 decision 7's `live_rec` slice into TK2.1 C3 (honouring
-> TK2 D10's "no inert state ships"); R3 removes `Mute` from the `:bind`
-> vocabulary with warn-and-skip keymap loading; R4 confirmed the trig/TRK
-> semantics in session (bare trig selects *and* sounds, TRK+trig selects
-> silently, the display follows without changing the open page); R5 defers
-> FUNC+transport ergonomics to session #3; R6 defers cross-surface lock
-> capture to ADR-045 (🟡 proposed, parked). **Next: TK2.1 C0 → C7, then
-> usability session #3 (C8).** design.md §5.1/§5.2 stay REOPENED until C7
-> rewrites them as DETERMINED. Independently unblocked, needing no
-> ratification: **BUG-041** (an isolated engine defect that C3a schedules)
-> and SPIKE-006's desk half (XL prior-art survey; the bench half needs
-> hardware).
-> Previous: 2026-07-27 (latest). **TK2.1 redesign pass drafted —
-> awaits ratification** (roadmap step 2.5). `ADR-044` (🟡 proposed,
-> D1–D12 + ratification questions R1–R3) freezes the reopened layout and
-> mode model; `design/phases/tk2.1-theotokos.md` is its commit blueprint
-> (C0–C7 + session #3 as C8). Layout: fixed region heights, one contextual
-> window, a persistent trig strip showing **only** the selected track on
-> every screen, a one-line track indicator (names, mute, selection), key
-> chips drawn wherever the keys currently act (resolved through the live
-> `Keymap`), and a labeled `[key] NAME` legend strip replacing the grey
-> hint line. Mode model: `RecMode { Off, Grid, Live }`, REC toggles
-> `Off↔Grid` and REC held + PLAY escalates to `Live`,
-> **default `Off`** — trig N = track N pads that play *and* select
-> (user-chosen this pass over the trig-is-step reading), no transport at
-> launch, sticky re-tap disarms behind a 400 ms auto-repeat guard, Mute
-> screen retired. **Encoder access + p-lock settled 2026-07-28
-> (user-directed):** encoder access is an explicit **ENC mode** (`n`),
-> *not* the Param screen — screen-as-mode broke the pad invariant and made
-> p-locking unexpressible, since the reference gesture holds a step while
-> turning an encoder and the trig rows cannot be both. New **D15** gives
-> p-lock authoring its first gesture: a shared `lock_target`, momentary
-> where releases are reported (kitty trig hold, Launchpad pad), latched
-> otherwise (`m`), published on the bus — reviving the CMD 33/34 path
-> unreachable since TK2 C3, and superseding D13. The value may come from
-> any surface; **cross-surface capture** (real encoders on a MIDI
-> controller while the step is held here) is deferred to its own ADR
-> (R6/OQ-T28, now drafted as **ADR-045**). It is testable today via
-> Theoria's relative touch encoders; there is **no relative hardware
-> controller** here — the Digitakt II was disqualified 2026-07-04
-> (absolute CC) and must not be revived, and the LaunchControl XL's pots
-> are a macro surface, not a contextual bank (**SPIKE-006**).
-> **Also tracked 2026-07-28:** the Digitakt-as-encoder-controller idea is
-> **dropped for good** — it was disqualified on hardware 2026-07-04 yet
-> survived in `handoff.md` as a "standing offer" and got propagated into
-> this ADR draft as an open assumption; the handoff guide now carries an
-> explicit do-not-revive note instead. New **SPIKE-006** (what the
-> LaunchControl XL can actually provide — pots not encoders, soft-takeover
-> viability, prior art on firmware modification, what a true relative
-> controller would cost) and new roadmap stage **W5 — Patch editor &
-> control mapping** (drag-and-drop node wiring with full graph visibility,
-> plus MIDI learn binding any exposed param or macro to any controller;
-> design spike → ADR → implementation; P16's macro system is its target
-> side). **ADR-045** drafted for cross-surface lock capture.
-> Live record follows **ADR-039 decision 7** (engine-side `live_rec`) —
-> the draft's first surface-side `CMD_SET_STEP` approach was withdrawn
-> because that accepted ADR names it as its rejected alternative; TK2.1
-> C3 therefore pulls one small P11 slice forward. **Hostile review held
-> the same day** (3 fresh-context reviewers — code claims / design
-> consistency / implementability): **15 B, 26 M, 27 m; 49+ code claims
-> verified clean**; all blockers and majors folded before ratification per
-> process rule 1. What review changed: the drafted **REC cycle became a
-> contested ratification item** — since **withdrawn at the user's
-> direction** in favour of the reference box's own gestures (REC toggles
-> grid rec; REC held + PLAY escalates), which leaves ADR-038's grid-rec
-> toggle and ADR-039's REC+PLAY grammar **intact — nothing is superseded**,
-> and R1 narrows to what `Live` degrades to where key releases are
-> unavailable (recommended: REC-while-running arms it). The cycle also had
-> its own hazard: leaving `Grid` passed *through* `Live` while the
-> transport ran, so a stray trig would record. D6 was re-grounded in the
-> same pass on user-confirmed reference behaviour — a bare trig **selects
-> and sounds** its track while TRK+trig **selects silently**, and the
-> display follows the press without changing the open page; the two are
-> the audible and silent forms of one selection, so ADR-038 structural
-> change 2 stands unamended and TRK keeps a role outside `Grid` mode; **§0
-> A10's chord precedence restored** (encoder jog, bare-trig-on-Param
-> included, resolves only with no armed prefix, so the mute chord stays
-> reachable); **design.md §4.2's jog constants restored** (the drafted new
-> divisors were withdrawn — the session evidence points at the faked
-> range, not the tiers); the commit sequence re-cut (chips must follow the
-> rec-mode change; the encoder commit split in two); exhaustive
-> update-to-stay-green site lists per rename/deletion; literal legend
-> content, cell formats and quantization formula; a dropped session
-> verdict (FUNC+transport ergonomics) restored as explicit deferral R5;
-> and D13 added so a retired button name degrades a user keymap instead of
-> rejecting it. Three defects filed: **BUG-039** (`InternalClock`
-> constructs with `playing: true`), **BUG-040** (encoder jog invents a
-> 0..1 range on composite pages, `model.rs:357`, and ignores `stepped` —
-> the file:line cause of session #2's "no variable step size"), and
-> **BUG-041** (`CMD_CLOCK_STOP` emits no transport event, so a sequencer's
-> `playing` never clears in the standalone app — found verifying the
-> draft's own "records nothing while stopped" claim, and scheduled as
-> TK2.1 C3a because D8 depends on it). **No code written; nothing
-> implemented.** Next: user ratification of ADR-044 (**R1–R5**), then
-> TK2.1 C0.
-> Previous: 2026-07-27 (later). **TK2 C10 — usability session #2
-> held, NOT a clean sign-off** (`design/sessions/theotokos-2.md`,
-> `design/phases/tk2-report.md`). Live, paired, in a shared tmux session
-> on the default 4-track instrument. Verdict: the underlying plumbing
-> (live-trig, encoder resolution, tempo derivation, key remapping, mute
-> state, live viz) all works, but the **default rendering and mode model
-> don't** — the shipped GRID screen renders all tracks stacked as
-> repeated blocks, reading as a Launchpad LED-grid emulator rather than
-> the intended fixed Elektron-style panel (one always-visible trig strip
-> + a genuinely separate contextual window above it + a labeled key
-> legend, not a scrolling grey hint line). Session reopens design.md
-> §5.1/§5.2 (were DETERMINED) per its own §6 convergence rule — hands-on
-> evidence is exactly what's required to reopen them. Also surfaced that
-> the shipped default (REC-armed on launch, trig = step-write) inverts
-> design.md §3.A's own already-accepted intent ("trigs are trigs
-> everywhere," "on hardware, trigs always play") — this is closing a gap
-> against existing intent, not opening a new question: redesign target
-> is trig/finger-drum-mode default (trig plays live + switches
-> contextual display to that track), REC arms step-entry, no auto-play
-> on launch, PLAY+REC = live record. Sticky-prefix (D6) re-tap should
-> toggle off, reversing the TK2 spec's own §0 A9 amendment. **OQ-T22
-> resolved** — mute quick-chord (TRK+FUNC+trig) wins outright; Mute
-> screen to be retired. OQ-T23 (tempo/tap) converged with a minor
-> friction note; **OQ-T24 (numpad fate) still open** — no verdict yet.
-> This session also formally closes the outstanding TK1 C8 obligation
-> (folded in per D4): superseded hypotheses (`\` leader, Shift+track
-> mute, number-row pattern select) dropped, yellow-flash and
-> composite-page-order carry-overs both converged clean. **Next: a short
-> redesign pass** (TK2.1 addendum or new ADR) freezing the layout +
-> mode-model changes, then implementation, then **session #3** to
-> re-judge what this session couldn't fairly evaluate under the old
-> layout (TRK/PTN physical feel, encoder bank ergonomics, numpad fate).
-> The TK2-exit scheduling pass (parallel P11/AN/ADR-041+042 tracks) is
-> **on hold** until the redesign + session #3 land — do not start it yet.
-> Previous: 2026-07-27 (earlier). **TK2 C9 shipped** — live visualization
-> (design.md §5.3b): `EnvelopeNode`/`LfoNode` publish
-> `/node/{id}/state/env_level` and `/node/{id}/state/lfo_phase` via
-> `published_state()`; `AnalogEngine`/`FmEngine` also publish
-> `env_level` so the default 4-track instrument animates. Theotokos
-> Param screen shows live envelope output as a green ▶ gauge (falling
-> back to static cyan) and an LFO phase track (●/─) when an LFO node
-> is in the graph. LFO phase scans all state-bus entries (not just
-> `generator_id`). 3 tests: `envelope_node_publishes_level`,
-> `lfo_node_publishes_phase`, `param_screen_animates_envelope_and_lfo`
-> (with buffer-text assertions). Full workspace green. Next: **⛔
-> usability session #2 (TK2 C10, D4)** — TK2 code-complete.
-> Previous: 2026-07-27 (earlier). **TK2 C8 shipped** — key remapping
-> (ADR-037, re-based by D11/D14): `Keymap` (`paraclete-theotokos/src/
-> input.rs`) is a flat `HashMap<KeyBinding, PanelButton>` with YAML
-> persistence (`serde_yml`, already a workspace dep) at `~/.config/
-> paraclete/keymap.yaml`, `./keymap.yaml` overriding on load (global→local
-> merge, `Keymap::merge_sources`); six new `:` verbs (`bind`/`unbind`/
-> `list-bindings`/`reset-bindings`/`save-bindings`/`load-bindings`) parsed
-> in `model.rs`, dispatched in `lib.rs`. `:save-bindings` is the only
-> write path — no auto-save anywhere, including on quit. Only `Char(':')`
-> is the D14-unbindable entry; Ctrl-C's protection is structural (the
-> `direct_action` branch in `handle_keys` intercepts it before the keymap
-> is ever consulted, regardless of what bare `c` is bound to). Hostile
-> review found **1 blocker**: two new tests mutated the process-global
-> `$HOME` env var with no synchronization — under `cargo test`'s default
-> multi-threaded runner they could interleave and write a test binding
-> into the developer's real `~/.config/paraclete/keymap.yaml` — fixed with
-> a `HOME_ENV_LOCK` mutex + a `with_scratch_home` helper that restores the
-> real `$HOME` even if the test body panics. **2 majors**: `Keymap::
-> from_yaml` never enforced the D14 unbindable guard (only the `:bind`
-> verb parser did), so a hand-edited `keymap.yaml` could smuggle a `:`
-> binding past it — fixed (enforced in `from_yaml` too, closing the load
-> path as well as the verb path; new regression test
-> `from_yaml_rejects_unbindable_key`). And every C8 success confirmation
-> (`:save-bindings`, `:list-bindings`, `:load-bindings`) reused the red
-> `cmdline_error` echo slot, so a successful save rendered as if it had
-> failed — fixed by adding a separate `cmdline_status` field (green,
-> distinct from the red error style) threaded through `Model`/
-> `RenderData`/`render_echo_area`, with the same "cleared on next real
-> action" lifecycle as `cmdline_error`. **1 minor**: the help overlay's
-> `:` verb list wasn't updated for the 6 new verbs — fixed. ADR-037
-> flipped to ✅ Accepted with an implementation note (its ratification is
-> "ratifies with C8 landing" per the TK2 spec's own framing — no separate
-> user session, unlike ADR-038). 96 crate tests (14 new: 8 spec-named + 5
-> bonus + 1 review-driven regression), full workspace green. Next:
-> **⛔ usability session #2** (TK2 C10, D4) — TK2 code-complete; all
-> C0–C9 landed.
-> Previous: 2026-07-24 (later still). **TK2 C7 shipped** — agent
-> smoke + polish gate (no new features). Ran the live TUI on the 4-track
-> default via tmux and drove the panel grammar end-to-end; found and fixed
-> two paper cuts invisible to the unit/injection/`TestBackend`-render test
-> suites: (1) `render_perf_window` handed the envelope `Gauge` an
-> unconstrained `Min(0)` area, tiling it across every row instead of
-> rendering one bar — fixed with an explicit `Length(1)` constraint;
-> (2) §2/D12 name no gesture that returns to the Grid screen from Settings/
-> Tempo/Param/Mute — fixed by making `PanelButton::No` fall back to
-> `OpenScreen(Screen::Grid)` everywhere except Chain (which keeps NO's more
-> specific clear-chain meaning, checked first). New regression test
-> `esc_returns_to_grid_from_other_screens` covers both the fallback and the
-> Chain exception. Updated `README.md`/`AGENTS.md` Theotokos key tables
-> from the stale TK1 SEQ/PERF-mode grammar to the TK2 panel grammar.
-> Hostile review of the full diff found the first documentation draft
-> **overclaimed two unshipped D13 features** — arrow-driven encoder-cursor
-> nav on the Param screen and numpad slot A/B/C jog are speced but never
-> wired (`encoder_cursor` never mutates past its `0` init; no
-> `KeyEventState::KEYPAD` handling exists anywhere) — corrected the docs to
-> describe only what's live and filed **BUG-038** in `design/bugs.md` so
-> the gap doesn't get silently reintroduced as "already done." The two
-> live-discovered rendering/navigation bugs were fixed within this same
-> commit (never shipped) and are UI-only, not engine-correctness issues, so
-> no separate `bugs.md` entries were filed for them — judgment call per
-> the standing defect-filing directive's "engine issues" framing. 82 crate
-> tests (1 new), full workspace green. Next: TK2 C8 (key remapping,
-> ADR-037-based).
-> Previous: 2026-07-24. **TK2 C6 shipped** — Tempo/Settings/Chain
-> screens (D12): Tempo (`0`) — YES taps a ring of up to 4 timestamps,
-> deriving bpm from the window average once 2+ taps exist (`CMD_SET_PARAM`
-> on the clock, engine-side `.clamp(20,300)`); UP/DOWN nudge ±1, FUNC+UP/
-> DOWN ±0.1. Settings (`8`, read-only): bpm, kitty status, track count,
-> pattern-bank size, crate version. Chain (`o`, opens via SONG): pattern-
-> bank row with active/cued/cursor markers, chain length + page-loop line
-> (all read from the engine's published state), YES pushes the cursor
-> pattern (`CMD_CHAIN_PUSH`), NO **and** Backspace clear it
-> (`CMD_CHAIN_CLEAR` — Backspace's existing screen-independent bypass,
-> committed in C3, is now screen-aware), LEFT/RIGHT move the cursor. KIT
-> echoes `reserved (kit)`; SAMPLING stays a silent no-op (no cap-doc
-> declares it yet — explicitly disclosed, not a gap). 6 tests named in
-> spec. Hostile review found **2 majors**: `cmdline_error` (the shared
-> echo/error slot used by D9's clamp echoes, `:` line parse errors, and
-> now KIT's reserved message) never cleared on any subsequent unrelated
-> action — a stray KIT tap could pin "reserved (kit)" over the screen
-> indefinitely, silently masking a later, more relevant echo — fixed with
-> a clear-before-dispatch on every non-`Noop` action. And
-> `tempo_screen_yes_taps_set_bpm` only checked that *a* `CMD_SET_PARAM`
-> fired, never inspecting the computed bpm — a broken averaging
-> computation would have passed silently — fixed to assert the exact
-> clamped value the real 50ms tap gap must produce. Engine command/
-> state-path fidelity (`CMD_CHAIN_PUSH`/`CLEAR`, the 5 published-state
-> paths Chain reads) verified byte-for-byte against `sequencer.rs`. 81
-> crate tests, full workspace green. Next: TK2 C7 (agent smoke + polish
-> gate — no new features).
-> Previous: 2026-07-23 (later still). **TK2 C5 shipped** — encoder
-> bank (D8): FUNC+top/bottom-row trig resolves against the active page's
-> params in Rule order (composite page first, engine `Rule` fallback),
-> up to 8 encoders; fine via FUNC+Ctrl; under step focus, jog routes to
-> that step's p-lock (CMD 33/34) instead of a live `CMD_BUMP_PARAM`,
-> reusing the TK1 ramp/acceleration machinery via a per-column tracker.
-> `resolve_page_params_n` generalizes the TK1 2-slot resolver; numpad
-> slots extend from 2 to 3 (D13, slot C); flash generalizes from 2 slots
-> to 8 encoders + 3 slots. Param screen renders 8 cells (2×4, name + bar
-> + value); the arrow-key cursor field exists and renders but isn't yet
-> wired to move (disclosed, deferred — arrows still resolve to Noop). 7
-> tests named in spec. Hostile review found **1 blocker**: §0 A11
-> ("pages over 8 params split into sub-pages, C5's render must show a
-> sub-page indicator") was entirely unimplemented — params past the 8th
-> were silently truncated with no signal anything existed beyond them —
-> fixed with real sub-page state (`Model.sub_page`), a slot-range-aware
-> `resolve_encoder_params`, the same-Pg-key-cycles-sub-page gesture (§0
-> A1 hypothesis, new `Action::NextSubPage`), and a `¶N/M` render
-> indicator. **2 majors**: slot C was bound but functionally dead — its
-> `Action::Jog` dispatch arm was a hardcoded `Slot::C => continue` (4
-> places) predating this commit, `update_flash` was never called for
-> index 2, and `RenderData` had no slot-C fields at all, despite the
-> commit describing D13 as "extended to slot C" — fixed (real `jog_c`
-> tracker, flash tracking, and status-line rendering). And the named test
-> `encoder_col_maps_to_page_param_in_rule_order` never actually exercised
-> Rule-order sorting — `test_caps()`'s shared `Rule` has no `page_groups`,
-> so it always hit the plain-declaration-order fallback — fixed with a
-> dedicated capability doc whose Rule assigns slots in the REVERSE of
-> declaration order, proving the sort runs. 3 new regression tests. 75
-> crate tests, full workspace green. Next: TK2 C6 (Tempo/Settings/Chain
-> screens).
-> Previous: 2026-07-23 (yet later). **TK2 C4 shipped** — FUNC
-> transport chords + mute chord (D7/A8/A10/A14/A16): FUNC+REC copies the
-> active lane, FUNC+PLAY clears it (`CMD_CLEAR` + `CMD_CLEAR_STEP_LOCK`
-> per step, §0 A8 — locks don't survive a plain `CMD_CLEAR`), FUNC+STOP
-> pastes — all reusing the unchanged TK1 `yank_active_pattern`/
-> `paste_pattern` (dormant since the C3 wiring flip, now reconnected).
-> TRK-held + FUNC+trig = mute toggle (was a C3 reserved no-op, now real);
-> PTN-held + FUNC+trig stays a no-op (nothing defined). Mute screen (`m`)
-> renders real per-track mute state, trigs retarget to mute-toggle (A16).
-> 6 tests named in spec. Hostile review found **1 blocker**: `key_to_button`
-> necessarily collapses Space and `x` onto the same `PanelButton::Play`
-> (D11) — meaning FUNC+Space silently hit the same `ClearLane` arm as
-> FUNC+x, directly violating normative A12 ("FUNC+Space is a no-op") on
-> any kitty-capable terminal (a live, reachable pattern-wipe footgun, not
-> hypothetical) — fixed with a raw-key override in `handle_keys` (button
-> identity can't distinguish them post-collapse, so the guard uses the
-> original `KeyEvent` one layer up). Also fixed a minor: 3 injection tests
-> used the synthetic lowercase+SHIFT combination §0 A1 flags as the
-> "BUG-035 false-pass class" — switched to uppercase+SHIFT (legacy
-> terminal shape). 2 new regression tests. 67 crate tests, full workspace
-> green. Next: TK2 C5 (encoder bank).
-> Previous: 2026-07-23 (still later). **TK2 C3 shipped** — wiring
-> + render migration: `lib.rs::handle_keys` now consumes the C2 pipeline
-> (`key_to_button` → `HeldState` → `button_to_action`), replacing the old
-> TK1 `map_key`/`map_seq`/`map_perf`. Real behavior change, not additive:
-> deleted the entire old input pipeline + 9 of its tests, `Mode`/
-> `LeaderState`/`Model.leader`/`CmdlineVerb::Mode` (Screen replaces Mode
-> per D12), and 16 TK1 integration tests whose triggers (`qweruiop` track
-> row, Shift+track mute, Enter/arrow-jog focus, number-row pattern select,
-> `y`/`Y` yank/paste, `\` leader) no longer exist under the new grammar —
-> `Action::Jog`/`FocusStep`/`ReleaseFocus` and `yank_active_pattern`/
-> `paste_pattern` are kept (unreachable, documented) for C4/C5 to reuse.
-> render.rs: status line (screen name/REC/armed-prefix), REC indicator on
-> the transport bar, help overlay regenerated from §2. 5 tests named in
-> spec, all passing. Hostile review found **1 blocker** — `setup_keyboard_flags`
-> never got the `DISAMBIGUATE_ESCAPE_CODES | REPORT_ALL_KEYS_AS_ESCAPE_CODES`
-> flags §0 A2 requires, so the kitty real-hold branch this very commit
-> built (`on_kitty_press`/`release`) would arm TRK/PTN and never see the
-> release that disarms it — fixed. **2 majors**: direct utility keys
-> (Ctrl-C/`:`/`?`/Backspace) bypassed the hold system entirely, so a sticky
-> armed prefix survived past them (D6 requires any non-trig key to disarm)
-> — fixed, kitty's real-hold exempted since it disarms only on physical
-> release. And FUNC+trig while TRK/PTN armed resolved to a wrong
-> `SelectTrack`/`SelectPattern` instead of the A10-reserved (C4) mute-chord
-> no-op — fixed. Plus a minor (stale slot A/B info under the Tempo/Chain/
-> Settings/Mute placeholders) — fixed. 4 new regression tests added for
-> the fixes; 60 crate tests, full workspace green. Per user request,
-> **pausing here** — TK2 C4 (FUNC+transport chords, mute) is next.
-> Previous: 2026-07-23 (even later). **TK2 C2 shipped** — panel
-> model pure types + mapping (`paraclete-theotokos/src/input.rs`,
-> additive-only per §0 A4: the old TK1 `map_key`/`map_seq`/`map_perf`
-> pipeline is untouched and still wired into `lib.rs`). New: `PanelButton`
-> (the §2 continuous grid + all named buttons), `Keymap`/`KeyBinding`
-> (D11, empty by default), `func_held` (§0 A1's case-fold/FUNC-inference
-> rule), `key_to_button`, `Hold`/`HeldState` (D6 sticky-prefix fallback,
-> amended by §0 A9 — same-prefix re-press is a no-op, not a toggle),
-> `ScreenState`/`Mods`/`button_to_action`. `model.rs` gained the `Screen`
-> enum (D12); `action.rs` gained 6 new `Action` variants routed to
-> `Outcome::StateOnly` for now. 76 crate tests (11 named in spec + 2 added
-> after hostile review: direct `func_held` coverage — was implemented but
-> untested by every other C2 test, which hand-built `Mods` instead — and
-> an accurately-named twin for `sticky_prefix_same_key_toggles_off`, whose
-> literal spec-mandated name asserts the opposite of what §0 A9 requires
-> it to test). Review also had a dead/unfalsifiable FUNC+Space guard
-> removed (both branches produced identical output; deferred to whichever
-> commit gives Play real meaning). All workspace tests green. Next: TK2 C3
-> (wiring + render migration — the deletions §0 A4 deferred from C2 move
-> here, alongside `lib.rs::handle_keys` consuming the C2 pipeline).
-> Previous: 2026-07-23 (later). **TK2 C1 shipped** — live-trig
-> engine command (`Sequencer::CMD_TRIG_NOW = 38`, D5/§0 A3): resolves
-> note/velocity sentinels, fires a `NoteOn` at the next `process` window's
-> sample offset 0, respects mute, works with the transport stopped. Two
-> rounds of hostile review against the spec found and fixed: (1) a blocker
-> — the live gate never closed while stopped, since the only close path was
-> transport-tick-driven and no ticks arrive when stopped (exactly the
-> failure A3 was written to prevent); fixed with a sample-counted gate
-> decremented once per `process()` window by buffer length, independent of
-> transport, tracked via a new `live_gate_samples_left` field and cached
-> `last_bpm`. (2) a follow-up major found in round two — the ordinary
-> step-boundary fire path called `emit_note_on_at` without first closing an
-> already-open gate (unlike the other three fire paths), so a live trig
-> could be silently orphaned by the next pattern step; fixed by centralizing
-> the close-if-open check inside `emit_note_on_at` itself so every fire path
-> gets it. 7 sequencer tests (6 named in spec + 1 regression for the
-> orphan-gate finding), all workspace tests green (`cargo test --workspace`).
-> `tools/test-driver` gained a matching `trig_now` scenario/interactive
-> action. Next: TK2 C2 (panel model — pure types + key mapping, additive
-> only per §0 A4).
-> Previous: 2026-07-23 (late). **Hostile review cycle complete** —
-> three subagents attacked every design ratified this session (ADR-038…043,
-> TK2 spec, P11/AN docs): **9 blockers, 21 majors, 14 minors; 46 code
-> claims verified clean**. All findings folded: TK2 spec gained a normative
-> §0 amendments section (key normalization, kitty flag set, live-trig
-> gate, `:` binding, C2 restructure, numpad gating); ADRs 039–043 carry
-> user-approved amendment sections (kit membership flag + retracted
-> "zero engine changes"; motion-gated scene morph; variant descriptor
-> overlays + machine-select on TRIG; lock-aware LFO base + name-hash
-> dests; SYN-as-SRC-sub-pages + gated-voice dependency). §4.4
-> modifier-floor amended (design.md log). BUG-035/036/037 filed (two
-> latent TK1 input bugs with false-passing tests; FmEngine Rule drift).
-> TK2 C0 shipped (`040a45f`, includes a PageNav fix the spec missed).
-> Next: TK2 C1 per the amended spec.
-> Previous: 2026-07-23. **Elektron convergence redesign — ADR-038 ✅
-> ACCEPTED** (ratified same day, D1–D4): Theotokos interaction model rebuilt
-> as a virtual front panel — TRK/PTN hold-chords replace the `qweruiop`
-> track row, REC grid-rec toggle + screens replace SEQ/PERF modes,
-> continuous two-row trig grid (`q…i`/`a…k`) replaces the split home-row
-> grid (split dropped entirely, D3), FUNC(Shift)-layer 8-encoder bank
-> replaces slot-jog. Engine scope pre-approved (D2): live-trig command +
-> `CANONICAL_PAGE_ORDER` → Digitakt order. **Session #2 held until the TK2
-> S0 panel lands (D4)** and tests the new grammar, not the superseded TK1
-> hypotheses (`\` leader, number-row patterns, `y`/`Y`). **Full TK2 spec
-> drafted same day** (`design/phases/tk2-theotokos.md`): decisions D5–D14
-> frozen (live-trig `CMD_TRIG_NOW=38`, sticky-prefix hold fallback,
-> FUNC+transport copy/clear/paste scope, encoder bank, screen model,
-> remap guardrails), commits C0–C9 + session C10, named tests per commit.
-> Next: implement C0 onward.
-> Previous: 2026-07-22. **TK1 CODE COMPLETE — C0–C7 shipped** (p-lock
-> UI, mutes, composite pages, `:` command line, pattern select, yank/paste,
-> `\` leader rebinding, yellow flash, `?` help overlay, suspend-crash fix).
-> **TK1 C8** = usability session #2 (user-paired; no code). **60 Theotokos
-> tests, 50 workspace suites green.**
-> (session #1, `design/sessions/theotokos-1.md`; report + spec-divergence
-> table `design/phases/tk0-report.md`). Theotokos is now the default
-> surface (`cargo run`; `--emulator` for legacy). **TK1 spec drafted**
-> (`design/phases/tk1-theotokos.md`, 8 commits + session #2) — **D1–D4
-> ratified** (`paraclete-view-assembly` crate, sequencer-`mute` trig-gate,
-> CMD 33–35 lock pair, `\` leader); **design review held — no blockers**,
-> findings M1–M7/m1–m12 folded. BUG-034 filed and **FIXED 2026-07-22**
-> (page-window stride; `GRID_STEPS=16`).
-> Previous: 2026-07-21 (evening). **Theotokos track ACCEPTED** —
-> keyboard-first modal performance terminal (`design/theotokos/`, ADR-036 ✅
-> 2026-07-21). Review found+fixed pre-ratification: BUG-032 (transport
-> unreachable — TK0 C0), BUG-033, 4-track default instrument, Antiphon-bound
-> composite Rules. TK0 POC spec: `design/phases/tk0-theotokos.md`.
-> Previous: 2026-07-21. **Theotokos track proposed** — keyboard-first
-> modal performance terminal (`design/theotokos/`, ADR-036 🟡 proposed; awaits
-> user ratification, then TK0 POC). A new track *alongside* the W-track, not
-> a fork: WT unaffected, convergence revisited at TK3.
-> Previous: 2026-07-20. **Paired session #3 held 2026-07-14** — went to
-> Linux/ALSA audio bring-up instead of the W2 §7.1 exit-criteria pass; findings
-> BUG-012 (Linux confirmation) + INFRA-004…007 (`design/sessions/s3.md`).
-> **BUG-012 fix complete, pending hardware verification** — output ring buffer
-> + FTZ/DAZ (`0f3d17b`), `BufferSize::Default` decision (`c3c56db`); the
-> chunk-and-discard distortion path is gone. **INFRA-004 shipped** —
-> `--no-emulator` headless mode (`c3c56db`). **W2 Commits 0–6 shipped** —
-> `Rule` + `ViewPlugin` trait (L2), 7 node impls (L3), Antiphon `view_meta`
-> protocol + composite assembly, web four-zone rail layout, param page grid
-> rendering, chain view, ViewRegistry wired with real data. All 581 tests pass,
-> web builds clean. **Next: W2 Commit 7** — formal §7.1 exit-criteria pass on
-> the fixed audio path (session #3 did not run it).
-> Previous: 2026-07-14. **BUG-012 shipped** — sample-rate auto-detection +
-> callback chunking (later corrected: chunk-and-discard, not a ring buffer —
-> see bugs.md). W2 Commits 0–6 shipped. 557 tests.
-> Previous: 2026-07-13. **Debug/test harness (ADR-033) promoted to
-> Rank 2.** The agent lane pivots from the (completed) universality audit to
-> building live-engine interrogation, a null audio backend, audio snapshot/diff,
-> and a structured log channel — so W2, P13, and every later feature are
-> developed and tested against real engine state (quality upfront, not late
-> bug-fixing). W2 *code* now gates on it; the W2 *spec* (Rank 1, user-paired) is
-> unaffected.
-> Previous: 2026-07-12 (late). **Vision crystallized + W2 groundwork
-> done.** North-star thesis captured in `instrument-vision.md` ("Performance Meets
-> Limitless Composability"): one graph, layered surfaces (hardware-style
-> performance / signal-flow graph / mouse+keyboard floor); every node has a
-> graceful-degrading view; "limitless elisp of machines" = two-tier engines (fast
-> monolithic + graph-composed); modulation IS the graph; **no hardcoded counts in
-> any frozen format.** W2 reference spike complete
-> (`design/specs/w2-reference-analysis.md` — all four manuals, 8 convergent
-> patterns, decision menus). **§6.0 axis resolved** (layered, not either/or).
-> **ADR-032 reframed** as the universal node-view contract. **Active agent work:
-> pre-W2 universality/hardcoded-count audit** (must land before the interface/
-> protocol/serializer freeze). D1 (W2 spec+ADR-032) and D2 (P13, now two-tier
-> framed) remain **user-owned/paired**. See "Active Priorities" below.
-> Previous: 2026-07-12 (ADR-034 implemented: D3/D4 closed, INFRA-003 resolved;
-> RuntimeCounters + `/engine/*`; both counter paths measured quiet; BUG-012
-> confirmed as a hard crash via the live-audio load test).
-> Previous: 2026-07-10 evening (paired session #2 held on glass)
-> **Current phase:** Legibility phase shipped and judged on the iPad over a **USB-C direct link (3.0 ms RTT, zero config — the no-shared-Wi-Fi answer)**. Session #2 verdict (`design/sessions/s2.md`): "improved a lot… it will be the baseline" but **far below bar — the Launchpad-grid mirror is the wrong foundation for Theoria**. New sequence: **(1) BUG-022/023** (seq-vs-trigger kick pitch mismatch; fast-retrigger ducking — sound correctness moves first), **(2) baseline interaction wins** (drag-draw steps, encoder gesture/placement, hide dead grid), **(3) W2 re-scoped → "Theoria native surface", design-first**: paired reference spike (chosen Elektron box manual + Hydrasynth manual → fixed-input rail + contextual window spec, param/env/LFO pages, source→FX channel view) before any further W-feature code; ADR-032 follows the spec. **Launchpad parked** (good version frozen; s1-F7 cleanup → trigger backlog). P10 C2+ engine depth independent/parallel; P13 keystone unchanged. Earlier 2026-07-10 work: legibility items + BUG-016…021 fixed + open-by-default `--token` opt-in (`theoria-legibility-report.md`). BUG-012 still queued for a hardware session.
+> Do not reintroduce a status block or a `Previous:` revision stack. Git holds
+> every prior revision of this file; a changelog inside it is redundant by
+> construction.
+
+**Active work:** the open milestone. `gh issue list --milestone TK2.2`.
 
 ---
 
-## Active Priorities (2026-07-12) — triage against the vision
+## Active Priorities — triage against the vision
 
-Ranked. Rank 1 is the critical-path **design** milestone (user-owned, paired);
-Rank 2 is the active **agent** task — now the debug/test harness, which gates W2
-*code* and de-risks every subsequent feature. **A fresh agent starts here.**
+Ranked, from the 2026-07-12 triage. Ranks 1–2 are complete; 3–4 are the
+standing north-star, both user-owned.
 
 | Rank | Work | Owner | Status | Notes |
 |---|---|---|---|---|
-| **1** | **W2 surface spec + ADR-032** — the universal node-view contract; the layered-surface model | **user (paired)** | **✅ ratified 2026-07-13** | Spec accepted. ADR-032 accepted. W2 implementation begins. |
-| **2** | **Debug/test harness (ADR-033/ADR-035)** — structured per-node debug log, regression baselines, CPU meter | **agent** | **COMPLETE 2026-07-13** | ✅ null backend + REPL (ADR-033, `92b8795`), ✅ regression baselines (ADR-035 Part A, `b74b853`), ✅ structured per-node debug log (ADR-035 Part B, `73332d5`), ✅ CPU meter /engine/cpu_us (`aad9e52`). W2 code gate lifted. |
-| **3** | **P13 voice: OQ-13 + OQ-14** — two-tier engine model | **user** | brief drafted | `w2-reference-analysis.md` P13 appendix. OQ-13 (monolithic vs composed-from-primitives) is **coupled to §6.0** — decide together. OQ-14 = machine-as-parameter (recommended: a topology swap is an audible gap, measured via BUG-012 load test). Now developed/tested against the Rank 2 harness. |
-| **4** | **Openable engines** — Tier-1 monolithic becomes graph-openable | user (later) | north-star, parked | The deepest "elisp of machines." Needs GraphNode / `InnerGraphNode::serialize()` maturity (a stub today). P13→P14+; **not** a W2 gate. |
+| **1** | **W2 surface spec + ADR-032** — the universal node-view contract; the layered-surface model | user (paired) | **✅ ratified 2026-07-13** | Spec accepted. ADR-032 accepted. |
+| **2** | **Debug/test harness (ADR-033/ADR-035)** — structured per-node debug log, regression baselines, CPU meter | agent | **✅ complete 2026-07-13** | Null backend + REPL (`92b8795`), regression baselines (`b74b853`), structured debug log (`73332d5`), CPU meter (`aad9e52`). |
+| **3** | **P13 voice: OQ-13 + OQ-14** — two-tier engine model | user | brief drafted | `w2-reference-analysis.md` P13 appendix. OQ-13 is coupled to §6.0 — decide together. |
+| **4** | **Openable engines** — Tier-1 monolithic becomes graph-openable | user (later) | north-star, parked | Needs GraphNode / `InnerGraphNode::serialize()` maturity. P13→P14+; **not** a W2 gate. |
 
-**Recently completed (former Rank 2):** the pre-W2 universality / hardcoded-count
-audit shipped 2026-07-12 — 6 findings triaged by permanence; **U1** (`&'static
-str` across the L2 API → `Cow<'static, str>`, both `Box::leak` sites deleted, ~85
-sites migrated, 554 tests green) unblocked dynamic per-client Theoria surfaces for
-W2. Detail: `design/review/universality-audit.md`. **U2** (Launchpad-shaped
-surface consts → descriptor-driven) folds into ADR-032.
-
-**Fresh-agent reading order:** `instrument-vision.md` ("Performance Meets
-Limitless Composability") → this section → **`design/phases/w2-interfaces.md`**
-(W2 spec) → `design/adr/ADR-032-theoria-view-plugin-api.md` → `handoff.md`.
-The user owns Ranks 1/3/4 (paired); the agent's lane is W2 implementation
-(once the user ratifies the spec + ADR-032 freeze). **Do not author the W2
-spec or ADR-032 further solo — they are drafted, next step is user
-ratification.**
+The pre-W2 universality / hardcoded-count audit shipped 2026-07-12 — 6 findings
+triaged by permanence; **U1** (`&'static str` → `Cow<'static, str>` across the L2
+API, ~85 sites, 554 tests green) unblocked dynamic per-client Theoria surfaces.
+Detail: `design/review/universality-audit.md`. **U2** folds into ADR-032.
 
 ---
 
 ## Prioritization Decision (July 2026): Playable Loop First
 
 With the tablet web surface accepted as the **primary control/editing device**
-(`design/interface-plan.md`), three forces competed for the next quarter:
-(a) reach something modestly useful fast and iterate with paired usage
-sessions, (b) long-deferred functionality bugs, (c) complete baseline
-standards. Decision — in priority order:
+(`design/interface-plan.md`), three forces competed: (a) reach something
+modestly useful fast and iterate with paired sessions, (b) long-deferred
+functionality bugs, (c) complete baseline standards. Decision, in priority
+order:
 
 1. **User-facing correctness that a session would notice is baseline** and
-   moves first: BUG-001 (0.4% tempo error — breaks sync when jamming beside
-   the Digitakt) and BUG-008 (param loss on reload after topology change).
-   These are P10 C0, pulled forward as an immediate pre-flight commit.
+   moves first. These became P10 C0, pulled forward as a pre-flight commit.
 2. **A playable feedback loop beats speculative depth.** W0 → P10 C1 → W1 land
-   before P10's pattern-depth commits (pages, chaining, polyrhythm). The
-   vision's "A Session" has never been tested against a real session; building
-   full pattern depth before the first paired session risks building the wrong
-   depth. P10 C2–C5 ordering is **re-validated after paired session #1**.
-3. **Non-user-facing standards move to a trigger-based backlog** (below).
-   Layer purity and per-cycle micro-allocations don't block sessions and no
-   longer occupy a scheduled phase slot (P10.5 dissolved into triggers).
+   before P10's pattern-depth commits. The vision's "A Session" had never been
+   tested against a real session; building full pattern depth before the first
+   paired session risks building the wrong depth.
+3. **Non-user-facing standards move to a trigger-based backlog.** Layer purity
+   and per-cycle micro-allocations don't block sessions and no longer occupy a
+   scheduled phase slot (P10.5 dissolved into triggers). Those triggers now
+   live on the issues themselves, labelled `deferred`.
 
-**No interim BUG-005 hack:** audit (July 2026) confirmed step param locks *are*
-serialized today; the v2 loss is conditions/micro-timing/swing, which the
-current control surface barely reaches. Data-safe saves for those arrive
-properly with serializer v3 in P10 C1 — scheduled before session #1 regardless.
-
-## Implementation Order & Design Gates (2026-07-23)
-
-The current execution sequence, with **⛔ gates** where work pauses for
-user design input (ratification, musical judgment, or a paired session).
-Agent-executable stretches need no input between gates.
-
-| Step | Work | Gate before proceeding |
-|---|---|---|
-| 1 | ~~**TK2 C0–C9**~~ (`tk2-theotokos.md` — panel, live-trig, encoder bank, screens, remapping, live viz) | **Shipped** |
-| 2 | ~~**⛔ Session #2**~~ (TK2 C10, user-paired) | **Held 2026-07-27 — NOT a clean sign-off.** `theotokos-2.md`/`tk2-report.md`. OQ-T22 resolved (chord wins), OQ-T23 converged, **OQ-T24 still open**. Reopened design.md §5.1/§5.2 (layout) + the default REC/trig mode model. |
-| 2.5 | ~~**⛔ TK2.1 redesign pass**~~ — **drafted + hostile-reviewed 2026-07-27, ADR-044 ✅ ratified 2026-07-28** (`ADR-044` 🟡 proposed + `design/phases/tk2.1-theotokos.md`, C0–C7 + session #3 as C8). Freezes the fixed panel (persistent one-track trig strip, track indicator, contextual window, key chips, legend strip) and the mode model (`RecMode{Off,Grid,Live}` — REC toggles `Off↔Grid`, REC+PLAY escalates to `Live` — pads by default, no transport at launch, engine-side live record per ADR-039 D7, encoder access = an explicit ENC mode with §0 A10 intact, p-lock via a shared lock target (D15), sticky re-tap disarms, Mute screen retired) | **Gate cleared.** All six R's answered (see the status block). **Implementation is live: TK2.1 C0 → C7, then session #3 (C8)**, which is what now blocks step 3 |
-| 3 | **⛔ TK2-exit scheduling pass** (user) — **on hold until step 2.5 clears** | order the parallel tracks: P11 spec → impl; AN0(→AN1); ADR-041+042 implementation. All three are independent of each other |
-| 4a | **P11**: spec (agent, session-informed) → **⛔ spec ratification** (kit UX OQs) → impl → session | two gates |
-| 4b | **AN0–AN1** (pool → capture; R2 transition-trick gate on AN1 exit) → **⛔ sampling session** | AN2 additionally needs P11 KitStore shipped |
-| 4c | **ADR-041 + ADR-042 impl** (machine select, MOD page — mechanical vs the ADRs) | none until P14 |
-| 5 | **P14**: spec — **⛔ user freezes the musical tables** (algorithm routing, ratio set, `harm` waveforms, macro machine set) → impl → **⛔ baseline patches + session** | needs 4c |
-| 6 | **W-track residuals**, any time a session is convened: W2 C7 §7.1 exit pass; BUG-012 hardware verification | ⛔ paired session |
-| 7 | **TK3 / WT convergence decision** (OQ-T12), after three Theotokos sessions | ⛔ user |
-| 8 | P12 (groove/generation), P13 (analog voice — remaining: **⛔ feature-set freeze**, OQ-15 allocator), P15 (effects) | unscheduled; P13 freeze is user judgment |
-
-Standing rule: phase specs are written only when the phase is next to
-start (front-load rule); every session may re-cut the order below it.
-
-**Near-term sequence (historical, W-era — kept for the record):**
-
-| Order | Work | Why |
-|---|---|---|
-| 1 | ~~P10 C0 pre-flight~~ — **shipped** (BUG-001 re-diagnosed via measurement harness; BUG-008 fixed) | Done |
-| 2 | ~~**W0**~~ — **shipped** (Theoria grid POC: `paraclete-antiphon` crate + canvas grid) | Done |
-| 3 | ~~**P10 C1**~~ — **shipped** (`6212242`; `Pattern` struct + serializer v3 = BUG-005) | Done — data-loss class closed before sessions |
-| 3.5 | ~~**BUG-012**~~ — **fix complete, pending hardware verification** (2026-07-14): sample-rate auto-detection, output ring buffer + FTZ/DAZ (`0f3d17b`), `BufferSize::Default` decision (`c3c56db`). The earlier "ring buffer fallback" claim was a doc error (chunk-and-discard) — corrected in bugs.md. Awaiting Linux ALSA re-test. | Pending verification — see bugs.md |
-| 4 | ~~**W1**~~ — **C0–C4 shipped** (trigger+velocity, path scheme, state mirror, semantic plane, theoria-web) | Runtime side done + web client builds; C5 = the session |
-| 5 | ~~**Paired session #1**~~ — **held 2026-07-09** (`design/sessions/s1.md`) | Pipe proven; verdict = UX not legible ("Behringer, needs Elektron"). Delta: discoverability is the keystone |
-| 6 | ~~**Theoria legibility phase**~~ — **implemented 2026-07-10** (`7e7a39a`/`e553c62`; report: `theoria-legibility-report.md`) | Minimum bar items 1–4 done + contextual encoders; judged live in Chrome. **Exit gate = paired tablet judgment (next session)**; F7 cleanup + F4/save-reload deferred |
-| 6.1 | ~~**BUG-022 + BUG-023**~~ — **shipped** (BUG-022 `5071c9a`, BUG-023 exonerated 2026-07-11) | Sound correctness resolved; BUG-023 confirmed macOS speaker protection via headphone A/B |
-| 6.2 | ~~**Theoria baseline interaction wins**~~ — **shipped 2026-07-11** (`e1f86cf` + `3356d60`; report: `theoria-baseline-interactions-report.md`) | Drag-draw paints via new authoritative `/script/lp/steps_n` mask mirror; encoder row at bottom edge w/ value bars; dead grid gone (mode-aware cells). Found+fixed BUG-024 (state_write in subscriptions panicked). Tablet judgment pending |
-| 6.3 | **W2 re-scoped: Theoria native surface, design-first** — reference spike across three Elektron boxes + Hydrasynth: **Digitakt II** for sample workflows, **Syntakt** for analog/synthesis machine-per-track param pages, **Digitone** for FM page discipline; **Hydrasynth** for signal-chain (source→effect graph) view. Common views (envelopes, LFOs, effects, sequencer) from any. ADR-032 after the spec | Session #2 F1/F7 keystone: "consistent inputs, contextual screen window"; do not improvise UI |
-| 7 | ~~P10 C2–C5~~ — **shipped 2026-07-11** (`0a8116b`/`e8f7718`/`50ef64b`/`5306674`; report: `p10-report.md`) | Pattern engine complete: page-loop windows, per-track length/speed (polyrhythm), BUG-004 fixed, cued switching + chain, state-bus surface + TUI indicator. §5.3 Launchpad surface parked per s2; P10 play-test pending (Theoria/W2 or paired TUI session) |
-
-**Paired sessions** are a first-class roadmap instrument from here on: one after
-each W-milestone (W1, W2, W3), notes captured append-only in `design/sessions/`,
-each producing explicit roadmap deltas (or an explicit "no change").
+**No interim BUG-005 hack:** audit confirmed step param locks *are* serialized
+today; the v2 loss was conditions/micro-timing/swing. Data-safe saves arrived
+with serializer v3 in P10 C1.
 
 ---
 
-## Design Triage — Open Spec Gaps
+## Implementation Order & Design Gates (2026-07-23)
 
-> **See "Active Priorities" above for the current ranked view** — it folds this
-> triage against the crystallized vision. This section keeps the per-gap detail.
+The execution sequence, with **⛔ gates** where work pauses for user design
+input (ratification, musical judgment, or a paired session). Agent-executable
+stretches need no input between gates.
 
-Things the plan gestures at but does **not** yet specify. Triaged 2026-07-12.
-**Owner** = who must author it: **user** (design judgment, frontier-tier per
-`handoff.md`) or **agent** (mechanical / low-judgment, safe to draft in-session).
-Ordered by nearness to the critical path.
+| Step | Work | Gate before proceeding |
+|---|---|---|
+| 1 | ~~**TK2 C0–C9**~~ (`tk2-theotokos.md`) | **Shipped** |
+| 2 | ~~**⛔ Session #2**~~ (TK2 C10, user-paired) | **Held 2026-07-27 — not a clean sign-off.** Reopened design.md §5.1/§5.2 + the default REC/trig mode model. |
+| 2.5 | ~~**⛔ TK2.1 redesign pass**~~ — ADR-044 ✅ ratified 2026-07-28 | **Gate cleared.** Shipped C0–C7; session #3 held 2026-07-29. |
+| 2.6 | ~~**TK2.2 fix pass**~~ (`tk2.2-theotokos.md`, ADR-046) | **Code-complete 2026-07-30, not closed.** ⛔ **C6 — usability session #4** is the only remaining step. |
+| 3 | **⛔ TK2-exit scheduling pass** (user) — blocked on step 2.6 | Order the parallel tracks: P11 spec → impl; AN0(→AN1); ADR-041+042 implementation. All three are independent of each other. |
+| 4a | **P11**: spec (agent, session-informed) → **⛔ spec ratification** (kit UX) → impl → session | two gates |
+| 4b | **AN0–AN1** (pool → capture; R2 transition-trick gate on AN1 exit) → **⛔ sampling session** | AN2 additionally needs P11 KitStore shipped |
+| 4c | **ADR-041 + ADR-042 impl** (machine select, MOD page — mechanical vs the ADRs) | none until P14 |
+| 5 | **P14**: spec — **⛔ user freezes the musical tables** → impl → **⛔ baseline patches + session** | needs 4c |
+| 6 | **W-track residuals**, any time a session is convened: W2 C7 §7.1 exit pass; BUG-012 hardware verification | ⛔ paired session |
+| 7 | **TK3 / WT convergence decision** (OQ-T12), after three Theotokos sessions | ⛔ user |
+| 8 | P12 (groove/generation), P13 (analog voice), P15 (effects) | unscheduled; P13 freeze is user judgment |
 
-| # | Gap | Owner | Next action | Priority |
-|---|---|---|---|---|
-| D1 | **W2 native surface has no spec.** "Theoria native surface" is a paragraph (fixed-input rail + contextual window; reference spike across Digitakt II / Syntakt / Digitone / Hydrasynth). It is the active next milestone. | **user** | **✅ Done** — spec + ADR-032 ratified (accepted 2026-07-13); W2 Commits 0–6 shipped. Residual: W2 Commit 7 (§7.1 exit-criteria pass, needs a paired session). *(Row was stale "pending ratification" until 2026-07-23.)* | ~~Critical~~ ✅ Done except C7 exit pass |
-| D2 | **P13 voice model undecided (OQ-13) + drum selection (OQ-14).** Both deferred to "the P13/P12+ spec," which is not drafted. OQ-13 (composed-from-primitives vs monolithic `AnalogVoice`) shapes the mod-matrix API and CLAP export. | **user** | **OQ-13 + OQ-14 resolved 2026-07-13.** OQ-13: compose from primitives → compile to monolith (reversible). OQ-14: machine-as-parameter (stepped param, ADR-019). Voice feature-set freeze, allocator expression-awareness policy, ZDF ladder C1 still open. | High (downstream keystone) — **partially resolved** |
-| D3 | **No ADR owns runtime observability.** ADR-033 covers only the offline/interactive driver. Nothing specs the live `/engine/cpu` counter path or the structured-log channel (see **INFRA-003**, bugs.md). | agent | **✅ Done (2026-07-12).** ADR-034 authored + implemented: `RuntimeCounters` with 4 atomic counters, state-bus `/engine/*` publishing, Antiphon mirror. INFRA-003 resolved; D4 unblocked. | ~~High~~ ✅ Done |
-| D4 | **Trigger-based backlog is un-actionable as written.** It claims "each item has a named trigger," but INFRA-003 shows we cannot *observe* triggers firing — so "quiet" is assumed, not measured. | agent | **✅ Done (2026-07-12).** Backlog flagged blocked-on-INFRA-003 in earlier pass; INFRA-003 now resolved with live counters. Triggers are now observable. | ~~Medium~~ ✅ Done |
-| D5 | **BUG-031 residual has no rule.** ADR-030 now documents speed×swing, but not swing large enough to overshoot the step at 1× speed. | agent | One sentence in ADR-030: clamp policy (or explicit "author's responsibility") for `swing_amount` beyond the step fraction. | Low |
-| D7 | **No surface state-synchronization contract.** Nothing says how a control surface and the engine agree on a parameter's value at startup or after a patch change. It has never bitten because every surface so far either has a feedback channel (Launchpad LEDs), is relative by construction (Theoria touch encoders), or is the software itself (Theotokos). The first absolute controller with no feedback channel breaks it, and the failure lands at the worst moment: hardware not matching software at the start of a show. Pickup/soft-takeover is disqualified by user directive. | agent (spike) → user (policy) | **SPIKE-006** answers it for the LaunchControl XL specifically; the general contract (per-binding sync policy) is **W5** scope. Added 2026-07-28. | Medium — blocks any absolute-controller support, not the current arc |
-| D6 | **`Cow<'static, str>` migration has no trigger.** Flagged "FREE until crates.io publication, do before v0.1.0" but sits in the Known Provisional table with no owner/milestone — the pre-publication window can close silently. | agent | Promote it to a Deferred-Bug Backlog row with a concrete trigger ("before `paraclete-node-api` v0.1.0 / first crates.io publish"). | Low (but time-boxed) |
+**Standing rule:** phase specs are written only when the phase is next to start
+(front-load rule); every session may re-cut the order below it.
 
-**Progress (2026-07-12):**
-- **D3** ✅ done — ADR-034 authored (proposed), implemented: `RuntimeCounters`
-  with 4 `AtomicU64` counters (`buffers_processed`, `dropout_lock_miss`,
-  `dropout_no_executor`, `state_bus_overflows`), shared via `Arc` between
-  audio callback and executor, published to state bus as `/engine/*` paths,
-  mirrored by Antiphon. INFRA-003 resolved. 4 unit tests in
-  `runtime_integration.rs`. D4 unblocked.
-- **D4** ✅ done (earlier pass). **Measured quiet 2026-07-12 — all four counters,
-  both paths.** Executor path: `engine_counters_quiet.yaml` (8 s busy 4-track
-  render) → `state_bus_overflows = 0`. Callback path: the load test
-  `patch_tests.rs::loadtest_topology_churn_under_live_audio` (real cpal, 703 live
-  `apply_patch` swaps in 15 s) → `dropout_lock_miss = 0`, `dropout_no_executor =
-  0`. The ADR-029 pause-rebuild-resume protocol produces zero self-inflicted
-  dropouts under stress. Bonus: the load test surfaced **BUG-012** as a hard
-  audio-thread crash on buffer-size mismatch (not graceful degradation) — see
-  bugs.md 2026-07-12 confirmation.
-- **D5** ✅ done (earlier pass).
-- **D6** ✅ done (earlier pass).
-- **D1, D2** — open, **user-owned** (unchanged).
+**Paired sessions** are a first-class roadmap instrument: one after each
+milestone, notes captured append-only in `design/sessions/`, each producing
+explicit roadmap deltas (or an explicit "no change").
 
 ---
 
 ## Roadmap
 
+Per-phase narrative lives in the phase spec and report under
+`design/phases/` — not in this table. Status here is one line.
+
 | Phase | Name | Deliverable | Status |
 |---|---|---|---|
 | **P0–P9** | Skeleton → Modular Graph | See `architecture-evolving.md` phase log | **Complete** |
-| **P9.5** | Device Emulation & Test Harness | Full Launchpad emulator (C1). | **Closed early** — C1 shipped; C2/C3 cancelled (superseded by W0/W1); C4 rescoped into P10 C5 test work; piano mode deferred (physical Keystep exists) |
-| **W0** | Theoria grid POC | Browser grid as peer device: `paraclete-antiphon` crate, WS bridge, canvas 8×8 + scene + control, LED mirror, shared `launchpad.rhai` profile | **Shipped** (July 2026; report: `w0-report.md`; localhost touch→LED 24–34 ms; exit criteria needing tablet/Launchpad hardware roll into the next user session) |
-| **P10 C0–C1** | Pattern engine foundation | BUG-001/008 pre-flight (C0, runs before W0); `Pattern` struct + serializer v3 = BUG-005 (C1) | **Shipped** (C0 `b0cf2c8`, C1 `6212242`) |
-| **W1** | Theoria MVP | Touch encoders (relative → `CMD_BUMP_PARAM`), context display, transport, state mirror v1 → **paired session #1** | **C0–C4 shipped** (`w1-report.md`); C5 = paired session #1 (next) |
-| **P10 C2–C5** | Pattern Engine depth | Multi-page (64-step) + page-loop; seamless switching + chaining; per-track length/speed; BUG-004 **+ BUG-013 (sub-block voice starts — micro-timing must be audible) + Sampler Hermite playback** in C3; grid/TUI surface | **Shipped 2026-07-11** (C2–C5 + BUG-004; BUG-013 landed post-C5: engines `309a9e6`, Sampler Hermite + span-split 2026-07-11; BUG-025 executor deferral and BUG-026 stable sort fixed 2026-07-11) |
-| **W2** | Theoria editor | Cap-doc-driven parameter pages for every engine; chain view; view-plugin API (ADR-032) → **paired session #3** | **In progress** — Commits 0–6 shipped (types, node impls, protocol, web rail, param pages, kick vertical slice, chain view); Commit 7 (§7.1 exit criteria + s3.md) next — session #3 held 2026-07-14 went to ALSA bring-up; formal pass pending |
-| **WT** | Theoria/term | Terminal client over in-process Antiphon transport; parameter pages + grid in the terminal | After W2, parallel W3 |
-| **W3** | Sequencer deep views | 64-step pattern view, cue/chain, hold-step p-lock overlay, condition/timing editors | Hard dependency on P10 C2–C5 |
-| **P11** | Live Performance | Mute system (global/pattern/prepared tiers), temp save/reload, kit model + Perform mode, live record | **ADR-039 ✅ accepted 2026-07-23** (R1–R3: model as written, whole-instrument kits, TK2 implementation first) + `p11-problem.md`. Kits = app-owned param snapshots, app-op drain, sequencer CMD 39–45 reserved. Phase spec after TK2/session #2. (W3 mute view follows) |
+| **P9.5** | Device Emulation & Test Harness | Full Launchpad emulator (C1) | **Closed early** — C1 shipped; C2/C3 superseded by W0/W1; C4 rescoped into P10 C5 |
+| **W0** | Theoria grid POC | `paraclete-antiphon` crate, WS bridge, canvas 8×8, LED mirror | **Shipped** — `w0-report.md` |
+| **P10 C0–C1** | Pattern engine foundation | BUG-001/008 pre-flight; `Pattern` struct + serializer v3 | **Shipped** (`b0cf2c8`, `6212242`) |
+| **W1** | Theoria MVP | Touch encoders, context display, transport, state mirror v1 | **C0–C4 shipped** — `w1-report.md` |
+| **P10 C2–C5** | Pattern engine depth | Multi-page + page-loop, cued switching + chaining, per-track length/speed | **Shipped 2026-07-11** — `p10-report.md` |
+| **W2** | Theoria editor | Cap-doc-driven param pages, chain view, view-plugin API (ADR-032) | **In progress** — C0–C6 shipped; C7 (§7.1 exit criteria) pending a formal pass |
+| **WT** | Theoria/term | Terminal client over in-process Antiphon transport | After W2, parallel W3. Interacts with OQ-T12 |
+| **W3** | Sequencer deep views | 64-step pattern view, cue/chain, hold-step p-lock overlay | Hard dependency on P10 C2–C5 |
+| **P11** | Live Performance | Mute tiers, temp save/reload, kit model + Perform mode, live record | **ADR-039 ✅ accepted** + `p11-problem.md`. Phase spec after TK2 exit |
 | **P12** | Groove & Generation | Retrig, Euclidean, controlled randomness, generative fills | — |
-| **P13** | Analog Voice | Full subtractive mono voice — **Pro-One as primary reference** (dual osc + hard sync + poly-mod routing, self-oscillating 4-pole, two envs, glide, arp); Model D / MS-20 as secondary character references only. Paraphonic allocation, **per-voice-expression-aware (OQ-15)**. ZDF ladder is C1 (audio-model review). | — |
-| **P14** | FM Voice | Four-operator melodic FM, macro-first | **Model ✅ accepted 2026-07-23** — ADR-043 ratified as written (4-op PM, 8 algorithms, SYN1/SYN2 page discipline, machine-variant macro tier); depends on ADR-041 (machine identity) + ADR-042 (MOD page), both ✅ accepted same day. Phase spec when next to start |
+| **P13** | Analog Voice | Subtractive mono voice — Pro-One primary reference; paraphonic, per-voice-expression-aware | — |
+| **P14** | FM Voice | Four-operator melodic FM, macro-first | **ADR-043 ✅ accepted**; depends on ADR-041 + ADR-042. Spec when next to start |
 | **P15** | Effects Palette | Distortion variety, chorus/phaser/flanger, BBD/tape delay, spring/plate | — |
-| **P16** | Macro & Terminal Control | Macro system; ~~TUI as editing surface~~ (terminal-surface half **superseded 2026-07-23** — delivered/owned by the TK track (ADR-036/038) and the WT convergence decision; P16 narrows to the instrument-wide macro system, which ADR-043's macro tier explicitly defers to). **Macros are also the target side of W5's MIDI learn** — an absolute-pot controller is only useful once there are stable macro destinations to bind it to | — |
-| **W4** | Interface maturity | Ordo layout profiles, multi-client polish, wavetable view, protocol freeze, headless protocol CI driver | Ongoing after W3 |
-| **W5** | **Patch editor & control mapping** | A real editor for Paraclete: drag-and-drop wiring of nodes with **full visibility of the graph** (the one surface where the modular architecture is legible instead of implied), plus **MIDI learn** — binding any exposed parameter or macro to any control on any controller, so arbitrary interfaces can be mapped for performance. This is the home for controller support that is *not* contextual: an absolute-pot surface (LaunchControl XL) is useful as **fixed macro bindings**, wired once and left, which needs the P16 macro system underneath it and MIDI learn on top. **Design spike first** (drag-drop graph UX, what "expose for performance" means as a data contract, how learned bindings persist alongside `Ordo`/profiles, and — surfaced 2026-07-28 — **every binding declaring a sync policy**: hardware-authoritative (physical position wins, needs a query channel), software-authoritative with feedback (needs LEDs/motors), or pseudo-relative (deltas from absolute, no correspondence). Pickup/soft-takeover is **not** an option — see SPIKE-006), then an ADR, then implementation | **Unscheduled — added 2026-07-28.** Depends on P16's macro system for the target side; ADR-032/`Rule` already supplies per-node view metadata. Not gated on TK2.1 |
-| **AN** | Anamnesis sampling layer | Capture-to-performance loop: HAL input + recorder rings (retroactive capture, resampling), app-owned sample pool + per-step sample locks, slices/chains, scenes + crossfader morph, pickup-style looping, staged timestretch — AN0–AN3, session-gated | **ADR-040 ✅ accepted 2026-07-23** (R1–R3: model as written; one-gesture transition trick frozen as an AN1 requirement; scheduling decided at TK2 exit) + `design/sampling/{problem,design}.md`. AN2 scenes depend on P11 KitStore |
-| **TK** | Theotokos performance terminal | Keyboard-first Elektron-class virtual front panel (continuous trig grid, TRK/PTN hold-chords, REC grid-rec toggle, FUNC-layer encoder bank, `Rule`-driven terminal views) — POC → usability-iterated phases TK0–TK3, session-gated | **TK0 shipped 2026-07-21** (ADR-036). **TK1 code complete 2026-07-22** (C0–C7: p-locks, mutes, composite pages, `:` line, pattern select, yank/paste, leader rebind, flash, help overlay, suspend-crash fix). **Elektron convergence redesign 2026-07-23 (ADR-038 ✅ accepted, D1–D4)** — full TK2 spec drafted same day (`tk2-theotokos.md`, commits C0–C9 + session C10). **TK2 C0–C9 shipped** (2026-07-23…2026-07-27): panel model, live-trig, FUNC transport chords, encoder bank, Tempo/Settings/Chain screens, agent smoke gate, key remapping (ADR-037 ✅ accepted), live visualization (env_level, lfo_phase). **Usability session #2 held 2026-07-27 (C10) — NOT a clean sign-off** (`theotokos-2.md`/`tk2-report.md`): plumbing all works, but shipped rendering (all-tracks-stacked grid) and default mode (REC-armed, trig=step-write) don't match intent — reopens design.md §5.1/§5.2 and reverses the shipped REC-default against §3.A's own "trigs always play" principle. OQ-T22 resolved (mute chord wins, Mute screen retired); OQ-T23 converged; **OQ-T24 still open**. **TK2.1 redesign drafted + hostile-reviewed 2026-07-27** — `ADR-044` (🟡 proposed; fixed panel, `RecMode{Off,Grid,Live}` reached by REC toggle + REC+PLAY, pads-by-default, engine-side live record per ADR-039 D7, ENC-mode encoder access, p-lock lock target, Mute screen retired) + `design/phases/tk2.1-theotokos.md` (C0–C7 + session #3). Review: 15 B / 26 M / 27 m, all blockers and majors folded pre-ratification; BUG-039/040/041 filed. **ADR-044 ✅ ratified 2026-07-28** (R1–R6 settled; no accepted ADR superseded). **Next: implement TK2.1 C0–C7, then session #3**, before the TK2-exit scheduling pass. **TK2.1 C0–C7 shipped 2026-07-28/29** (`f2576f4`…`7d3d6c2`). **Usability session #3 held 2026-07-29** (`theotokos-3.md`) — **the redesign is signed off, the phase is not.** Panel, mode model, REC grammar (toggle + REC-hold+PLAY), finger-drumming and engine-side live record all converged on first contact, discharging session #2's reopening of `design.md` §5.1/§5.2; the panel was endorsed as "digital, hardcore… weird unix and hacker culture", i.e. on **terminal-native** grounds rather than the hardware-mimicry D1 literally specified — which redirects future work away from skeuomorphism (and argues for TKW's WASM/browser route over a rasterised window). Found inside the shipped work: **4 bugs** — BUG-043 (transport has neither pause nor stop; `CMD_CLOCK_START` always rewinds and the engine has no resume vocabulary, so this needs a cross-surface decision, not a patch), BUG-044 (live pad trig sounds two octaves above the same track's sequenced steps — `sequencer.rs:809` hardcodes note 60 over `default_note`), BUG-045 (hand-written steps inherit stale micro-timing), BUG-046 (holding a trig rapid-toggles it; auto-repeat suppressed for `Rec` only) — plus **two structural design collisions with one root cause**: D9 makes trigs *be* the encoders while D15 uses them as *step selectors*, so in `Grid`+ENC a jog writes a p-lock instead of the live value (F7), and momentary p-lock cannot express locking encoder *N* on step *N* because both are the same key (F11, **momentary recommended for retirement**; latched is strictly more expressive). D3/D4's legend model needs a second pass (hints adjacent to their referent, legend carries only off-screen affordances, no column reflow on mode change). **OQ-T27 reopened**; new **OQ-T29** (quantization control) and **OQ-T30** (multi-surface bidirectional transport/state agreement). 7 of 11 hypotheses judged; the rest stopped at user direction. **Next: TK2.2 — the fix pass — then session #4**, then the TK2-exit scheduling pass. **`design/phases/tk2.2-theotokos.md` is EXECUTION-READY for C0–C5 as of 2026-07-29** (C0 BUG-044 live-trig pitch; C1 BUG-046 + bare-trig ownership; C2 BUG-045 micro-timing; C3 the legend/chip placement revision; C4 jog/lock feedback; C5 BUG-043 transport; C6 session #4). **ADR-046 ✅ accepted 2026-07-29** (R1–R4 settled as recommended: three commands with one meaning each — START runs from position, STOP halts in place, new REWIND sets position; `global_start`→`global_rewind`; rewind valid while running; clock `playing`/position published), which lifts C5's gate. Migration is small and was verified rather than assumed — only Theotokos and tests command the clock. C5 carries an explicit hazard note: `sequencer.rs:925`'s `global_start` branch bundles four behaviours (sets playing, resets position, resets period, **fires the entry step** per BUG-001), so a mechanical rename would make a rewind start playback and emit a note. ADR-044 carries a session #3 amendment note recording what was confirmed, redirected (D1's goal is terminal-native, not hardware-mimicry) and superseded (D3/D4 placement, D9's collision, D15's momentary half retired). **ADR-045's premise was empirically confirmed** by the session and is recommended for unparking — it is the real answer to the reopened OQ-T27, since the keyboard structurally cannot express hold-a-step-and-turn-an-encoder. **TK2.2 C0–C5 shipped 2026-07-30** (`9f62cef`…`8595db6`, plus a same-day follow-up `4fe3f5f`) — **phase is code-complete, not closed; C6 (usability session #4) is the only remaining step.** C0 (BUG-044), C1 (BUG-046 + E4), C2 (BUG-045), C3 (E1/E2/E3 legend/chip revision), C4 (E5 jog feedback) landed exactly as specced, each hostile-reviewed clean. C5 (BUG-043/ADR-046) implemented the three-command split and the required `sequencer.rs` decomposition (position-reset on rewind, entry-step fire gated on the playing-transition, not on rewind) — hostile review confirmed the decomposition itself correct but found the migration inventory had missed two consumers that relied on `InternalClock`'s old auto-start boot default: the ADR-033 test-driver harness and the legacy `--emulator` `launchpad.rhai` profile, both silently going dead (one ADR-035 baseline, `plock_authoring`, hard-failed all 10 checks). Fixed same-day in `4fe3f5f`, verified the `plock_authoring` baseline passes with **zero regeneration** (proof the fix restored exactly the original recorded behaviour). One pre-existing, unrelated failure was found and ruled out during that investigation: `kick_reverb_clean.yaml`'s dropout assertion fails identically on the pre-TK2.2 baseline commit (`390e176`) — filed as a new bug, not fixed here. BUG-039 (`InternalClock` auto-starts) closes as a side effect of ADR-046 T3. **Next: session #4** (paired, no code) — judges TK2.2's fixes plus the five items session #3 didn't reach (§5 of the phase spec), then the TK2-exit scheduling pass. |
-| **TKW** | Theotokos window host (platform-agnostic) | A **compat application** that hosts the existing Theotokos panel in a native window instead of a terminal emulator, so keyboard capability stops depending on the host terminal. Today the release-dependent half of the grammar (REC+PLAY hold escalation, momentary p-lock per D15, TRK/PTN hold feel, numpad detection for OQ-T24) requires the **kitty keyboard protocol**; terminals without it (konsole, most defaults) fall back to D11's sticky-prefix path, so the primary gestures are unreachable for many users and untestable on those machines. A window owning raw key input makes down/up, physical keycodes, and the keypad flag unconditional — retiring the kitty-vs-fallback split and D14's degradation story as *user-facing* concerns. **Feasibility assessed 2026-07-29 as low-to-moderate:** `render.rs` is already backend-agnostic (its ~40 tests drive it through ratatui's `TestBackend`, so nothing in the draw layer knows about crossterm), and input has a single entry point — `TheotokosApp::handle_keys(&[KeyEvent])` — whose crossterm `KeyEvent`/`KeyCode`/`KeyModifiers` are plain constructible types, not terminal-bound handles. The integration is therefore a **winit→crossterm key adapter** (~150–250 lines: keycode + modifier mapping, `KeyEventKind::{Press,Repeat,Release}`, `KeyEventState::KEYPAD`) plus a windowed ratatui backend; the model and render layers are reused unchanged. **Costs that make this ADR-scale, not a commit:** it needs heavy new deps (windowing + rasterizer + font stack) against the project's per-commit no-new-deps rule; it changes the crate's stated terminal-first identity, and the terminal build must keep working alongside it; and glyph/colour fidelity (box-drawing, `▓░` state glyphs, the `REVERSED` playhead) has to be re-judged in a rasterizer. **A browser host is explicitly acceptable** (user direction, 2026-07-29) — "platform-agnostic" is the requirement, native is not. That admits three candidate routes, for the spike to choose between: **(a) native window** (winit + windowed ratatui backend, as above); **(b) panel compiled to WASM** — build `render.rs` + the input/model layer for `wasm32-unknown-unknown` and draw through a browser ratatui backend (DOM/canvas), with **antiphon as the transport to the native audio engine**, exactly as Theoria already works. This is the strongest fit with the existing architecture: it reuses the *whole* Rust panel unchanged rather than a 200-line adapter, gets `keydown`/`keyup` and keypad detection free from the DOM, needs no new native deps, and reaches any device with a browser (tablets included). **Its one real risk is latency**, and it lands on the hypothesis this phase cares most about — W0 measured 24–34 ms localhost touch→LED round-trip, and H5 (live record tight at 120–140 bpm) is precisely a timing-feel judgement, so the spike must measure input→sound one-way before committing. **(c) hand-written browser panel** in the existing preact app — free keyboard events, but duplicates `render.rs` in TypeScript and would drift; weakest of the three, kept only as a fallback if WASM proves impractical. Route (b) also bears on **OQ-T12 (WT convergence)** — a WASM panel over antiphon and the planned WT terminal-Antiphon client are close cousins, and deciding one should inform the other rather than proceeding independently. | **Unscheduled — added 2026-07-29** at user direction, arising from session #3 setup (no kitty-capable terminal on the dev box; kitty installed for the session rather than worked around). **Design spike + ADR first**, then implement. Not gated on TK2.1 exit, but should be decided *after* session #3 has judged the kitty path by feel — the session's verdict on the release-based gestures determines how much this is worth. |
+| **P16** | Macro Control | Instrument-wide macro system (terminal-surface half superseded by the TK track) | Also the target side of W5's MIDI learn |
+| **W4** | Interface maturity | Ordo layout profiles, multi-client polish, protocol freeze, headless protocol CI | Ongoing after W3 |
+| **W5** | Patch editor & control mapping | Drag-and-drop graph wiring with full node visibility; MIDI learn for arbitrary controllers | **Unscheduled.** Design spike → ADR → impl. Needs P16 macros for the target side. Every binding must declare a sync policy; pickup/soft-takeover is not an option (SPIKE-006) |
+| **AN** | Anamnesis sampling layer | Capture-to-performance loop: recorder rings, sample pool, slices, scenes, staged timestretch | **ADR-040 ✅ accepted** + `design/sampling/`. AN2 depends on P11 KitStore |
+| **TK** | Theotokos performance terminal | Keyboard-first Elektron-class virtual front panel — POC → usability-iterated TK0–TK3, session-gated | **TK0–TK2.1 shipped. TK2.2 code-complete 2026-07-30, not closed** — C6 (session #4) remains. Full narrative: `tk2.1-report.md`, `tk2.2-theotokos.md` |
+| **TKW** | Theotokos window host | A platform-agnostic host for the Theotokos panel, so keyboard capability stops depending on the host terminal | **Unscheduled.** Three candidate routes — (a) native window, (b) panel compiled to WASM over antiphon *(strongest architectural fit; latency is the risk to measure)*, (c) hand-written browser panel *(weakest — duplicates `render.rs`)*. **Design spike + ADR first.** Bears on OQ-T12 |
 
 The interface track (Antiphon server + Theoria clients) is specified in
 `design/interface-plan.md` (**accepted July 2026**; ADR-031 authored with W0,
-ADR-032 with W2). The terminal is a permanent first-class surface: **WT**
-(after W2, parallel to W3) ports `paraclete-tui` to an Antiphon client over an
-in-process transport, gaining the same generic views (pages, grid) as the web
-client — the P16 "TUI as editing surface" goal delivered early through shared
-machinery.
+ADR-032 with W2). The terminal is a permanent first-class surface: **WT** ports
+`paraclete-tui` to an Antiphon client over an in-process transport, gaining the
+same generic views as the web client.
 
 ---
 
 ## Why P10 Still Matters — The Playability Gap
 
 Unchanged from June 2026: "fun to play" per `instrument-vision.md` needs pages,
-patterns, polyrhythm, and durable state, and the engine has none of them
-(`CMD_SET_PATTERN` is a stub; single 16-step pattern). P10 closes this; P11
-layers performance affordances on top. What changed is *sequencing*: the
-foundation commits run now, the depth commits run after real session evidence.
+patterns, polyrhythm, and durable state. P10 closes this; P11 layers performance
+affordances on top. What changed is *sequencing*: the foundation commits run
+first, the depth commits after real session evidence.
 
-The arc beyond P12 (synthesis P13–P14, effects P15, macro/terminal P16) is
-unchanged — scope, not new architecture; P13 remains the keystone of the full
-four-pillar instrument.
-
----
-
-## Deferred-Bug Backlog (trigger-based, replaces P10.5)
-
-> **D4 (2026-07-12):** ADR-034 made the engine's dropouts/overflows observable,
-> and both paths are now **measured quiet** (no longer assumed): executor path
-> `state_bus_overflows = 0` (`engine_counters_quiet.yaml`, 8 s busy render);
-> audio-callback path `dropout_lock_miss = 0` / `dropout_no_executor = 0` under
-> 703 live topology swaps (`loadtest_topology_churn_under_live_audio`, real cpal).
-> The BUG-002/BUG-012 buffer-size trigger, however, is now known to **crash**
-> (debug) rather than degrade — pull it forward if any external interface is in play.
-
-| Bug | Fix when this trigger fires |
-|---|---|
-| BUG-002 (`baseline()` hardcodes 44100/512) | First non-44.1 kHz/512 deployment, or CLAP host reports mismatch — whichever first |
-| BUG-003 (hal→runtime layer violation) | Before any LGPL3/crates.io publication of `StateBusHandle` consumers, or when `paraclete-antiphon` wants `StateBusHandle` from L2 |
-| BUG-006 (`agg_state_buf` realloc/cycle) | When the web state mirror measurably raises state-bus churn (profile in W1), or any audible xrun traced to it |
-| BUG-007 (`publish_bank_state` String alloc) | Folded into W1 C1 (state-path unification) |
-| Executor cell `Mutex` → `arc-swap`; master limiter/headroom; xrun/CPU meter to `/engine/cpu`; FM 2-sample feedback average; DT node `rtrb` harmonization | See `design/review/audio-model-review.md` — each has a named trigger there |
-| ~~`Cow<'static, str>` L2 migration~~ **DONE 2026-07-12 (audit U1)** | **Shipped.** `CapabilityDocument`/`SurfaceDescriptor` name/vendor/extensions → `Cow<'static, str>`; both `Box::leak` sites in `bridge.rs` deleted. `ParamUnit`/`PortName`/`ParamDisplayAdapter` already modeled the hybrid. See `design/review/universality-audit.md` U1. |
-
-Everything else open is scheduled: BUG-001/008 → P10 C0 (now), BUG-005 → P10 C1
-(now), BUG-004 → P10 C3.
+The arc beyond P12 (synthesis P13–P14, effects P15, macro P16) is unchanged —
+scope, not new architecture; P13 remains the keystone of the full four-pillar
+instrument.
 
 ---
 
-## Known Provisional Implementations
+## Standing design tiebreakers
 
-| Item | Status | Resolution | Target |
-|---|---|---|---|
-| `CMD_SET_PATTERN` stub (always pattern 0) | **Fixed (P10 C4)** | Multi-pattern with cued switching + chain (`sequencer.rs` `switch_pattern`/`CMD_SET_PATTERN`) | Done |
-| Single-pattern, 16-step only | **Fixed (P10 C2–C5)** | Pattern engine: pages (64-step), per-track length/speed, page-loop windows | Done |
-| `Sequencer::serialize()` drops P5 fields (BUG-005) | **Fixed (P10 C1 shipped)** | Serializer v3 (`6212242`); length-prefixed step + pattern records | Done |
-| BUG-008 / BUG-001 | **Fixed (P10 C0 shipped)** | s0 re-diagnosis: 240-tick step + step-0 fire + drift-only snap; mem::take | Done |
-| Negative micro-timing == zero (BUG-004) | **Fixed (P10 C3)** | Emitted in prev step's early-fire window | Done |
-| Terminal emulator: no RGB, no keyboard encoders | ~~Accepted permanent~~ **SUPERSEDED 2026-07-23** | The "terminal stays keyboard-grid-only" premise is dead: Theotokos (ADR-036/038) made the terminal a first-class performance surface with a FUNC-layer 8-encoder bank. The Launchpad *emulator* itself remains legacy (`--emulator`) with its known audio-thread-input defect | — |
-| No headless input injection for CI | Active | In-process injection API, built with P10 C5 surface tests; protocol-level driver at W4 | P10 C5 |
-| Encoder hardware (EN16/MFT) unpurchased | **De-escalated** | W1 touch encoders are the only relative path (session 0: Digitakt II verified absolute-only, disqualified; BUG-009 filed); buy a true-relative box later for tactile feel | Post-W1 |
-| Hard-coded app node IDs as script/UI contract | Active | W-track binds by discovery (`hello`/`topology` msgs); profiles migrate when it breaks | W2 |
-| AnalogEngine/FmEngine monophonic | Active | Voice allocator | P13 |
-| L2 `&'static str` in `CapabilityDocument`/`SurfaceDescriptor` (name, vendor, extensions) | **Fixed 2026-07-12 (audit U1)** | Migrated to `Cow<'static, str>`; both `Box::leak` sites deleted; ~85 sites `"x".into()`. Dynamic surfaces (Theoria per-client) now unblocked. | Done |
-| Per-step velocity dropped at engine boundary (`retrigger(note)` has no velocity) | Active | Plumb velocity → level in W1 C0 (spec amended); velocity-mod routing later | **W1 C0** |
-| Sampler: one sample per node — no velocity layers, round-robin, or slices | Active | Layering via topology today; slices/layers are engine-internal, spec with the P12+ drum pass | P12+ |
-| AnalogEngine: one machine per drum type | Active — vision amended July 2026: machine *family* per type (kick/snare/tom/clap/hat variants, per-track selectable) is the destination | peaks/plaits (MIT) algorithm source; OQ-14 decides selection mechanism | P12+ |
-| Inner GraphNode runtime patching; `InnerGraphNode::serialize()` empty | Active | Inner-graph patch + persistence | P11+ |
-| CLAP plugin nodes not in `NodeRegistry` | Active | Registry + PluginLibrary arg | P11+ |
+From paired session #2 and the 2026-07-12 vision pass:
 
----
+- **Synthesis voices are the emotional core** — "sit down with a nice kick
+  engine and tune it". Interface work starts from studied reference manuals,
+  never improvised.
+- **One graph, layered surfaces** (hardware-style performance / signal-flow
+  graph / mouse+keyboard floor).
+- **Every node has a graceful-degrading view** — ADR-032 is the *universal
+  node-view contract*, not just engine param pages.
+- **Two-tier engines** ("elisp of machines" — fast monolithic *and*
+  graph-composed, never forced to choose).
+- **Modulation is graph edges** — limitless LFOs/envs, no slot count.
+- **No hardcoded counts in any frozen format.**
+- **Tone (public repo):** *do* name Elektron / Hydrasynth as the aspirational
+  bar — they set the standard. Frame humbly and clear-eyed: a small open
+  project may not match their per-surface polish. The pitch is the
+  *combination* (performance immediacy + open composability, one graph, any
+  controller, free license), **never** superiority over a named product.
 
-## Open Questions
-
-| # | Question | Blocking | Notes |
-|---|---|---|---|
-| OQ-3 | MIDI 2.0 CI depth | — | Deferred; not blocking |
-| OQ-4 | Network / distributed nodes | — | The W-track WS protocol is a de-facto first answer; revisit after protocol freeze (W4) |
-| OQ-6 | Micro-timing clock representation | P10 C3 | Close out in p10-report |
-| OQ-7 | Oversampling strategy | — | Not until CvSignal audio-rate modulation needs it |
-| OQ-11 | Pattern/page representation on the Launchpad grid | P10 C5 | Scene = page select; cued blink; now co-designed with the W3 pattern view |
-| OQ-12 | Live-record quantisation model | P11 | Step vs live-quantised; interaction with micro-timing. **Concrete demand + evidence 2026-07-29 (Theotokos session #3, = OQ-T29):** live rec is *always* record-as-played — `record_live_trig` snaps to the nearest step and writes micro-timing in 96th units, with no hard-quantize path, so a clean on-grid take is unobtainable. User: "we will definitely want quantization control." Weigh **non-destructive** seriously (quantize as a playback/view setting) since the micro offsets are already persisted per step. Interacts with BUG-045: hand-written steps currently *inherit* stale offsets, so "step rec is fully quantized" may be an invariant or a mode depending on how OQ-12 lands. |
-| OQ-16 | **Multi-surface state agreement (= OQ-T30)** | TK2.1 fix pass / W4 | **Added 2026-07-29 (Theotokos session #3).** User: "we should consider what happens with multiple interfaces ie terminals and web etc. There needs to be listeners to engine bi directional." Transport state is authored by whichever surface pressed a key, and the engine's command vocabulary is too thin for concurrent surfaces to stay agreed — the same seam **BUG-043** exposes (no resume vocabulary; `CMD_CLOCK_START` always rewinds). Spans antiphon's existing bidirectional bridge (W0/W1 state mirror), **W4** multi-client polish, **OQ-T28**/ADR-045 cross-surface parameter capture, and **TKW** route (b), which would make the Theotokos panel itself one of several concurrent clients. Any BUG-043 fix should be designed against this, not just against the terminal. |
-| OQ-15 | Per-note expression routing (poly aftertouch / MPE) | P12+ mod routing; P13 allocator | No architectural gap — internal events are MIDI 2.0 UMP (per-note pressure native; MPE subsumed). Policy set now: **MPE is translated to UMP per-note at the device-node boundary** (the graph never sees channel-rotation); `HardwareEvent::PadPressure` exists unused (LP X sends 0xA0 in programmer mode — parse it when a consumer exists); engines route pressure → destinations via the same velocity-mod family (P12+); **P13 voice allocator must be per-voice-expression-aware from day one** (pressure/pitch/timbre per voice); CLAP boundary maps to note expressions (already deferred-tracked). Wire msg `pad_pres` reserved in protocol v0. |
-| OQ-14 | Drum machine selection: stepped parameter vs type_tag swap | P12+ | Machine-as-parameter (ADR-019 stepped param: kit-savable, live-switchable, no topology change) vs machine-as-type-tag (`analog_engine:kick_hard`, apply_patch swap). Parameter path is the live-performance-friendly default hypothesis; decide in the P12+ spec. |
-| OQ-13 | P13 voice: composed-from-primitives vs monolithic machine | **P13 C0** | `instrument-vision.md` says "composed from Paraclete primitives" (GraphNode/ADR-023 path: Phase-port hard sync, topo-order feedforward mod are already expressible); ADR-022's machine pattern + `SubgraphPlugin` CLAP portability argue for a monolithic `AnalogVoice` engine like AnalogEngine. Decide first, in the P13 spec — it shapes the mod-matrix API and CLAP export. |
-| WQ-1…9 | Interface-track risks (Wi-Fi jitter, velocity, reconciliation, licensing, terminal parity scope, …) | W0–W2 | Tracked in `design/interface-plan.md` |
-
----
-
-## Agent Infrastructure Gaps (July 2026)
-
-An agent working on this codebase cannot currently:
-
-| Gap | Impact | See |
-|---|---|---|
-| **Debug harness** | Can't interrogate engine state live — no REPL to send commands, read params, watch changes, or measure peaks while running | ADR-033 § interactive mode |
-| **Null audio backend** | Can't run graph without a physical audio device — blocks CI and headless agent runs | ADR-033 § prerequisite |
-| ~~**Artifact detection**~~ | **Closed 2026-07-12 (INFRA-001):** `discontinuity_lt`/`dc_offset_lt`/`dropout_lt_ms` assertions + NaN/Inf checks in the test driver | Shipped `9655cd0` |
-| ~~**Audio diff/snapshot**~~ | **Closed 2026-07-13 (ADR-035 Part A):** deterministic baseline fingerprints (peak/rms/dc + 50ms envelope), `--check-baseline` exits 1 on drift, CI-ready | Shipped `b74b853` |
-| **Structured log channel** | No per-node debug events (step fires, voice triggers, param changes) — state bus is push-only per cycle | Buildable on ADR-033 `watch` |
-| **CPU/xrun meter** | Can't tell if a change degrades performance — each trigger named in audio-model review, none have fired **because our own dropouts are invisible** (INFRA-003) | Trigger-based backlog below; **INFRA-003** (bugs.md) is the concrete first step |
-| **Live dropout/xrun detection** | Audio callback fills silence on `try_lock` miss / missing executor with no counter or log; state-bus SPSC overflow drops silently. "No trigger has fired" is unproven, not confirmed | **INFRA-003** — atomic counters on the `fill(0.0)` paths + `/engine/cpu`; lock-free, does **not** need the full ADR-033 harness |
-
-The debug harness (ADR-033 interactive mode) unblocks these. It is the
-keystone, and as of 2026-07-13 it is **Rank 2 in Active Priorities** — the active
-agent lane, sequenced to land before W2 code so W2/P13 and every later feature
-are built and tested against live engine state. **INFRA-003** (live dropout/xrun
-counters) was the cheap independent first step and **shipped** with ADR-034
-(counters measured quiet); the remaining debug-posture work — ~~null backend →~~
-~~interactive mode →~~ ~~audio diff/snapshot~~ → structured log, plus a CPU-% meter — is
-tracked under that Rank 2 entry.
-
----
-## Agent Tooling Investigation Spikes (July 2026)
-
-These are proposed tooling changes that carry risk or trade-offs. Do not
-implement without investigation; each needs a spike to confirm feasibility.
-
-| # | Spike | Risk | Investigation needed |
-|---|---|---|---|
-| SPIKE-001 | **`unwrap_used = "deny"` lint** | 148 call sites across the workspace. Many unwraps in the audio hot path reflect invariants guaranteed by graph topology (e.g., `connect()` validation before `process()`). Denying them forces either `unsafe` or per-cycle `Result` allocation — both worse than the status quo. | Catalog unwraps by category (hot-path invariant vs error-recoverable). Determine which could become `expect()` with meaningful messages. Time-box: 2h audit. |
-| SPIKE-002 | **`panic = "deny"` lint** | 28 panics, mostly `published_state()` test assertions in production source files (not behind `#[cfg(test)]`). A blanket deny would either break the build or require a migration of all test assertions to test-only gating. | Extract `published_state()` test assertions into `#[cfg(test)]` blocks or separate test modules. Confirm no production panics remain. Then re-evaluate the lint. |
-| SPIKE-003 | **Layer-boundary lint enforcement** | `clippy`'s `disallowed-dependencies` only works on external crate names, not workspace-internal deps. A custom `cargo-deny` config or hand-rolled script is needed. Even then, `paraclete-hal` → `paraclete-runtime` is an acknowledged violation (BUG-003) that the spec itself permits. | Prototype a `cargo tree`-based check script in `tools/`. Decide whether it gates CI or is advisory-only. |
-| SPIKE-004 | **Remove `default-members`** | The single `paraclete-app` default was likely intentional for cross-platform portability. Some crates (e.g., `paraclete-clap-host`) may pull platform-specific deps that don't compile on all targets. Blowing open to `--workspace` could regress `cargo build` on non-macOS platforms. | Test `cargo build --workspace` on Linux and Windows (or review dependency chains for platform-gated crates). The `.cargo/config.toml` aliases added in this session are the safe alternative. |
-| SPIKE-006 | **Can we read the LaunchControl XL's physical state?** | The XL has pots and faders — absolute positions — but "absolute" is not the disqualifier by itself. A control can reconcile with software state three ways: a **feedback channel** (LED ring or motor showing the software value), a **query channel** (read the physical value on demand), or **relative encoding** (never needing to agree). The XL's pots have none of the three, and that is the actual problem. The Launchpad is fine by contrast — its LEDs *are* a feedback channel. **Standing constraint from the user: soft-takeover/pickup is disqualified.** Having to wiggle every control to re-sync at the start of a show is not an acceptable workflow, and starting a show with hardware not reflecting software is a failure, not a papercut. **Primary question: is there any way to capture the current position of every knob and fader?** — a SysEx dump request, a values-burst on template change, any "send snapshot" gesture, or an undocumented one found by bench sniffing. If none exists in stock firmware, that — **not delta transmission** — is what firmware modification would be for; survey the prior art (community firmware, bootloader access, what others have added). If state capture is possible in any form, the user would accept a **hardware-authoritative** binding: on startup and on demand, the physical positions *become* the parameter values, 1:1, hardware wins. Note the trade that model carries and confirm it is wanted: for bound parameters, patch/kit recall stops meaning anything, because the panel overrides it — acceptable for a fixed performance surface, wrong for preset workflows. Fallback if no query exists: **pseudo-relative** (treat each absolute message as a delta from the last received position, first message taken as reference and not applied) — no jumps and no wiggle ceremony, at the cost of position no longer corresponding to value | Bench it: enumerate what every mode transmits, and specifically hunt for any state-dump path (SysEx request, template switch, power-on burst). Survey XL firmware-modification prior art with state capture as the goal. If neither works, cost out a controller that has a feedback or query channel, or true relative encoders. Outcome feeds **W5**'s binding contract (each binding declares its sync policy) and, if firmware modification looks real, its own ADR. **Do not** re-explore the Digitakt as a controller — settled 2026-07-04, absolute-only, no relative mode |
-| SPIKE-005 | **`insta` snapshot tests for TUI** | Terminal rendering varies by terminal type, color support, and unicode width. Even with `ratatui::TestBackend`, insta snapshots create diff noise on any rendering change — intentional or not. Maintenance cost may outweigh value unless the TUI is under active refactoring. | Add one snapshot test for the grid render path. Run for one week of active development; measure snapshot churn vs catch rate. Decide after the trial. |
-
----
-## Resolved Open Questions
-
-| Question | Resolution | ADR / Phase |
-|---|---|---|
-| Language / License / Plugin format / Signal model | Rust; GPL3+LGPL3 L2; CLAP; mixed-rate typed ports | ADR-001…004 |
-| Scheduler cycles | petgraph DAG; LoopBreakNode | ADR-005, ADR-028 |
-| Hardware emulator; Scripting runtime; Node API level; Clock ownership | Required at P1; Rhai; single trait, three levels; federated domains | ADR-006…009 |
-| Multi-track; Effects; Cellular architecture; Universal parameter control | Node instances; plain nodes + marker; no non-node components; CMD_SET/BUMP_PARAM | ADR-016…019 |
-| Node portability; Instrument encapsulation | L2-only linking; GraphNode | ADR-022, ADR-023 |
-| CLAP wrapper / project file / TUI / CLAP host | Hand-rolled adapter; RON; terminal UI + publish_context; clap-sys host | ADR-024…027 |
-| Dynamic topology | Pause-rebuild-resume; NodeRegistry | ADR-029 |
-| Pattern engine data model | Pattern owns steps; Sequencer owns patterns | ADR-030 |
-| Interface architecture (server + clients) | Antiphon server, pluggable transports, surfaces as device nodes; Theoria schema-driven views + plugins | **interface-plan (accepted); ADR-031 @ W0, ADR-032 @ W2** |
-| ~~OQ-10~~ XL Mk3 protocol | Moot — XL ruled out; touch encoders (W1) + true-relative box later | — |
+**Do not revive the Digitakt-as-encoder-controller idea.** Checked on hardware
+2026-07-04 and disqualified: the Digitakt II transmits **absolute** CC and
+Elektron's MIDI implementation has no relative mode
+(`design/sessions/s0-hardware-checks.md`, Check 1). It survived in later docs as
+a "standing offer" long after it was settled — it is neither. Paraclete's
+relative-only encoder contract needs a controller that transmits knob *deltas*;
+no such device is on hand. Digitakt remains a *design reference* for workflow,
+per naming policy — never a control surface for parameter editing.
