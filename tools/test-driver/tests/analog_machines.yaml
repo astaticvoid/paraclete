@@ -1,0 +1,100 @@
+# INFRA-017 (#155), analog half — companion to `fm_machines.yaml`.
+#
+# The two existing ADR-035 baselines both address node 20, which boots as
+# `AnalogKick`. `AnalogEngine::render_span` dispatches to a separate
+# `process_kick` / `process_snare` / `process_hihat`, so **two of its three
+# machines are observed by nothing**: node 21 (Snare) and node 22 (HiHat) are
+# never triggered anywhere in the suite.
+#
+# That matters for MM-C7 in the same way the FM gap does. MM-C7 chunks
+# `render_span` into 64-sample sub-blocks and claims to be output-identical;
+# `kick_reverb_clean` and `plock_authoring` would hold it to that claim for
+# `process_kick` alone, and the spec's instruction is explicitly "if a
+# baseline drifts, do not re-fingerprint" — advice that only bites where a
+# baseline exists to drift.
+#
+# Nodes 21 and 22 are driven directly rather than by switching node 20's
+# `machine`, because they are the machines the shipped instrument actually
+# wires; a regression that only reaches a machine reached by switching would
+# be a weaker signal than one that reaches the graph as it ships.
+#
+# Verified non-silent when written, at the fingerprint's own 50 ms resolution:
+#   pre-trigger  0.00-0.30 s  max window RMS 0.0000 (all 5 windows exactly 0)
+#   Snare        0.30-2.60 s  max window RMS 0.8247, no zero window
+#   HiHat        2.80-4.60 s  max window RMS 1.4625, no zero window
+#   both         4.80-5.80 s  max window RMS 1.7625, no zero window
+# A future edit that drops a trigger sends its window to ~0, which reads as
+# drift rather than passing quietly. Peak is 6.06 — there is no limiter on the
+# master bus, and two voices plus the reverb tail sum freely; that is the
+# graph's real output, not a scenario defect.
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 6
+output: /tmp/analog_machines.wav
+play: false
+
+timeline:
+  # ── AnalogSnare (node 21) ───────────────────────────────────────────────
+  - at: 0.10
+    set_param: { target: "analog_engine:snare", param: tune, value: 3.0 }
+  - at: 0.10
+    set_param: { target: "analog_engine:snare", param: snap, value: 0.02 }
+  - at: 0.10
+    set_param: { target: "analog_engine:snare", param: noise, value: 0.8 }
+  - at: 0.10
+    set_param: { target: "analog_engine:snare", param: decay, value: 0.6 }
+  - at: 0.10
+    set_param: { target: "analog_engine:snare", param: tone, value: 3000.0 }
+  - at: 0.30
+    trigger: { target: "analog_engine:snare", velocity: 1.0 }
+
+  # Second snare at the other end of its noise/tone range — `noise` at 0
+  # leaves the tonal body alone, which is a different mix path.
+  - at: 1.10
+    set_param: { target: "analog_engine:snare", param: noise, value: 0.0 }
+  - at: 1.10
+    set_param: { target: "analog_engine:snare", param: tone, value: 7000.0 }
+  - at: 1.10
+    set_param: { target: "analog_engine:snare", param: snap, value: 0.25 }
+  - at: 1.30
+    trigger: { target: "analog_engine:snare", velocity: 0.6 }
+
+  # Retrigger while the 0.6 s decay is still sounding.
+  - at: 1.60
+    trigger: { target: "analog_engine:snare", velocity: 1.0 }
+
+  # ── AnalogHiHat (node 22) ───────────────────────────────────────────────
+  - at: 2.80
+    set_param: { target: "analog_engine:hihat", param: tone, value: 12000.0 }
+  - at: 2.80
+    set_param: { target: "analog_engine:hihat", param: decay, value: 0.08 }
+  - at: 2.80
+    set_param: { target: "analog_engine:hihat", param: open, value: 0.0 }
+  - at: 3.00
+    trigger: { target: "analog_engine:hihat", velocity: 1.0 }
+
+  # Open hat: `open` lengthens the decay, so this covers the long branch too.
+  - at: 3.40
+    set_param: { target: "analog_engine:hihat", param: open, value: 1.0 }
+  - at: 3.40
+    set_param: { target: "analog_engine:hihat", param: tone, value: 6000.0 }
+  - at: 3.60
+    trigger: { target: "analog_engine:hihat", velocity: 1.0 }
+
+  - at: 4.20
+    set_param: { target: "analog_engine:hihat", param: decay, value: 0.5 }
+  - at: 4.30
+    trigger: { target: "analog_engine:hihat", velocity: 0.4 }
+
+  # ── Both at once ────────────────────────────────────────────────────────
+  # Two voices summing through the mix and reverb together — the state each
+  # keeps is per node, so a chunking bug that leaked across voices would show
+  # here and not in the isolated windows above.
+  - at: 4.80
+    trigger: { target: "analog_engine:snare", velocity: 0.9 }
+  - at: 4.80
+    trigger: { target: "analog_engine:hihat", velocity: 0.9 }
+  - at: 5.20
+    trigger: { target: "analog_engine:hihat", velocity: 0.5 }
+  - at: 5.40
+    trigger: { target: "analog_engine:snare", velocity: 0.5 }

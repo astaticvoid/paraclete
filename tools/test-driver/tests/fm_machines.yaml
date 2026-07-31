@@ -1,0 +1,125 @@
+# INFRA-017 (#155) — regression coverage for `FmEngine`, which the two
+# existing ADR-035 baselines do not observe at all: `kick_reverb_clean` and
+# `plock_authoring` both address only nodes 10 and 20.
+#
+# This is MM-C7's prerequisite. That commit restructures `render_span` in
+# *both* engines into 64-sample sub-blocks and claims to be output-identical;
+# without this file the FM half of that claim has no evidence behind it, and
+# MM-C8's `lfo_depth = 0` check has the same hole.
+#
+# Node 27 is `fm_engine:bass`, the only FM voice the default instrument wires.
+# It is driven through **all three machines** rather than just Bass, because
+# `render_span` dispatches to a separate `process_kick`/`process_bell`/
+# `process_bass` per machine — chunking could break one and leave the others
+# bit-identical. Reaching the other two needs the runtime `machine` param that
+# MM-C3/C4 added; before those commits this scenario could not have existed.
+#
+# Params are varied inside each machine's window so the fingerprint covers
+# more than one point of each machine's space: `feedback` at 0 and at 0.8 on
+# Kick (0 skips the self-feedback term), `drive` at 0 and at 1.0 (the
+# `soft_clip` branch), a mid-note retrigger on Bell, and a machine switch that
+# lands while a voice is still sounding, which runs the MM §0 D1 fade.
+#
+# No assertions: as with `plock_authoring`, the fingerprint is the evidence,
+# and baseline mode does not evaluate artifact assertions anyway
+# (`main.rs:1280`). The trap that leaves is baking in *silence* — a scenario
+# that never sounded would fingerprint as zeros and pass forever. Guard: every
+# machine's window carries real energy in the recorded envelope, measured at
+# its 50 ms resolution when this baseline was written —
+#   pre-trigger  0.00-0.30 s  max window RMS 0.0000 (all 5 windows exactly 0)
+#   Bass         0.30-2.00 s  max window RMS 2.5198, no zero window
+#   Kick         2.40-4.20 s  max window RMS 1.8315, no zero window
+#   Bell         4.60-6.20 s  max window RMS 1.8230, no zero window
+# If a future edit drops a machine's triggers, those windows go to ~0 and the
+# drift is visible rather than silently re-baselined. The exactly-zero
+# pre-trigger windows are also what shows this scenario is isolated: the
+# default instrument's sequencers boot with no active steps, so nothing but
+# these triggers sounds and no `clear` is needed.
+#
+# Peak is 3.27, well over unity — there is no limiter on the master bus and
+# `kick_reverb_clean` records 2.04 for the same reason. That is the graph's
+# real output, not a scenario defect.
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 7
+output: /tmp/fm_machines.wav
+play: false
+
+timeline:
+  # ── FM Bass (machine 2 — the machine node 27 boots on) ──────────────────
+  - at: 0.10
+    set_param: { target: "fm_engine:bass", param: tune, value: 5.0 }
+  - at: 0.10
+    set_param: { target: "fm_engine:bass", param: ratio, value: 2.0 }
+  - at: 0.10
+    set_param: { target: "fm_engine:bass", param: index, value: 4.0 }
+  - at: 0.10
+    set_param: { target: "fm_engine:bass", param: attack, value: 0.05 }
+  - at: 0.10
+    set_param: { target: "fm_engine:bass", param: decay, value: 1.0 }
+  - at: 0.10
+    set_param: { target: "fm_engine:bass", param: drive, value: 0.6 }
+  - at: 0.30
+    trigger: { target: "fm_engine:bass", velocity: 1.0 }
+
+  # Second Bass note with the modulation index and drive taken away, so the
+  # window covers both sides of the `soft_clip` branch.
+  - at: 1.10
+    set_param: { target: "fm_engine:bass", param: index, value: 0.5 }
+  - at: 1.10
+    set_param: { target: "fm_engine:bass", param: drive, value: 0.0 }
+  - at: 1.10
+    set_param: { target: "fm_engine:bass", param: attack, value: 0.001 }
+  - at: 1.30
+    trigger: { target: "fm_engine:bass", velocity: 0.5 }
+
+  # ── FM Kick (machine 0) ─────────────────────────────────────────────────
+  # The switch lands while the Bass note above is still decaying, so the
+  # MM §0 D1 fade-then-swap runs here rather than the silent fast path.
+  - at: 2.00
+    set_param: { target: "fm_engine:bass", param: machine, value: 0.0 }
+  - at: 2.20
+    set_param: { target: "fm_engine:bass", param: tune, value: -12.0 }
+  - at: 2.20
+    set_param: { target: "fm_engine:bass", param: punch, value: 0.9 }
+  - at: 2.20
+    set_param: { target: "fm_engine:bass", param: decay, value: 0.8 }
+  - at: 2.20
+    set_param: { target: "fm_engine:bass", param: feedback, value: 0.8 }
+  - at: 2.20
+    set_param: { target: "fm_engine:bass", param: drive, value: 0.0 }
+  - at: 2.40
+    trigger: { target: "fm_engine:bass", velocity: 1.0 }
+
+  # feedback 0 skips the self-feedback term entirely; drive 1.0 saturates.
+  - at: 3.20
+    set_param: { target: "fm_engine:bass", param: feedback, value: 0.0 }
+  - at: 3.20
+    set_param: { target: "fm_engine:bass", param: drive, value: 1.0 }
+  - at: 3.40
+    trigger: { target: "fm_engine:bass", velocity: 0.7 }
+
+  # ── FM Bell (machine 1) ─────────────────────────────────────────────────
+  - at: 4.20
+    set_param: { target: "fm_engine:bass", param: machine, value: 1.0 }
+  - at: 4.40
+    set_param: { target: "fm_engine:bass", param: tune, value: 0.0 }
+  - at: 4.40
+    set_param: { target: "fm_engine:bass", param: ratio, value: 5.5 }
+  - at: 4.40
+    set_param: { target: "fm_engine:bass", param: index, value: 6.0 }
+  - at: 4.40
+    set_param: { target: "fm_engine:bass", param: decay, value: 3.0 }
+  - at: 4.40
+    set_param: { target: "fm_engine:bass", param: feedback, value: 0.4 }
+  - at: 4.60
+    trigger: { target: "fm_engine:bass", velocity: 1.0 }
+
+  # Retrigger while the 3-second Bell decay is still sounding — the envelope
+  # restart path, not a fresh voice.
+  - at: 5.60
+    trigger: { target: "fm_engine:bass", velocity: 0.3 }
+
+  # A second mid-note switch, back to Bass, ending on the fade again.
+  - at: 6.20
+    set_param: { target: "fm_engine:bass", param: machine, value: 2.0 }
