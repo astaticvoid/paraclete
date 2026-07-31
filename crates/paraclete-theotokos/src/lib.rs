@@ -1836,6 +1836,7 @@ mod tests {
             routing: Cow::Borrowed(&[]),
             diagram: None,
             view_overrides: Cow::Borrowed(&[]),
+            variants: Cow::Borrowed(&[]),
         };
         caps.insert(
             100,
@@ -2774,6 +2775,7 @@ mod tests {
             routing: Cow::Borrowed(&[]),
             diagram: None,
             view_overrides: Cow::Borrowed(&[]),
+            variants: Cow::Borrowed(&[]),
         };
         let mut caps = HashMap::new();
         caps.insert(
@@ -3282,6 +3284,7 @@ mod tests {
             routing: Cow::Borrowed(&[]),
             diagram: None,
             view_overrides: Cow::Borrowed(&[]),
+            variants: Cow::Borrowed(&[]),
         };
         let mut caps = HashMap::new();
         caps.insert(

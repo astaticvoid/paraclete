@@ -1,12 +1,19 @@
 //! ADR-032 — Theoria view-plugin API types.
 //!
-//! `Rule` is the serializable view-data struct stored on `CapabilityDocument`.
-//! Built once per node at construction time from `ViewPlugin::to_rule()`.
-//! The Antiphon server serializes this to assemble the `view_meta` JSON message.
+//! `Rule` is the view-data struct stored on `CapabilityDocument`, built once
+//! per node at construction time from `ViewPlugin::to_rule()`.
 //!
 //! Serialize derives are gated behind the `serialize` feature flag (optional
 //! serde). The `ViewPlugin` trait is always available — third-party node
 //! authors implement it without depending on serde.
+//!
+//! **`Rule` does not currently reach the wire through serde.** No crate in
+//! the workspace enables the `serialize` feature, so those derives are
+//! inert; Antiphon holds `HashMap<u32, Rule>` and hand-maps it into its own
+//! protocol types. An earlier version of this doc said the server
+//! "serializes this to assemble the `view_meta` JSON message" — it does not.
+//! Enabling the feature would put this entire internal shape on the wire as
+//! a side effect, which is a protocol decision, not a build-flag one.
 
 use std::borrow::Cow;
 
@@ -49,12 +56,134 @@ pub struct Rule {
 
     /// Override sub-node views, keyed by sub-node id.
     pub view_overrides: Cow<'static, [(u64, Rule)]>,
+
+    /// ADR-041: per-machine view variants for a machine-host engine, one per
+    /// value of its `machine` param.
+    ///
+    /// **Empty means "this node has one fixed view"** — the base fields above
+    /// are used as-is, which is every node that is not a machine host. A
+    /// surface watches the node's `machine` param and swaps the displayed
+    /// variant locally; there is no runtime capability re-query and none is
+    /// added (ADR-041 decision 1).
+    pub variants: Cow<'static, [MachineVariant]>,
+}
+
+// ── MachineVariant + ParamOverlay ─────────────────────────────────────────────
+
+/// One machine's view of its host node (ADR-041 decision 3).
+///
+/// Carries that machine's own page layout, so a `param_pages` entry naming a
+/// param the active machine does not declare — BUG-037's shape — becomes
+/// unrepresentable rather than silently degrading to a `param_{id}`
+/// placeholder.
+///
+/// **That covers `param_pages` only.** `Rule`'s other reference-bearing
+/// fields — `affordances`, `envelopes`, `macros`, `routing` — have no variant
+/// slot and stay machine-invariant, so they can still name a param the active
+/// variant does not display. That is live, not hypothetical: both engines
+/// build affordances and envelope groups outside the per-machine `match`
+/// (`analog_engine.rs:280-303`, `fm_engine.rs:296-303`). Widening this type is
+/// deliberately deferred — ADR-041 decision 3 and §0 A1 specify exactly these
+/// five fields — so the guard is an assertion instead (see MM-C8), and it must
+/// check refs against the **active variant's displayed set**, not just the
+/// union doc, or it passes on precisely this case.
+#[derive(Clone, Debug)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+pub struct MachineVariant {
+    /// The `machine` param value that selects this variant.
+    pub value: u32,
+
+    /// Display name for this machine (e.g. "AnalogKick").
+    pub name: Cow<'static, str>,
+
+    /// Page group IDs this machine contributes to — may differ per machine.
+    pub page_groups: Cow<'static, [Cow<'static, str>]>,
+
+    /// This machine's param placements, replacing `Rule::param_pages` while
+    /// it is active.
+    pub pages: Cow<'static, [(u32, PageRef)]>,
+
+    /// Per-param range/default overrides for this machine, keyed by param id.
+    ///
+    /// The host's parameter bank stores the **union** (widest-envelope) range
+    /// and is never narrowed — these are what a *surface* displays and clamps
+    /// input against (ADR-041 §0 A1).
+    ///
+    /// **Absence of an overlay does not mean the machine ignores the param.**
+    /// It is ambiguous between "this machine does not use it" and "this
+    /// machine uses it at the full union range, so there is nothing to
+    /// narrow" — and the second is common (per MM-C3's table, Kick's `decay`
+    /// *is* the union). The discriminator for "does this machine use it" is
+    /// membership in `pages`. Keying display-suppression on overlay absence
+    /// would hide params that are merely un-narrowed.
+    ///
+    /// Duplicate ids are representable here and their precedence is
+    /// undefined; MM-C8's assertion checks uniqueness rather than the type
+    /// enforcing it.
+    pub overlays: Cow<'static, [(u32, ParamOverlay)]>,
+}
+
+/// One machine's range and default for a param it shares with its siblings.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serialize", derive(serde::Serialize))]
+pub struct ParamOverlay {
+    pub min: f64,
+    pub max: f64,
+    pub default: f64,
+
+    /// True for params that *are* the node's identity rather than a setting —
+    /// `machine` itself. Identity params are rejected as p-lock targets and as
+    /// scene-morph destinations (ADR-041 §0 A4, decision 6): per-step machine
+    /// switching is undesigned, and stepped identity is not morphable.
+    /// Enforced surface/app-side — the sequencer stores opaque
+    /// `(node_id, param_id)` locks and cannot know a foreign node's params.
+    ///
+    /// **Machine-invariant in practice, but stored per variant** (ADR-041 §0
+    /// A1 puts the flag here). `machine` exists on every machine of a host, so
+    /// `identity: true` has to be repeated in every variant's `overlays`; miss
+    /// one and lock rejection silently stops working *for that machine only*.
+    /// MM-C8's assertion checks that a param flagged in any variant is flagged
+    /// in all of them. Hoisting it to a `Rule`-level `identity_params` would
+    /// remove the hazard structurally but deviates from the ratified shape, so
+    /// it is not taken here.
+    pub identity: bool,
+}
+
+/// Forward-compatible construction, for the reason spelled out on
+/// `impl Default for Rule` — these are new all-public-field types on the same
+/// LGPL3 boundary, and `MachineVariant` is the one most likely to grow (its
+/// doc names two fields it may need). Adding a field after MM-C3–C5 have
+/// written variant literals costs strictly more than this does now.
+impl Default for MachineVariant {
+    fn default() -> Self {
+        Self {
+            value: 0,
+            name: Cow::Borrowed(""),
+            page_groups: Cow::Borrowed(&[]),
+            pages: Cow::Borrowed(&[]),
+            overlays: Cow::Borrowed(&[]),
+        }
+    }
+}
+
+/// Hand-written, not derived: `#[derive(Default)]` would give
+/// `min: 0.0, max: 0.0`, a degenerate range that clamps every write to zero.
+/// A unit range is the harmless default for a param whose range nobody set.
+impl Default for ParamOverlay {
+    fn default() -> Self {
+        Self {
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            identity: false,
+        }
+    }
 }
 
 // ── PageRef ────────────────────────────────────────────────────────────────────
 
 /// A parameter's placement in the page grid.
-#[derive(Clone)]
+#[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 pub struct PageRef {
     /// Page group key ("SRC", "FLTR", "AMP", "FX", "MOD", or custom).
@@ -161,6 +290,7 @@ impl Rule {
             routing: Cow::Borrowed(&[]),
             diagram: None,
             view_overrides: Cow::Borrowed(&[]),
+            variants: Cow::Borrowed(&[]),
         }
     }
 
@@ -176,6 +306,7 @@ impl Rule {
             routing: Cow::Borrowed(&[]),
             diagram: None,
             view_overrides: Cow::Borrowed(&[]),
+            variants: Cow::Borrowed(&[]),
         }
     }
 
@@ -184,10 +315,92 @@ impl Rule {
     }
 }
 
+/// Forward-compatible construction for third-party node authors.
+///
+/// `Rule` has all-public fields at the **LGPL3 boundary** (L2), so every field
+/// added to it breaks every external `Rule { .. }` literal — as this crate's
+/// own 14 literals just demonstrated when `variants` landed. A node written as
+/// `Rule { name: …, page_groups: …, ..Default::default() }` survives the next
+/// addition; one that spells out every field does not.
+///
+/// Flagged per the standing universality check: this crate is pre-1.0, so the
+/// window to make additions non-breaking is now. `#[non_exhaustive]` is the
+/// other option and was **not** taken — it forbids literal construction
+/// outside the defining crate entirely, which would break `paraclete-nodes`
+/// and every third-party node at once, for a stricter guarantee than the
+/// problem needs.
+impl Default for Rule {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::capability::ParamDescriptor;
+
+    /// MM-C2: `variants` is additive and inert. Every node that is not a
+    /// machine host leaves it empty, and empty must mean "use the base fields
+    /// as-is" — the property the whole additive design rests on (ADR-041
+    /// decision 3).
+    #[test]
+    fn convenience_constructors_leave_variants_empty() {
+        assert!(Rule::empty().variants.is_empty());
+        assert!(Rule::single_page("Filter", "FLTR").variants.is_empty());
+        assert!(Rule::default().variants.is_empty());
+    }
+
+    /// `Rule::empty()` is declared `const fn`, but nothing in the workspace
+    /// calls it in const position — so a future field with a non-const default
+    /// would silently drop the qualifier and no build would notice. This pins
+    /// it.
+    #[test]
+    fn rule_empty_is_usable_in_const_position() {
+        const EMPTY: Rule = Rule::empty();
+        assert!(EMPTY.is_empty());
+    }
+
+    /// A node written against the forward-compatible form gets a usable Rule
+    /// without naming `variants` — which is the point of the `Default` impl.
+    #[test]
+    fn default_spread_construction_compiles_and_is_inert() {
+        let rule = Rule {
+            name: Cow::Borrowed("ThirdParty"),
+            page_groups: Cow::Owned(vec![Cow::Borrowed("SRC")]),
+            ..Default::default()
+        };
+        assert_eq!(rule.name.as_ref(), "ThirdParty");
+        assert!(rule.variants.is_empty());
+        assert!(
+            !rule.is_empty(),
+            "one page group means it has surface presence"
+        );
+    }
+
+    /// The overlay carries the flag p-lock and scene-assign rejection key on
+    /// (ADR-041 §0 A4), so a defaulted overlay must not read as identity —
+    /// that would reject locks on an ordinary param. Also pins the range:
+    /// a derived `Default` would give `min == max == 0.0`, which clamps every
+    /// write to zero.
+    #[test]
+    fn defaulted_overlay_is_an_ordinary_unit_range_param() {
+        let d = ParamOverlay::default();
+        assert!(!d.identity, "a defaulted overlay must not read as identity");
+        assert!(d.min < d.max, "degenerate range clamps every write to min");
+        assert_eq!((d.min, d.max), (0.0, 1.0));
+    }
+
+    /// MM-C2 is inert: a defaulted variant contributes no pages and no
+    /// overlays, so adding one to a `Rule` cannot change what renders until a
+    /// later commit populates it.
+    #[test]
+    fn defaulted_variant_contributes_nothing() {
+        let v = MachineVariant::default();
+        assert!(v.pages.is_empty());
+        assert!(v.overlays.is_empty());
+        assert!(v.page_groups.is_empty());
+    }
 
     #[test]
     fn rule_single_page_has_one_page_group() {
@@ -269,6 +482,7 @@ mod tests {
             routing: Cow::Borrowed(&[]),
             diagram: Some(Cow::Borrowed(b"<svg>...</svg>")),
             view_overrides: Cow::Borrowed(&[]),
+            variants: Cow::Borrowed(&[]),
         };
         assert!(rule.diagram.is_some());
     }

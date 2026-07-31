@@ -312,6 +312,7 @@ impl ViewPlugin for AnalogEngine {
             routing: Cow::Borrowed(&[]),
             diagram: None,
             view_overrides: Cow::Borrowed(&[]),
+            variants: Cow::Borrowed(&[]),
         }
     }
 }

@@ -304,6 +304,7 @@ impl ViewPlugin for FmEngine {
             routing: Cow::Borrowed(&[]),
             diagram: None,
             view_overrides: Cow::Borrowed(&[]),
+            variants: Cow::Borrowed(&[]),
         }
     }
 }

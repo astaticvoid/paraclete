@@ -137,6 +137,7 @@ impl ViewPlugin for FilterNode {
             routing: Cow::Borrowed(&[]),
             diagram: None,
             view_overrides: Cow::Borrowed(&[]),
+            variants: Cow::Borrowed(&[]),
         }
     }
 }

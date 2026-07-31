@@ -61,8 +61,8 @@ pub use capability::{
 };
 
 pub use rule::{
-    AffordanceHint, EnvelopeGroup, MacroBinding, MacroCurve, PageRef, RoutingSemantics, Rule,
-    ViewPlugin,
+    AffordanceHint, EnvelopeGroup, MachineVariant, MacroBinding, MacroCurve, PageRef, ParamOverlay,
+    RoutingSemantics, Rule, ViewPlugin,
 };
 
 pub use agreement::{ConnectionAgreement, ConnectionRecord, LockableParam};
