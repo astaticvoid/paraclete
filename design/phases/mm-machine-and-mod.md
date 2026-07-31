@@ -162,7 +162,7 @@ chain node. Intended for MOD; new and untested for SRC/FX/AMP. No shipped
 instrument has a multi-contributor page today (see MM-C1's note), so this
 first bites in MM-C11.
 
-### MM-C1 — Carry `slot` to the encoder column *(#150 / BUG-052)*
+### MM-C1 — Carry `slot` to the encoder column ✅ *(landed, `a549768`)*
 
 **MM-C0 is necessary but not sufficient, and this is the other half.**
 Review of MM-C0 found that the declared slot stops at the crate boundary:
@@ -198,6 +198,32 @@ through the same placement or comment it as descoped-and-inconsistent.
 **Tests:** a rule declaring slots 0, 2, 5 puts params on encoder columns
 0, 2, 5 with 1, 3, 4 empty; jogging column 2 moves the param declared at
 slot 2, not the second param in the list.
+
+*As landed:* `resolve_encoder_params` returns
+`EncoderBank = [Option<EncoderParam>; SUB_PAGE_SLOTS]` rather than a wider
+tuple. The bug was that *two* call sites independently interpreted position,
+so an eighth tuple field would have left the same drift available; the type
+change makes positional indexing unrepresentable, which is a stronger
+guarantee than the tests.
+
+*Behaviour change not covered by "no visible change today", recorded per
+guardrail 1:* in the engine-local `Rule` branch, a `param_pages` entry whose
+id is absent from the cap-doc — BUG-037's exact shape — used to be **dropped**,
+closing the gap and shifting every later param one column left. It now leaves
+the column empty. The new behaviour is the intended one, but it is a change,
+and it is latent rather than dead: the composite branch wins in the shipped
+app, so this goes live the moment #152 drops a track's composite view.
+
+*Also filed from this commit's review:* #152 (`main.rs` builds the per-track
+composite Vec with `filter_map`, so a track that fails to assemble shifts
+every later track's params — and Theotokos indexes that Vec by track).
+
+*Correction carried:* #47 (BUG-037) was closed by accident — the MM spec
+commit's body contained the prose "MM-C4 closes #47" and GitHub parsed the
+keyword. Reopened, and its body now also names the `AnalogEngine` instance
+(`analog_engine.rs:276` places `tune` at SRC slot 0 unconditionally, but the
+HiHat cap-doc declares only `tone`/`decay`/`open`), which the original issue
+did not mention. MM-C4 must fix both engines, not just `FmEngine`.
 
 ### MM-C2 — `MachineVariant` on `Rule` (additive, inert)
 
@@ -364,6 +390,22 @@ doc, for both engines — the assertion MM-C8 generalises.
 make every client re-implement the merge — including the 8-slot alignment —
 and they would drift (design-process learning 5: `PageNav.tsx` already kept
 a private copy of the page order).
+
+**`Rule` does not reach the wire through serde, and this is a hand-mapping
+commit.** Found while scoping MM-C2: `rule.rs`'s module doc says "the
+Antiphon server serializes this to assemble the `view_meta` JSON message",
+but the `serialize` feature on `paraclete-node-api`
+(`paraclete-node-api/Cargo.toml:20`) is enabled by **no crate in the
+workspace** — `grep -rn serialize --include=Cargo.toml` finds only the
+declaration. The derive is dead code. Antiphon holds
+`HashMap<u32, Rule>` (`crates/paraclete-antiphon/src/view.rs:19`) and builds
+its own `ViewMetaParam` by hand.
+
+Two consequences: MM-C2's field addition is wire-inert for free, needing no
+`skip_serializing_if`; and the work here is extending Antiphon's mapping,
+not adding serde attributes. Do not "enable the serialize feature" as a
+shortcut — that would put the whole internal `Rule` shape on the wire as a
+side effect, which is a protocol decision nobody has made.
 
 **Tests:** a two-contributor page where the engine has variants and the
 chain node does not merges correctly on both; wire round-trip carries
