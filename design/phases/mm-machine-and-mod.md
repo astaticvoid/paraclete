@@ -541,6 +541,31 @@ after every write, and a run that ends green is not proof it did.
 
 ### MM-C6 — Theotokos: variant-aware pages, machine-select, lock rejection
 
+> **Next commit in the phase**, and the one place MM-C5 leaves a decision
+> open rather than made. MM-C5 pre-merged every machine's pages into
+> `CompositeView::variants`, so "swap the displayed variant locally" is a
+> swap of `cv.pages` for the matching entry — every downstream reader
+> (`resolve_encoder_params`, `page_sub_page_count`, `select_perf_page`, the
+> page labels) then works unchanged.
+>
+> **The open question is who declares the TRIG placement, and it changes what
+> a performer sees.** ADR-041 amendment 2 says machine-select lives on the
+> TRIG page but not who pages it. MM-C6's `Changes:` list says
+> `crates/paraclete-theotokos/` only — yet nothing in the shipped graph
+> declares a TRIG page at all (verified on the wire: every default track has
+> SRC and AMP and nothing else), so a Theotokos-only change means Theotokos
+> synthesises a page no other surface has. The alternative — each engine
+> declaring `machine` at a TRIG slot in its variant `pages` — gives every
+> surface the same control through the machinery MM-C5 just built, and
+> MM-C4's `every_variant_page_ref_resolves_in_that_variants_params` already
+> carries the comment "MM-C6 pages it".
+>
+> **Either way a new page appears at index 0, ahead of SRC**, because TRIG is
+> first in `CANONICAL_PAGE_ORDER`. Page keys 1-6 then select different pages
+> than they did. That is a performer-facing change, not an implementation
+> detail, which is why this commit wants a session rather than a headless
+> agent.
+
 **Changes:** `crates/paraclete-theotokos/`
 
 1. Watch `machine` on the state bus, swap the displayed variant locally —
@@ -563,7 +588,14 @@ params; an inert param retains its value across the switch and is not
 displayed; `[m]`+trig on `machine` is refused with a message and sets no
 lock.
 
-### MM-C7 — The 64-sample sub-block loop *(pure refactor, no LFO)*
+### MM-C7 — The 64-sample sub-block loop *(pure refactor, no LFO)* ✅ *(landed, `ba3fe50`)*
+
+> **Landed before MM-C6, deliberately.** MM-C6's deliverable is a visible
+> panel change — machine-select on TRIG adds a page, shifting every page index
+> a performer has learned — and it wants a paired session to judge. MM-C7 has
+> no dependency on it (engine DSP vs surface), its prerequisite had just been
+> met, and it is decisively verifiable headlessly. **MM-C6 is the phase's next
+> commit; do not read the tick here as its being skipped.**
 
 > **Prerequisite (#155): an FM baseline must exist first.** ✅ *(met,
 > `855d36c`)* This commit's whole verification plan is "both ADR-035 baselines
