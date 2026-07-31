@@ -2,7 +2,7 @@ use crate::action::GRID_STEPS;
 use crate::input::PanelButton;
 use crossterm::event::KeyCode;
 use paraclete_node_api::{CapabilityDocument, PageRef, ParamDescriptor, StateBusHandle, StateBusValue};
-use paraclete_view_assembly::{CompositeView, SUB_PAGE_SLOTS};
+use paraclete_view_assembly::{CompositeOverlay, CompositeView, SUB_PAGE_SLOTS};
 use std::collections::HashMap;
 
 /// TK2 C3 (D12): replaces `Mode` (deleted at the wiring flip, per §0 A4).
@@ -418,6 +418,150 @@ impl Model {
         self.caps.get(&node_id)?.params.iter().find(|pd| pd.id == param_id)
     }
 
+    // ── MM-C6: machine variants ──────────────────────────────────────────
+
+    /// The overlay in force for `(node_id, param_id)` on the active track —
+    /// the *selected machine's* range, not the bank's (ADR-041 §0 A1).
+    ///
+    /// The engine's `ParameterBank` stores the widest envelope across every
+    /// machine and is never narrowed; narrowing it would truncate values
+    /// belonging to machines that are not selected, on load. So the union is
+    /// right for storage and wrong for a knob: on `FmBell`, `decay` runs to
+    /// 8 s, on `FmBass` to 4, and the bank says 8 for both. A surface that
+    /// clamps to the bank lets a performer dial a `FmBass` decay the machine
+    /// does not use.
+    ///
+    /// `None` for every param of every node that is not a machine host, which
+    /// is all of them but the two engines — the caller then uses the
+    /// descriptor, exactly as before MM-C6.
+    pub fn active_overlay(&self, node_id: u32, param_id: u32) -> Option<&CompositeOverlay> {
+        let cv = self.composite.get(self.active_track)?;
+        let set = cv.variants.iter().find(|s| s.node_id == node_id)?;
+        let variant = set.variants.iter().find(|v| v.value == set.active)?;
+        variant.overlays.iter().find(|o| o.param_id == param_id)
+    }
+
+    /// Is this param the node's *identity* rather than a setting (ADR-041
+    /// §0 A4)? Identity params are refused as p-lock targets and as
+    /// scene-morph destinations.
+    ///
+    /// Checked against **every** variant, not just the selected one. The flag
+    /// lives per overlay and has to be repeated in each machine, so a variant
+    /// that forgot it would otherwise make rejection work on one machine and
+    /// not another — "p-locking machine works on HiHat but not Kick", which
+    /// no test catches by accident. Reading the union of the flags means a
+    /// missed repeat costs nothing here; MM-C8's assertion is what will say
+    /// the declaration itself is inconsistent.
+    pub fn is_identity_param(&self, node_id: u32, param_id: u32) -> bool {
+        self.composite
+            .get(self.active_track)
+            .and_then(|cv| cv.variants.iter().find(|s| s.node_id == node_id))
+            .is_some_and(|set| {
+                set.variants.iter().any(|v| {
+                    v.overlays
+                        .iter()
+                        .any(|o| o.param_id == param_id && o.identity)
+                })
+            })
+    }
+
+    /// Re-point every machine host at the machine its `machine` param now
+    /// names, swapping in that variant's pre-merged pages. Returns true if
+    /// anything moved, so the caller can repaint.
+    ///
+    /// **This is the whole of ADR-041 decision 1's "swap the displayed
+    /// variant locally".** No capability is re-queried and no query channel
+    /// exists to re-query it with: MM-C5 pre-merged every machine's pages into
+    /// `CompositeVariantSet`, so a switch is a swap of an already-built page
+    /// list. Cap-docs are still collected once, at startup.
+    ///
+    /// Called every frame rather than on a state-bus subscription because the
+    /// switch can come from anywhere — a Theoria client, a profile script, a
+    /// `:set` on the command line — and Theotokos owns none of those paths.
+    /// The read is a handful of `HashMap` lookups over the chain's hosts, and
+    /// the clone only happens on an actual change.
+    pub fn sync_machine_selection(&mut self, bus: &StateBusHandle) -> bool {
+        let mut changed = false;
+        for track in 0..self.composite.len() {
+            let hosts: Vec<(u32, u32, u32)> = self.composite[track]
+                .variants
+                .iter()
+                .filter_map(|s| Some((s.node_id, s.select_param?, s.active)))
+                .collect();
+            for (node_id, select_param, active) in hosts {
+                let Some(raw) = self.read_param_opt(bus, node_id, select_param) else {
+                    continue;
+                };
+                // The bank slot is an f64 a malformed project could carry.
+                // Mirror the engines' `from_value`: clamp rather than panic,
+                // and never index with a negative or non-finite value.
+                if !raw.is_finite() || raw < 0.0 {
+                    continue;
+                }
+                let want = raw as u32;
+                if want == active {
+                    continue;
+                }
+                let Some(idx) = self.composite[track]
+                    .variants
+                    .iter()
+                    .find(|s| s.node_id == node_id)
+                    .and_then(|s| s.variants.iter().position(|v| v.value == want))
+                else {
+                    continue;
+                };
+                let pages = {
+                    let set = self.composite[track]
+                        .variants
+                        .iter_mut()
+                        .find(|s| s.node_id == node_id)
+                        .expect("found immediately above");
+                    set.active = want;
+                    set.variants[idx].pages.clone()
+                };
+                self.composite[track].pages = pages;
+                changed = true;
+            }
+        }
+        if changed {
+            // A machine with fewer pages can leave the selection past the end,
+            // and one with a shorter page can leave the sub-page past the end.
+            // Both would render an empty bank that no key could escape.
+            let pages = self
+                .composite
+                .get(self.active_track)
+                .map(|cv| cv.pages.len())
+                .unwrap_or(0);
+            if self.perf_page >= pages {
+                self.perf_page = pages.saturating_sub(1);
+            }
+            let subs = self.page_sub_page_count();
+            if self.sub_page >= subs {
+                self.sub_page = subs.saturating_sub(1);
+            }
+            self.bind_page();
+        }
+        changed
+    }
+
+    /// `read_param_value`'s answer, but distinguishing "absent" from 0.0 —
+    /// `sync_machine_selection` must not read a missing path as machine 0 and
+    /// yank the performer back to the first machine every frame.
+    fn read_param_opt(&self, bus: &StateBusHandle, node_id: u32, param_id: u32) -> Option<f64> {
+        let name = self
+            .caps
+            .get(&node_id)?
+            .params
+            .iter()
+            .find(|p| p.id == param_id)
+            .map(|p| p.name.to_string())?;
+        match bus.read(&format!("/node/{}/param/{}", node_id, name))? {
+            StateBusValue::Float(f) => Some(*f),
+            StateBusValue::Int(i) => Some(*i as f64),
+            _ => None,
+        }
+    }
+
     /// The encoder bank for the active page and sub-page, **already placed**:
     /// index `n` is the param on encoder `n`, `None` is an empty column.
     ///
@@ -456,11 +600,24 @@ impl Model {
                         // TK2.1 C4: an unresolvable ref keeps its column and
                         // renders dimmed at a placeholder 0..1 range, rather
                         // than being dropped.
-                        let (min, max, stepped, resolved) =
+                        let (mut min, mut max, stepped, resolved) =
                             match self.resolve_param_descriptor(p.node_id, p.param_id) {
                                 Some(pd) => (pd.min, pd.max, pd.stepped, true),
                                 None => (0.0, 1.0, false, false),
                             };
+                        // MM-C6: on a machine host, display and clamp against
+                        // the SELECTED machine's overlay. The descriptor above
+                        // is the bank's union across every machine and is
+                        // deliberately wider — see `active_overlay`. Only the
+                        // range moves; the stored value is never re-clamped,
+                        // which is what lets a value belonging to another
+                        // machine survive a round trip.
+                        if resolved {
+                            if let Some(o) = self.active_overlay(p.node_id, p.param_id) {
+                                min = o.min;
+                                max = o.max;
+                            }
+                        }
                         bank[col] = Some(EncoderParam {
                             node_id: p.node_id,
                             param_id: p.param_id,

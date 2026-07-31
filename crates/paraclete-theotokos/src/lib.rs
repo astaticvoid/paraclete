@@ -154,6 +154,12 @@ impl TheotokosApp {
         _now_ms: u64,
         key_events: &[KeyEvent],
     ) -> Result<(), String> {
+        // MM-C6 / ADR-041 decision 1: a machine switch repaints the pages
+        // locally, from variants MM-C5 already merged. Polled rather than
+        // subscribed because the switch can come from anywhere Theotokos does
+        // not own — a Theoria client, a profile script, `:set machine` — and
+        // it must repaint the same way whichever it was.
+        self.dirty |= self.model.sync_machine_selection(&bus.borrow());
         self.dirty |= self.handle_keys(bus, key_events);
         self.render_if_needed(terminal, bus)
     }
@@ -1105,7 +1111,7 @@ impl TheotokosApp {
                             // it lands in — the destination (locked step
                             // vs. live) is read from current state at
                             // render time, not stored here.
-                            self.last_jog_param = Some(name);
+                            self.last_jog_param = Some(name.clone());
                             let track = self.model.active_track;
                             let tracker = &mut self.encoder_trackers[col];
                             let held = match tracker.repeat(now, tick_ms) {
@@ -1130,6 +1136,29 @@ impl TheotokosApp {
                                 Dir::Next => delta,
                                 Dir::Prev => -delta,
                             };
+                            // MM-C6 / ADR-041 §0 A4: an identity param is what
+                            // the node *is*, not a setting, so it is refused
+                            // as a p-lock target — per-step machine switching
+                            // is undesigned.
+                            //
+                            // It has to be refused *here*, surface-side. The
+                            // sequencer stores opaque `(node_id, param_id)`
+                            // pairs and cannot know it is holding a foreign
+                            // node's identity param, so decision 6's
+                            // "CMD_SET_LOCK_TARGET validation" cannot live
+                            // there. The engines refuse the switch too — they
+                            // read the bank rather than `get_param` — but that
+                            // is the belt to this brace, and silently: without
+                            // this the performer would author a lock, see it
+                            // stored, and hear nothing happen.
+                            if self.model.lock_step_for_active_track().is_some()
+                                && self.model.is_identity_param(node_id, param_id)
+                            {
+                                self.model.cmdline_error =
+                                    Some(format!("{} is the machine — cannot be locked", name));
+                                dirty = true;
+                                continue;
+                            }
                             if let Some(step) = self.model.lock_step_for_active_track() {
                                 let seq_id = self.model.tracks[track].sequencer_id;
                                 let current = self
@@ -1743,7 +1772,9 @@ mod tests {
         AffordanceHint, CapabilityDocument, PageRef, ParamDescriptor, ParamUnit, Rule,
         StateBusValue,
     };
-    use paraclete_view_assembly::{CompositeParam, CompositePage};
+    use paraclete_view_assembly::{
+        CompositeOverlay, CompositeParam, CompositePage, CompositeVariant, CompositeVariantSet,
+    };
     use std::borrow::Cow;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1812,6 +1843,143 @@ mod tests {
             routes: vec![],
             variants: vec![],
         }
+    }
+
+    // ── MM-C6 fixtures: a machine host ───────────────────────────────────
+
+    const MACHINE_PID: u32 = 900;
+    const TONE_PID: u32 = 901;
+    const PUNCH_PID: u32 = 902;
+
+    /// A two-machine host. Machine 0 pages `machine`, `tone` and `punch`;
+    /// machine 1 drops `punch` and narrows `tone` — the AnalogKick/AnalogHiHat
+    /// shape, where a param one machine declares is simply absent on another.
+    ///
+    /// `machine` is paged here so the p-lock rejection has an encoder to
+    /// reject. **No shipped node pages it yet** — where machine-select is
+    /// declared is the one MM-C6 decision left open (ADR-041 amendment 2 says
+    /// TRIG but not who declares it), so this fixture stands in for whichever
+    /// way that lands.
+    fn machine_host_view(node_id: u32) -> CompositeView {
+        let page = |params: &[(u32, &str, u8)]| CompositePage {
+            id: "SRC".into(),
+            label: "Source".into(),
+            params: params
+                .iter()
+                .map(|&(param_id, name, slot)| CompositeParam {
+                    node_id,
+                    param_id,
+                    name: name.into(),
+                    label: name.into(),
+                    affordance: AffordanceHint::None,
+                    env_group: None,
+                    slot,
+                    routing: None,
+                    stepped: param_id == MACHINE_PID,
+                    options: None,
+                })
+                .collect(),
+            envelopes: vec![],
+            macros: vec![],
+        };
+        let overlay = |param_id, min, max, identity| CompositeOverlay {
+            param_id,
+            param_name: "x".into(),
+            min,
+            max,
+            default: min,
+            identity,
+        };
+        let m0 = page(&[
+            (MACHINE_PID, "machine", 0),
+            (TONE_PID, "tone", 1),
+            (PUNCH_PID, "punch", 2),
+        ]);
+        let m1 = page(&[(MACHINE_PID, "machine", 0), (TONE_PID, "tone", 1)]);
+        CompositeView {
+            engine_node_id: node_id,
+            engine_name: "Host".into(),
+            display_name: "Host".into(),
+            pages: vec![m0.clone()],
+            chain: vec![node_id],
+            routes: vec![],
+            variants: vec![CompositeVariantSet {
+                node_id,
+                select_param: Some(MACHINE_PID),
+                select_param_name: Some("machine".into()),
+                active: 0,
+                variants: vec![
+                    CompositeVariant {
+                        value: 0,
+                        name: "Zero".into(),
+                        pages: vec![m0],
+                        overlays: vec![
+                            overlay(MACHINE_PID, 0.0, 1.0, true),
+                            overlay(TONE_PID, 200.0, 8000.0, false),
+                            overlay(PUNCH_PID, 0.0, 1.0, false),
+                        ],
+                    },
+                    CompositeVariant {
+                        value: 1,
+                        name: "One".into(),
+                        pages: vec![m1],
+                        overlays: vec![
+                            overlay(MACHINE_PID, 0.0, 1.0, true),
+                            overlay(TONE_PID, 1000.0, 18000.0, false),
+                        ],
+                    },
+                ],
+            }],
+        }
+    }
+
+    /// Cap-doc for the host: the **union** bank, deliberately wider than
+    /// either machine's overlay (`tone` 200..18000 spans both), so a test can
+    /// tell an overlay range from the descriptor's.
+    fn machine_host_caps(node_id: u32) -> HashMap<u32, CapabilityDocument> {
+        let mut caps = test_caps();
+        let pd = |id, name: &'static str, min, max, stepped| paraclete_node_api::ParamDescriptor {
+            id,
+            name: name.into(),
+            min,
+            max,
+            default: min,
+            stepped,
+            unit: paraclete_node_api::ParamUnit::Generic,
+            display: None,
+        };
+        caps.insert(
+            node_id,
+            CapabilityDocument {
+                name: "Host".into(),
+                vendor: "test".into(),
+                version: (0, 1, 0),
+                ports: vec![],
+                params: vec![
+                    pd(MACHINE_PID, "machine", 0.0, 1.0, true),
+                    pd(TONE_PID, "tone", 200.0, 18000.0, false),
+                    pd(PUNCH_PID, "punch", 0.0, 1.0, false),
+                ],
+                extensions: vec![],
+                view: None,
+            },
+        );
+        caps
+    }
+
+    fn machine_host_app(node_id: u32, seq_id: u32) -> TheotokosApp {
+        let mut app = test_app(1, vec![seq_id], vec![node_id], vec!["Host".into()]);
+        app.model.caps = machine_host_caps(node_id);
+        app.model.composite = vec![machine_host_view(node_id)];
+        app.model.perf_page = 0;
+        app
+    }
+
+    fn set_machine(bus: &BusHandle, node_id: u32, value: f64) {
+        bus.borrow_mut().write(
+            &format!("/node/{node_id}/param/machine"),
+            paraclete_node_api::StateBusValue::Float(value),
+        );
     }
 
     fn test_bus() -> BusHandle {
@@ -1936,6 +2104,224 @@ mod tests {
             keymap: Keymap::default(),
             held: HeldState::new(false),
         }
+    }
+
+    // ── MM-C6 ────────────────────────────────────────────────────────────
+
+    fn page_param_names(app: &TheotokosApp) -> Vec<String> {
+        app.model.composite[0].pages[0]
+            .params
+            .iter()
+            .map(|p| p.name.clone())
+            .collect()
+    }
+
+    /// ADR-041 decision 1: selecting a machine repaints that machine's params
+    /// with **zero runtime negotiation** — no cap-doc is re-queried, because
+    /// MM-C5 already merged every machine's pages.
+    #[test]
+    fn selecting_a_machine_repaints_the_page_to_that_machines_params() {
+        let bus = test_bus();
+        let mut app = machine_host_app(100, 200);
+        assert_eq!(page_param_names(&app), ["machine", "tone", "punch"]);
+
+        set_machine(&bus, 100, 1.0);
+        assert!(
+            app.model.sync_machine_selection(&bus.borrow()),
+            "a machine change must report dirty so the panel repaints"
+        );
+        assert_eq!(app.model.composite[0].variants[0].active, 1);
+        assert_eq!(
+            page_param_names(&app),
+            ["machine", "tone"],
+            "machine 1 does not declare `punch`, so it must leave the page"
+        );
+    }
+
+    /// A param the newly selected machine does not use disappears from the
+    /// panel, and Theotokos writes nothing to it — the value keeps living in
+    /// the union bank so it is still there on the way back. Theotokos issuing
+    /// any command here is the bug: that is how a "reset inactive params on
+    /// switch" would creep in surface-side.
+    #[test]
+    fn an_inert_param_leaves_the_page_without_being_written_to() {
+        let bus = test_bus();
+        let mut app = machine_host_app(100, 200);
+        set_machine(&bus, 100, 1.0);
+        app.model.sync_machine_selection(&bus.borrow());
+
+        assert!(
+            !page_param_names(&app).contains(&"punch".to_string()),
+            "an inert param is not displayed"
+        );
+        assert!(
+            app.pending.is_empty(),
+            "a machine switch must issue no node commands: {:?}",
+            app.pending.iter().map(|c| c.type_id).collect::<Vec<_>>()
+        );
+        // It is still reachable on the machine that declares it.
+        set_machine(&bus, 100, 0.0);
+        app.model.sync_machine_selection(&bus.borrow());
+        assert!(page_param_names(&app).contains(&"punch".to_string()));
+    }
+
+    /// ADR-041 §0 A1: the encoder shows and clamps against the **selected
+    /// machine's** overlay, not the bank's union. The union is what storage
+    /// needs and what a knob must not have — see `Model::active_overlay`.
+    #[test]
+    fn encoder_range_is_the_active_machines_overlay_not_the_bank_union() {
+        let bus = test_bus();
+        let mut app = machine_host_app(100, 200);
+
+        let tone = |app: &TheotokosApp| {
+            app.model
+                .resolve_encoder_params()
+                .iter()
+                .flatten()
+                .find(|e| e.param_id == TONE_PID)
+                .map(|e| (e.min, e.max))
+                .expect("tone is on the page")
+        };
+        // The cap-doc says 200..18000 for both machines; the overlays do not.
+        assert_eq!(tone(&app), (200.0, 8000.0), "machine 0's range");
+
+        set_machine(&bus, 100, 1.0);
+        app.model.sync_machine_selection(&bus.borrow());
+        assert_eq!(tone(&app), (1000.0, 18000.0), "machine 1's range");
+    }
+
+    /// A node with no variants keeps taking its range from the descriptor —
+    /// every track that is not a machine host, which is most of them.
+    #[test]
+    fn a_node_without_variants_still_uses_its_descriptor_range() {
+        let mut app = machine_host_app(100, 200);
+        app.model.composite[0].variants.clear();
+        let tone = app
+            .model
+            .resolve_encoder_params()
+            .iter()
+            .flatten()
+            .find(|e| e.param_id == TONE_PID)
+            .map(|e| (e.min, e.max))
+            .unwrap();
+        assert_eq!(tone, (200.0, 18000.0), "the cap-doc's union, unmodified");
+    }
+
+    /// ADR-041 §0 A4 / amendment 4: `machine` is identity, not a setting, so
+    /// it is refused as a p-lock target — surface-side, because the sequencer
+    /// holds opaque `(node_id, param_id)` pairs and cannot know.
+    #[test]
+    fn p_locking_the_machine_param_is_refused_with_a_message() {
+        let bus = test_bus();
+        let mut app = machine_host_app(100, 200);
+        app.model.lock_target = Some((0, 4));
+        app.model.enc = true;
+
+        let dirty = app.handle_keys(&bus, &[kc('q')]);
+
+        assert!(dirty);
+        assert!(
+            app.pending.is_empty(),
+            "no lock may be stored for an identity param: {:?}",
+            app.pending.iter().map(|c| c.type_id).collect::<Vec<_>>()
+        );
+        let msg = app.model.cmdline_error.as_deref().unwrap_or("");
+        assert!(
+            msg.contains("machine"),
+            "the performer must be told why, got {msg:?}"
+        );
+    }
+
+    /// ADR-041 §0 A1 puts the `identity` flag on the *overlay*, so it has to
+    /// be repeated in every machine's overlays. Miss one and rejection would
+    /// work on one machine and not another — "p-locking machine works on
+    /// HiHat but not Kick", which no ordinary test catches by accident. The
+    /// check reads the union of the flags across variants so a missed repeat
+    /// costs nothing here; MM-C8's assertion is what will complain about the
+    /// declaration itself.
+    #[test]
+    fn an_identity_flag_missing_from_one_variant_still_rejects_the_lock() {
+        let bus = test_bus();
+        let mut app = machine_host_app(100, 200);
+        // Strip the flag from the FIRST variant only — the one a naive
+        // "read the active machine's overlays" would consult.
+        for o in app.model.composite[0].variants[0].variants[0]
+            .overlays
+            .iter_mut()
+        {
+            o.identity = false;
+        }
+        assert_eq!(app.model.composite[0].variants[0].active, 0, "on machine 0");
+        assert!(
+            app.model.is_identity_param(100, MACHINE_PID),
+            "the flag survives on machine 1, so the param is still identity"
+        );
+
+        app.model.lock_target = Some((0, 4));
+        app.model.enc = true;
+        app.handle_keys(&bus, &[kc('q')]);
+        assert!(
+            app.pending.is_empty(),
+            "rejection must not depend on which machine happens to be selected"
+        );
+    }
+
+    /// The same encoder still jogs the live value when no lock target is
+    /// armed — the rejection is of *locking* it, not of selecting a machine.
+    #[test]
+    fn the_machine_param_still_jogs_live_when_no_lock_is_armed() {
+        let bus = test_bus();
+        let mut app = machine_host_app(100, 200);
+        app.model.lock_target = None;
+        app.model.enc = true;
+
+        app.handle_keys(&bus, &[kc('q')]);
+
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.type_id == paraclete_node_api::CMD_BUMP_PARAM
+                    && c.arg0 == MACHINE_PID as i64),
+            "selecting a machine is the whole point of the control"
+        );
+        assert!(app.model.cmdline_error.is_none());
+    }
+
+    /// A `machine` value naming no declared variant must not move the panel.
+    /// The engines clamp such a value rather than panicking; drawing a machine
+    /// that is not the one sounding would be worse than leaving it alone.
+    #[test]
+    fn an_unknown_machine_value_leaves_the_panel_where_it_is() {
+        let bus = test_bus();
+        let mut app = machine_host_app(100, 200);
+        for bad in [7.0, -1.0, f64::NAN] {
+            set_machine(&bus, 100, bad);
+            assert!(
+                !app.model.sync_machine_selection(&bus.borrow()),
+                "{bad} names no variant and must change nothing"
+            );
+            assert_eq!(app.model.composite[0].variants[0].active, 0);
+            assert_eq!(page_param_names(&app), ["machine", "tone", "punch"]);
+        }
+    }
+
+    /// An absent state-bus path must not read as machine 0 — that would drag
+    /// the performer back to the first machine on every frame before the
+    /// engine has published anything.
+    #[test]
+    fn a_missing_machine_path_is_not_read_as_machine_zero() {
+        let bus = test_bus();
+        let mut app = machine_host_app(100, 200);
+        set_machine(&bus, 100, 1.0);
+        app.model.sync_machine_selection(&bus.borrow());
+        assert_eq!(app.model.composite[0].variants[0].active, 1);
+
+        let empty = test_bus();
+        assert!(
+            !app.model.sync_machine_selection(&empty.borrow()),
+            "no published value means no opinion, not machine 0"
+        );
+        assert_eq!(app.model.composite[0].variants[0].active, 1);
     }
 
     fn kc(c: char) -> KeyEvent {
