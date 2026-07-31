@@ -708,11 +708,18 @@ fn render_trig_row<'a>(
 
 /// TK2.1 C0: the contextual window for `Screen::Grid` — header
 /// `{display_name} — {engine_name}`,
-/// then the active page's first 4 params *(tunable)* as name/value/bar
-/// (reusing the already-resolved `encoder_cells`), then the existing
-/// envelope section. A track with no page params (no composite view, no
-/// `Rule` pagination — `model.rs` `resolve_encoder_params` returns empty)
-/// renders the header plus a placeholder line rather than an empty pane.
+/// then whatever occupies the active page's **first 4 encoder columns**
+/// *(tunable)* as name/value/bar (reusing the already-resolved
+/// `encoder_cells`), then the existing envelope section.
+///
+/// Column-scoped, not "the first 4 params": since MM-C1 a page can have
+/// declared gaps, so a sparse page shows fewer than 4 entries here. That is
+/// deliberate — the strip and the encoder bank stay on one convention, and
+/// reintroducing rank-ordering here is what MM-C1 removed everywhere else.
+///
+/// A track with no page params (no composite view, no `Rule` pagination —
+/// `model.rs` `resolve_encoder_params` returns an all-empty bank) renders
+/// the header plus a placeholder line rather than an empty pane.
 fn render_track_context(frame: &mut Frame, area: Rect, data: &RenderData) {
     let chunks = Layout::vertical([
         Constraint::Length(1),

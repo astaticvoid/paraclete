@@ -59,6 +59,25 @@ pub struct SlotBinding {
     pub max: f64,
 }
 
+/// One placed encoder cell — the param sitting on a specific encoder column.
+#[derive(Clone, Debug)]
+pub struct EncoderParam {
+    pub node_id: u32,
+    pub param_id: u32,
+    pub name: String,
+    pub min: f64,
+    pub max: f64,
+    pub stepped: bool,
+    /// False only for the composite branch's "no cap-doc entry found" case
+    /// (TK2.1 C4). `min`/`max` are placeholder 0..1 when it is.
+    pub resolved: bool,
+}
+
+/// The 8-encoder bank, indexed by column. `None` is an empty column — which a
+/// page can now genuinely have, since MM-C1 places by declared slot rather
+/// than closing gaps (#150).
+pub type EncoderBank = [Option<EncoderParam>; SUB_PAGE_SLOTS as usize];
+
 pub struct TrackInfo {
     pub sequencer_id: u32,
     pub generator_id: u32,
@@ -317,6 +336,18 @@ impl Model {
     /// Generalizes the TK1 2-slot resolver (`bind_page`) so the 8-encoder
     /// bank can resolve against the same page — composite pages first,
     /// falling back to the engine-local `Rule` (existing TK0 path).
+    ///
+    /// **Positional, and knowingly inconsistent with `resolve_encoder_params`**
+    /// since MM-C1: this reads `page.params` by position, so it binds the
+    /// first `n` params of the page rather than the params at slots `0..n`.
+    /// It feeds `slot_a`/`slot_b`/`slot_c`, which **are** on screen — the
+    /// `A:`/`B:`/`C:` readout on every Param screen (`render.rs`). Only the
+    /// A/B/C *jog* is descoped (BUG-038 / OQ-T24; `Action::Jog` is emitted
+    /// nowhere). So on a page with sparse slots the readout and the encoder
+    /// bank would disagree, each showing a different convention. Harmless
+    /// while every shipped node declares densely from 0; reviving the
+    /// cluster means routing it through the same placement, not re-deriving
+    /// one here.
     pub fn resolve_page_params_n(&self, n: usize) -> Vec<(u32, u32, String, f64, f64)> {
         if let Some(cv) = self.composite.get(self.active_track) {
             if let Some(page) = cv.pages.get(self.perf_page) {
@@ -387,81 +418,122 @@ impl Model {
         self.caps.get(&node_id)?.params.iter().find(|pd| pd.id == param_id)
     }
 
-    /// Returns `(node_id, param_id, name, min, max, stepped, resolved)`.
-    /// `resolved` is false only for the composite branch's "no cap-doc
-    /// entry found" case (TK2.1 C4) — the `min`/`max` fields are 0..1 and
-    /// not to be trusted when it is.
-    pub fn resolve_encoder_params(&self) -> Vec<(u32, u32, String, f64, f64, bool, bool)> {
-        let lo = (self.sub_page * SUB_PAGE_SLOTS as usize) as u16;
+    /// The encoder bank for the active page and sub-page, **already placed**:
+    /// index `n` is the param on encoder `n`, `None` is an empty column.
+    ///
+    /// MM-C1 (#150, BUG-052): this used to return a `Vec` in slot order and
+    /// let each caller index it positionally, which made the encoder column
+    /// the param's *rank* in the window rather than its declared slot — a
+    /// node declaring slots 0, 2, 5 rendered on encoders 1, 2, 3, closing the
+    /// gaps it asked for. Placement now happens once, here, so the render and
+    /// jog paths cannot disagree about it. ADR-041 §0 A2 puts machine-select
+    /// on a TRIG slot by convention, which needs the declared slot to survive
+    /// this far.
+    ///
+    /// `resolved` is false only for the composite branch's "no cap-doc entry
+    /// found" case (TK2.1 C4) — `min`/`max` are 0..1 and not to be trusted
+    /// when it is.
+    pub fn resolve_encoder_params(&self) -> EncoderBank {
+        let width = SUB_PAGE_SLOTS as usize;
+        let lo = (self.sub_page * width) as u16;
         let hi = lo + SUB_PAGE_SLOTS as u16;
+        let mut bank: EncoderBank = std::array::from_fn(|_| None);
+        // `lo` is always a multiple of SUB_PAGE_SLOTS, so within the window
+        // `slot - lo` is the column and is unique per param.
+        let column = |slot: u8| (slot as u16).checked_sub(lo).map(|c| c as usize);
+
         if let Some(cv) = self.composite.get(self.active_track) {
             if let Some(page) = cv.pages.get(self.perf_page) {
                 if !page.params.is_empty() {
-                    let mut params: Vec<_> = page
+                    for p in page
                         .params
                         .iter()
                         .filter(|p| (p.slot as u16) >= lo && (p.slot as u16) < hi)
-                        .collect();
-                    params.sort_by_key(|p| p.slot);
-                    return params
-                        .into_iter()
-                        .map(|p| match self.resolve_param_descriptor(p.node_id, p.param_id) {
-                            Some(pd) => (
-                                p.node_id,
-                                p.param_id,
-                                p.name.clone(),
-                                pd.min,
-                                pd.max,
-                                pd.stepped,
-                                true,
-                            ),
-                            None => (p.node_id, p.param_id, p.name.clone(), 0.0, 1.0, false, false),
-                        })
-                        .collect();
+                    {
+                        let Some(col) = column(p.slot).filter(|c| *c < width) else {
+                            continue;
+                        };
+                        // TK2.1 C4: an unresolvable ref keeps its column and
+                        // renders dimmed at a placeholder 0..1 range, rather
+                        // than being dropped.
+                        let (min, max, stepped, resolved) =
+                            match self.resolve_param_descriptor(p.node_id, p.param_id) {
+                                Some(pd) => (pd.min, pd.max, pd.stepped, true),
+                                None => (0.0, 1.0, false, false),
+                            };
+                        bank[col] = Some(EncoderParam {
+                            node_id: p.node_id,
+                            param_id: p.param_id,
+                            name: p.name.clone(),
+                            min,
+                            max,
+                            stepped,
+                            resolved,
+                        });
+                    }
+                    return bank;
                 }
             }
         }
         let gen_id = self.tracks[self.active_track].generator_id;
         let cap = match self.caps.get(&gen_id) {
             Some(c) => c,
-            None => return Vec::new(),
+            None => return bank,
         };
         let rule = match &cap.view {
             Some(r) => r,
-            None => return Vec::new(),
+            None => return bank,
         };
         let page = match rule.page_groups.get(self.perf_page) {
             Some(p) => p.as_ref(),
             None => {
-                // No Rule pagination — no sub-pages to split into; only
-                // sub-page 0 has content (matches `resolve_page_params_n`'s
-                // same fallback, which has no slot field to filter on).
+                // No Rule pagination — no declared slots to place by, so this
+                // branch alone is genuinely positional, and only sub-page 0
+                // has content (matches `resolve_page_params_n`'s same
+                // fallback).
                 if self.sub_page > 0 {
-                    return Vec::new();
+                    return bank;
                 }
-                return cap
-                    .params
-                    .iter()
-                    .take(SUB_PAGE_SLOTS as usize)
-                    .map(|p| (gen_id, p.id, p.name.to_string(), p.min, p.max, p.stepped, true))
-                    .collect();
+                for (col, p) in cap.params.iter().take(width).enumerate() {
+                    bank[col] = Some(EncoderParam {
+                        node_id: gen_id,
+                        param_id: p.id,
+                        name: p.name.to_string(),
+                        min: p.min,
+                        max: p.max,
+                        stepped: p.stepped,
+                        resolved: true,
+                    });
+                }
+                return bank;
             }
         };
-        let mut params: Vec<&(u32, PageRef)> = rule
-            .param_pages
-            .iter()
-            .filter(|(_, pr)| pr.page.as_ref() == page && (pr.slot as u16) >= lo && (pr.slot as u16) < hi)
-            .collect();
-        params.sort_by_key(|(_, pr)| pr.slot);
-        params
-            .iter()
-            .filter_map(|(pid, _)| {
-                cap.params
-                    .iter()
-                    .find(|pd| pd.id == *pid)
-                    .map(|pd| (gen_id, pd.id, pd.name.to_string(), pd.min, pd.max, pd.stepped, true))
-            })
-            .collect()
+        for (pid, pr) in rule.param_pages.iter().filter(|(_, pr)| {
+            pr.page.as_ref() == page && (pr.slot as u16) >= lo && (pr.slot as u16) < hi
+        }) {
+            let Some(col) = column(pr.slot).filter(|c| *c < width) else {
+                continue;
+            };
+            // MM-C1 behaviour change, latent today: a `param_pages` entry
+            // whose id is absent from the cap-doc (BUG-037's shape) used to be
+            // dropped, closing the gap and shifting every later param one
+            // column left. It now leaves the column empty. A hole is honest;
+            // a silent left-shift is the thing BUG-052 was about. Unreachable
+            // in the shipped app — the composite branch above always wins —
+            // until #152 drops a track's composite view.
+            if let Some(pd) = cap.params.iter().find(|pd| pd.id == *pid) {
+                bank[col] = Some(EncoderParam {
+                    node_id: gen_id,
+                    param_id: pd.id,
+                    name: pd.name.to_string(),
+                    min: pd.min,
+                    max: pd.max,
+                    stepped: pd.stepped,
+                    resolved: true,
+                });
+            }
+        }
+        bank
     }
 
     /// TK2 C5 (§0 A11): how many sub-pages the active page has (min 1) —

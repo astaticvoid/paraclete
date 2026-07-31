@@ -305,18 +305,18 @@ impl TheotokosApp {
         // truncating). Resolved fresh each render, matching the jog
         // dispatch below.
         let encoder_params = self.model.resolve_encoder_params();
-        let encoder_cells: Vec<Option<render::EncoderCell>> = (0..8)
-            .map(|i| {
-                encoder_params
-                    .get(i)
-                    .map(|(nid, pid, name, min, max, _stepped, resolved)| {
-                        let value = self.model.read_param_value(bus, *nid, *pid);
+        let encoder_cells: Vec<Option<render::EncoderCell>> = encoder_params
+            .iter()
+            .map(|cell| {
+                cell.as_ref()
+                    .map(|p| {
+                        let value = self.model.read_param_value(bus, p.node_id, p.param_id);
                         render::EncoderCell {
-                            name: name.clone(),
+                            name: p.name.clone(),
                             value,
-                            min: *min,
-                            max: *max,
-                            resolved: *resolved,
+                            min: p.min,
+                            max: p.max,
+                            resolved: p.resolved,
                         }
                     })
             })
@@ -1079,11 +1079,27 @@ impl TheotokosApp {
                 // machinery (`Tuning::jog_step`) via a per-column tracker.
                 Action::EncoderJog { col, dir, mag } => {
                     let params = self.model.resolve_encoder_params();
-                    match params.get(col).cloned() {
+                    // MM-C1: `col` indexes the placed bank directly, so an
+                    // encoder whose slot no node declared is empty and jogs
+                    // nothing — it no longer silently drives whichever param
+                    // happened to be next in the list.
+                    match params.get(col).cloned().flatten() {
                         None => {
-                            self.model.cmdline_error = Some(format!("no encoder {}", col + 1));
+                            // MM-C1: a declared gap is an existing encoder with
+                            // nothing bound to it, which "no encoder N"
+                            // described poorly once gaps became possible.
+                            self.model.cmdline_error =
+                                Some(format!("encoder {} unbound", col + 1));
                         }
-                        Some((node_id, param_id, name, min, max, stepped, _resolved)) => {
+                        Some(model::EncoderParam {
+                            node_id,
+                            param_id,
+                            name,
+                            min,
+                            max,
+                            stepped,
+                            resolved: _,
+                        }) => {
                             // TK2.2 C4 (E5): record what this jog is about
                             // to write, independent of which branch below
                             // it lands in — the destination (locked step
@@ -1761,6 +1777,37 @@ mod tests {
         }
     }
 
+    /// A one-page composite whose params sit at the given `(param_id, slot)`
+    /// pairs — for asserting placement, which a dense fixture cannot show.
+    fn composite_view_with_slots(node_id: u32, params: &[(u32, u8)]) -> CompositeView {
+        CompositeView {
+            engine_node_id: node_id,
+            engine_name: "Test".into(),
+            display_name: "Test".into(),
+            pages: vec![CompositePage {
+                id: "p1".into(),
+                label: "P1".into(),
+                params: params
+                    .iter()
+                    .map(|&(param_id, slot)| CompositeParam {
+                        node_id,
+                        param_id,
+                        name: format!("p{param_id}"),
+                        label: format!("P{param_id}"),
+                        affordance: AffordanceHint::None,
+                        env_group: None,
+                        slot,
+                        routing: None,
+                    })
+                    .collect(),
+                envelopes: vec![],
+                macros: vec![],
+            }],
+            chain: vec![],
+            routes: vec![],
+        }
+    }
+
     fn test_bus() -> BusHandle {
         Rc::new(RefCell::new(StateBusHandle::default()))
     }
@@ -2190,6 +2237,80 @@ mod tests {
             toggles, 1,
             "a held trig (Press + N*Repeat + Release) must toggle the step \
              exactly once, not once per repeat pulse"
+        );
+    }
+
+    /// MM-C1 (#150, BUG-052): the encoder column is the param's **declared
+    /// slot**, not its rank in the window. Before this, a node declaring
+    /// slots 0, 2, 5 rendered on encoders 1, 2, 3 — the gaps closed up, and
+    /// ADR-041 §0 A2's "machine-select on a TRIG slot by convention" could
+    /// not mean anything.
+    #[test]
+    fn encoder_column_is_the_declared_slot_not_the_rank() {
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.composite = vec![composite_view_with_slots(100, &[(1, 0), (2, 2), (3, 5)])];
+
+        let bank = app.model.resolve_encoder_params();
+        let occupied: Vec<usize> = bank
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| c.as_ref().map(|_| i))
+            .collect();
+        assert_eq!(
+            occupied,
+            vec![0, 2, 5],
+            "params declared at slots 0/2/5 must sit on those columns"
+        );
+        assert_eq!(bank[2].as_ref().unwrap().param_id, 2);
+        assert_eq!(bank[5].as_ref().unwrap().param_id, 3);
+    }
+
+    /// A declared gap is an empty encoder, not a closed-up one — and jogging
+    /// it must do nothing rather than drive whichever param was next.
+    #[test]
+    fn jogging_an_undeclared_column_is_a_no_op() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.composite = vec![composite_view_with_slots(100, &[(1, 0), (2, 2)])];
+        app.model.enc = true;
+
+        // Encoder 2 (column 1) is a declared gap.
+        app.pending.clear();
+        app.handle_keys(&bus, &[func_trig('w')]);
+        assert!(
+            app.pending.is_empty(),
+            "an empty column must emit no command; got {:?}",
+            app.pending
+        );
+        assert_eq!(
+            app.model.cmdline_error.as_deref(),
+            Some("encoder 2 unbound"),
+            "and should say which column, rather than failing silently or \
+             reporting some unrelated error"
+        );
+    }
+
+    /// The second sub-page's window re-bases to columns 0..8, so a param at
+    /// slot 9 is encoder 2 of sub-page 2 — not encoder 2 of sub-page 1.
+    #[test]
+    fn sub_page_two_rebases_slots_to_columns() {
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.composite = vec![composite_view_with_slots(100, &[(1, 0), (2, 9)])];
+
+        let first = app.model.resolve_encoder_params();
+        assert!(first[0].is_some(), "slot 0 on sub-page 1");
+        assert!(
+            first.iter().skip(1).all(|c| c.is_none()),
+            "slot 9 must not appear on sub-page 1"
+        );
+
+        app.model.sub_page = 1;
+        let second = app.model.resolve_encoder_params();
+        assert!(second[0].is_none(), "nothing declared at slot 8");
+        assert_eq!(
+            second[1].as_ref().expect("slot 9 -> column 1").param_id,
+            2,
+            "slot 9 is column 1 of sub-page 2"
         );
     }
 
@@ -2635,14 +2756,16 @@ mod tests {
             page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG")]),
             param_pages: Cow::Owned(vec![
                 // Declared decay-then-tune below, but Rule order is
-                // tune (slot 0) then decay (slot 1) — the reverse.
+                // tune (slot 0) then decay (slot 2) — reversed, AND sparse.
+                // MM-C1: the gap at slot 1 is what distinguishes placement
+                // from rank; with slots 0/1 both conventions agree.
                 (tune_id, PageRef {
                     page: Cow::Borrowed("TRIG"),
                     slot: 0,
                 }),
                 (decay_id, PageRef {
                     page: Cow::Borrowed("TRIG"),
-                    slot: 1,
+                    slot: 2,
                 }),
             ]),
             macros: Cow::Borrowed(&[]),
@@ -2736,13 +2859,24 @@ mod tests {
             "encoder 1 must target the Rule's slot-0 param (tune), not decay"
         );
 
+        // MM-C1: slot 1 is a declared gap. Under the old rank-based
+        // placement this column held decay (the second entry after the slot
+        // sort); it must now be unbound.
         app.pending.clear();
         app.handle_keys(&bus, &[func_trig('w')]);
+        assert!(
+            app.pending.is_empty(),
+            "encoder 2 is a declared gap and must bind nothing; got {:?}",
+            app.pending
+        );
+
+        app.pending.clear();
+        app.handle_keys(&bus, &[func_trig('e')]);
         assert!(
             app.pending.iter().any(|c| c.type_id
                 == paraclete_node_api::CMD_BUMP_PARAM
                 && c.arg0 == decay_id as i64),
-            "encoder 2 must target the Rule's slot-1 param (decay)"
+            "encoder 3 must target the Rule's slot-2 param (decay)"
         );
     }
 
@@ -2760,8 +2894,11 @@ mod tests {
         );
         assert_eq!(
             app.model.cmdline_error.as_deref(),
-            Some("no encoder 4"),
-            "must echo the out-of-range encoder index"
+            // MM-C1: the encoder exists, nothing is bound to it — which is
+            // what a column past the param count now is, the same as a
+            // declared gap.
+            Some("encoder 4 unbound"),
+            "must echo the unbound encoder index"
         );
     }
 
@@ -2816,7 +2953,11 @@ mod tests {
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         assert!(app.last_jog_param.is_none(), "sanity: no jog yet");
 
-        let expected_name = app.model.resolve_encoder_params()[0].2.clone();
+        let expected_name = app.model.resolve_encoder_params()[0]
+            .as_ref()
+            .expect("encoder 0 is populated")
+            .name
+            .clone();
         app.handle_keys(&bus, &[func_trig('q')]);
 
         assert_eq!(
@@ -3002,12 +3143,16 @@ mod tests {
         app.model.composite = vec![composite_view_with_param(100, param_id)];
 
         let params = app.model.resolve_encoder_params();
-        assert_eq!(params.len(), 1);
-        let (_, _, _, min, max, stepped, resolved) = params[0].clone();
-        assert!(resolved, "must resolve against the cap-doc, not fall back");
-        assert_eq!(min, 20.0);
-        assert_eq!(max, 20000.0);
-        assert!(!stepped);
+        assert_eq!(
+            params.iter().filter(|c| c.is_some()).count(),
+            1,
+            "one declared param, so one populated column"
+        );
+        let p = params[0].as_ref().expect("declared at slot 0");
+        assert!(p.resolved, "must resolve against the cap-doc, not fall back");
+        assert_eq!(p.min, 20.0);
+        assert_eq!(p.max, 20000.0);
+        assert!(!p.stepped);
     }
 
     /// TK2.1 C4 (D10, closes BUG-040 §2): a stepped param (an integer
