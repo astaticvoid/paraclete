@@ -640,8 +640,21 @@ impl HeldState {
     }
 
     /// Esc disarms unconditionally (D6).
+    ///
+    /// Also clears `pressed`, because in the kitty path this is the recovery
+    /// from a hold whose release never arrived (BUG-050) — leaving a stale
+    /// entry there would put the next press/release pair for that key out of
+    /// step, so the first re-tap would disarm nothing.
     pub fn on_esc(&mut self) {
         self.armed = None;
+        self.pressed.clear();
+    }
+
+    /// Focus left the terminal mid-hold, so the release that would have
+    /// disarmed the prefix is never delivered — same recovery as Esc, applied
+    /// without waiting for the user to discover they are latched (BUG-050).
+    pub fn on_focus_lost(&mut self) {
+        self.on_esc();
     }
 
     /// D6 (kitty branch, TK2 C3): a TRK/PTN press arms for as long as the

@@ -177,6 +177,14 @@ impl TheotokosApp {
                 Event::Resize(_, _) => {
                     self.dirty = true;
                 }
+                // BUG-050: focus leaving mid-hold means the release that
+                // would disarm a TRK/PTN prefix is never delivered. Treat it
+                // as a release of everything rather than waiting for the user
+                // to notice they are latched and find Esc.
+                Event::FocusLost => {
+                    self.held.on_focus_lost();
+                    self.dirty = true;
+                }
                 _ => {}
             }
         }
@@ -638,6 +646,22 @@ impl TheotokosApp {
                                     || input::trig_col(button).is_some() =>
                             {
                                 true
+                            }
+                            // D6: "Esc disarms unconditionally" — implemented
+                            // in the sticky path by `on_press`'s catch-all,
+                            // but never wired here, so `on_esc` sat as dead
+                            // code while the kitty branch cleared `armed`
+                            // only on the matching physical release. A
+                            // release that never arrives (focus taken
+                            // mid-hold, protocol renegotiated) left every
+                            // trig diverting with no way back but quitting
+                            // (BUG-050). Not consumed: Esc's own action still
+                            // resolves on this press, and it is never one of
+                            // the diverted buttons (`button_to_action` only
+                            // diverts trigs while armed).
+                            KeyEventKind::Press if button == PanelButton::No => {
+                                self.held.on_esc();
+                                false
                             }
                             _ => self.held.on_kitty_press(button),
                         }
@@ -1658,27 +1682,38 @@ fn is_press_or_repeat(ev: KeyEvent) -> bool {
 }
 
 fn setup_keyboard_flags() -> Result<(), String> {
-    use crossterm::event::{KeyboardEnhancementFlags, PushKeyboardEnhancementFlags};
+    use crossterm::event::{
+        EnableFocusChange, KeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    };
     // §0 A2: REPORT_EVENT_TYPES alone yields no release events for text
     // keys (Tab, `p`, all trigs) — exactly the events TK2 C3's kitty
     // hold-chord branch (HeldState::on_kitty_press/release) needs. Without
     // the other two flags, TRK/PTN would arm on press and never receive
     // the release that disarms them.
+    //
+    // EnableFocusChange is what makes that failure recoverable (BUG-050): a
+    // hold interrupted by focus loss never gets its release, so the panel
+    // needs to hear about the focus change to disarm.
     execute!(
         std::io::stdout(),
         PushKeyboardEnhancementFlags(
             KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
                 | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
                 | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
-        )
+        ),
+        EnableFocusChange
     )
     .map(|_| {})
     .map_err(|e| format!("kitty flags: {e}"))
 }
 
 fn pop_keyboard_flags() -> Result<(), String> {
-    use crossterm::event::PopKeyboardEnhancementFlags;
-    execute!(std::io::stdout(), PopKeyboardEnhancementFlags)
+    use crossterm::event::{DisableFocusChange, PopKeyboardEnhancementFlags};
+    execute!(
+        std::io::stdout(),
+        PopKeyboardEnhancementFlags,
+        DisableFocusChange
+    )
         .map(|_| {})
         .map_err(|e| format!("kitty flags pop: {e}"))
 }
@@ -2156,6 +2191,69 @@ mod tests {
             "a held trig (Press + N*Repeat + Release) must toggle the step \
              exactly once, not once per repeat pulse"
         );
+    }
+
+    /// BUG-050: on a kitty terminal the TRK arm was cleared *only* by Tab's
+    /// physical release. If that release never arrived — focus taken
+    /// mid-hold, protocol renegotiated — every trig kept diverting to
+    /// `SelectTrack` with no way out but quitting. D6 says "Esc disarms
+    /// unconditionally"; the sticky path got that from `on_press`'s
+    /// catch-all, the kitty path never wired it and `on_esc` was dead code.
+    ///
+    /// Feeds the wedged shape directly: a Tab press with no release.
+    #[test]
+    fn kitty_esc_disarms_a_latched_trk_prefix() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200, 201], vec![100, 101], vec!["T1".into(), "T2".into()]);
+        app.held.kitty = true;
+        app.model.rec = RecMode::Grid;
+
+        // Tab down, no release: TRK is now latched.
+        let tab_press =
+            KeyEvent::new_with_kind(KeyCode::Tab, KeyModifiers::NONE, KeyEventKind::Press);
+        app.handle_keys(&bus, &[tab_press]);
+        assert_eq!(
+            app.held.armed,
+            Some(input::Hold::Trk),
+            "a kitty Tab press with no release must latch TRK — otherwise \
+             this test is not reproducing the wedge"
+        );
+
+        let esc = KeyEvent::new_with_kind(KeyCode::Esc, KeyModifiers::NONE, KeyEventKind::Press);
+        app.handle_keys(&bus, &[esc]);
+        assert_eq!(app.held.armed, None, "Esc must disarm unconditionally (D6)");
+
+        // And the panel is actually usable again: the next trig writes a step
+        // instead of selecting a track.
+        app.pending.clear();
+        app.handle_keys(&bus, &[kc('w')]);
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.type_id == crate::action::CMD_TOGGLE_STEP),
+            "after Esc a bare trig must resolve normally, not divert to \
+             SelectTrack"
+        );
+    }
+
+    /// BUG-050: the release that would disarm a hold is exactly what focus
+    /// loss eats, so losing focus disarms too — the user should not have to
+    /// discover they are latched before they can recover.
+    #[test]
+    fn focus_loss_disarms_a_latched_prefix() {
+        let mut held = HeldState::new(true);
+        held.on_kitty_press(PanelButton::Trk);
+        assert_eq!(held.armed, Some(input::Hold::Trk));
+
+        held.on_focus_lost();
+        assert_eq!(held.armed, None, "focus loss must disarm");
+
+        // The stale press must be forgotten as well, or the next press of the
+        // same key would be followed by a release that disarms a *different*
+        // arm than the one it belongs to.
+        held.on_kitty_press(PanelButton::Trk);
+        held.on_kitty_release(PanelButton::Trk);
+        assert_eq!(held.armed, None, "press/release pairs stay in step");
     }
 
     /// TK2.2 C1 (E4): the bare trig has exactly one owner per mode. With no
