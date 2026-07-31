@@ -289,7 +289,13 @@ Platform crates (outside the five layers):
 - **Parameter names are canonical across all nodes.** Use `const CUTOFF_ID: u32 =
   ParamDescriptor::id_for_name("cutoff");` — the function is `const fn`.
   Canonical: `"cutoff"`, `"resonance"`, `"drive"`, `"wet"`, `"dry"`, `"decay"`,
-  `"attack"`, `"release"`, `"tune"`.
+  `"attack"`, `"release"`, `"tune"`, `"machine"`.
+- **`"machine"` is an *identity* param, not a setting** (ADR-041). It is a
+  stepped selector over a machine-host engine's variants, its overlay carries
+  `identity: true`, and it must be rejected as a p-lock target and as a
+  scene-morph destination. The engines also refuse to switch on a `ParamLock`
+  — they read the bank, not `get_param` — because the sequencer holds opaque
+  `(node_id, param_id)` locks and cannot know it has an identity param.
 - **`published_state()` push-down:** accepts `&mut Vec<(String, StateBusValue)>`,
   pushes into it. The old returning signature is forbidden (allocates per cycle).
 - **`deserialize()` AFTER `activate()`** for ParameterBank nodes. `activate()`

@@ -387,7 +387,28 @@ saved.
   range; a switch mid-note produces no sample discontinuity above the
   `discontinuity_lt` threshold (test-driver scenario).
 
-### MM-C4 — `FmEngine`: same, and BUG-037 dies structurally
+### MM-C4 — `FmEngine`: same, and BUG-037 dies structurally ✅ *(landed)*
+
+**#47 was worse than its issue recorded.** It named `ratio`/`index`/`attack`
+declared for machines that lack them and FmKick's unpaged `punch`. In the
+code, **`tune` was on no page for any machine** — all three declare it and no
+surface could reach it. MM-C4 guards both directions: no page may name an
+undeclared param, and no declared param may be unpaged.
+
+*Visible change on a shipped node,* recorded like MM-C3's HiHat one. Node 27
+(FM Bass) re-lays out: `ratio`/`index`/dead-placeholder/`drive`/`attack` at
+slots 0-4 becomes `tune`(0), `ratio`(1), `index`(2), gap, `drive`(4), gap,
+`attack`(6). Every control moves and two holes appear.
+
+*Slot policy differs between the two engines, deliberately.* FmEngine assigns
+per param; AnalogEngine packs. There, shared params are already at fixed
+slots and the rest are machine-exclusive, so packing collides nothing a
+performer could hold across a switch; here half the set is shared across some
+pair. Both keep the invariant that matters — **a shared param never moves.**
+
+**The ADR-035 baselines are not evidence for this commit.** They address only
+nodes 10 and 20, so nothing in them observes `FmEngine`. See the MM-C7
+prerequisite below; #155 tracks it.
 
 **Changes:** `crates/paraclete-nodes/src/fm_engine.rs` — as MM-C3. The
 verified conflicts:
@@ -475,6 +496,16 @@ lock.
 
 ### MM-C7 — The 64-sample sub-block loop *(pure refactor, no LFO)*
 
+> **Prerequisite (#155): an FM baseline must exist first.** This commit's
+> whole verification plan is "both ADR-035 baselines clean, and if one drifts
+> do **not** re-fingerprint it" — but it restructures `render_span` in *both*
+> engines, and the two baselines address only nodes 10 and 20. The FM half
+> would be refactored with no regression evidence at all. MM-C8's
+> `lfo_depth = 0` check has the same hole, and MM-C10 widens it to `Sampler`
+> and `FilterNode`, which nothing observes either. Adding a baseline for a
+> *new* scenario is fine; the no-re-fingerprint rule is about an existing one
+> that drifts.
+
 **Changes:** `analog_engine.rs:159` and `fm_engine.rs:157` — `render_span`
 chunks into `LFO_SUB_BLOCK` (64) sub-blocks per D2 and calls `process_*`
 per chunk. No LFO exists yet; params are simply re-read per sub-block.
@@ -529,19 +560,25 @@ BUG-037's successor**, so it lands here in three parts:
 2. **Overlay ids are unique within a variant.** `overlays` is a linear assoc
    list; duplicates are representable and precedence is undefined. Same shape
    as `PageRef::slot` being fiction until MM-C0 (design-process learning 9).
-3. **Shared ids agree on `name`, `unit` and `stepped` across machines.** The
+3. **Run it over every `ViewPlugin`, not just the machine hosts.** #156:
+   `Sampler` pages `loop` at SRC slot 4 while its cap-doc declares only 8
+   params, `loop` not among them — so it draws a *working, lockable* control
+   under a `param_{id}` placeholder, and `slice` is neither declared nor
+   paged. The defect class is not specific to machine hosts, and `Sampler`
+   is the proof; #47 was only its first instance.
+4. **Shared ids agree on `name`, `unit` and `stepped` across machines.** The
    union merge keeps the *first declarer's* non-range fields for a shared id
    and silently drops the rest. Consistent in `AnalogEngine` today (`tone` is
    Hz in all three, `decay` Seconds, `tune` Semitones) and therefore untested;
    MM-C4 runs the same merge over `FmEngine`'s wider conflict set, where a
    disagreement would show a param under the wrong unit with no diagnostic.
-4. **A param flagged `identity` in any variant is flagged in all of them.**
+5. **A param flagged `identity` in any variant is flagged in all of them.**
    `machine` exists on every machine of a host, so the flag has to be repeated
    per variant; miss one and lock rejection silently stops working *for that
    machine only* — "p-locking machine works on HiHat but not Kick", which no
    test catches by accident.
 
-Point 4 exists because the flag lives on the overlay per ADR-041 §0 A1. A
+Point 5 exists because the flag lives on the overlay per ADR-041 §0 A1. A
 `Rule`-level `identity_params` list would remove the hazard structurally
 rather than by assertion; that deviates from the ratified shape, so it is
 **not** taken without the user — but it is the better design if this
