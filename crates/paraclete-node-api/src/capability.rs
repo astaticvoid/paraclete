@@ -6,7 +6,18 @@ use crate::rule::Rule;
 // ── ParamUnit ─────────────────────────────────────────────────────────────────
 
 /// Units for parameter display.
-#[derive(Clone, Debug)]
+///
+/// `PartialEq`/`Eq` so a machine-host engine (ADR-041) can assert that a param
+/// id shared across its machines carries the same unit in each — the union
+/// parameter bank keeps the first declarer's descriptor and drops the rest, so
+/// a disagreement would render a param under the wrong unit with no
+/// diagnostic.
+///
+/// Equality is structural, so `Custom("Hz") != Hz` and
+/// `Custom("x") != CustomDynamic("x")`. Neither is currently reachable —
+/// `Custom` has no uses in-tree — but a third-party node mixing a built-in
+/// variant with an equivalent custom label will not compare equal.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ParamUnit {
     Generic,
     Hz,

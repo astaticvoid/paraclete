@@ -3,7 +3,8 @@ use std::collections::HashMap;
 
 use paraclete_node_api::{
     AffordanceHint, CapabilityDocument, DebugEventKind, EnvelopeGroup, Event, Node, PageRef,
-    ParamDescriptor, ParamUnit, ParameterBank, PortDescriptor, PortDirection, PortType,
+    MachineVariant, ParamDescriptor, ParamOverlay, ParamUnit, ParameterBank, PortDescriptor,
+    PortDirection, PortType,
     ProcessInput, ProcessOutput, Rule, StateBusValue, UmpMessage, ViewPlugin,
     midi::ChannelVoice2, CMD_TRIGGER,
 };
@@ -14,8 +15,58 @@ fn fp(name: &str) -> u32 { ParamDescriptor::id_for_name(name) }
 
 // ── Machine variant ───────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum FmMachine { Kick, Bell, Bass }
+
+impl FmMachine {
+    /// Declaration order, and therefore the `machine` param's value order.
+    /// **Append-only** — a saved project stores the numeric value, so
+    /// reordering silently re-points every stored `machine` at another engine.
+    pub const ALL: [FmMachine; 3] = [FmMachine::Kick, FmMachine::Bell, FmMachine::Bass];
+
+    pub fn value(self) -> u32 {
+        match self {
+            FmMachine::Kick => 0,
+            FmMachine::Bell => 1,
+            FmMachine::Bass => 2,
+        }
+    }
+
+    /// Out-of-range clamps to the last machine rather than panicking — this
+    /// reads an `f64` bank slot a malformed project could carry.
+    pub fn from_value(v: u32) -> Self {
+        *Self::ALL.get(v as usize).unwrap_or(&FmMachine::Bass)
+    }
+
+    pub fn doc_name(self) -> &'static str {
+        match self {
+            FmMachine::Kick => "FmKick",
+            FmMachine::Bell => "FmBell",
+            FmMachine::Bass => "FmBass",
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            FmMachine::Kick => "FM Kick",
+            FmMachine::Bell => "FM Bell",
+            FmMachine::Bass => "FM Bass",
+        }
+    }
+}
+
+/// MM §0 D1, as amended by MM-C3: ramp to silence, then swap. Bidirectional,
+/// because a cancelled or retargeted switch must return to unity continuously.
+const MACHINE_SWITCH_FADE_SECS: f32 = 0.005;
+
+/// See `AnalogEngine`'s copy — same contract, same reasoning.
+#[derive(Clone, Copy, Debug)]
+struct SwitchFade {
+    remaining: u32,
+    /// `Some` = fading out toward this machine; `None` = a cancelled switch
+    /// ramping back to unity, which swaps nothing.
+    target: Option<FmMachine>,
+}
 
 // ── FmEngine ──────────────────────────────────────────────────────────────────
 
@@ -46,6 +97,9 @@ pub struct FmEngine {
     /// Per-cycle ParamLock overrides, cleared each process() (ADR-019 —
     /// locks must never mutate the bank, or they bleed into unlocked steps).
     node_locks: Vec<(u32, f64)>,
+
+    /// In-flight gain ramp for a machine switch (MM §0 D1).
+    switch_fade: Option<SwitchFade>,
 
     render_l: Vec<f32>,
     render_r: Vec<f32>,
@@ -78,6 +132,7 @@ impl FmEngine {
             last_note:  36, // C2 — matches current_hz's initial value
             velocity_level: 1.0,
             node_locks: Vec::new(),
+            switch_fade: None,
             render_l:   Vec::new(),
             render_r:   Vec::new(),
             pending_initial_params: HashMap::new(),
@@ -101,36 +156,183 @@ impl FmEngine {
         self.bank.get(param_id) as f32
     }
 
-    fn build_doc(machine: FmMachine) -> CapabilityDocument {
-        let (name, params) = match machine {
-            FmMachine::Kick => ("FmKick", vec![
+    /// The params one machine actually reads. **Not** what the bank stores —
+    /// see `union_params`.
+    fn machine_params(machine: FmMachine) -> Vec<ParamDescriptor> {
+        match machine {
+            FmMachine::Kick => vec![
                 ParamDescriptor { id: fp("tune"),     name: "tune".into(),     min: -24.0, max: 24.0, default: 0.0, stepped: false, unit: ParamUnit::Semitones, display: None },
                 ParamDescriptor { id: fp("punch"),    name: "punch".into(),    min: 0.0,   max: 1.0,  default: 0.7, stepped: false, unit: ParamUnit::Generic,   display: None },
                 ParamDescriptor { id: fp("decay"),    name: "decay".into(),    min: 0.01,  max: 2.0,  default: 0.5, stepped: false, unit: ParamUnit::Seconds,   display: None },
                 ParamDescriptor { id: fp("feedback"), name: "feedback".into(), min: 0.0,   max: 1.0,  default: 0.2, stepped: false, unit: ParamUnit::Generic,   display: None },
                 ParamDescriptor { id: fp("drive"),    name: "drive".into(),    min: 0.0,   max: 1.0,  default: 0.0, stepped: false, unit: ParamUnit::Generic,   display: None },
-            ]),
-            FmMachine::Bell => ("FmBell", vec![
+            ],
+            FmMachine::Bell => vec![
                 ParamDescriptor { id: fp("tune"),     name: "tune".into(),     min: -24.0, max: 24.0, default: 0.0,  stepped: false, unit: ParamUnit::Semitones, display: None },
                 ParamDescriptor { id: fp("ratio"),    name: "ratio".into(),    min: 0.5,   max: 8.0,  default: 3.5,  stepped: false, unit: ParamUnit::Generic,   display: None },
                 ParamDescriptor { id: fp("index"),    name: "index".into(),    min: 0.0,   max: 8.0,  default: 2.0,  stepped: false, unit: ParamUnit::Generic,   display: None },
                 ParamDescriptor { id: fp("decay"),    name: "decay".into(),    min: 0.05,  max: 8.0,  default: 2.0,  stepped: false, unit: ParamUnit::Seconds,   display: None },
                 ParamDescriptor { id: fp("feedback"), name: "feedback".into(), min: 0.0,   max: 0.5,  default: 0.1,  stepped: false, unit: ParamUnit::Generic,   display: None },
-            ]),
-            FmMachine::Bass => ("FmBass", vec![
+            ],
+            FmMachine::Bass => vec![
                 ParamDescriptor { id: fp("tune"),  name: "tune".into(),  min: -24.0, max: 24.0, default: 0.0,  stepped: false, unit: ParamUnit::Semitones, display: None },
                 ParamDescriptor { id: fp("ratio"), name: "ratio".into(), min: 0.5,   max: 4.0,  default: 1.0,  stepped: false, unit: ParamUnit::Generic,   display: None },
                 ParamDescriptor { id: fp("index"), name: "index".into(), min: 0.0,   max: 8.0,  default: 2.0,  stepped: false, unit: ParamUnit::Generic,   display: None },
                 ParamDescriptor { id: fp("attack"),name: "attack".into(),min: 0.001, max: 0.5,  default: 0.01, stepped: false, unit: ParamUnit::Seconds,   display: None },
                 ParamDescriptor { id: fp("decay"), name: "decay".into(), min: 0.05,  max: 4.0,  default: 0.5,  stepped: false, unit: ParamUnit::Seconds,   display: None },
                 ParamDescriptor { id: fp("drive"), name: "drive".into(), min: 0.0,   max: 1.0,  default: 0.0,  stepped: false, unit: ParamUnit::Generic,   display: None },
-            ]),
-        };
-        CapabilityDocument {
-            name: name.into(), vendor: "Paraclete".into(), version: (0, 6, 0),
-            ports: vec![], params, extensions: vec!["paraclete.instrument".into()],
-    view: None,
+            ],
         }
+    }
+
+    /// The bank's parameter set: **every machine's params merged at the widest
+    /// envelope**, plus `machine` itself (ADR-041 §0 A1).
+    ///
+    /// `active` picks each param's *default* and nothing else. Ranges are the
+    /// union unconditionally, for the lifetime of the node — narrowing them to
+    /// the active machine truncates storage on load, which is the phase's one
+    /// unrecoverable mistake (MM §3.4). Per-machine ranges live in
+    /// `MachineVariant::overlays`; this engine never sees them.
+    ///
+    /// FmEngine is where the widest-envelope rule actually bites: `decay`
+    /// spans 0.01-2.0 / 0.05-8.0 / 0.05-4.0 across the three machines and
+    /// `feedback` 0-1.0 / 0-0.5, so a Bell patch's 6-second decay only
+    /// survives selecting Kick and coming back because the bank holds the
+    /// union.
+    fn union_params(active: FmMachine) -> Vec<ParamDescriptor> {
+        let mut out: Vec<ParamDescriptor> = vec![ParamDescriptor {
+            id: fp("machine"),
+            name: "machine".into(),
+            min: 0.0,
+            max: (FmMachine::ALL.len() - 1) as f64,
+            default: active.value() as f64,
+            stepped: true,
+            unit: ParamUnit::Generic,
+            display: None,
+        }];
+
+        for m in FmMachine::ALL {
+            for p in Self::machine_params(m) {
+                match out.iter_mut().find(|q| q.id == p.id) {
+                    Some(q) => {
+                        q.min = q.min.min(p.min);
+                        q.max = q.max.max(p.max);
+                        if m == active {
+                            q.default = p.default;
+                        }
+                    }
+                    None => out.push(p),
+                }
+            }
+        }
+        out
+    }
+
+    fn build_doc(machine: FmMachine) -> CapabilityDocument {
+        CapabilityDocument {
+            // The active machine's name; touches no range.
+            name: machine.doc_name().into(),
+            vendor: "Paraclete".into(),
+            version: (0, 6, 0),
+            ports: vec![],
+            params: Self::union_params(machine),
+            extensions: vec!["paraclete.instrument".into()],
+            view: None,
+        }
+    }
+
+    /// Has the `machine` param been moved? Called at the block boundary.
+    ///
+    /// Reads the **bank**, not `get_param` — a `ParamLock` on `machine` must
+    /// never switch machines mid-step (ADR-041 decision 6).
+    fn poll_machine_param(&mut self) {
+        let target = FmMachine::from_value(self.bank.get(fp("machine")).max(0.0) as u32);
+        let total = self.fade_len();
+
+        if target == self.machine {
+            if let Some(f) = self.switch_fade {
+                if f.target.is_some() {
+                    self.switch_fade = Some(SwitchFade {
+                        remaining: total.saturating_sub(f.remaining).max(1),
+                        target: None,
+                    });
+                }
+            }
+            return;
+        }
+
+        if self.switch_fade.map(|f| f.target) == Some(Some(target)) {
+            return;
+        }
+        if !self.active {
+            self.apply_machine_switch(target);
+            self.switch_fade = None;
+            return;
+        }
+
+        let remaining = match self.switch_fade {
+            Some(f) if f.target.is_some() => f.remaining.min(total),
+            Some(f) => total.saturating_sub(f.remaining).max(1),
+            None => total,
+        };
+        self.switch_fade = Some(SwitchFade { remaining, target: Some(target) });
+    }
+
+    fn fade_len(&self) -> u32 {
+        (MACHINE_SWITCH_FADE_SECS * self.sample_rate).max(1.0) as u32
+    }
+
+    /// Ramp the rendered block, and once a fade-out reaches silence, swap.
+    fn apply_switch_fade(&mut self, block_size: usize) {
+        let Some(fade) = self.switch_fade else {
+            return;
+        };
+        let total = self.fade_len() as f32;
+        let fading_out = fade.target.is_some();
+        let mut left = fade.remaining;
+
+        for i in 0..block_size.min(self.render_l.len()) {
+            if left == 0 {
+                if fading_out {
+                    self.render_l[i] = 0.0;
+                    self.render_r[i] = 0.0;
+                }
+                continue;
+            }
+            let g = if fading_out {
+                left as f32 / total
+            } else {
+                1.0 - (left as f32 / total)
+            };
+            self.render_l[i] *= g;
+            self.render_r[i] *= g;
+            left -= 1;
+        }
+
+        if left == 0 {
+            if let Some(target) = fade.target {
+                self.apply_machine_switch(target);
+            }
+            self.switch_fade = None;
+        } else {
+            self.switch_fade = Some(SwitchFade { remaining: left, target: fade.target });
+        }
+    }
+
+    /// ADR-041 decision 4: voice state resets on switch.
+    ///
+    /// **The bank is not rebuilt** — that is `activate()`'s job and it resets
+    /// every slot to defaults, the same cross-machine data loss the union bank
+    /// exists to prevent, by another route (MM §3.5).
+    fn apply_machine_switch(&mut self, target: FmMachine) {
+        self.machine = target;
+        self.carrier_phase = 0.0;
+        self.modulator_phase = 0.0;
+        self.prev_mod_out = 0.0;
+        self.pitch_env = AdState::new();
+        self.mod_env = AdState::new();
+        self.amp_env = AdState::new();
+        self.active = false;
     }
 
     fn retrigger(&mut self, note: u8, velocity: f32) {
@@ -273,25 +475,106 @@ impl FmEngine {
     }
 }
 
+impl FmEngine {
+    /// One machine's page placements — **this is the #47 (BUG-037) fix**.
+    ///
+    /// The single machine-invariant page set this replaces named `ratio`,
+    /// `index`, `feedback`, `drive` and `attack` for every machine, while
+    /// FmKick declares none of `ratio`/`index`/`attack`, FmBell none of
+    /// `drive`/`attack`, and FmBass no `feedback`. Composite assembly degraded
+    /// each unmatched ref to a `param_{id}` placeholder, so FmBass — node 27
+    /// in the shipped instrument — drew a dead control at SRC slot 2. And
+    /// `tune`, which all three declare, appeared on **no** page at all, so it
+    /// was unreachable from any surface.
+    ///
+    /// Slots are assigned per *param*, not packed per machine, so a param
+    /// keeps the same encoder on every machine that declares it. Machines
+    /// that do not declare one leave its column empty — MM-C0's slot honouring
+    /// is what makes that render correctly.
+    ///
+    /// **`AnalogEngine` packs instead, and that divergence is deliberate.**
+    /// There, every param two machines share (`tune`, `tone`, `decay`) is
+    /// already at a fixed slot, and the rest are machine-*exclusive*
+    /// (`punch`/`snap`, `drive`/`noise`), so packing them collides nothing a
+    /// performer could be holding across a switch. Here half the set is shared
+    /// across *some* pair — `feedback` by Kick and Bell, `drive` by Kick and
+    /// Bass, `ratio`/`index` by Bell and Bass — so packing would move a
+    /// control that exists on both sides of the switch. The invariant both
+    /// engines keep is the one that matters: **a shared param never moves.**
+    fn machine_page_refs(machine: FmMachine) -> Vec<(u32, PageRef)> {
+        const SRC: &str = "SRC";
+        let src = |name: &str, slot: u8| {
+            (fp(name), PageRef { page: Cow::Borrowed(SRC), slot })
+        };
+        let mut refs = vec![(fp("decay"), PageRef { page: Cow::Borrowed("AMP"), slot: 0 })];
+        refs.push(src("tune", 0));
+        match machine {
+            FmMachine::Kick => {
+                refs.push(src("feedback", 3));
+                refs.push(src("drive", 4));
+                refs.push(src("punch", 5));
+            }
+            FmMachine::Bell => {
+                refs.push(src("ratio", 1));
+                refs.push(src("index", 2));
+                refs.push(src("feedback", 3));
+            }
+            FmMachine::Bass => {
+                refs.push(src("ratio", 1));
+                refs.push(src("index", 2));
+                refs.push(src("drive", 4));
+                refs.push(src("attack", 6));
+            }
+        }
+        refs
+    }
+
+    /// This machine's per-param ranges, for a surface to display and clamp
+    /// against. The bank stores the union and is never narrowed to these.
+    fn machine_overlays(machine: FmMachine) -> Vec<(u32, ParamOverlay)> {
+        let mut out: Vec<(u32, ParamOverlay)> = vec![(
+            fp("machine"),
+            ParamOverlay {
+                min: 0.0,
+                max: (FmMachine::ALL.len() - 1) as f64,
+                default: machine.value() as f64,
+                identity: true,
+            },
+        )];
+        for p in Self::machine_params(machine) {
+            out.push((
+                p.id,
+                ParamOverlay { min: p.min, max: p.max, default: p.default, identity: false },
+            ));
+        }
+        out
+    }
+
+    fn machine_variants() -> Vec<MachineVariant> {
+        FmMachine::ALL
+            .iter()
+            .map(|&m| MachineVariant {
+                value: m.value(),
+                name: Cow::Borrowed(m.doc_name()),
+                page_groups: Cow::Owned(vec![Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
+                pages: Cow::Owned(Self::machine_page_refs(m)),
+                overlays: Cow::Owned(Self::machine_overlays(m)),
+            })
+            .collect()
+    }
+}
+
 impl ViewPlugin for FmEngine {
     fn to_rule(&self, _node_id: u64, _sub_nodes: &[(u64, &dyn ViewPlugin)]) -> Rule {
-        let display_name = match self.machine {
-            FmMachine::Kick => "FM Kick",
-            FmMachine::Bell => "FM Bell",
-            FmMachine::Bass => "FM Bass",
-        };
         let decay_id = fp("decay");
         Rule {
-            name: Cow::Borrowed(display_name),
+            name: Cow::Borrowed(self.machine.display_name()),
             page_groups: Cow::Owned(vec![Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
-            param_pages: Cow::Owned(vec![
-                (fp("ratio"),    PageRef { page: Cow::Borrowed("SRC"), slot: 0 }),
-                (fp("index"),    PageRef { page: Cow::Borrowed("SRC"), slot: 1 }),
-                (fp("feedback"), PageRef { page: Cow::Borrowed("SRC"), slot: 2 }),
-                (fp("drive"),    PageRef { page: Cow::Borrowed("SRC"), slot: 3 }),
-                (fp("attack"),   PageRef { page: Cow::Borrowed("SRC"), slot: 4 }),
-                (decay_id,       PageRef { page: Cow::Borrowed("AMP"), slot: 0 }),
-            ]),
+            // Base fields stay the ACTIVE machine's, so a consumer that
+            // ignores `variants` renders what it did before (ADR-041
+            // decision 3). MM-C5 teaches composite assembly to prefer the
+            // variant.
+            param_pages: Cow::Owned(Self::machine_page_refs(self.machine)),
             macros: Cow::Borrowed(&[]),
             affordances: Cow::Owned(vec![
                 (decay_id, AffordanceHint::EnvelopeCurve { group_idx: 0 }),
@@ -304,7 +587,7 @@ impl ViewPlugin for FmEngine {
             routing: Cow::Borrowed(&[]),
             diagram: None,
             view_overrides: Cow::Borrowed(&[]),
-            variants: Cow::Borrowed(&[]),
+            variants: Cow::Owned(Self::machine_variants()),
         }
     }
 }
@@ -355,10 +638,13 @@ impl Node for FmEngine {
         self.active     = false;
         self.last_note  = 36;
         self.velocity_level = 1.0;
+        self.switch_fade = None;
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
         self.bank.handle_commands(input.commands);
+        // Block boundary: the one place a machine switch may begin.
+        self.poll_machine_param();
 
         let block_size = input.block_size;
         for s in &mut self.render_l { *s = 0.0; }
@@ -418,6 +704,7 @@ impl Node for FmEngine {
             }
         }
         self.render_span(cursor, block_size);
+        self.apply_switch_fade(block_size);
 
         if let Some(buf) = output.audio_outputs.first_mut() {
             if buf.channels() >= 2 {
@@ -500,6 +787,358 @@ mod tests {
 
     fn rms(v: &[f32]) -> f32 {
         (v.iter().map(|&x| x*x).sum::<f32>() / v.len() as f32).sqrt()
+    }
+
+    // ── MM-C4: union bank, machine identity, and the #47 page fix ─────────
+
+    /// **The phase's load-bearing invariant** (MM §3.4), and FmEngine is where
+    /// it actually bites: `decay` spans three different ranges across the
+    /// machines and `feedback` two, so a narrowed bank would truncate a Bell
+    /// patch's long decay the moment Kick was selected.
+    #[test]
+    fn union_bank_covers_every_variant_overlay() {
+        for constructed in FmMachine::ALL {
+            let doc = FmEngine::build_doc(constructed);
+            for variant in FmEngine::machine_variants() {
+                for (pid, overlay) in variant.overlays.iter() {
+                    let slot = doc.params.iter().find(|p| p.id == *pid).unwrap_or_else(|| {
+                        panic!("variant {} declares param {pid} the union doc lacks", variant.name)
+                    });
+                    assert!(
+                        slot.min <= overlay.min && slot.max >= overlay.max,
+                        "bank range [{}, {}] for param {pid} does not cover {}'s overlay \
+                         [{}, {}] (constructed as {constructed:?}) — narrowing truncates \
+                         stored values on load",
+                        slot.min, slot.max, variant.name, overlay.min, overlay.max
+                    );
+                }
+            }
+        }
+    }
+
+    /// The conflict this engine exists to demonstrate: Bell's `decay` reaches
+    /// 8 s, Kick's stops at 2 s. A Kick-constructed engine must still store 8.
+    #[test]
+    fn a_value_legal_on_another_machine_survives_loading_under_this_one() {
+        let bell_decay_max = FmEngine::machine_params(FmMachine::Bell)
+            .into_iter()
+            .find(|p| p.id == fp("decay"))
+            .expect("Bell declares decay")
+            .max;
+        let kick_decay_max = FmEngine::machine_params(FmMachine::Kick)
+            .into_iter()
+            .find(|p| p.id == fp("decay"))
+            .expect("Kick declares decay")
+            .max;
+        assert!(
+            bell_decay_max > kick_decay_max,
+            "fixture assumption: Bell's decay range must exceed Kick's"
+        );
+
+        let mut eng = FmEngine::kick();
+        let mut initial = HashMap::new();
+        initial.insert("decay".to_string(), bell_decay_max);
+        eng.set_initial_params(&initial);
+        eng.activate(44100.0, 512);
+
+        assert_eq!(
+            eng.bank.get(fp("decay")),
+            bell_decay_max,
+            "a Kick-constructed engine truncated a Bell-legal decay — the bank \
+             was narrowed to the active machine, destroying the value on load"
+        );
+    }
+
+    #[test]
+    fn machine_round_trip_preserves_every_param() {
+        let mut eng = FmEngine::kick();
+        eng.activate(44100.0, 512);
+
+        let doc = FmEngine::build_doc(FmMachine::Kick);
+        let mut expected: Vec<(u32, f64)> = Vec::new();
+        for p in doc.params.iter().filter(|p| p.id != fp("machine")) {
+            let v = p.min + (p.max - p.min) * 0.73;
+            eng.bank.set(p.id, v);
+            expected.push((p.id, v));
+        }
+
+        for target in [FmMachine::Bell, FmMachine::Bass, FmMachine::Kick] {
+            eng.bank.set(fp("machine"), target.value() as f64);
+            eng.poll_machine_param();
+            assert_eq!(eng.machine, target, "switch should apply while silent");
+        }
+
+        for (pid, want) in expected {
+            assert_eq!(eng.bank.get(pid), want, "param {pid} changed across a round trip");
+        }
+    }
+
+    #[test]
+    fn union_doc_has_no_duplicate_ids() {
+        for m in FmMachine::ALL {
+            let doc = FmEngine::build_doc(m);
+            let mut ids: Vec<u32> = doc.params.iter().map(|p| p.id).collect();
+            let before = ids.len();
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(ids.len(), before, "duplicate param id in {m:?}'s union doc");
+        }
+    }
+
+    /// MM-C8 assertion part 3, brought forward because this is the engine with
+    /// the wide conflict set. The union merge keeps the *first declarer's*
+    /// name/unit/stepped for a shared id and silently drops the rest, so a
+    /// disagreement would show a param under the wrong unit with no diagnostic.
+    #[test]
+    fn shared_param_ids_agree_on_name_unit_and_stepped() {
+        let mut seen: HashMap<u32, (String, ParamUnit, bool)> = HashMap::new();
+        for m in FmMachine::ALL {
+            for p in FmEngine::machine_params(m) {
+                let key = (p.name.as_str().to_string(), p.unit, p.stepped);
+                match seen.get(&p.id) {
+                    Some(first) => assert_eq!(
+                        *first, key,
+                        "param {} ({}) disagrees across machines: {first:?} vs {key:?} — \
+                         the union merge would silently keep the first",
+                        p.id,
+                        p.name.as_str()
+                    ),
+                    None => {
+                        seen.insert(p.id, key);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn machine_param_is_stepped_over_the_machine_count() {
+        let doc = FmEngine::build_doc(FmMachine::Kick);
+        let m = doc.params.iter().find(|p| p.id == fp("machine")).expect("machine param");
+        assert!(m.stepped);
+        assert_eq!((m.min, m.max), (0.0, 2.0));
+    }
+
+    #[test]
+    fn every_variant_flags_machine_as_identity() {
+        for v in FmEngine::machine_variants() {
+            let (_, o) = v
+                .overlays
+                .iter()
+                .find(|(pid, _)| *pid == fp("machine"))
+                .unwrap_or_else(|| panic!("variant {} has no machine overlay", v.name));
+            assert!(o.identity, "variant {} does not flag machine as identity", v.name);
+        }
+    }
+
+    /// **This is #47 (BUG-037).** Before MM-C4 the single machine-invariant
+    /// page set named `ratio`/`index`/`attack` for FmKick, which declares none
+    /// of them; `drive`/`attack` for FmBell; `feedback` for FmBass — the last
+    /// of which is node 27 in the shipped instrument, drawing a dead control.
+    #[test]
+    fn every_variant_page_ref_resolves_in_that_variants_params() {
+        for m in FmMachine::ALL {
+            let mut declared: Vec<u32> =
+                FmEngine::machine_params(m).iter().map(|p| p.id).collect();
+            declared.push(fp("machine")); // union-level, MM-C6 pages it
+            for (pid, page_ref) in FmEngine::machine_page_refs(m) {
+                assert!(
+                    declared.contains(&pid),
+                    "{m:?}'s {} page slot {} names param {pid}, which {m:?} does not declare",
+                    page_ref.page, page_ref.slot
+                );
+            }
+        }
+    }
+
+    /// The other half of #47: every param a machine declares must be reachable
+    /// from some page. `punch` (FmKick) and `tune` (all three) were on no page
+    /// at all, so no surface could edit them.
+    #[test]
+    fn every_declared_param_appears_on_some_page() {
+        for m in FmMachine::ALL {
+            let paged: Vec<u32> = FmEngine::machine_page_refs(m).iter().map(|(id, _)| *id).collect();
+            for p in FmEngine::machine_params(m) {
+                assert!(
+                    paged.contains(&p.id),
+                    "{m:?} declares {} but no page references it — unreachable from any surface",
+                    p.name.as_str()
+                );
+            }
+        }
+    }
+
+    /// A param keeps the same encoder across every machine that has it, so
+    /// switching machine does not shuffle controls under the performer.
+    #[test]
+    fn shared_params_keep_the_same_slot_across_machines() {
+        let mut slot_of: HashMap<u32, (String, u8)> = HashMap::new();
+        for m in FmMachine::ALL {
+            for (pid, r) in FmEngine::machine_page_refs(m) {
+                let here = (r.page.as_ref().to_string(), r.slot);
+                match slot_of.get(&pid) {
+                    Some(first) => assert_eq!(
+                        *first, here,
+                        "param {pid} sits at {first:?} on one machine and {here:?} on {m:?}"
+                    ),
+                    None => {
+                        slot_of.insert(pid, here);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn switch_while_silent_is_immediate() {
+        let mut eng = FmEngine::kick();
+        eng.activate(44100.0, 512);
+        assert!(!eng.active);
+        eng.bank.set(fp("machine"), FmMachine::Bass.value() as f64);
+        eng.poll_machine_param();
+        assert_eq!(eng.machine, FmMachine::Bass, "nothing to declick");
+        assert!(eng.switch_fade.is_none());
+    }
+
+    #[test]
+    fn switch_while_sounding_fades_out_before_swapping() {
+        let mut eng = FmEngine::kick();
+        eng.activate(44100.0, 512);
+        let _ = run_fm(&mut eng, &[make_note_on(36)]);
+        assert!(eng.active, "voice should be sounding");
+
+        eng.bank.set(fp("machine"), FmMachine::Bell.value() as f64);
+        eng.poll_machine_param();
+        assert_eq!(eng.machine, FmMachine::Kick, "must fade first, not swap instantly");
+
+        let out = run_fm(&mut eng, &[]);
+        assert_eq!(eng.machine, FmMachine::Bell, "swap after the fade");
+        assert!(!eng.active, "voice state resets on switch");
+
+        // Envelope, not per-sample slope: FM at a high modulation index has
+        // legitimate near-Nyquist content, so adjacent samples can differ by
+        // more than the peak and a step bound says nothing. What a fade must
+        // show is a *declining* envelope followed by exact silence.
+        let fade = eng.fade_len() as usize;
+        assert!(fade * 2 < out.len(), "fixture: the fade must fit inside a block");
+        let rms = |w: &[f32]| (w.iter().map(|s| s * s).sum::<f32>() / w.len() as f32).sqrt();
+
+        let first = rms(&out[..fade / 2]);
+        let second = rms(&out[fade / 2..fade]);
+        assert!(first > 0.001, "fixture: the fading voice must be audible");
+        // 0.6, not merely `second < first`. A hard cut at the fade boundary —
+        // no ramp at all — still yields a ratio of ~0.96 here, because the
+        // kick's own amp decay falls a few percent over 5 ms; the real ramp
+        // gives ~0.36. Bare monotonicity passes the mutant.
+        assert!(
+            second < first * 0.6,
+            "envelope declined only {:.3}x across the fade ({first:.4} then \
+             {second:.4}) — that is the voice's own decay, not a ramp",
+            second / first
+        );
+        assert!(
+            out[fade..].iter().all(|s| *s == 0.0),
+            "everything after the fade must be exactly silent, ready for the swap"
+        );
+    }
+
+    /// The cancel path (MM §0 D1). Copied into this engine from AnalogEngine
+    /// and initially shipped unguarded here — a mutation replacing the whole
+    /// branch with `switch_fade = None` passed the entire suite. ~35 lines of
+    /// the trickiest logic in the commit, unguarded in its second copy.
+    #[test]
+    fn cancelling_a_switch_ramps_back_instead_of_snapping() {
+        let mut eng = FmEngine::kick();
+        // 192 kHz makes the 5 ms fade 960 samples — longer than the 512-sample
+        // block, which is the only condition under which a cancel can land
+        // mid-ramp at all.
+        eng.activate(192_000.0, 512);
+        let _ = run_fm(&mut eng, &[make_note_on(36)]);
+
+        eng.bank.set(fp("machine"), FmMachine::Bell.value() as f64);
+        eng.poll_machine_param();
+        assert_eq!(
+            eng.switch_fade.expect("fade armed").target,
+            Some(FmMachine::Bell)
+        );
+
+        eng.bank.set(fp("machine"), FmMachine::Kick.value() as f64);
+        eng.poll_machine_param();
+        let cancelling = eng.switch_fade.expect("a cancel must still ramp");
+        assert_eq!(
+            cancelling.target, None,
+            "a cancelled switch ramps back to unity and swaps nothing"
+        );
+        assert_eq!(eng.machine, FmMachine::Kick, "no swap happened");
+    }
+
+    /// The retarget path. A mutation taking a fresh full-length fade here also
+    /// passed the whole suite before this test existed.
+    #[test]
+    fn retargeting_mid_fade_keeps_the_gain_it_reached() {
+        let mut eng = FmEngine::kick();
+        eng.activate(192_000.0, 512);
+        let _ = run_fm(&mut eng, &[make_note_on(36)]);
+
+        eng.bank.set(fp("machine"), FmMachine::Bell.value() as f64);
+        eng.poll_machine_param();
+        let _ = run_fm(&mut eng, &[]); // burn part of the fade
+        let mid = eng.switch_fade.expect("still fading").remaining;
+        assert!(mid < eng.fade_len(), "fixture: some fade must have elapsed");
+
+        eng.bank.set(fp("machine"), FmMachine::Bass.value() as f64);
+        eng.poll_machine_param();
+        let after = eng.switch_fade.expect("still fading");
+        assert_eq!(after.target, Some(FmMachine::Bass));
+        assert!(
+            after.remaining <= mid,
+            "retarget restarted the fade ({} > {mid}), stepping the gain back \
+             to unity",
+            after.remaining
+        );
+    }
+
+    /// Two params of one machine on one slot means one silently covers the
+    /// other. MM-C0's duplicate-slot `debug_assert` lives in composite
+    /// assembly, which no engine unit test reaches, and MM-C8 part 2 checks
+    /// *overlay* id uniqueness — a different thing. This commit hand-maintains
+    /// a 7-column table across three machines, so the guard belongs next to it.
+    #[test]
+    fn no_machine_puts_two_params_on_one_slot() {
+        for m in FmMachine::ALL {
+            let mut seen: Vec<(String, u8)> = Vec::new();
+            for (pid, r) in FmEngine::machine_page_refs(m) {
+                let key = (r.page.as_ref().to_string(), r.slot);
+                assert!(
+                    !seen.contains(&key),
+                    "{m:?} puts a second param ({pid}) on {} slot {} — one \
+                     would silently cover the other",
+                    r.page,
+                    r.slot
+                );
+                seen.push(key);
+            }
+        }
+    }
+
+    #[test]
+    fn a_param_lock_on_machine_does_not_switch() {
+        let mut eng = FmEngine::kick();
+        eng.activate(44100.0, 512);
+        eng.set_node_id(27);
+        let lock = TimedEvent {
+            sample_offset: 0,
+            event: Event::ParamLock(ParamLockEvent {
+                node_id: 27,
+                param_id: fp("machine"),
+                value: FmMachine::Bass.value() as f64,
+            }),
+        };
+        for _ in 0..3 {
+            let _ = run_fm(&mut eng, std::slice::from_ref(&lock));
+            assert_eq!(eng.machine, FmMachine::Kick, "a p-lock must never switch machines");
+        }
+        assert!(eng.switch_fade.is_none(), "and must not even arm a fade");
     }
 
     #[test]
