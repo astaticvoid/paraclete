@@ -57,6 +57,38 @@ cargo c   # = check --workspace
 cargo cl  # = clippy --workspace
 ```
 
+**Clippy is judged against a baseline, not against zero.** The workspace
+carries pre-existing warnings. "Clean on touched crates" means *no new* ones:
+capture `cargo clippy --workspace --all-targets` at HEAD, capture it again
+with the change, and diff. Warnings only re-emit when a crate recompiles, so
+`touch` the files you changed before the second run or the comparison lies.
+
+### Mutation testing — the house standard for "is this test load-bearing?"
+
+Tests here are routinely mutation-checked before being trusted: apply one
+deliberate defect, confirm a *named* test fails, revert. Several commits have
+found tests that passed on obviously broken code (MM-C4 found three; MM-C6
+found a claim that lived only in a comment). Report which specific test killed
+each mutant — "the suite is green" is not the claim being made.
+
+Three ways the harness silently lies. All three have happened:
+
+1. **Restoring with `cp`/`mv` gives the file the backup's older mtime.** Cargo
+   compares mtimes, decides the crate is unchanged, and reruns the **mutant's**
+   binary. A green run afterwards proves nothing. **`touch` after every write
+   *and* every restore.**
+2. **A mutant can hang instead of failing.** An iterator that stops advancing
+   makes a test collect forever, and the run stalls rather than reporting.
+   Wrap every `cargo test` / `cargo run` in `timeout`; treat exit 124 as a
+   *killed* mutant.
+3. **`cargo test` prints `error: test failed, to rerun pass ...` on an ordinary
+   assertion failure.** A `grep -E "^error"` compile-check therefore misreads
+   killed mutants as "did not compile". Match `^error\[|could not compile`.
+
+A mutant killed by **no unit test but caught by an ADR-035 baseline** is a
+finding worth writing down, not a gap to paper over — see the `analog_machines`
+case in `design/phases/mm-machine-and-mod.md` (MM-C7).
+
 ## Logging
 
 `env_logger` is initialized at the top of `main()`.  All terminal output must go
@@ -248,6 +280,25 @@ timeout 2 bash -c 'echo >/dev/tcp/127.0.0.1/7274' && echo "up" || echo "down"
 # (emulator will print TUI grid to stdout but app won't crash)
 ```
 
+### Inspecting the Antiphon wire from an agent
+
+**The WebSocket port is the HTTP port + 1.** The app prints only the HTTP URL
+(`http://host:7274/`); clients derive the WS port themselves
+(`web/packages/app/src/app.tsx`, `wsUrl()`). Connecting to 7274 gets an
+HTTP 200 and a failed upgrade, which reads like a broken handshake.
+
+There is no Python WebSocket library in this environment (`websockets` and
+`websocket-client` are both absent) and adding one is not worth it — a ~60
+line raw RFC 6455 client is enough to drive `hello` + `get_view_meta` and dump
+what the server actually sends. Client frames must be masked; server frames
+are not. Use this to check a protocol change against the **running graph**
+rather than only against fixtures: MM-C5 was verified this way, and it is how
+"no shipped node declares a TRIG page" got established as fact rather than
+assumption.
+
+Prefer it over reading `protocol.rs` alone whenever a change adds or
+populates a wire field — the mapper and the assembler can each look right
+while disagreeing.
 
 ## Architecture: five-layer model
 
@@ -437,6 +488,37 @@ files), checks conformance to ADRs, layer boundaries, audio-thread rules,
 naming conventions, and test coverage, and returns findings. Do not skip this
 step — it is the quality gate between implementation pushes.
 
+#### Review subagents: two rules learned the hard way
+
+**1. Forbid tree-mutating git explicitly. "Do not make any edits" is not
+enough.** On 2026-07-30 a review agent given exactly that ran `git stash`
+(plus two `git reset`) to diff against HEAD and **wiped 11 files** of
+uncommitted work while the parent was still editing. "Don't edit" reads as
+"don't use Edit/Write"; git plumbing does not register as editing, and
+stashing is the obvious way to compare against HEAD — so the failure is
+likely, not exotic. Put this in the prompt verbatim:
+
+> Do not run any git command that mutates the working tree or index — no
+> stash, reset, checkout, clean, restore, or add. Read with `git diff` /
+> `git show` only. To compare against HEAD use `git show HEAD:<path>`.
+
+Prefer a worktree-isolated agent when the reviewer genuinely needs to build
+both sides; that makes the hazard structurally impossible.
+
+*Recovery, if it happens:* the work is not lost. `git stash list` shows it,
+`git stash show --stat stash@{0}` confirms the file set. Reset any file you
+edited *after* the stash, `git stash pop`, then re-apply that edit. The tell
+is a "file was modified, either by the user or by a linter" notice for a file
+you did not touch, plus a `git status` suddenly much shorter than it should
+be — investigate git state, do not assume the user changed something.
+
+**2. Give the fresh agent real context.** It has zero conversation history.
+Name the commit under review, the spec/ADR sections that bind it (including
+post-ratification amendments), the exact files, what changed and why, what to
+check specifically, and how to run the tests and clippy itself. Terse "review
+this diff" prompts to fresh-context agents produce shallow reviews; detailed
+ones have caught a real defect in nearly every commit they have gated.
+
 **Before closing a session**, the agent must report any untracked files,
 uncommitted changes, or stale trackers. The working tree must be either clean
 or explicitly accounted for — never silent about dirt.
@@ -510,7 +592,24 @@ sweep); do trivial single actions inline.
   introduction, data-model restructures, post-commit code review passes.
 - **Defer to the user** (with Opus, not a higher tier): protocol freezes; any
   deviation from a spec contract; any new ADR; re-ordering a phase's commits
-  after a paired session.
+  after a paired session; **anything that changes what a gesture the performer
+  has already learned now does** — a new page ahead of the existing ones, a
+  remapped key, a changed default. Headless agents cannot judge those, and a
+  paired session is cheap next to relearning muscle memory.
+
+### A deferred decision blocks its item, not its commit
+
+When one part of a commit needs the user and the rest does not, **land the
+rest**. Do everything independent of the answer, then say plainly which item
+is outstanding, why, and what the options are — in the commit message *and* in
+the phase spec, since the next agent reads the spec and not your session.
+
+MM-C6 is the worked example: 3 of its 4 items shipped (`a9996c1`) while item 2
+— where machine-select is declared, which shifts every page index — waits for
+a session. MM-C7 then landed *ahead* of it, out of spec order, because it had
+no dependency on the answer. Commit order in a phase spec is a plan, not a
+constraint; when you depart from it, say so at the section heading so the tick
+does not read as "skipped".
 
 ## Guardrails (all tiers)
 
@@ -519,6 +618,29 @@ sweep); do trivial single actions inline.
    silent on a detail, choose the boring option and note it in the report.
    **New tools/components outside existing phases: write an ADR first, get
    approval, then implement. Never jump to code.**
+
+   **But a ratified spec is a frontloaded hypothesis, not a contract, and the
+   difference changes how you *report*.** The user, during Theotokos session
+   #3: *"I don't care about spec as canon. I purposefully ratified, knowing
+   everything was up for revision once we built... I'm not holding to account
+   imperfect impl."* The heavy up-front ADR + hostile-review process exists
+   because agent build cycles are expensive to redo, not because the design is
+   meant to be final. So:
+   - Record findings as **current behaviour + `file:line` + what to build
+     next.** Citations exist to make the next change cheap, never to assign
+     fault.
+   - Do **not** sort findings into "spec's fault" vs "implementation slip" —
+     that distinction is noise here, and framing one that way drew an explicit
+     correction. Never defend an implementation by citing the spec it
+     faithfully followed.
+   - A session finding that contradicts a ratified decision is the *expected
+     output* of a usability session, not an escalation.
+   - Distinguish "the design converged" from "the phase is done". Session #3
+     signed off a redesign while leaving the phase open on 4 bugs.
+
+   "Stop and ask" above still applies to a genuine fork in the work — a
+   deviation from a spec *contract*, a protocol freeze, a new ADR. It is not a
+   licence to stall on a detail where the boring option is obvious.
 2. **Do not revisit named decisions** without the user: no tokio; no Web MIDI
    as primary transport; wire names stay plain; relative-only encoders;
    surfaces are device nodes; DAG + LoopBreakNode; ADR-019 naming contracts;
