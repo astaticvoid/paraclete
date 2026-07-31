@@ -539,10 +539,20 @@ mutated file with `mv` gives it the backup's older mtime; cargo compares
 mtimes and re-runs the **mutant's** binary. A mutation harness must `touch`
 after every write, and a run that ends green is not proof it did.
 
-### MM-C6 — Theotokos: variant-aware pages, machine-select, lock rejection
+### MM-C6 — Theotokos: variant-aware pages, machine-select, lock rejection *(3 of 4 landed, `a9996c1`)*
 
-> **Next commit in the phase**, and the one place MM-C5 leaves a decision
-> open rather than made. MM-C5 pre-merged every machine's pages into
+> **Items 1, 3 and 4 landed in `a9996c1`; item 2 is open and is a decision,
+> not a task.** What landed: the host's identity param is polled off the state
+> bus each frame and its variant's pre-merged pages swapped in; the encoder
+> shows and clamps the selected machine's overlay rather than the bank's
+> union; and a p-lock on an identity param is refused with an echo message.
+> The identity flag is read across *all* variants — ADR-041 §0 A1 puts it on
+> the overlay so it must be repeated per machine, and a mutant reading only
+> the selected one survived the suite until a deliberately-inconsistent
+> fixture was written for it.
+>
+> **What remains is item 2, and it changes what a performer sees.** Read the
+> next paragraph before implementing it. MM-C5 pre-merged every machine's pages into
 > `CompositeView::variants`, so "swap the displayed variant locally" is a
 > swap of `cv.pages` for the matching entry — every downstream reader
 > (`resolve_encoder_params`, `page_sub_page_count`, `select_perf_page`, the
