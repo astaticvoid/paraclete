@@ -619,6 +619,59 @@ slightly different starting value. Find that, don't re-fingerprint.
 **Tests:** both baselines clean; a span shorter than 64 samples renders as
 one sub-block; a span of exactly 64 renders as one, 65 as two.
 
+#### As landed
+
+**The chunking is a function, not a loop in two places.**
+`engine_dsp::sub_blocks(start, end)` yields the cut spans and borrows nothing,
+so each engine drives it while holding `&mut self`. Two hand-written `while`
+loops would have made the 64/65 boundary testable only through audio; this way
+the spec's three named cases are unit tests, and MM-C10's `Sampler` and
+`FilterNode` inherit the same cut rather than re-deriving it.
+
+**Output-identity is asserted directly, not just inferred from the
+baselines.** Each engine gained
+`chunked_render_is_identical_to_one_unchunked_call`: one un-chunked
+`process_*(0, 500)` against the chunked sequence from identical state, per
+machine. The baselines prove identity through the whole graph; this says
+*which machine* broke when one does. 500 is deliberate — not a multiple of 64,
+so the final short chunk exercises the `.min(end)` clamp that a 512-sample
+block never would.
+
+> **Both of those tests are expected to fail at MM-C9, and that is not a
+> regression.** Once an LFO ticks per sub-block, a chunked render legitimately
+> differs from an un-chunked one — that is the entire point of the structure.
+> Update them deliberately then; do not weaken them now, and do not let a
+> green run at MM-C9 pass without noticing they went quiet.
+
+**A voice that goes idle mid-span is deliberately not cut short, and the
+reason is not the obvious one.** `if !self.active { break; }` looks free: the
+skipped samples really would be silence, since the render buffers are zeroed
+at the top of every block and an idle `AdState` returns 0.0. But
+`process_snare` and `process_hihat` advance an xorshift LFSR once per sample
+(`self.noise_state`, `self.hihat_noise`), so skipping samples skips those
+advances and **every later note gets a different noise sequence**.
+
+That was run as a mutant, and the result is the most useful thing this commit
+learned:
+
+| mutant | caught by |
+|---|---|
+| chunks overlap by one sample | 8 unit tests |
+| boundaries block-aligned, not span-relative (D2) | 1 unit test, exactly |
+| short final chunk dropped | 7 unit tests |
+| **early exit when the voice goes idle** | **`analog_machines` baseline only** |
+
+No unit test catches the last one. `kick_reverb_clean` and `fm_machines` do
+not either — neither voice has noise. With the break in place the first hihat
+note stays bit-identical and drift begins at the *second*, ~3550 ms in.
+
+**Two things follow for MM-C8 onward.** The `analog_machines` baseline that
+#155 was filed to get is load-bearing on its first outing, which is the
+argument for finishing #155's `Sampler`/`FilterNode` half before MM-C10
+restructures those. And a "silent samples cost nothing" argument is void
+anywhere a `process_*` carries sample-rate state — noise generators, filter
+memories, phase accumulators. MM-C9's LFO will add another.
+
 ### MM-C8 — `LfoBlock` in `engine_dsp` (pure, unhosted)
 
 **Changes:** `crates/paraclete-nodes/src/engine_dsp.rs` — `LfoBlock`
