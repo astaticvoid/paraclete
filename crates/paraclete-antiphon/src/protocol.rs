@@ -114,8 +114,20 @@ pub enum ServerMsg {
         engine_node_id: u32,
         engine_name: String,
         display_name: String,
+        /// The layout for the machine each host was **constructed** with, not
+        /// the one it is on now. Antiphon assembles from the cap-doc snapshot
+        /// taken at `add_node` and nothing re-runs it, so setting `machine`
+        /// on a node and re-requesting `view_meta` returns the same `active`
+        /// until restart (#157). A client that has watched
+        /// `/node/{id}/param/machine` change should draw the matching entry
+        /// of `variants` rather than this field.
         pages: Vec<ViewMetaPage>,
         chain: ViewMetaChain,
+        /// [MM] ADR-041 machine variants. Absent for a track whose chain has
+        /// no machine host, which is every track today that is not an
+        /// `AnalogEngine` or `FmEngine`.
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        variants: Vec<ViewMetaVariantSet>,
     },
 }
 
@@ -195,10 +207,24 @@ pub struct ViewMetaParam {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub env_group: Option<u32>,
     pub slot: u8,
+    /// Present and `true` for an integer-stepped param; absent means
+    /// continuous. Never sent as `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stepped: Option<bool>,
+    /// Named values for a stepped param, **indexed by the param's value** —
+    /// `options[v]` labels value `v`, and `null` is a value with no name.
+    /// It is *not* an ordered list of choices: reading `options[i]` as the
+    /// i-th choice is right only for a param whose values start at 0 and run
+    /// contiguously, which is true of `machine` and need not be of the next
+    /// stepped param to arrive.
+    ///
+    /// Absent when the param has no named values, and also when its values
+    /// are too spread to index densely. For a machine selector the
+    /// authoritative list is always `ViewMetaVariantSet::variants`, which
+    /// carries `value` explicitly; this field is the by-value view of the
+    /// same names and never disagrees with it.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub options: Option<Vec<String>>,
+    pub options: Option<Vec<Option<String>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub routing: Option<ViewMetaRouting>,
 }
@@ -223,6 +249,75 @@ pub struct ViewMetaMacro {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ViewMetaRouting {
     pub dest: String,
+}
+
+/// [MM] Every machine one node in the track's chain can be (ADR-041).
+///
+/// A client switches machines by setting `select_param` on `node_id` and
+/// drawing the matching entry's `pages`. It never re-merges: the pages here
+/// are the whole track's, already aligned, because a client that assembled
+/// them itself would have to re-implement 8-slot contributor alignment and
+/// would drift from the server's.
+///
+/// **Each entry's `pages` assume every *other* machine host in the chain
+/// stays on the machine `active` names for it.** With one host per chain —
+/// every track that ships, since an engine has no audio input and so can
+/// never be another track's chain node — that assumption is vacuous. With
+/// two, switching host B and then drawing `A.variants[j].pages` renders B's
+/// stale contribution, and because a contributor reserves whole sub-pages,
+/// every slot after B's shifts. Nothing here records which selections the
+/// pre-merge assumed; a client with two hosts in one chain must re-request
+/// `view_meta` after a switch rather than trust the other host's entry.
+///
+/// **Size grows with the machine count.** Every entry carries the whole
+/// track's pages, so the message is O(machines x chain length). Three
+/// machines is the shipped case; a 16- or 32-machine bank would multiply
+/// `view_meta` by that with no cap and no paging (#158).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ViewMetaVariantSet {
+    pub node_id: u32,
+    /// Param name to `set_param` on `node_id` to change machine.
+    ///
+    /// Absent when there is no such param to name — either the node declares
+    /// variants without flagging an identity param, or it flags one its
+    /// cap-doc does not declare. Nothing in tree does either. Absent means the
+    /// machine cannot be changed; it is deliberately not a `param_{id}`
+    /// placeholder, which would look live and write nowhere.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub select_param: Option<String>,
+    /// The value `ViewMeta::pages` was built for.
+    pub active: u32,
+    pub variants: Vec<ViewMetaVariant>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ViewMetaVariant {
+    /// `select_param`'s value that selects this machine.
+    pub value: u32,
+    pub name: String,
+    pub pages: Vec<ViewMetaPage>,
+    /// Display ranges for this machine. The node's own parameter bank holds
+    /// the **union** across machines and is never narrowed, so a client that
+    /// clamps to the bank's range would let a performer dial a value this
+    /// machine does not use. Clamp input to these instead (ADR-041 §0 A1).
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub overlays: Vec<ViewMetaOverlay>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ViewMetaOverlay {
+    pub param: String,
+    pub min: f64,
+    pub max: f64,
+    pub default: f64,
+    /// This param *is* the node's identity, not a setting: reject it as a
+    /// p-lock target and as a scene-morph destination (ADR-041 §0 A4).
+    #[serde(skip_serializing_if = "is_false", default)]
+    pub identity: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -393,6 +488,46 @@ mod tests {
                     node_labels: vec![(20, "Engine".into()), (40, "Filter".into())],
                     routing: vec![],
                 },
+                variants: vec![ViewMetaVariantSet {
+                    node_id: 20,
+                    select_param: Some("machine".into()),
+                    active: 0,
+                    variants: vec![ViewMetaVariant {
+                        value: 0,
+                        name: "AnalogKick".into(),
+                        pages: vec![ViewMetaPage {
+                            id: "SRC".into(),
+                            label: "Source".into(),
+                            params: vec![ViewMetaParam {
+                                id: "machine".into(),
+                                node_id: 20,
+                                label: "Machine".into(),
+                                affordance: "None".into(),
+                                env_group: None,
+                                slot: 0,
+                                stepped: Some(true),
+                                // Value 1 deliberately unnamed, so the
+                                // round-trip covers a hole rather than only
+                                // a dense list.
+                                options: Some(vec![
+                                    Some("AnalogKick".into()),
+                                    None,
+                                    Some("AnalogHiHat".into()),
+                                ]),
+                                routing: None,
+                            }],
+                            envelopes: vec![],
+                            macros: vec![],
+                        }],
+                        overlays: vec![ViewMetaOverlay {
+                            param: "machine".into(),
+                            min: 0.0,
+                            max: 2.0,
+                            default: 0.0,
+                            identity: true,
+                        }],
+                    }],
+                }],
             },
         ];
         for m in &msgs {

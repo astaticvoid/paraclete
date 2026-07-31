@@ -164,7 +164,14 @@ export function ParamPage({ connection, stateStore, page, nodes }: ParamPageProp
               )}
               {p.stepped && p.options && (
                 <div class="param-stepped-hint">
-                  {p.options.join(" | ")}
+                  {/* `options` is indexed by value and a hole is null, so
+                      render the value alongside its name rather than joining
+                      positionally — a gap would otherwise read as an empty
+                      choice sitting between two real ones. */}
+                  {p.options
+                    .map((name, value) => (name === null ? null : `${value}:${name}`))
+                    .filter((s): s is string => s !== null)
+                    .join(" | ")}
                 </div>
               )}
             </div>

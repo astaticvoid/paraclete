@@ -1768,12 +1768,15 @@ mod tests {
                     env_group: None,
                     slot: 0,
                     routing: None,
+                    stepped: false,
+                    options: None,
                 }],
                 envelopes: vec![],
                 macros: vec![],
             }],
             chain: vec![],
             routes: vec![],
+            variants: vec![],
         }
     }
 
@@ -1798,6 +1801,8 @@ mod tests {
                         env_group: None,
                         slot,
                         routing: None,
+                        stepped: false,
+                        options: None,
                     })
                     .collect(),
                 envelopes: vec![],
@@ -1805,6 +1810,7 @@ mod tests {
             }],
             chain: vec![],
             routes: vec![],
+            variants: vec![],
         }
     }
 

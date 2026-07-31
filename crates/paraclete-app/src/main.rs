@@ -851,10 +851,15 @@ fn build_view_registry(conf: &NodeConfigurator, summaries: &[NodeSummary]) -> Vi
             if let Some(rule) = doc.view.clone() {
                 rules.insert(s.id, rule);
             }
-            let params: Vec<(u32, String)> = doc
+            let params: Vec<paraclete_view_assembly::ParamInfo> = doc
                 .params
                 .iter()
-                .map(|p| (p.id, p.name.to_string()))
+                .map(|p| paraclete_view_assembly::ParamInfo {
+                    id: p.id,
+                    name: p.name.to_string(),
+                    stepped: p.stepped,
+                    default: p.default,
+                })
                 .collect();
             node_infos.insert(
                 s.id,

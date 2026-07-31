@@ -931,6 +931,49 @@ mod tests {
         }
     }
 
+    /// MM-C5 resolves which variant a surface draws from the cap-doc default
+    /// of the identity param, so that a view assembled with no live state
+    /// still shows the machine the node was built on. That only works while
+    /// the identity param's default *is* the active machine's value.
+    #[test]
+    fn the_machine_params_cap_doc_default_is_the_active_machine() {
+        for m in FmMachine::ALL {
+            let doc = FmEngine::build_doc(m);
+            let p = doc
+                .params
+                .iter()
+                .find(|p| p.id == fp("machine"))
+                .expect("union doc declares machine");
+            assert_eq!(
+                p.default,
+                m.value() as f64,
+                "{m:?}'s cap-doc must name {m:?} as the machine in force"
+            );
+        }
+    }
+
+    /// The base `Rule` fields are the active machine's, so a consumer that
+    /// ignores `variants` renders what the variant-aware path renders
+    /// (ADR-041 decision 3). If these drift, `assemble` and a client that
+    /// reads `param_pages` directly disagree about the same node.
+    #[test]
+    fn base_param_pages_equal_the_active_variants_pages() {
+        for m in FmMachine::ALL {
+            let rule = FmEngine::new(m).to_rule(0, &[]);
+            let v = rule
+                .variants
+                .iter()
+                .find(|v| v.value == m.value())
+                .expect("a variant per machine");
+            assert_eq!(
+                rule.param_pages.to_vec(),
+                v.pages.to_vec(),
+                "{m:?}'s base pages differ from its own variant's"
+            );
+            assert_eq!(rule.page_groups.to_vec(), v.page_groups.to_vec());
+        }
+    }
+
     /// **This is #47 (BUG-037).** Before MM-C4 the single machine-invariant
     /// page set named `ratio`/`index`/`attack` for FmKick, which declares none
     /// of them; `drive`/`attack` for FmBell; `feedback` for FmBass — the last
