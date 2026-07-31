@@ -68,8 +68,8 @@ stretches need no input between gates.
 | 1 | ~~**TK2 C0–C9**~~ (`tk2-theotokos.md`) | **Shipped** |
 | 2 | ~~**⛔ Session #2**~~ (TK2 C10, user-paired) | **Held 2026-07-27 — not a clean sign-off.** Reopened design.md §5.1/§5.2 + the default REC/trig mode model. |
 | 2.5 | ~~**⛔ TK2.1 redesign pass**~~ — ADR-044 ✅ ratified 2026-07-28 | **Gate cleared.** Shipped C0–C7; session #3 held 2026-07-29. |
-| 2.6 | ~~**TK2.2 fix pass**~~ (`tk2.2-theotokos.md`, ADR-046) | **Code-complete 2026-07-30, not closed.** ⛔ **C6 — usability session #4** is the only remaining step. |
-| 3 | **⛔ TK2-exit scheduling pass** (user) — blocked on step 2.6 | Order the parallel tracks: P11 spec → impl; AN0(→AN1); ADR-041+042 implementation. All three are independent of each other. |
+| 2.6 | ~~**TK2.2 fix pass**~~ (`tk2.2-theotokos.md`, ADR-046) | **CLOSED 2026-07-30.** Session #4 held; every hypothesis passed, ADR-045 stays parked on user judgment. `tk2.2-report.md`, `sessions/theotokos-4.md`. Four defects filed (#142–#145), not blocking. |
+| 3 | **⛔ TK2-exit scheduling pass** (user) — **gate now open** | Order the parallel tracks: P11 spec → impl; AN0(→AN1); ADR-041+042 implementation. All three are independent of each other. Session #4 adds one input: #147 (acknowledge every command / held-key highlight) wants an ADR and may want to ride with whichever Theotokos work is scheduled next. |
 | 4a | **P11**: spec (agent, session-informed) → **⛔ spec ratification** (kit UX) → impl → session | two gates |
 | 4b | **AN0–AN1** (pool → capture; R2 transition-trick gate on AN1 exit) → **⛔ sampling session** | AN2 additionally needs P11 KitStore shipped |
 | 4c | **ADR-041 + ADR-042 impl** (machine select, MOD page — mechanical vs the ADRs) | none until P14 |
@@ -112,7 +112,7 @@ Per-phase narrative lives in the phase spec and report under
 | **W4** | Interface maturity | Ordo layout profiles, multi-client polish, protocol freeze, headless protocol CI | Ongoing after W3 |
 | **W5** | Patch editor & control mapping | Drag-and-drop graph wiring with full node visibility; MIDI learn for arbitrary controllers | **Unscheduled.** Design spike → ADR → impl. Needs P16 macros for the target side. Every binding must declare a sync policy; pickup/soft-takeover is not an option (SPIKE-006) |
 | **AN** | Anamnesis sampling layer | Capture-to-performance loop: recorder rings, sample pool, slices, scenes, staged timestretch | **ADR-040 ✅ accepted** + `design/sampling/`. AN2 depends on P11 KitStore |
-| **TK** | Theotokos performance terminal | Keyboard-first Elektron-class virtual front panel — POC → usability-iterated TK0–TK3, session-gated | **TK0–TK2.1 shipped. TK2.2 code-complete 2026-07-30, not closed** — C6 (session #4) remains. Full narrative: `tk2.1-report.md`, `tk2.2-theotokos.md` |
+| **TK** | Theotokos performance terminal | Keyboard-first Elektron-class virtual front panel — POC → usability-iterated TK0–TK3, session-gated | **TK0–TK2.2 shipped and closed** (TK2.2 closed 2026-07-30 by session #4). Full narrative: `tk2.1-report.md`, `tk2.2-report.md`, `sessions/theotokos-4.md` |
 | **TKW** | Theotokos window host | A platform-agnostic host for the Theotokos panel, so keyboard capability stops depending on the host terminal | **Unscheduled.** Three candidate routes — (a) native window, (b) panel compiled to WASM over antiphon *(strongest architectural fit; latency is the risk to measure)*, (c) hand-written browser panel *(weakest — duplicates `render.rs`)*. **Design spike + ADR first.** Bears on OQ-T12 |
 
 The interface track (Antiphon server + Theoria clients) is specified in

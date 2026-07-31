@@ -144,6 +144,53 @@ Other:    Shift+; = : line   ? = help   Backspace = clear locks   Ctrl-C = quit
 cargo run -- --no-tui --no-emulator --no-antiphon
 ```
 
+### Driving the panel from an agent (paired usability sessions)
+
+Run the app in **kitty** with remote control so the agent can read the panel
+and drive keys without spending user time. **Never through tmux** — its
+`extended-keys` is CSI-u/modifyOtherKeys and does not proxy key *releases*,
+which silently forces the sticky fallback and invalidates every hold/chord
+result without saying so.
+
+```bash
+setsid kitty --listen-on unix:@tk4 -o allow_remote_control=yes \
+  -e bash -c 'exec ./target/release/paraclete 2>>/tmp/tk4-app.log' &
+kitty @ --to unix:@tk4 get-text          # read the panel
+kitty @ --to unix:@tk4 get-text --ansi   # read it WITH colours/attributes
+```
+
+`get-text --ansi` is how you read state the plain text cannot show: active vs
+empty step glyphs share `▓`/`░` but differ by colour, and the playhead and
+lock focus are carried by `Modifier::REVERSED` (`[7;33m`) alone.
+
+**Two send verbs, and the difference matters:**
+
+| Verb | Delivers | Use for |
+|---|---|---|
+| `send-key q` / `send-key shift+z` | press **and** release | anything that should be a **tap**; FUNC (Shift) chords arrive intact |
+| `send-text "q"` | press, **no release** | deliberately *latching* a hold prefix |
+
+Composing them synthesizes a hold-chord — session #3's "chords genuinely need
+the user's hands" is superseded:
+
+```bash
+kitty @ --to unix:@tk4 send-text $'\t'   # Tab press, no release -> TRK armed
+kitty @ --to unix:@tk4 send-key q        # trig press+release while armed
+kitty @ --to unix:@tk4 send-key tab      # press+release -> clears the arm
+```
+
+**Hazard:** using `send-text` for a tap latches the key as a held prefix, and
+a latched REC makes every trig `Action::Noop` by design (`input.rs:749`).
+That reads exactly like "step entry is broken". Use `send-key` for taps.
+
+**Not agent-testable:** the sticky-fallback path (D11's re-tap disarm and
+400 ms guard) never runs in kitty, which delivers releases — judging it needs
+a release-less terminal that is not tmux.
+
+**Not a valid audio oracle:** `parecord` off the default sink monitor. It has
+read digital silence while the user could plainly hear the pattern
+(session #4). Use `test-driver` renders, which assert on a file.
+
 ### Legacy Launchpad emulator (`--emulator`)
 
 When no Launchpad is connected, the 8x8 grid is keyboard-driven:
