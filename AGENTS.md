@@ -92,6 +92,16 @@ cargo run -p test-driver -- <scenario>.yaml --check-baseline    # diff; exit 1 o
 # Baseline runs use a DETERMINISTIC single-threaded render (not the wall-clock
 # threaded path), so the peak/rms/dc + 50ms windowed-RMS envelope fingerprint is
 # bit-stable run-to-run. Tolerances live in the .baseline.json (edit to loosen).
+# Baseline mode does NOT evaluate a scenario's artifact assertions (main.rs:1280)
+# — the fingerprint is the check. Nothing runs these automatically; there is no
+# CI. Run all four before and after any DSP-touching change:
+#   kick_reverb_clean   node 20 through mix+reverb          (analog Kick)
+#   plock_authoring     node 10 -> 20, authored p-locks     (analog Kick)
+#   analog_machines     nodes 21, 22, and both at once      (analog Snare, HiHat)
+#   fm_machines         node 27 driven through all three    (FM Kick, Bell, Bass)
+# Together these observe all six voice machines. `Sampler`, `FilterNode` and
+# `DistortionNode` still have none — they are in no instrument file, so covering
+# them needs a fixture first (#155).
 
 # Interactive mode: JSON-lines REPL for live engine interrogation
 cargo run -p test-driver -- --interactive --instrument instrument.yaml

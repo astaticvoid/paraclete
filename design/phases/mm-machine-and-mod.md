@@ -430,7 +430,60 @@ unrepresentable. **Close #47 in this commit's message.**
 **Tests:** every param ref in every variant's `pages` resolves in the union
 doc, for both engines — the assertion MM-C8 generalises.
 
-### MM-C5 — Variants through composite assembly and the wire
+### MM-C5 — Variants through composite assembly and the wire ✅ *(landed, `62a2c5c`)*
+
+**What the spec left open, and how it was closed.** MM-C5 never said *how*
+assembly learns which machine is active — only that `merge_page` "selects the
+active variant's `pages`". It resolves from the **identity param's cap-doc
+default**: `union_params(active)` sets that param's default to
+`active.value()` and nothing else in the doc is defined to *be* the selection.
+So `assemble()` keeps its signature and needs no live state, and both engines
+gained a test pinning the invariant, since the whole resolution rests on it.
+`assemble_for()` takes an explicit selection map for a caller that *does* hold
+live state — MM-C6's Theotokos is the intended user and the only forward
+reach in the commit.
+
+*Corollary a reader should not mistake for a defect:* base `Rule` fields and
+the active variant's fields are identical by construction, and a test in each
+engine now says so. That is what makes "variants non-empty ⇒ always a variant,
+base fields otherwise" a rewrite of nothing rather than a behaviour change.
+
+**Two decisions the spec was silent on**, both taken toward the more
+conservative wire and named here so a reviewer can push back:
+
+- **Overlays ride the wire with their variant.** MM-C5's text asks only for
+  `stepped`/`options`, but a client that can draw a machine's pages and not
+  clamp to its ranges would clamp to the *bank's union* — dialing Bell's 8 s
+  decay on FmKick, whose own maximum is 2 s. ADR-041 §0 A1 exists precisely
+  for that, so `ViewMetaVariant` carries `overlays`.
+- **`options` is indexed by value, and a gap is `null`.** The first draft
+  filled unclaimed indices with the index as a string, which *invents*
+  machines: values `{0, 3}` shipped `["Zeroth","1","2","Third"]`, so a client
+  drew four choices and two selected nothing. A permanent wire field must be
+  able to say "no name at this value"; `variants[]` stays the authoritative
+  list either way, since it carries `value` explicitly.
+
+**The mechanism ships ahead of its only producer.** No shipped node pages its
+`machine` param yet, so nothing in the running app exercises `options` until
+MM-C6 puts machine-select on TRIG. The paths are unit-tested with fixtures,
+and the live wire was verified for everything that *is* reachable: all four
+default tracks answer with variants, `active` resolves per node (20→Kick,
+21→Snare, 22→HiHat, 27→Bass), and each machine carries its own ranges.
+
+**Three limits now documented at the wire types rather than left as false
+comfort:**
+
+1. `ViewMeta::pages` is the machine each host was *constructed* with, not the
+   one it is on — Antiphon assembles from a startup cap-doc snapshot and
+   nothing re-runs it (**#157**). Not a blocker: a client watches the state
+   bus and draws the matching `variants` entry, which is ADR-041 decision 1's
+   model exactly. Only the claim that `pages` was current was wrong.
+2. Each variant's pages assume every *other* machine host stays put. Vacuous
+   today — an engine has no audio input, so it can never be another track's
+   chain node (`main.rs:887-895`) — and now tested rather than asserted.
+3. Payload is O(machines × chain length) (**#158**). Fine at three machines;
+   ADR-043's variant-native FmVoice is what makes it worth having written
+   down.
 
 **Changes:**
 
@@ -470,6 +523,22 @@ chain node does not merges correctly on both; wire round-trip carries
 `stepped`/`options` for `machine`; a client rendering the pre-merged pages
 gets the same slot layout as Theotokos.
 
+*The third of those is true by construction, not by assertion* — `main.rs:367`
+and `view.rs:26` call the same `assemble()`. Nothing pins that they keep doing
+so; a cross-crate test would.
+
+*One fixture lesson worth carrying to MM-C6.* The obvious two-machine fixture
+cannot see the sub-page advance: if both machines fit one sub-page, reading
+`max_slot` from the base rule instead of the active variant still passes.
+Covering it needs a machine that spills past slot 7 while its sibling does
+not, so the chain node's base *moves* with the selection. Assume the same
+blind spot exists wherever a variant-dependent quantity is derived.
+
+*And one harness lesson, because it nearly voided the evidence.* Restoring a
+mutated file with `mv` gives it the backup's older mtime; cargo compares
+mtimes and re-runs the **mutant's** binary. A mutation harness must `touch`
+after every write, and a run that ends green is not proof it did.
+
 ### MM-C6 — Theotokos: variant-aware pages, machine-select, lock rejection
 
 **Changes:** `crates/paraclete-theotokos/`
@@ -496,15 +565,37 @@ lock.
 
 ### MM-C7 — The 64-sample sub-block loop *(pure refactor, no LFO)*
 
-> **Prerequisite (#155): an FM baseline must exist first.** This commit's
-> whole verification plan is "both ADR-035 baselines clean, and if one drifts
-> do **not** re-fingerprint it" — but it restructures `render_span` in *both*
-> engines, and the two baselines address only nodes 10 and 20. The FM half
-> would be refactored with no regression evidence at all. MM-C8's
-> `lfo_depth = 0` check has the same hole, and MM-C10 widens it to `Sampler`
-> and `FilterNode`, which nothing observes either. Adding a baseline for a
-> *new* scenario is fine; the no-re-fingerprint rule is about an existing one
-> that drifts.
+> **Prerequisite (#155): an FM baseline must exist first.** ✅ *(met,
+> `855d36c`)* This commit's whole verification plan is "both ADR-035 baselines
+> clean, and if one drifts do **not** re-fingerprint it" — but it restructures
+> `render_span` in *both* engines, and the two baselines address only nodes 10
+> and 20. The FM half would be refactored with no regression evidence at all.
+> MM-C8's `lfo_depth = 0` check has the same hole, and MM-C10 widens it to
+> `Sampler` and `FilterNode`, which nothing observes either. Adding a baseline
+> for a *new* scenario is fine; the no-re-fingerprint rule is about an
+> existing one that drifts.
+>
+> **Now met for this commit's scope, and only that.** `fm_machines.yaml` and
+> `analog_machines.yaml` cover the five machines nothing observed, so all six
+> voice machines have a baseline. `render_span` dispatches per machine, so one
+> machine's baseline covers neither sibling — that is why five files were
+> needed, not one.
+>
+> **Run all four, not two:** `kick_reverb_clean`, `plock_authoring`,
+> `analog_machines`, `fm_machines`. Each is bit-stable, and each machine was
+> shown load-bearing by mutating one coefficient and confirming the drift
+> lands in that machine's own time window.
+>
+> **Know what they do not catch before trusting a green run.** A 2 % change to
+> `MACHINE_SWITCH_FADE_SECS` passes: 220 samples against a 50 ms envelope
+> window is below the fingerprint's resolution. These observe a *systematic*
+> change to a voice, not a transient one shorter than a window. A chunking bug
+> that recomputes an envelope coefficient per sub-block is systematic and will
+> show; one that perturbs a single sub-block boundary may not.
+>
+> **#155 stays open for MM-C10.** `Sampler`, `FilterNode` and `DistortionNode`
+> are in no instrument file, so covering them needs a fixture first. Do not
+> read MM-C7's prerequisite being met as MM-C10's being met.
 
 **Changes:** `analog_engine.rs:159` and `fm_engine.rs:157` — `render_span`
 chunks into `LFO_SUB_BLOCK` (64) sub-blocks per D2 and calls `process_*`
