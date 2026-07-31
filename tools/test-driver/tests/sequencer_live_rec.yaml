@@ -19,7 +19,7 @@ play: false
 
 timeline:
   - at: 0.02
-    set_param: { target: kick, param: decay, value: 0.15 }
+    set_param: { target: "analog_engine:kick", param: decay, value: 0.15 }
   - at: 0.03
     clear: { target: "10" }
   - at: 0.1

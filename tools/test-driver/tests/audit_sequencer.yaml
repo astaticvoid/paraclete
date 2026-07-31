@@ -4,26 +4,33 @@ duration_secs: 4
 output: /tmp/audit_test.wav
 play: false
 
+# INFRA-012: `target: Kick` used to resolve to the *voice* (node 20), so every
+# command below aimed at the sequencer was delivered to a node that ignores it
+# — the scenario passed while doing nothing. Targets are now qualified, and the
+# assertions below read the sequencer state each command is supposed to move.
+
 timeline:
   - at: 0.0
     set_param:
-      target: kick
+      target: "analog_engine:kick"
       param: decay
       value: 0.5
 
+  # 2.0 is the ceiling the sequencer clamps to (sequencer.rs:698). This asked
+  # for 4.0, which was silently clamped — moot while it was misrouted anyway.
   - at: 0.0
     set_speed:
-      target: Kick
-      speed: 4.0
+      target: "sequencer/Kick"
+      speed: 2.0
 
   - at: 0.0
-    toggle_step: { target: Kick, step: 0 }
+    toggle_step: { target: "sequencer/Kick", step: 0 }
   - at: 0.0
-    toggle_step: { target: Kick, step: 4 }
+    toggle_step: { target: "sequencer/Kick", step: 4 }
   - at: 0.0
-    toggle_step: { target: Kick, step: 8 }
+    toggle_step: { target: "sequencer/Kick", step: 8 }
   - at: 0.0
-    toggle_step: { target: Kick, step: 12 }
+    toggle_step: { target: "sequencer/Kick", step: 12 }
 
 probe:
   - at: 0.3
@@ -33,12 +40,22 @@ probe:
   - at: 1.2
     path: "/node/10/state/current_step"
   - at: 2.0
-    path: "/node/10/state/current_step"
+    path: "/node/10/state/steps"
 
 assert:
-  - at: 0.5
-    path: "/node/10/state/current_step"
-    between: [1, 5]
+  # set_speed landed on the sequencer, not the voice. Timing-independent, so it
+  # holds in debug and release alike — unlike a current_step reading, which
+  # drifts with the ~25% debug capture skew and is only probed above.
+  - at: 2.0
+    path: "/node/10/state/speed_mult"
+    eq: 2.0
+
+  # toggle_step landed: a sequencer with no steps set never trigs. This is 0
+  # under the INFRA-012 misrouting and non-zero once the toggles arrive.
+  - at: 2.0
+    path: "/node/10/state/last_trig"
+    between: [1, 10000]
+
   - at: 2.0
     path: "/node/20/param/decay"
     eq: 0.5

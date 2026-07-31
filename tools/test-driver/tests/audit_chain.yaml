@@ -7,17 +7,17 @@ play: false
 timeline:
   - at: 0.0
     set_param:
-      target: kick
+      target: "analog_engine:kick"
       param: decay
       value: 0.3
   - at: 0.0
     set_param:
-      target: kick
+      target: "analog_engine:kick"
       param: drive
       value: 0.0
   - at: 0.0
     set_param:
-      target: snare
+      target: "analog_engine:snare"
       param: decay
       value: 0.1
   - at: 0.0

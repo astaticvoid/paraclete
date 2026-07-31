@@ -9,7 +9,7 @@ play: false
 
 timeline:
   - at: 1.0
-    trigger: { target: kick, velocity: 1.0 }
+    trigger: { target: "analog_engine:kick", velocity: 1.0 }
 
 # NOTE: timeline actions dispatch on wall clock but from/until windows are in
 # capture time, which runs slower than wall clock (block processing + sleep).

@@ -6,10 +6,10 @@ play: true
 
 timeline:
   - at: 0.5
-    trigger: { target: kick, velocity: 1.0 }
+    trigger: { target: "analog_engine:kick", velocity: 1.0 }
   - at: 1.0
-    trigger: { target: kick, velocity: 1.0 }
+    trigger: { target: "analog_engine:kick", velocity: 1.0 }
   - at: 1.5
-    trigger: { target: kick, velocity: 1.0 }
+    trigger: { target: "analog_engine:kick", velocity: 1.0 }
   - at: 2.0
-    trigger: { target: kick, velocity: 1.0 }
+    trigger: { target: "analog_engine:kick", velocity: 1.0 }

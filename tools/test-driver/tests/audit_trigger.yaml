@@ -6,13 +6,13 @@ play: false
 
 timeline:
   - at: 0.0
-    set_param: { target: kick, param: decay, value: 0.5 }
+    set_param: { target: "analog_engine:kick", param: decay, value: 0.5 }
   - at: 0.0
-    set_param: { target: kick, param: drive, value: 0.0 }
+    set_param: { target: "analog_engine:kick", param: drive, value: 0.0 }
   - at: 1.0
-    trigger: { target: kick, velocity: 1.0 }
+    trigger: { target: "analog_engine:kick", velocity: 1.0 }
   - at: 3.0
-    trigger: { target: kick, velocity: 1.0 }
+    trigger: { target: "analog_engine:kick", velocity: 1.0 }
 
 probe:
   - at: 0.5
