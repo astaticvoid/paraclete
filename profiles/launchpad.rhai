@@ -21,12 +21,23 @@
 //   SEQ_EDIT press = return to trigger mode.
 
 fn on_load() {
-    // ADR-046 T3: InternalClock now boots `playing: false` — every surface
-    // must start the transport itself (Theotokos does the same in its own
-    // `new()`). Without this, the emulator/Launchpad fallback path is
-    // silently dead: trigger mode still fires CMD_TRIGGER directly, but
-    // sequence mode's steps never advance.
-    send_cmd(CLOCK_ID, 16, 0, 0.0); // CMD_CLOCK_START
+    // ADR-046 T3: InternalClock boots `playing: false`. This profile's
+    // surfaces have no transport control of their own — the Launchpad map
+    // above binds none, and Theoria's transport bar is read-only at W1 — so
+    // on those paths the sequencer would never advance and there would be no
+    // key to press to fix it. Trigger mode still works (CMD_TRIGGER is
+    // direct); only sequence mode is affected.
+    //
+    // BUG-049: gated, because it must NOT fire when a surface that *does*
+    // own the transport is running. Theotokos has PLAY/STOP (ADR-044 D7),
+    // and profiles load unconditionally from the instrument file regardless
+    // of which surfaces exist — so ungated, a plain `cargo run` booted with
+    // the transport already running. Theotokos does not start the clock
+    // itself; its own startup CMD_CLOCK_STOP was retired by ADR-046 T3, and
+    // an earlier version of this comment wrongly claimed otherwise.
+    if !TRANSPORT_HAS_OWNER {
+        send_cmd(CLOCK_ID, 16, 0, 0.0); // CMD_CLOCK_START
+    }
 
     state_write("/script/lp/mode",     "trigger");
     // Numeric twin of /script/lp/mode (0 = trigger, 1 = sequence): the

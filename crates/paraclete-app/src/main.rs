@@ -230,12 +230,12 @@ fn main() {
             static_dir: Some(static_source),
             device_id: ID_THEORIA,
         };
-        // Static snapshot: InternalClock auto-starts, so playing=true is
-        // truthful at W0. The live state mirror replaces this at W1.
-        let transport = TransportSummary {
-            playing: true,
-            bpm: def.bpm,
-        };
+        // ADR-046 T4: a surface renders published state, never an optimistic
+        // guess. The hard-coded playing=true that used to sit here outlived
+        // the boot state it described — T3 made the clock boot stopped and
+        // this line kept telling fresh clients otherwise (BUG-051). Asking
+        // the clock what it publishes stays truthful if it changes again.
+        let transport = clock_transport_summary(&mut conf, ids.clock, def.bpm);
         match AntiphonServer::spawn(config, summaries.clone(), transport, view_registry.clone()) {
             Ok((node, handle)) => {
                 conf.add_surface(ID_THEORIA, Box::new(node));
@@ -291,7 +291,7 @@ fn main() {
     let mut scripting = ScriptingEngine::new();
     scripting.bind_state_bus(bus_handle.clone());
 
-    let constants = build_constants(launchpad_id, digitakt_id, keystep_id, &ids);
+    let constants = build_constants(launchpad_id, digitakt_id, keystep_id, &ids, theotokos);
 
     for profile_path in &def.profiles {
         let label = Path::new(profile_path)
@@ -774,6 +774,35 @@ fn load_or_create_token() -> String {
 
 /// Assemble the `welcome` node snapshot from the configurator's cap-doc cache.
 /// Antiphon never talks to the configurator directly (w0 spec §kerygma).
+/// The transport as the clock itself reports it, for Antiphon's W0 hello.
+///
+/// The live state mirror corrects this at W1, but the snapshot a client is
+/// handed on connect still has to be true when it is sent. Falls back to a
+/// stopped transport at the instrument's declared bpm when the clock cannot be
+/// read — never to an optimistic `playing: true` (BUG-051).
+fn clock_transport_summary(
+    conf: &mut NodeConfigurator,
+    clock_id: u32,
+    default_bpm: f64,
+) -> TransportSummary {
+    let mut state = Vec::new();
+    if let Some(node) = conf.node_mut(clock_id) {
+        node.published_state(&mut state);
+    }
+    let mut summary = TransportSummary {
+        playing: false,
+        bpm: default_bpm,
+    };
+    for (path, value) in state {
+        match (path.as_str(), value) {
+            ("/transport/playing", paraclete_node_api::StateBusValue::Bool(playing)) => summary.playing = playing,
+            ("/transport/bpm", paraclete_node_api::StateBusValue::Float(bpm)) => summary.bpm = bpm,
+            _ => {}
+        }
+    }
+    summary
+}
+
 fn collect_node_summaries(conf: &NodeConfigurator, ids: &InstrumentIds) -> Vec<NodeSummary> {
     ids.all
         .iter()
@@ -948,6 +977,7 @@ fn build_constants(
     digitakt_id: Option<u32>,
     keystep_id: Option<u32>,
     ids: &InstrumentIds,
+    transport_has_owner: bool,
 ) -> Vec<(String, rhai::Dynamic)> {
     fn id_array(ids: &[u32]) -> rhai::Dynamic {
         rhai::Dynamic::from(
@@ -975,6 +1005,17 @@ fn build_constants(
             rhai::Dynamic::from(ID_THEORIA as i64),
         ),
         ("CLOCK_ID".into(), rhai::Dynamic::from(ids.clock as i64)),
+        // BUG-049: whether some surface in this session gives the user a
+        // transport control. Theotokos does (PLAY/STOP, ADR-044 D7); a bare
+        // Launchpad does not, and Theoria's transport bar is read-only at W1
+        // — which is why `launchpad.rhai` starts the clock on load at all.
+        // Profiles must gate that start on this, or a Theotokos session
+        // inherits the auto-start and boots running, contradicting the
+        // "engine boots stopped" invariant ADR-046 T3 exists to hold.
+        (
+            "TRANSPORT_HAS_OWNER".into(),
+            rhai::Dynamic::from(transport_has_owner),
+        ),
         ("TRACK_SEQ_IDS".into(), id_array(&ids.sequencers)),
         ("TRACK_SAMP_IDS".into(), id_array(&ids.samplers)),
         ("TRACK_GEN_IDS".into(), id_array(&ids.generators)),
