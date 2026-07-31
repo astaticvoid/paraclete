@@ -1,0 +1,60 @@
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 4
+output: /tmp/machine_switch.wav
+play: false
+
+# MM-C3: switching `machine` mid-note must ramp the voice to silence rather
+# than cutting it (MM §0 D1). Node 20 is the AnalogEngine on track 1, which
+# boots as Kick (machine 0); this switches it to Snare (1) while a kick is
+# still sounding.
+#
+# The engine-level fade shape is covered by unit tests; this asserts the whole
+# graph — engine through mix and reverb to the capture — produces no step.
+#
+# Deliberately only ONE trigger. An earlier draft fired a second kick at 2.5 s
+# to also exercise a switch-while-silent, and that attack (0.058) rather than
+# the switch (0.009) set the achievable threshold — 29x headroom over the thing
+# under test. Worse, whether the attack fell inside the window depended on
+# build profile, since timeline actions dispatch on wall clock while capture
+# runs ~25% slower in debug. Switch-while-silent is a unit test instead
+# (`switch_while_silent_is_immediate`), which leaves this window pure silence
+# after the switch and lets the threshold sit where the phenomenon actually is.
+
+timeline:
+  # Long decay so the voice is still sounding when the switch lands.
+  - at: 0.0
+    set_param: { target: "analog_engine:kick", param: decay, value: 2.0 }
+  - at: 0.5
+    trigger: { target: "analog_engine:kick", velocity: 1.0 }
+
+  # Mid-note switch.
+  - at: 1.0
+    set_param: { target: "analog_engine:kick", param: machine, value: 1.0 }
+
+probe:
+  - at: 0.8
+    path: "/node/20/param/machine"
+  - at: 1.5
+    path: "/node/20/param/machine"
+
+assert:
+  # The command reached the node's bank. This does NOT prove the engine
+  # swapped — `publish_bank_state` echoes the slot, so an engine that accepted
+  # the write and ignored it would pass. The unit tests carry that claim.
+  - at: 1.5
+    path: "/node/20/param/machine"
+    eq: 1.0
+
+  # The voice really was sounding when the switch arrived — otherwise this
+  # scenario proves nothing about declicking.
+  - at: 0.9
+    peak_gte: 0.01
+    window_ms: 200
+
+  # No step at the switch. Measured: 0.0087 across the switch with the fade,
+  # 0.60 without it. 0.05 leaves room for the reverb tail's own texture while
+  # still catching a partial-fade regression, not just total fade removal.
+  - discontinuity_lt: 0.05
+    from: 0.6
+    until: 3.0

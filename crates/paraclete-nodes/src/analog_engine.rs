@@ -4,7 +4,8 @@ use std::borrow::Cow;
 
 use paraclete_node_api::{
     AffordanceHint, CapabilityDocument, DebugEventKind, EnvelopeGroup, Event, Node, PageRef,
-    ParamDescriptor, ParamUnit, ParameterBank, PortDescriptor, PortDirection, PortType,
+    MachineVariant, ParamDescriptor, ParamOverlay, ParamUnit, ParameterBank, PortDescriptor,
+    PortDirection, PortType,
     ProcessInput, ProcessOutput, Rule, StateBusValue, UmpMessage, ViewPlugin,
     midi::ChannelVoice2, CMD_TRIGGER,
 };
@@ -15,8 +16,76 @@ fn ap(name: &str) -> u32 { ParamDescriptor::id_for_name(name) }
 
 // ── Machine variant ───────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum AnalogMachine { Kick, Snare, HiHat }
+
+impl AnalogMachine {
+    /// Declaration order, and therefore the `machine` param's value order.
+    /// **Append-only** — a saved project stores the numeric value, so
+    /// reordering this silently re-points every stored `machine` at a
+    /// different engine.
+    pub const ALL: [AnalogMachine; 3] = [
+        AnalogMachine::Kick,
+        AnalogMachine::Snare,
+        AnalogMachine::HiHat,
+    ];
+
+    pub fn value(self) -> u32 {
+        match self {
+            AnalogMachine::Kick => 0,
+            AnalogMachine::Snare => 1,
+            AnalogMachine::HiHat => 2,
+        }
+    }
+
+    /// Out-of-range values clamp to the last machine rather than panicking —
+    /// this reads a `f64` bank slot that a malformed project could carry.
+    pub fn from_value(v: u32) -> Self {
+        *Self::ALL.get(v as usize).unwrap_or(&AnalogMachine::HiHat)
+    }
+
+    /// Capability-document name, shown as the engine name on a surface.
+    pub fn doc_name(self) -> &'static str {
+        match self {
+            AnalogMachine::Kick => "AnalogKick",
+            AnalogMachine::Snare => "AnalogSnare",
+            AnalogMachine::HiHat => "AnalogHiHat",
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            AnalogMachine::Kick => "Kick",
+            AnalogMachine::Snare => "Snare",
+            AnalogMachine::HiHat => "HiHat",
+        }
+    }
+}
+
+/// MM §0 D1: a machine switch fades the voice to silence over this long,
+/// then swaps and resets voice state. There is no matching fade-*in* —
+/// ADR-041 decision 4 resets envelopes on switch, so the new machine starts
+/// silent and its next trigger begins from zero anyway.
+const MACHINE_SWITCH_FADE_SECS: f32 = 0.005;
+
+/// An in-flight gain ramp around a machine switch.
+///
+/// There is no fade-*in* after a swap: ADR-041 decision 4 resets voice state,
+/// and `render_span` early-returns while inactive, so the node emits exact
+/// zeros until the next trigger — which starts from zero anyway. There is
+/// provably nothing to fade in.
+///
+/// The ramp is still bidirectional, for a different reason: a switch that is
+/// cancelled or retargeted part-way must return to unity *continuously*.
+/// Jumping straight back is the same click the fade exists to prevent.
+#[derive(Clone, Copy, Debug)]
+struct SwitchFade {
+    /// Samples of ramp left to run.
+    remaining: u32,
+    /// `Some` = fading out toward this machine; `None` = a cancelled switch
+    /// ramping back to unity, which swaps nothing.
+    target: Option<AnalogMachine>,
+}
 
 // ── AnalogEngine ──────────────────────────────────────────────────────────────
 
@@ -46,6 +115,9 @@ pub struct AnalogEngine {
     /// Linear output-level multiplier derived from trigger velocity (0.0..=1.0).
     /// 1.0 = unity gain (full velocity, matches pre-W1 output level).
     velocity_level: f32,
+
+    /// In-flight gain ramp for a machine switch (MM §0 D1).
+    switch_fade: Option<SwitchFade>,
 
     render_l:    Vec<f32>,
     render_r:    Vec<f32>,
@@ -81,6 +153,7 @@ impl AnalogEngine {
             node_locks:  Vec::new(),
             last_note:   36, // C2 — matches current_hz's initial value
             velocity_level: 1.0,
+            switch_fade: None,
             render_l:    Vec::new(),
             render_r:    Vec::new(),
             pending_initial_params: HashMap::new(),
@@ -103,8 +176,10 @@ impl AnalogEngine {
         self.bank.get(param_id) as f32
     }
 
-    fn build_doc(machine: AnalogMachine) -> CapabilityDocument {
-        let params = match machine {
+    /// The params one machine actually reads. **Not** what the bank stores —
+    /// see `union_params`.
+    fn machine_params(machine: AnalogMachine) -> Vec<ParamDescriptor> {
+        match machine {
             AnalogMachine::Kick => vec![
                 ParamDescriptor { id: ap("tune"),  name: "tune".into(),  min: -24.0, max: 24.0,   default: 0.0,   stepped: false, unit: ParamUnit::Semitones, display: None },
                 ParamDescriptor { id: ap("punch"), name: "punch".into(), min: 0.0,   max: 1.0,    default: 0.7,   stepped: false, unit: ParamUnit::Generic,   display: None },
@@ -124,21 +199,185 @@ impl AnalogEngine {
                 ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.01,   max: 1.0,     default: 0.08,   stepped: false, unit: ParamUnit::Seconds, display: None },
                 ParamDescriptor { id: ap("open"),  name: "open".into(),  min: 0.0,    max: 1.0,     default: 0.0,    stepped: false, unit: ParamUnit::Generic, display: None },
             ],
-        };
-
-        let name = match machine {
-            AnalogMachine::Kick  => "AnalogKick",
-            AnalogMachine::Snare => "AnalogSnare",
-            AnalogMachine::HiHat => "AnalogHiHat",
-        };
-
-        CapabilityDocument {
-            name: name.into(), vendor: "Paraclete".into(), version: (0, 6, 0),
-            ports: vec![],
-            params,
-            extensions: vec!["paraclete.instrument".into()],
-    view: None,
         }
+    }
+
+    /// The bank's parameter set: **every machine's params merged at the widest
+    /// envelope**, plus `machine` itself (ADR-041 §0 A1).
+    ///
+    /// `active` picks each param's *default* — and nothing else. Ranges are the
+    /// union unconditionally, for the lifetime of the node. Narrowing them to
+    /// the active machine is the phase's one unrecoverable mistake: writes
+    /// clamp to the bank's range (`parameter.rs:73,78,97`), and `deserialize()`
+    /// runs after `activate()` through the same clamping `set()`, so a narrowed
+    /// bank truncates every value belonging to a machine that is not currently
+    /// selected — on **load** — and persists that on the next save.
+    ///
+    /// Per-machine ranges live in `MachineVariant::overlays` and are a surface
+    /// concern; this engine never sees them.
+    fn union_params(active: AnalogMachine) -> Vec<ParamDescriptor> {
+        let mut out: Vec<ParamDescriptor> = vec![ParamDescriptor {
+            id: ap("machine"),
+            name: "machine".into(),
+            min: 0.0,
+            max: (AnalogMachine::ALL.len() - 1) as f64,
+            default: active.value() as f64,
+            stepped: true,
+            unit: ParamUnit::Generic,
+            display: None,
+        }];
+
+        for m in AnalogMachine::ALL {
+            for p in Self::machine_params(m) {
+                match out.iter_mut().find(|q| q.id == p.id) {
+                    Some(q) => {
+                        q.min = q.min.min(p.min);
+                        q.max = q.max.max(p.max);
+                        // The active machine's default wins; otherwise the
+                        // first declarer's stands, so a param the active
+                        // machine does not read still has a sane starting
+                        // value for when it is selected.
+                        if m == active {
+                            q.default = p.default;
+                        }
+                    }
+                    None => out.push(p),
+                }
+            }
+        }
+        out
+    }
+
+    fn build_doc(machine: AnalogMachine) -> CapabilityDocument {
+        CapabilityDocument {
+            // The active machine's name — a surface shows what is selected.
+            // This is the only other place `machine` is read here, and it
+            // touches no range.
+            name: machine.doc_name().into(),
+            vendor: "Paraclete".into(),
+            version: (0, 6, 0),
+            ports: vec![],
+            params: Self::union_params(machine),
+            extensions: vec!["paraclete.instrument".into()],
+            view: None,
+        }
+    }
+
+    /// Has the `machine` param been moved? Called at the block boundary, so a
+    /// switch never lands mid-sub-block (ADR-041 decision 4).
+    ///
+    /// Reads the **bank**, not `get_param` — a `ParamLock` on `machine` must
+    /// never switch machines mid-step. Decision 6 forbids p-locking it and
+    /// MM-C6 rejects it surface-side; this is the engine-side belt to that
+    /// brace, because the sequencer stores opaque `(node_id, param_id)` locks
+    /// and cannot know it is holding an identity param.
+    fn poll_machine_param(&mut self) {
+        let target = AnalogMachine::from_value(self.bank.get(ap("machine")).max(0.0) as u32);
+        let total = self.fade_len();
+
+        if target == self.machine {
+            // Moved back before the fade finished. Ramping straight to unity
+            // would step the gain by however far the fade had already got —
+            // the very artefact this exists to prevent — so ramp back up from
+            // wherever it is.
+            if let Some(f) = self.switch_fade {
+                if f.target.is_some() {
+                    self.switch_fade = Some(SwitchFade {
+                        remaining: total.saturating_sub(f.remaining).max(1),
+                        target: None,
+                    });
+                }
+            }
+            return;
+        }
+
+        if self.switch_fade.map(|f| f.target) == Some(Some(target)) {
+            return;
+        }
+        if !self.active {
+            // Nothing sounding, nothing to declick.
+            self.apply_machine_switch(target);
+            self.switch_fade = None;
+            return;
+        }
+
+        // Retarget mid-fade keeps the gain it has already reached; taking a
+        // fresh full-length fade would jump back to unity.
+        let remaining = match self.switch_fade {
+            Some(f) if f.target.is_some() => f.remaining.min(total),
+            // A cancel-ramp in flight is at gain (total - remaining)/total;
+            // converting back to a fade-out preserves that level.
+            Some(f) => total.saturating_sub(f.remaining).max(1),
+            None => total,
+        };
+        self.switch_fade = Some(SwitchFade {
+            remaining,
+            target: Some(target),
+        });
+    }
+
+    fn fade_len(&self) -> u32 {
+        (MACHINE_SWITCH_FADE_SECS * self.sample_rate).max(1.0) as u32
+    }
+
+    /// Ramp the rendered block, and once a fade-out reaches silence, swap.
+    ///
+    /// A `target: None` ramp is a cancelled switch on its way back to unity —
+    /// it changes no machine, it just restores gain continuously.
+    fn apply_switch_fade(&mut self, block_size: usize) {
+        let Some(fade) = self.switch_fade else {
+            return;
+        };
+        let total = self.fade_len() as f32;
+        let fading_out = fade.target.is_some();
+        let mut left = fade.remaining;
+
+        for i in 0..block_size.min(self.render_l.len()) {
+            if left == 0 {
+                if fading_out {
+                    self.render_l[i] = 0.0;
+                    self.render_r[i] = 0.0;
+                }
+                continue;
+            }
+            let g = if fading_out {
+                left as f32 / total
+            } else {
+                1.0 - (left as f32 / total)
+            };
+            self.render_l[i] *= g;
+            self.render_r[i] *= g;
+            left -= 1;
+        }
+
+        if left == 0 {
+            if let Some(target) = fade.target {
+                self.apply_machine_switch(target);
+            }
+            self.switch_fade = None;
+        } else {
+            self.switch_fade = Some(SwitchFade {
+                remaining: left,
+                target: fade.target,
+            });
+        }
+    }
+
+    /// ADR-041 decision 4: voice state resets on switch.
+    ///
+    /// **The bank is not rebuilt.** Rebuilding is `activate()`'s job and it
+    /// resets every slot to defaults — the same cross-machine data loss the
+    /// union bank exists to prevent, by a different route (MM §3.5).
+    fn apply_machine_switch(&mut self, target: AnalogMachine) {
+        self.machine = target;
+        self.osc_phase = 0.0;
+        self.pitch_env = AdState::new();
+        self.amp_env = AdState::new();
+        self.body_env = AdState::new();
+        self.noise_env = AdState::new();
+        self.svf_low = 0.0;
+        self.svf_band = 0.0;
+        self.active = false;
     }
 
     fn retrigger(&mut self, note: u8, velocity: f32) {
@@ -261,40 +500,91 @@ impl AnalogEngine {
     }
 }
 
+impl AnalogEngine {
+    /// One machine's page placements. `tune` is deliberately absent for HiHat,
+    /// which does not declare it — the unconditional `tune` at SRC slot 0 in
+    /// the pre-MM code is half of #47 (BUG-037), and per-machine pages are how
+    /// MM-C4 closes that class.
+    fn machine_page_refs(machine: AnalogMachine) -> Vec<(u32, PageRef)> {
+        let mut refs = vec![(ap("decay"), PageRef { page: Cow::Borrowed("AMP"), slot: 0 })];
+        match machine {
+            AnalogMachine::Kick => {
+                refs.push((ap("tune"),  PageRef { page: Cow::Borrowed("SRC"), slot: 0 }));
+                refs.push((ap("tone"),  PageRef { page: Cow::Borrowed("SRC"), slot: 1 }));
+                refs.push((ap("punch"), PageRef { page: Cow::Borrowed("SRC"), slot: 2 }));
+                refs.push((ap("drive"), PageRef { page: Cow::Borrowed("SRC"), slot: 3 }));
+            }
+            AnalogMachine::Snare => {
+                refs.push((ap("tune"),  PageRef { page: Cow::Borrowed("SRC"), slot: 0 }));
+                refs.push((ap("tone"),  PageRef { page: Cow::Borrowed("SRC"), slot: 1 }));
+                refs.push((ap("snap"),  PageRef { page: Cow::Borrowed("SRC"), slot: 2 }));
+                refs.push((ap("noise"), PageRef { page: Cow::Borrowed("SRC"), slot: 3 }));
+            }
+            AnalogMachine::HiHat => {
+                refs.push((ap("tone"), PageRef { page: Cow::Borrowed("SRC"), slot: 1 }));
+                refs.push((ap("open"), PageRef { page: Cow::Borrowed("SRC"), slot: 2 }));
+            }
+        }
+        refs
+    }
+
+    /// This machine's per-param ranges, for a surface to display and clamp
+    /// against. The bank stores the union and is never narrowed to these.
+    fn machine_overlays(machine: AnalogMachine) -> Vec<(u32, ParamOverlay)> {
+        let mut out: Vec<(u32, ParamOverlay)> = vec![(
+            ap("machine"),
+            ParamOverlay {
+                min: 0.0,
+                max: (AnalogMachine::ALL.len() - 1) as f64,
+                default: machine.value() as f64,
+                // Repeated in every variant on purpose: miss one and p-lock
+                // rejection stops working for that machine alone. MM-C8
+                // asserts the flag is consistent across variants.
+                identity: true,
+            },
+        )];
+        for p in Self::machine_params(machine) {
+            out.push((
+                p.id,
+                ParamOverlay {
+                    min: p.min,
+                    max: p.max,
+                    default: p.default,
+                    identity: false,
+                },
+            ));
+        }
+        out
+    }
+
+    fn machine_variants() -> Vec<MachineVariant> {
+        AnalogMachine::ALL
+            .iter()
+            .map(|&m| MachineVariant {
+                value: m.value(),
+                name: Cow::Borrowed(m.doc_name()),
+                page_groups: Cow::Owned(vec![Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
+                pages: Cow::Owned(Self::machine_page_refs(m)),
+                overlays: Cow::Owned(Self::machine_overlays(m)),
+            })
+            .collect()
+    }
+}
+
 impl ViewPlugin for AnalogEngine {
     fn to_rule(&self, _node_id: u64, _sub_nodes: &[(u64, &dyn ViewPlugin)]) -> Rule {
-        let display_name = match self.machine {
-            AnalogMachine::Kick  => "Kick",
-            AnalogMachine::Snare => "Snare",
-            AnalogMachine::HiHat => "HiHat",
-        };
+        let display_name = self.machine.display_name();
+        let (decay_id, tone_id) = (ap("decay"), ap("tone"));
 
-        let (decay_id, tune_id, tone_id) = (ap("decay"), ap("tune"), ap("tone"));
-
-        let mut page_refs = vec![
-            (decay_id, PageRef { page: Cow::Borrowed("AMP"), slot: 0 }),
-            (tune_id,  PageRef { page: Cow::Borrowed("SRC"), slot: 0 }),
-            (tone_id,  PageRef { page: Cow::Borrowed("SRC"), slot: 1 }),
-        ];
+        // Base fields stay the ACTIVE machine's, so a consumer that ignores
+        // `variants` renders exactly what it did before (ADR-041 decision 3).
+        // MM-C5 teaches composite assembly to prefer the variant.
+        let page_refs = Self::machine_page_refs(self.machine);
 
         let affordances = vec![
             (decay_id, AffordanceHint::EnvelopeCurve { group_idx: 0 }),
             (tone_id,  AffordanceHint::FilterShape),
         ];
-
-        match self.machine {
-            AnalogMachine::Kick => {
-                page_refs.push((ap("punch"), PageRef { page: Cow::Borrowed("SRC"), slot: 2 }));
-                page_refs.push((ap("drive"), PageRef { page: Cow::Borrowed("SRC"), slot: 3 }));
-            }
-            AnalogMachine::Snare => {
-                page_refs.push((ap("snap"),  PageRef { page: Cow::Borrowed("SRC"), slot: 2 }));
-                page_refs.push((ap("noise"), PageRef { page: Cow::Borrowed("SRC"), slot: 3 }));
-            }
-            AnalogMachine::HiHat => {
-                page_refs.push((ap("open"), PageRef { page: Cow::Borrowed("SRC"), slot: 2 }));
-            }
-        }
 
         let env = EnvelopeGroup {
             env_type: Cow::Borrowed("AD"),
@@ -312,7 +602,7 @@ impl ViewPlugin for AnalogEngine {
             routing: Cow::Borrowed(&[]),
             diagram: None,
             view_overrides: Cow::Borrowed(&[]),
-            variants: Cow::Borrowed(&[]),
+            variants: Cow::Owned(Self::machine_variants()),
         }
     }
 }
@@ -366,10 +656,13 @@ impl Node for AnalogEngine {
         self.active      = false;
         self.last_note   = 36;
         self.velocity_level = 1.0;
+        self.switch_fade = None;
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
         self.bank.handle_commands(input.commands);
+        // Block boundary: the one place a machine switch may begin.
+        self.poll_machine_param();
 
         let block_size = input.block_size;
         for s in &mut self.render_l { *s = 0.0; }
@@ -434,6 +727,7 @@ impl Node for AnalogEngine {
             }
         }
         self.render_span(cursor, block_size);
+        self.apply_switch_fade(block_size);
 
         if let Some(buf) = output.audio_outputs.first_mut() {
             if buf.channels() >= 2 {
@@ -793,6 +1087,352 @@ mod tests {
         assert!((rms(&out_base) - rms(&out_locked)).abs() > 1e-4,
             "cycle 2 (no lock) should differ from locked drive=1.0; base={:.4} locked={:.4}",
             rms(&out_base), rms(&out_locked));
+    }
+
+    // ── MM-C3: union bank + machine identity ──────────────────────────────
+
+    /// **The phase's load-bearing invariant** (MM §3.4). The bank stores the
+    /// widest envelope across every machine and is never narrowed to the
+    /// active one — writes clamp to the bank's range, so narrowing truncates
+    /// storage rather than display, and `deserialize()` runs after
+    /// `activate()` through that same clamping `set()`.
+    ///
+    /// Asserted against the variants' own overlays rather than literals, so it
+    /// cannot drift from the declarations it is checking.
+    #[test]
+    fn union_bank_covers_every_variant_overlay() {
+        for constructed in AnalogMachine::ALL {
+            let doc = AnalogEngine::build_doc(constructed);
+            for variant in AnalogEngine::machine_variants() {
+                for (pid, overlay) in variant.overlays.iter() {
+                    let slot = doc
+                        .params
+                        .iter()
+                        .find(|p| p.id == *pid)
+                        .unwrap_or_else(|| {
+                            panic!("variant {} declares param {pid} the union doc lacks", variant.name)
+                        });
+                    assert!(
+                        slot.min <= overlay.min && slot.max >= overlay.max,
+                        "bank range [{}, {}] for param {pid} does not cover {}'s \
+                         overlay [{}, {}] (engine constructed as {constructed:?}) — \
+                         narrowing the bank truncates stored values on load",
+                        slot.min, slot.max, variant.name, overlay.min, overlay.max
+                    );
+                }
+            }
+        }
+    }
+
+    /// The load path that exists today: `initial_params` from the instrument
+    /// file, replayed through the clamping `bank.set()` inside `activate()`.
+    ///
+    /// HiHat's `tone` reaches 18 kHz; Kick's stops at 8 kHz. A Kick-constructed
+    /// engine must still store 18 kHz, because the value belongs to a machine
+    /// the user may select later. This is the corruption path from MM §3.4 —
+    /// #154 means a project save cannot exercise it yet, so it goes through
+    /// `set_initial_params` instead.
+    #[test]
+    fn a_value_legal_on_another_machine_survives_loading_under_this_one() {
+        let hihat_tone_max = AnalogEngine::machine_params(AnalogMachine::HiHat)
+            .into_iter()
+            .find(|p| p.id == ap("tone"))
+            .expect("HiHat declares tone")
+            .max;
+        let kick_tone_max = AnalogEngine::machine_params(AnalogMachine::Kick)
+            .into_iter()
+            .find(|p| p.id == ap("tone"))
+            .expect("Kick declares tone")
+            .max;
+        assert!(
+            hihat_tone_max > kick_tone_max,
+            "fixture assumption: HiHat's tone range must exceed Kick's"
+        );
+
+        let mut eng = AnalogEngine::kick();
+        let mut initial = HashMap::new();
+        initial.insert("tone".to_string(), hihat_tone_max);
+        eng.set_initial_params(&initial);
+        eng.activate(44100.0, 512);
+
+        assert_eq!(
+            eng.bank.get(ap("tone")),
+            hihat_tone_max,
+            "a Kick-constructed engine truncated a HiHat-legal tone to Kick's \
+             ceiling — the bank was narrowed to the active machine, which \
+             destroys the value on load"
+        );
+    }
+
+    /// Switching away and back must lose nothing, for every param of every
+    /// machine. Probe values are derived from the declared ranges, not written
+    /// as literals — a failing derived test cannot be quietly retuned.
+    #[test]
+    fn machine_round_trip_preserves_every_param() {
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+
+        // Park every param at a distinctive point inside the union range.
+        let doc = AnalogEngine::build_doc(AnalogMachine::Kick);
+        let mut expected: Vec<(u32, f64)> = Vec::new();
+        for p in doc.params.iter().filter(|p| p.id != ap("machine")) {
+            let v = p.min + (p.max - p.min) * 0.73;
+            eng.bank.set(p.id, v);
+            expected.push((p.id, v));
+        }
+
+        for target in [AnalogMachine::Snare, AnalogMachine::HiHat, AnalogMachine::Kick] {
+            eng.bank.set(ap("machine"), target.value() as f64);
+            eng.poll_machine_param();
+            // Inactive voice, so the switch is immediate — no fade to run out.
+            assert_eq!(eng.machine, target, "switch should apply while silent");
+        }
+
+        for (pid, want) in expected {
+            assert_eq!(
+                eng.bank.get(pid),
+                want,
+                "param {pid} changed across a machine round trip"
+            );
+        }
+    }
+
+    #[test]
+    fn union_doc_has_no_duplicate_ids() {
+        for m in AnalogMachine::ALL {
+            let doc = AnalogEngine::build_doc(m);
+            let mut ids: Vec<u32> = doc.params.iter().map(|p| p.id).collect();
+            let before = ids.len();
+            ids.sort_unstable();
+            ids.dedup();
+            assert_eq!(ids.len(), before, "duplicate param id in {m:?}'s union doc");
+        }
+    }
+
+    /// The union is the same set whatever the engine was constructed as —
+    /// only defaults differ. A machine-dependent param *set* would mean the
+    /// bank changes shape on switch.
+    #[test]
+    fn union_param_set_is_machine_independent_but_defaults_are_not() {
+        let ids = |m| {
+            let mut v: Vec<u32> = AnalogEngine::build_doc(m).params.iter().map(|p| p.id).collect();
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(ids(AnalogMachine::Kick), ids(AnalogMachine::HiHat));
+
+        let default_of = |m, pid| {
+            AnalogEngine::build_doc(m)
+                .params
+                .iter()
+                .find(|p| p.id == pid)
+                .unwrap()
+                .default
+        };
+        // Kick's tone default is 4000, HiHat's 8000 — the active machine picks.
+        assert_ne!(
+            default_of(AnalogMachine::Kick, ap("tone")),
+            default_of(AnalogMachine::HiHat, ap("tone"))
+        );
+        assert_eq!(default_of(AnalogMachine::Kick, ap("machine")), 0.0);
+        assert_eq!(default_of(AnalogMachine::HiHat, ap("machine")), 2.0);
+    }
+
+    #[test]
+    fn machine_param_is_stepped_over_the_machine_count() {
+        let doc = AnalogEngine::build_doc(AnalogMachine::Kick);
+        let m = doc.params.iter().find(|p| p.id == ap("machine")).expect("machine param");
+        assert!(m.stepped);
+        assert_eq!((m.min, m.max), (0.0, 2.0));
+    }
+
+    /// Every variant must flag `machine` as identity — miss one and p-lock
+    /// rejection silently stops working for that machine alone.
+    #[test]
+    fn every_variant_flags_machine_as_identity() {
+        for v in AnalogEngine::machine_variants() {
+            let (_, o) = v
+                .overlays
+                .iter()
+                .find(|(pid, _)| *pid == ap("machine"))
+                .unwrap_or_else(|| panic!("variant {} has no machine overlay", v.name));
+            assert!(o.identity, "variant {} does not flag machine as identity", v.name);
+        }
+    }
+
+    /// A variant's pages may only name params that variant declares — the
+    /// BUG-037 class. HiHat has no `tune`, so no HiHat page may reference it.
+    #[test]
+    fn every_variant_page_ref_resolves_in_that_variants_params() {
+        for m in AnalogMachine::ALL {
+            let mut declared: Vec<u32> =
+                AnalogEngine::machine_params(m).iter().map(|p| p.id).collect();
+            // `machine` is on the union doc but is not a machine-specific
+            // param, so `machine_params` excludes it. MM-C6 puts machine-select
+            // on the TRIG page (ADR-041 §0 A2); without this it would look like
+            // an unresolvable ref the moment that lands.
+            declared.push(ap("machine"));
+            for (pid, page_ref) in AnalogEngine::machine_page_refs(m) {
+                assert!(
+                    declared.contains(&pid),
+                    "{m:?}'s {} page slot {} names param {pid}, which {m:?} does not declare",
+                    page_ref.page, page_ref.slot
+                );
+            }
+        }
+    }
+
+    /// A machine switch while a voice is sounding ramps to silence rather than
+    /// cutting — the declick from MM §0 D1.
+    ///
+    /// Asserts the *samples*, not just the state machine: a hard mute would
+    /// satisfy "swapped after a block" while producing exactly the click the
+    /// fade exists to prevent.
+    #[test]
+    fn switch_while_sounding_fades_out_before_swapping() {
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        trigger_now(&mut eng);
+        assert!(eng.active, "voice should be sounding");
+
+        eng.bank.set(ap("machine"), AnalogMachine::Snare.value() as f64);
+        eng.poll_machine_param();
+        assert_eq!(
+            eng.machine,
+            AnalogMachine::Kick,
+            "a sounding voice must fade first, not swap instantly"
+        );
+        assert!(eng.switch_fade.is_some());
+
+        // The fade is shorter than one 512-sample block at 44.1 kHz (5 ms =
+        // 220 samples), so one render completes it.
+        let out = run_engine(&mut eng, &[]);
+        assert_eq!(eng.machine, AnalogMachine::Snare, "swap after the fade");
+        assert!(eng.switch_fade.is_none());
+        assert!(!eng.active, "voice state resets on switch");
+
+        // The ramp really ramped: no single-sample step anywhere near the size
+        // of the signal it was attenuating.
+        let peak = out.iter().fold(0.0f32, |a, &s| a.max(s.abs()));
+        assert!(peak > 0.01, "fixture: the fading voice must be audible");
+        let max_step = out
+            .windows(2)
+            .fold(0.0f32, |a, w| a.max((w[1] - w[0]).abs()));
+        assert!(
+            max_step < peak * 0.5,
+            "a {max_step:.4} step against a {peak:.4} peak is a cut, not a fade"
+        );
+        assert!(
+            out[out.len() - 1].abs() < 1e-6,
+            "the block must end silent, ready for the swap"
+        );
+    }
+
+    /// M1 from MM-C3's review: cancelling a switch part-way used to drop the
+    /// fade outright, snapping the gain from wherever it had reached back to
+    /// unity — the same click, in the other direction. Reachable whenever the
+    /// fade spans more than one block, which the tunable constant invites.
+    #[test]
+    fn cancelling_a_switch_ramps_back_instead_of_snapping() {
+        let mut eng = AnalogEngine::kick();
+        // 192 kHz makes the 5 ms fade 960 samples — longer than the 512-sample
+        // block, which is exactly the condition that makes this reachable.
+        eng.activate(192_000.0, 512);
+        trigger_now(&mut eng);
+
+        eng.bank.set(ap("machine"), AnalogMachine::Snare.value() as f64);
+        eng.poll_machine_param();
+        let fading = eng.switch_fade.expect("fade armed");
+        assert_eq!(fading.target, Some(AnalogMachine::Snare));
+
+        // Move it back before the fade completes.
+        eng.bank.set(ap("machine"), AnalogMachine::Kick.value() as f64);
+        eng.poll_machine_param();
+        let cancelling = eng.switch_fade.expect("a cancel must still ramp");
+        assert_eq!(
+            cancelling.target, None,
+            "a cancelled switch ramps back to unity and swaps nothing"
+        );
+        assert_eq!(
+            eng.machine,
+            AnalogMachine::Kick,
+            "no swap happened, so the machine is unchanged"
+        );
+    }
+
+    /// Retargeting mid-fade must continue from the gain already reached, not
+    /// restart at unity.
+    #[test]
+    fn retargeting_mid_fade_keeps_the_gain_it_reached() {
+        let mut eng = AnalogEngine::kick();
+        // See above: the fade must outlast one block for a retarget to land
+        // mid-ramp at all.
+        eng.activate(192_000.0, 512);
+        trigger_now(&mut eng);
+
+        eng.bank.set(ap("machine"), AnalogMachine::Snare.value() as f64);
+        eng.poll_machine_param();
+        // Burn some of the fade.
+        let _ = run_engine(&mut eng, &[]);
+        let mid = eng.switch_fade.expect("still fading").remaining;
+        assert!(mid < eng.fade_len(), "fixture: some fade must have elapsed");
+
+        eng.bank.set(ap("machine"), AnalogMachine::HiHat.value() as f64);
+        eng.poll_machine_param();
+        let after = eng.switch_fade.expect("still fading");
+        assert_eq!(after.target, Some(AnalogMachine::HiHat));
+        assert!(
+            after.remaining <= mid,
+            "retarget restarted the fade ({} > {mid}), stepping the gain back to unity",
+            after.remaining
+        );
+    }
+
+    #[test]
+    fn switch_while_silent_is_immediate() {
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        assert!(!eng.active);
+
+        eng.bank.set(ap("machine"), AnalogMachine::HiHat.value() as f64);
+        eng.poll_machine_param();
+        assert_eq!(eng.machine, AnalogMachine::HiHat, "nothing to declick");
+        assert!(eng.switch_fade.is_none());
+    }
+
+    /// A `ParamLock` on `machine` must not switch machines: `poll_machine_param`
+    /// reads the bank, not `get_param`. ADR-041 decision 6 forbids p-locking it
+    /// and MM-C6 rejects it surface-side; this is the engine-side guard,
+    /// because the sequencer cannot know it is holding an identity param.
+    #[test]
+    fn a_param_lock_on_machine_does_not_switch() {
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        eng.set_node_id(20);
+
+        // Fed as the executor actually delivers it — a ParamLock event through
+        // `process()` — not by poking `node_locks` and calling poll directly.
+        // `process()` polls before it clears and refills `node_locks`, so the
+        // lock only exists on the *second* block; a one-block test would pass
+        // against an implementation that reads `get_param` (design-process
+        // learning 4).
+        let lock = TimedEvent {
+            sample_offset: 0,
+            event: Event::ParamLock(ParamLockEvent {
+                node_id: 20,
+                param_id: ap("machine"),
+                value: AnalogMachine::HiHat.value() as f64,
+            }),
+        };
+        for _ in 0..3 {
+            let _ = run_engine(&mut eng, std::slice::from_ref(&lock));
+            assert_eq!(
+                eng.machine,
+                AnalogMachine::Kick,
+                "a p-lock must never reach the machine switch"
+            );
+        }
+        assert!(eng.switch_fade.is_none(), "and must not even arm a fade");
     }
 
     #[test]
