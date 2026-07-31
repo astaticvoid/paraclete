@@ -69,10 +69,10 @@ stretches need no input between gates.
 | 2 | ~~**⛔ Session #2**~~ (TK2 C10, user-paired) | **Held 2026-07-27 — not a clean sign-off.** Reopened design.md §5.1/§5.2 + the default REC/trig mode model. |
 | 2.5 | ~~**⛔ TK2.1 redesign pass**~~ — ADR-044 ✅ ratified 2026-07-28 | **Gate cleared.** Shipped C0–C7; session #3 held 2026-07-29. |
 | 2.6 | ~~**TK2.2 fix pass**~~ (`tk2.2-theotokos.md`, ADR-046) | **CLOSED 2026-07-30.** Session #4 held; every hypothesis passed, ADR-045 stays parked on user judgment. `tk2.2-report.md`, `sessions/theotokos-4.md`. Four defects filed (#142–#145), not blocking. |
-| 3 | **⛔ TK2-exit scheduling pass** (user) — **gate now open** | Order the parallel tracks: P11 spec → impl; AN0(→AN1); ADR-041+042 implementation. All three are independent of each other. Session #4 adds one input: #147 (acknowledge every command / held-key highlight) wants an ADR and may want to ride with whichever Theotokos work is scheduled next. |
+| 3 | ~~**⛔ TK2-exit scheduling pass**~~ (user) | **Gate cleared 2026-07-30.** User ordered **4c first**. 4a and 4b remain unscheduled — closing 4c does not imply either is next. #147 was deliberately not chosen as the first unit and is unmilestoned, tracked by its labels. Preceded by a defect pass closing #143–#146. |
 | 4a | **P11**: spec (agent, session-informed) → **⛔ spec ratification** (kit UX) → impl → session | two gates |
 | 4b | **AN0–AN1** (pool → capture; R2 transition-trick gate on AN1 exit) → **⛔ sampling session** | AN2 additionally needs P11 KitStore shipped |
-| 4c | **ADR-041 + ADR-042 impl** (machine select, MOD page — mechanical vs the ADRs) | none until P14 |
+| 4c | **MM**: ADR-041 + ADR-042 impl (machine select, MOD page) — `mm-machine-and-mod.md` | **ACTIVE.** MM-C0 landed. One session gate at exit (§6.7): machine switch and LFO depth are both performance gestures. |
 | 5 | **P14**: spec — **⛔ user freezes the musical tables** → impl → **⛔ baseline patches + session** | needs 4c |
 | 6 | **W-track residuals**, any time a session is convened: W2 C7 §7.1 exit pass; BUG-012 hardware verification | ⛔ paired session |
 | 7 | **TK3 / WT convergence decision** (OQ-T12), after three Theotokos sessions | ⛔ user |
