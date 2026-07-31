@@ -81,7 +81,7 @@ result — use it to hear/verify sound changes without the app:
 
 ```bash
 # Quick mode: trigger a voice, render, auto-play
-cargo run -p test-driver -- --trigger kick --at 1.0 -d 3
+cargo run -p test-driver -- --trigger analog_engine:kick --at 1.0 -d 3
 
 # Scenario mode: timed commands + assertions (see tools/test-driver/tests/)
 cargo run -p test-driver -- tools/test-driver/tests/kick_reverb_clean.yaml
@@ -96,13 +96,25 @@ cargo run -p test-driver -- <scenario>.yaml --check-baseline    # diff; exit 1 o
 # Interactive mode: JSON-lines REPL for live engine interrogation
 cargo run -p test-driver -- --interactive --instrument instrument.yaml
 # stdin commands, one JSON object per line; responses on stdout:
-#   {"cmd":"trigger","target":"kick","velocity":1.0}   engine mutations:
-#   {"cmd":"set_param","target":"kick","param":"decay","value":0.3}   set/bump/
+#   {"cmd":"trigger","target":"analog_engine:kick","velocity":1.0}   engine mutations:
+#   {"cmd":"set_param","target":"analog_engine:kick","param":"decay","value":0.3}   set/bump/
 #   {"cmd":"read","path":"/node/20/param/decay"}   sequencer/chain, same as batch
 #   {"cmd":"peak","window_ms":500}   read/dump/peak/render/quit are REPL-only
 #   {"cmd":"dump"}   {"cmd":"render","output":"/tmp/x.wav"}   {"cmd":"quit"}
 # Errors are non-fatal JSON ({"error":"..."}); the session continues.
 ```
+
+**Naming a target.** A scenario's `target:` accepts a node id, a full type tag
+(`analog_engine:kick`), a display name (`Kick`), a short type tag (`kick`), or
+a qualified `type_tag/display_name` (`sequencer/Kick`); names are
+case-insensitive. A name claimed by **more than one node is a hard error**
+listing the candidates and a suggested unambiguous handle for each — it is not
+resolved to one of them (INFRA-012: it used to be, silently, and a whole
+scenario's commands went to a node that ignored them while still passing).
+In the default `instrument.yaml` this makes `kick`/`snare`/`hihat`/`bass` and
+the bare tag `sequencer` all ambiguous. Numeric ids are **not** validated
+against the instrument — a typo'd id resolves and then silently no-ops
+(INFRA-014).
 
 Assertions: state-bus `eq`/`between`, live `peak_gte`/`peak_lt`, and
 post-capture artifact scans `discontinuity_lt`/`dc_offset_lt`/`dropout_lt_ms`
@@ -129,7 +141,7 @@ Pads:     qwertyui/asdfghjk = Trig1-16   bare trig = play + select track (REC of
 Rec:      z = REC toggles Off↔Grid (step-entry)   z(hold)+x = REC+PLAY → Live (record)
           x/c = PLAY/STOP (Space=PLAY)   Shift+z/x/c = copy/clear/paste lane
 Screens:  1-6 = param pages   7/9 = KIT/SAMPLING (reserved)   8 = Settings   0 = Tempo
-          o = Chain   Esc = NO (also: back to Grid)
+          o = Chain   Esc = NO (also: back to Grid; disarms a held prefix)
           arrows = Tempo ±bpm / Chain cursor (no-op elsewhere)
 Enc/Lock: n = toggle ENC mode (bare trig jogs encoder n; Ctrl = fine, Shift(FUNC) = coarse)
           m(hold)+trig = arm p-lock target (latched); hold a trig = momentary target (kitty)

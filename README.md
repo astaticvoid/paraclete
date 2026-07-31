@@ -165,7 +165,7 @@ cargo run -p gen-samples
 cargo build --workspace -p paraclete-clap
 
 # Headless testing
-cargo run -p test-driver -- --trigger kick --at 1.0 -d 3
+cargo run -p test-driver -- --trigger analog_engine:kick --at 1.0 -d 3
 cargo run -p test-driver -- tools/test-driver/tests/kick_reverb_clean.yaml
 ```
 
