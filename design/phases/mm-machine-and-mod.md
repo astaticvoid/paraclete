@@ -254,20 +254,75 @@ before (assert against the existing composite tests, unchanged).
    setting the `machine` default. `instrument.yaml` keeps working unchanged
    — that is a hard requirement, not a nicety.
 
-**The trap here.** `get_param` (`:99`) reads `node_locks` then the bank and
-returns `f32`. It must **not** learn about overlays: values are stored
-un-clamped at union range so switching away and back loses nothing
-(ADR-041 decision 2 — "inactive values are never clamped"). Clamping to the
-active overlay is a *display and encoder* concern (MM-C6), not a read-path
-concern. A test that makes MM-C3 pass by clamping in `get_param` has broken
-lossless cross-machine state — which is the whole reason the union bank was
-chosen over per-machine banks.
+#### The trap here — and where it actually is
 
-**Tests:** switching machine and back restores every param value exactly;
-a value set while on HiHat that is out of Kick's range survives a round
-trip; union doc has no duplicate ids; `machine` is stepped with the right
-range; a switch mid-note produces no sample discontinuity above the
-`discontinuity_lt` threshold (test-driver scenario).
+`ParameterBank` **already clamps on every write, and never on read**:
+
+| site | `crates/paraclete-node-api/src/parameter.rs` | |
+|---|---|---|
+| `CMD_SET_PARAM` | `:73` | `s.current = cmd.arg1.clamp(s.min, s.max)` |
+| `CMD_BUMP_PARAM` | `:78` | `.clamp(s.min, s.max)` |
+| `set()` | `:97` | `s.current = value.clamp(s.min, s.max)` |
+| `get()` | `:85-91` | plain read, **no clamp** |
+
+So the dangerous act is **not** adding a clamp to a read path. It is
+**narrowing `ParameterSlot.min`/`max` to the active machine's overlay** —
+which is the thing that looks like correctly applying the overlay. Because
+writes already clamp, narrowing the range silently truncates *storage*.
+
+It is worse than a wrong sound, because of the order the house convention
+mandates. `activate()` rebuilds the bank from `build_doc(self.machine)`
+(`crates/paraclete-nodes/src/analog_engine.rs:344-345`) and replays through
+the clamping `set()` (`:350`); `deserialize()` runs **after** `activate()`
+and re-applies saved values through the same `set()`. If the bank's range
+is the active machine's rather than the union, **loading a project
+truncates every value belonging to a machine that is not currently
+selected** — and the truncation persists the next time that project is
+saved.
+
+**Recovery differs sharply by site, which is why naming the site matters:**
+
+- *Read-path clamp* (the engine's `get_param` wrapper at `:99`): affects
+  only what the DSP hears. Storage is intact. Delete the line and every
+  value returns. **Fully recoverable.**
+- *Bank-range narrowing*: truncates at write time. In-session edits are
+  gone immediately. A project already on disk survives — until it is loaded
+  under the bug and saved again. **That load-then-save window is the only
+  unrecoverable path in this phase**, and it is the one to guard.
+
+**Three rules that make it hard rather than merely forbidden:**
+
+1. **The engine never holds overlays.** They live in `MachineVariant` on
+   the `Rule` (MM-C2) and are consumed by surfaces. The engine has no
+   overlay data to clamp *with*, so the wrong turn requires deliberately
+   plumbing overlays into the engine — a visible act in review, not a
+   one-line edit. This is affordable because ADR-041 decision 2 specifies
+   no reset-to-default on switch ("inert but retain values"), so the engine
+   genuinely never needs per-machine defaults.
+2. **`build_doc` uses `self.machine` for the `machine` param's default and
+   for nothing else.** Ranges are union, unconditionally.
+3. **A machine switch must not rebuild the bank.** Rebuilding is
+   `activate()`'s job and it resets every slot to defaults — the same data
+   loss by a different route.
+
+**Tests.** Four, and the first two are the guards:
+
+- **Invariant, shared by both engines:** an
+  `assert_union_bank_covers_all_variants(engine)` helper asserting each
+  bank slot's `[min, max]` contains every variant overlay's range for that
+  id. Fails the instant anyone narrows, in either engine, without needing
+  to guess which param they narrowed.
+- **The corruption path itself:** serialize with a value that is legal on
+  HiHat and out of range on Kick, deserialize with Kick active, assert the
+  value is unchanged. This is the load-then-save window as a test.
+- **Round trip, derived not literal:** compute the probe value *from the
+  declared cap-doc ranges* (a param where one machine's max exceeds
+  another's), not from a hardcoded number. Making a failing derived test
+  "pass" means changing what it derives, which reads as wrong; retuning a
+  literal reads as reasonable.
+- Union doc has no duplicate ids; `machine` is stepped with the right
+  range; a switch mid-note produces no sample discontinuity above the
+  `discontinuity_lt` threshold (test-driver scenario).
 
 ### MM-C4 — `FmEngine`: same, and BUG-037 dies structurally
 
@@ -440,9 +495,16 @@ two-node chain, not a unit fixture.
    declaration is incomplete — fix that instead.
 3. **No allocation, lock, or block in `process()`.** Per-machine state is
    pre-allocated at build. The sub-block loop allocates nothing.
-4. **Values are stored un-clamped at union range.** Clamping is display and
-   input, never storage (MM-C3's trap).
-5. **The base/offset split.** The LFO never writes the bank.
+4. **The bank's `min`/`max` are the union range for the lifetime of the
+   node, whatever machine is active.** Writes already clamp to them
+   (`parameter.rs:73,78,97`), so narrowing them truncates storage — and
+   because `deserialize()` runs after `activate()` through the same
+   clamping `set()`, it truncates on *load*. Overlays are a surface
+   concern and never reach the engine. See MM-C3's trap for the recovery
+   analysis; this is the phase's only unrecoverable failure.
+5. **A machine switch never rebuilds the bank.** That is `activate()`'s
+   job and it resets to defaults.
+6. **The base/offset split.** The LFO never writes the bank.
 
 ---
 
