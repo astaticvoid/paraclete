@@ -225,7 +225,7 @@ keyword. Reopened, and its body now also names the `AnalogEngine` instance
 HiHat cap-doc declares only `tone`/`decay`/`open`), which the original issue
 did not mention. MM-C4 must fix both engines, not just `FmEngine`.
 
-### MM-C2 — `MachineVariant` on `Rule` (additive, inert)
+### MM-C2 — `MachineVariant` on `Rule` ✅ *(landed, `4da6a01`)*
 
 **Change:** `crates/paraclete-node-api/src/rule.rs` — add
 
@@ -471,8 +471,38 @@ ramp/rand), `lfo_speed` (0.01–64 Hz, exponential taper), `lfo_mode`
 (free/trig/hold/one/half), `lfo_start_phase`, `lfo_fade`, `lfo_dest`,
 `lfo_depth`.
 
-Also lands the ADR-041 amendment 5 debug assertion: **every page/variant
-param ref resolves in the union doc**, debug-build only.
+#### The validation assertion, widened *(MM-C2 review)*
+
+ADR-041 amendment 5 asks for a debug-build assertion that "every page/variant
+param ref resolves in the union doc". As literally stated it would **pass on
+BUG-037's successor**, so it lands here in three parts:
+
+1. **Refs resolve against the active variant's displayed set, not the union
+   doc.** `MachineVariant` carries `pages` only; `Rule`'s other
+   reference-bearing fields — `affordances`, `envelopes`, `macros`, `routing`
+   — have no variant slot and stay machine-invariant. Both engines already
+   build them outside the per-machine `match`
+   (`analog_engine.rs:280-303`, `fm_engine.rs:296-303`), so a base-`Rule`
+   affordance can name a param the active variant does not display. Against
+   the *union* doc that resolves fine; against the active variant it does not.
+   `AffordanceHint::EnvelopeCurve { group_idx }` indexes `Rule::envelopes`,
+   and `EnvelopeGroup::param_ids` is a fixed `[u32; 4]` — this bites as soon
+   as machines differ in envelope shape, which ADR-043's variant-native
+   FmVoice and MM-C11's first real `LfoShape` declarations both do.
+2. **Overlay ids are unique within a variant.** `overlays` is a linear assoc
+   list; duplicates are representable and precedence is undefined. Same shape
+   as `PageRef::slot` being fiction until MM-C0 (design-process learning 9).
+3. **A param flagged `identity` in any variant is flagged in all of them.**
+   `machine` exists on every machine of a host, so the flag has to be repeated
+   per variant; miss one and lock rejection silently stops working *for that
+   machine only* — "p-locking machine works on HiHat but not Kick", which no
+   test catches by accident.
+
+Point 3 exists because the flag lives on the overlay per ADR-041 §0 A1. A
+`Rule`-level `identity_params` list would remove the hazard structurally
+rather than by assertion; that deviates from the ratified shape, so it is
+**not** taken without the user — but it is the better design if this
+assertion ever proves insufficient.
 
 **Tests:** each shape over one cycle; `trig` resets phase to
 `lfo_start_phase`, `free` does not; `hold` samples once per trigger;
