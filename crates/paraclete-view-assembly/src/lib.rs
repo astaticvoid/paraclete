@@ -21,6 +21,21 @@ use paraclete_node_api::{AffordanceHint, Rule};
 
 pub const CANONICAL_PAGE_ORDER: [&str; 6] = ["TRIG", "SRC", "FLTR", "AMP", "FX", "MOD"];
 
+/// Slots per sub-page — one encoder bank's worth (`PageRef::slot` documents
+/// 0–7 as sub-page 1, 8–15 as sub-page 2, …). Each contributor to a merged
+/// page is padded to a multiple of this so one node's params never straddle a
+/// sub-page boundary (ADR-042 §0 A3).
+///
+/// Import this rather than writing `8` — Theotokos's sub-page windowing reads
+/// it, and a private copy is how `PageNav.tsx` drifted from the canonical page
+/// order.
+///
+/// Ceiling: `PageRef::slot` is a `u8`, so a page cannot exceed 32 sub-pages.
+/// Past that the offset arithmetic saturates and contributors stack at slot
+/// 255. That needs 31 rule-bearing nodes contributing to one page of a single
+/// track chain; the `debug_assert` in `merge_page` catches it in a debug build.
+pub const SUB_PAGE_SLOTS: u8 = 8;
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -188,13 +203,34 @@ fn merge_page(
     let mut envelopes: Vec<CompositeEnvelope> = Vec::new();
     let mut macros: Vec<CompositeMacro> = Vec::new();
     let mut envelopes_offset: u32 = 0;
-    let mut slot: u8 = 0;
+    // Where this contributor's declared slots start. Each contributor is
+    // padded to a whole number of 8-slot sub-pages (ADR-042 §0 A3) so a
+    // second node's params can never straddle a sub-page boundary — the
+    // performer pages through one node's controls at a time.
+    let mut contributor_base: u8 = 0;
 
     for &(nid, rule) in contributors {
+        let mut max_slot: Option<u8> = None;
         for (param_id, page_ref) in rule.param_pages.iter() {
             if page_ref.page.as_ref() != group_name {
                 continue;
             }
+            // ADR-041 §0 A2 prerequisite: honor the slot the node declared.
+            // This used to be a sequential counter that ignored `page_ref.slot`
+            // entirely, which made `PageRef::slot` documentation-only — while
+            // Theotokos's *non*-composite path (model.rs) already sorted by the
+            // declared value, so the same param could land in two different
+            // places depending on which path drew it.
+            let slot = contributor_base.saturating_add(page_ref.slot);
+            debug_assert!(
+                !params
+                    .iter()
+                    .any(|p: &CompositeParam| p.node_id == nid && p.slot == slot),
+                "node {nid} declares two params at slot {} of page {group_name} — \
+                 one would silently cover the other",
+                page_ref.slot
+            );
+            max_slot = Some(max_slot.map_or(page_ref.slot, |m: u8| m.max(page_ref.slot)));
             let env_group = rule
                 .affordances
                 .iter()
@@ -239,7 +275,6 @@ fn merge_page(
                 slot,
                 routing,
             });
-            slot = slot.saturating_add(1);
         }
 
         for env in rule.envelopes.iter() {
@@ -292,7 +327,20 @@ fn merge_page(
                 page: m.page.as_ref().map(|p| p.to_string()),
             });
         }
+
+        // Advance past this contributor, rounded up to a whole sub-page. A
+        // contributor that put nothing on this page consumes nothing.
+        if let Some(max) = max_slot {
+            let sub_pages = (max / SUB_PAGE_SLOTS).saturating_add(1);
+            contributor_base =
+                contributor_base.saturating_add(sub_pages.saturating_mul(SUB_PAGE_SLOTS));
+        }
     }
+
+    // Declared slots need not arrive in order, and consumers that read the
+    // list positionally (rather than sorting by `slot`) should still see it
+    // laid out the way it renders.
+    params.sort_by_key(|p| p.slot);
 
     if params.is_empty() {
         return None;
@@ -333,19 +381,38 @@ mod tests {
         }
     }
 
+    /// Slots are assigned sequentially **per page**, the way a real node
+    /// declares them. The old helper hardcoded `slot: 0` for every param —
+    /// harmless while `merge_page` ignored the field, and a fixture that
+    /// described a node no node could be once it stopped ignoring it.
+    /// Use `make_rule_slotted` where a test needs specific slots.
     fn make_rule(name: &str, pages: &[&str], param_pages: &[(u32, &str)]) -> Rule {
+        let mut next: HashMap<&str, u8> = HashMap::new();
+        let slotted: Vec<(u32, &str, u8)> = param_pages
+            .iter()
+            .map(|&(pid, pg)| {
+                let slot = next.entry(pg).or_insert(0);
+                let assigned = *slot;
+                *slot += 1;
+                (pid, pg, assigned)
+            })
+            .collect();
+        make_rule_slotted(name, pages, &slotted)
+    }
+
+    fn make_rule_slotted(name: &str, pages: &[&str], param_pages: &[(u32, &str, u8)]) -> Rule {
         Rule {
             name: Cow::Owned(name.to_string()),
             page_groups: Cow::Owned(pages.iter().map(|&s| Cow::Owned(s.to_string())).collect()),
             param_pages: Cow::Owned(
                 param_pages
                     .iter()
-                    .map(|&(pid, pg)| {
+                    .map(|&(pid, pg, slot)| {
                         (
                             pid,
                             PageRef {
                                 page: Cow::Owned(pg.to_string()),
-                                slot: 0,
+                                slot,
                             },
                         )
                     })
@@ -445,6 +512,145 @@ mod tests {
         assert_eq!(cv.pages[0].envelopes.len(), 2);
         assert_eq!(cv.pages[0].envelopes[0].id, 0);
         assert_eq!(cv.pages[0].envelopes[1].id, 1);
+    }
+
+    /// ADR-041 §0 A2 prerequisite. `merge_page` used to assign slots from a
+    /// sequential counter and never read `PageRef::slot`, so a node could
+    /// declare slot 5 and be drawn at 0. Both ADR-041 (machine-select on a
+    /// specific TRIG slot) and ADR-042 (8-aligned MOD contributions) need the
+    /// declared value to be the rendered value.
+    #[test]
+    fn declared_slots_are_honored_not_renumbered() {
+        let mut rules = HashMap::new();
+        rules.insert(
+            20,
+            make_rule_slotted("Eng", &["SRC"], &[(1, "SRC", 5), (2, "SRC", 0)]),
+        );
+
+        let mut nodes = HashMap::new();
+        nodes.insert(20, node_info("Eng", &[("tune", 1), ("decay", 2)]));
+
+        let chains = vec![TrackChain {
+            engine_node_id: 20,
+            chain_ids: vec![],
+        }];
+        let cv = assemble(&rules, &chains, 0, &nodes).unwrap();
+        let page = &cv.pages[0];
+
+        let slot_of = |pid: u32| page.params.iter().find(|p| p.param_id == pid).unwrap().slot;
+        assert_eq!(slot_of(1), 5, "param declared at slot 5 must land at 5");
+        assert_eq!(slot_of(2), 0, "param declared at slot 0 must land at 0");
+        // Declaration order was 5 then 0; the emitted list is slot-ordered.
+        assert_eq!(
+            page.params.iter().map(|p| p.slot).collect::<Vec<_>>(),
+            vec![0, 5]
+        );
+    }
+
+    /// ADR-042 §0 A3: a second contributor starts on a fresh sub-page, so its
+    /// params can never straddle a boundary the performer pages across.
+    #[test]
+    fn second_contributor_starts_on_a_fresh_sub_page() {
+        let mut rules = HashMap::new();
+        // Engine uses slots 0..=2 — well inside the first sub-page.
+        rules.insert(
+            20,
+            make_rule_slotted("Eng", &["FLTR"], &[(1, "FLTR", 0), (2, "FLTR", 2)]),
+        );
+        // Chain node also declares from 0; it must not collide with the engine.
+        rules.insert(30, make_rule_slotted("Chn", &["FLTR"], &[(3, "FLTR", 0)]));
+
+        let mut nodes = HashMap::new();
+        nodes.insert(20, node_info("Eng", &[("cutoff", 1), ("resonance", 2)]));
+        nodes.insert(30, node_info("Chn", &[("drive", 3)]));
+
+        let chains = vec![TrackChain {
+            engine_node_id: 20,
+            chain_ids: vec![30],
+        }];
+        let cv = assemble(&rules, &chains, 0, &nodes).unwrap();
+        let page = &cv.pages[0];
+
+        let of = |nid: u32, pid: u32| {
+            page.params
+                .iter()
+                .find(|p| p.node_id == nid && p.param_id == pid)
+                .unwrap()
+                .slot
+        };
+        assert_eq!(of(20, 1), 0);
+        assert_eq!(of(20, 2), 2);
+        assert_eq!(
+            of(30, 3),
+            SUB_PAGE_SLOTS,
+            "the chain node's slot 0 must be re-based onto sub-page 2, not \
+             collide with the engine's slot 0"
+        );
+        // No two params share a slot.
+        let mut slots: Vec<u8> = page.params.iter().map(|p| p.slot).collect();
+        let before = slots.len();
+        slots.dedup();
+        assert_eq!(slots.len(), before, "slots must be unique across the page");
+    }
+
+    /// A contributor spilling past slot 7 consumes both sub-pages, so the next
+    /// contributor starts at 16 rather than overlapping the spill.
+    #[test]
+    fn contributor_spanning_two_sub_pages_reserves_both() {
+        let mut rules = HashMap::new();
+        rules.insert(
+            20,
+            make_rule_slotted("Eng", &["SRC"], &[(1, "SRC", 0), (2, "SRC", 9)]),
+        );
+        rules.insert(30, make_rule_slotted("Chn", &["SRC"], &[(3, "SRC", 0)]));
+
+        let mut nodes = HashMap::new();
+        nodes.insert(20, node_info("Eng", &[("a", 1), ("b", 2)]));
+        nodes.insert(30, node_info("Chn", &[("c", 3)]));
+
+        let chains = vec![TrackChain {
+            engine_node_id: 20,
+            chain_ids: vec![30],
+        }];
+        let cv = assemble(&rules, &chains, 0, &nodes).unwrap();
+        let page = &cv.pages[0];
+
+        let chn = page.params.iter().find(|p| p.node_id == 30).unwrap();
+        assert_eq!(
+            chn.slot,
+            SUB_PAGE_SLOTS * 2,
+            "an engine reaching slot 9 occupies two sub-pages; the next \
+             contributor starts after both"
+        );
+    }
+
+    /// A node that contributes nothing to this page must not push the next
+    /// contributor down an empty sub-page.
+    #[test]
+    fn contributor_absent_from_a_page_consumes_no_slots() {
+        let mut rules = HashMap::new();
+        rules.insert(20, make_rule_slotted("Eng", &["SRC"], &[(1, "SRC", 0)]));
+        // Declares the SRC page group but puts no param on it.
+        rules.insert(30, make_rule_slotted("Mid", &["SRC"], &[]));
+        rules.insert(40, make_rule_slotted("Chn", &["SRC"], &[(3, "SRC", 0)]));
+
+        let mut nodes = HashMap::new();
+        nodes.insert(20, node_info("Eng", &[("a", 1)]));
+        nodes.insert(30, node_info("Mid", &[]));
+        nodes.insert(40, node_info("Chn", &[("c", 3)]));
+
+        let chains = vec![TrackChain {
+            engine_node_id: 20,
+            chain_ids: vec![30, 40],
+        }];
+        let cv = assemble(&rules, &chains, 0, &nodes).unwrap();
+        let page = &cv.pages[0];
+
+        let chn = page.params.iter().find(|p| p.node_id == 40).unwrap();
+        assert_eq!(
+            chn.slot, SUB_PAGE_SLOTS,
+            "the empty contributor between them must not reserve a sub-page"
+        );
     }
 
     #[test]

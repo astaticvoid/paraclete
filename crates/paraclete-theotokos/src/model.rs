@@ -2,7 +2,7 @@ use crate::action::GRID_STEPS;
 use crate::input::PanelButton;
 use crossterm::event::KeyCode;
 use paraclete_node_api::{CapabilityDocument, PageRef, ParamDescriptor, StateBusHandle, StateBusValue};
-use paraclete_view_assembly::CompositeView;
+use paraclete_view_assembly::{CompositeView, SUB_PAGE_SLOTS};
 use std::collections::HashMap;
 
 /// TK2 C3 (D12): replaces `Mode` (deleted at the wiring flip, per §0 A4).
@@ -392,8 +392,8 @@ impl Model {
     /// entry found" case (TK2.1 C4) — the `min`/`max` fields are 0..1 and
     /// not to be trusted when it is.
     pub fn resolve_encoder_params(&self) -> Vec<(u32, u32, String, f64, f64, bool, bool)> {
-        let lo = (self.sub_page * 8) as u16;
-        let hi = lo + 8;
+        let lo = (self.sub_page * SUB_PAGE_SLOTS as usize) as u16;
+        let hi = lo + SUB_PAGE_SLOTS as u16;
         if let Some(cv) = self.composite.get(self.active_track) {
             if let Some(page) = cv.pages.get(self.perf_page) {
                 if !page.params.is_empty() {
@@ -442,7 +442,7 @@ impl Model {
                 return cap
                     .params
                     .iter()
-                    .take(8)
+                    .take(SUB_PAGE_SLOTS as usize)
                     .map(|p| (gen_id, p.id, p.name.to_string(), p.min, p.max, p.stepped, true))
                     .collect();
             }
@@ -485,7 +485,7 @@ impl Model {
                 .max()
         });
         match max_slot {
-            Some(s) => (s as usize / 8) + 1,
+            Some(s) => (s as usize / SUB_PAGE_SLOTS as usize) + 1,
             None => 1,
         }
     }
