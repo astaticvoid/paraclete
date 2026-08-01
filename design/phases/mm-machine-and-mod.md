@@ -916,7 +916,42 @@ a p-locked step plus an LFO yields lock+offset, not lock-only or
 offset-from-bank; `lfo_dest = 0` is off; a dest pointing at an `lfo_*`
 param is impossible by construction.
 
-### MM-C10 — Host in `Sampler` and `FilterNode`
+### MM-C10 — Host in `Sampler` and `FilterNode` ✅ *(landed, `bfbde8e`)*
+
+> **Prerequisite met first** (`46c6fac`, `2e032d5`): `instrument-fx.yaml` gives
+> both nodes a graph, and #159 added `sample:` to the instrument schema so a
+> sampler can load anything at all — without it a sampler fixture rendered
+> silence, which baseline mode would have fingerprinted as zeros and passed
+> forever.
+>
+> **The two baselines are not equally useful, and the difference decided the
+> guard.** `sampler_chain` is genuinely sensitive — 0.1% playback-position
+> drift is caught — because the sampler goes dry to the mix. `fx_chain` is
+> not: it catches filter *coefficient* changes at 2% but was measured to MISS
+> filter-state re-sequencing at 1% per block, since the SVF re-converges
+> within a block and the reverb smooths the rest. So `FilterNode`'s primary
+> guard is `chunked_filter_render_is_identical_to_one_unchunked_pass`, which
+> compares the restructured render against the un-restructured one directly.
+>
+> **`FilterNode`'s coefficient cache had to change**, and getting it wrong
+> would have been silent: it recomputed only when the *bank* moved, and an LFO
+> never moves the bank. It keys on the effective value now.
+>
+> **A real bug the guard test found.** `LfoHost` used `0` as its "no
+> destination" sentinel; `FilterNode` numbers its params `0, 1, 2`, so
+> `PARAM_CUTOFF == 0` and the filter's principal destination read as off. The
+> LFO did nothing at all. `dest` is `Option<u32>` now. No engine could have
+> shown this — they name-hash, so their ids are never 0.
+>
+> **MM-C11's composite payoff is still not verified, and is now blocked on a
+> different defect: #160.** The engines declare `ports: vec![]` in their
+> cap-docs while `Node::ports()` returns the real list, so edge-derived chain
+> derivation never leaves the engine and `CompositeView::chain` is empty for
+> every track in the shipped app. On `instrument-fx.yaml` track 0 reports
+> `chain: [20]` where it should report `[20, 40, 30]`, and the filter shows up
+> as its own track instead. The MOD page itself is correct on both hosts —
+> verified on the wire with per-node dest labels — but two nodes' blocks
+> cannot stack until a track can hold two nodes.
 
 Per ADR-042 decision 6's rollout order. Same structure; `FilterNode` has no
 `render_span` equivalent, so its sub-block loop is new here.
