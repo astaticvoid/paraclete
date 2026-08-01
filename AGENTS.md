@@ -8,8 +8,12 @@ the phase spec in `design/phases/` → relevant ADRs in `design/adr/`.
 **Implementing? Start here:**
 
 ```bash
-gh issue list --milestone TK2.2          # the active phase's remaining work
-gh issue list --state open --label bug   # what's actually broken
+# Which phase is active? Ask GitHub — never hardcode a milestone name here,
+# it goes stale the moment a phase closes (the exact failure "Phase
+# transitions" below exists to prevent):
+gh api repos/:owner/:repo/milestones --jq '.[] | "\(.number)  \(.title)  open=\(.open_issues)"'
+gh issue list --milestone "<title from above>"   # the active phase's remaining work
+gh issue list --state open --label bug           # what's actually broken
 gh issue list --state open --label open-question
 ```
 
@@ -35,9 +39,9 @@ cargo build
 # CORRECT:
 cargo build --workspace
 
-# WRONG: runs only paraclete-app's ~24 tests
+# WRONG: runs only paraclete-app's 32 tests
 cargo test
-# CORRECT:
+# CORRECT (991 tests as of 2026-08-01 — bare `cargo test` covers ~3% of them):
 cargo test --workspace
 
 # Likewise for check and clippy:
@@ -169,6 +173,28 @@ post-capture artifact scans `discontinuity_lt`/`dc_offset_lt`/`dropout_lt_ms`
 1 assertion failure, 2 fatal. Caveat: timeline actions dispatch on wall
 clock but capture time runs ~25% slower in debug builds — leave margin in
 artifact windows around action times.
+
+## Command-line flags
+
+There is no arg-parsing crate — `main()` scans `std::env::args()` by hand
+(`crates/paraclete-app/src/main.rs:44`), so **an unknown flag is silently
+ignored** and a typo'd `--no-tuii` just starts the TUI. There is no `--help`.
+
+| Flag | Effect |
+|---|---|
+| `--instrument=<file>` | graph to load (default `instrument.yaml`) |
+| `--load=<file>` | apply a saved project over the built graph, **before** the executor starts |
+| `--save=<file>` | write the project **immediately at startup** (step 6 of `main()`, before the executor starts) — it is *not* save-on-quit, so it captures the freshly built (or `--load`ed) graph, never a session's edits |
+| `--no-tui` | headless; no Theotokos, no emulator. Use for all automated testing |
+| `--emulator` | legacy 8×8 Launchpad-emulator grid instead of Theotokos |
+| `--no-emulator` | never fall back to the terminal emulator when no Launchpad is found (implied by Theotokos) |
+| `--theotokos` | accepted no-op — Theotokos is the default |
+| `--no-antiphon` | do not start the interface server |
+| `--antiphon-port=<n>` | HTTP port (default `paraclete_antiphon::DEFAULT_PORT` = 7274). **WebSocket is this + 1** |
+| `--theoria-dir=<dir>` | serve this web build instead of the embedded/on-disk default |
+| `--token` | require a 6-digit session code. **Access is open on the LAN by default** (2026-07-10 user decision) |
+| `--open` | accepted no-op (older notes) |
+| `--dev-ui` | every 1000 main-loop ticks, dump each sequencer's `current_step`/`steps` to stderr |
 
 ## Keyboard controls (Theotokos is default)
 
@@ -318,12 +344,27 @@ No layer may reach across another. Hard constraint.
 | L4 Scripting | `paraclete-scripting` | GPL3 | Rhai sandbox, profile scripts |
 | App | `paraclete-app` | GPL3 | Binary entry point, graph wiring |
 
-Platform crates (outside the five layers):
+Platform crates (outside the five layers — all GPL3; `paraclete-node-api` is
+the *only* LGPL3 crate in the workspace):
 - `paraclete-antiphon` — interface server (WebSocket + HTTP, no tokio)
 - `paraclete-clap` — Paraclete-as-CLAP-plugin (machine bank `.clap` binaries)
 - `paraclete-clap-host` — Paraclete-as-CLAP-host (loads third-party `.clap` plugins as nodes)
-- `paraclete-tui` — ratatui terminal UI
+- `paraclete-tui` — ratatui terminal UI (legacy `--emulator` grid)
+- `paraclete-theotokos` — the default keyboard-first performance panel
+  (`action.rs` / `input.rs` / `model.rs` / `render.rs`)
+- `paraclete-view-assembly` — composite track-rule assembly shared by Antiphon
+  and Theotokos (ADR-036). Depends only on L2, so the web and terminal views
+  agree by construction; owns `CANONICAL_PAGE_ORDER` and sub-page slot width.
+  **Page order lives here — do not re-declare it in a consumer** (the drift
+  that `PageNav.tsx` already caused, learning 5 below).
 - `paraclete-graph-nodes` — nodes that own an inner `NodeExecutor` (only crate allowed to depend on both `paraclete-nodes` and `paraclete-runtime`)
+- `paraclete-machine-{kick,snare,fm-kick,fm-bell,fm-bass}` — one `.clap` binary
+  each, wrapping an engine + `Sequencer` via `paraclete-clap::SubgraphPlugin`.
+  Thin shims: adding a machine means a new crate here, not an edit to an
+  existing one.
+
+Tools (`tools/`, not shipped): `gen-samples` (pre-flight sample generation),
+`test-driver` (ADR-033 headless render/assert harness), `lpx-debug`.
 
 ## Configurator / Executor split
 
@@ -429,6 +470,7 @@ Within the same `sample_offset`, the executor delivers events in this order:
 | 27 | `FmEngine::bass()` |
 | 30–37 | `DistortionNode[0–7]` |
 | 40–47 | `FilterNode[0–7]` |
+| 60 | `AudioOutput` (graph sink; every instrument file ends here) |
 | 101–106 | Surface nodes (LaunchpadEmulator, Launchpad, DigitaktMidi, Keystep, SurfaceMapping, TheoriaSurface) |
 | 110–113 | `ScriptingGatewayNode` (LP, DT, KS, Theoria) |
 | 200 | `ReverbNode` |
@@ -438,6 +480,15 @@ Within the same `sample_offset`, the executor delivers events in this order:
 > sequencers 10–13, voices 20–22 + 27 (no Samplers 23–26, no Distortion/
 > Filter nodes). Clients must bind by discovery (`hello`/cap-docs), never
 > by this table.
+>
+> `instrument-fx.yaml` is the second shipped graph: one sequencer (10) →
+> `analog_engine:kick` (20) → filter (40) → distortion (30), plus a sampler
+> track (11 → 23). It is the only fixture exercising `FilterNode`/
+> `DistortionNode` — the `fx_chain` baseline renders it.
+>
+> **60 is also `Sampler`'s default `root_note`.** The collision is noted in
+> `instrument.yaml:21`; when reading a bare `60` in a diff, check whether it
+> is a node id or a MIDI note.
 
 ## Main loop sequence (order matters)
 
@@ -701,8 +752,18 @@ does not read as "skipped".
   `Status:` line and an appended implementation note *are* updated when the ADR
   is implemented (e.g. ADR-033 `proposed → accepted`).
 - `design/review/` — post-phase code reviews and latent-issue audits
-- `design/phases/` — per-phase specs and implementation reports (append-only)
+- `design/phases/` — per-phase specs and implementation reports (append-only).
+  Naming: `<phase>-<topic>.md` is the spec, `<phase>-report.md` the report
 - `design/sessions/` — paired usability session notes (append-only)
+- `design/<feature>/` — pre-ADR problem/design pairs for a feature area
+  (`theotokos/`, `sampling/`: `problem.md` states the problem, `design.md` the
+  proposal). This is where a feature starts before it earns ADRs and a phase
+- `design/specs/` — external-reference analyses (prior-art teardowns), not
+  Paraclete contracts
+- `design/architecture-core.md`, `architecture-evolving{,-append}.md`,
+  `instrument-vision.md`, `interface-plan.md`, `prior-art-analysis.md` —
+  standing architecture and vision documents; `interface-plan.md` is the
+  authority for the naming policy in Guardrail 4
 
 Open bugs, open questions, spikes, spec gaps and carryover are **GitHub
 Issues** — see the reading order at the top of this file.
@@ -762,6 +823,12 @@ process rules for design work in this repo:
 
 ## MCP tool selection
 
+**Two config files, one server set.** Claude Code reads `.mcp.json`; opencode
+reads the `mcp` block in `opencode.json`. They are maintained separately and
+have already diverged (serena is `"enabled": false` in `opencode.json` while
+`.mcp.json` starts it). **When you add or remove a server, edit both** — a
+server that works in one harness and not the other reads as a broken install.
+
 **Serena** (symbol-level code navigation/refactoring — LSP-backed):
 - Requires `rust-analyzer` on `PATH` for Rust symbol resolution — install
   with `rustup component add rust-analyzer` if Serena's Rust tools return
@@ -792,5 +859,5 @@ process rules for design work in this repo:
 **Chrome DevTools**: The primary method for testing and debugging the Theoria
 web UI (`web/` directory). Navigate to `http://localhost:7274` (antiphon),
 inspect DOM/console/network. Not relevant for Rust-only changes.
-**The `chrome-devtools` MCP server must be enabled in `opencode.json` before
-testing web views** (`"enabled": true` in the `mcp` block).
+Enabled in `.mcp.json` (Claude Code) already; under opencode it needs
+`"enabled": true` in the `opencode.json` `mcp` block.
