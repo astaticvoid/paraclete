@@ -815,6 +815,46 @@ directions; the dest table's head is asserted so a reorder fails loudly
 
 ### MM-C9 — Host `LfoBlock` in both machine engines
 
+> **BLOCKED on one decision, and it is a freeze.** `lfo_dest`'s stored form is
+> contradictory between ADR-042's body and its own amendment, and §1 says
+> *"the param surface is frozen by this phase so sync lands later with no
+> surface change"* (OQ-M2) — so whichever reading is implemented becomes
+> permanent. Amendments win over the body by the rule at the top of this spec,
+> but the amendment does not supply what the body's version was carrying.
+>
+> | | says |
+> |---|---|
+> | ADR-042 decision 1 (body) | `lfo_dest` is `stepped: 0 = off, 1..N = **index** into the node's declared params` |
+> | ADR-042 amendment 2 | dest is stored as the target param's **name-hash id**, with the display index derived from an append-only per-engine dest table |
+>
+> Taking the amendment literally leaves the descriptor with no usable range: a
+> name-hash id needs `min: 0, max: u32::MAX`, `stepped: true`, which every
+> surface that does not know the dest table renders as a 4-billion-step
+> encoder. Taking the body keeps a clean `0..N` encoder but reintroduces
+> exactly the instability amendment 2 deleted OQ-M4 for — declaration order is
+> not stable, so a saved `lfo_dest` re-points when a param is added.
+>
+> **A third option exists and is probably the answer, which is why it should
+> not be chosen unilaterally:** store the id (amendment 2's stability) *and*
+> declare the descriptor range as `0..table.len()` (the body's usable
+> encoder), with the append-only table as the sole id↔index mapping and the
+> bank slot holding the index. That satisfies both intents but is neither of
+> the two written decisions.
+>
+> Everything else in MM-C9 is understood and unblocked once this is settled:
+> the 7 params join each union doc, `LfoBlock` ticks per sub-block in MM-C7's
+> loop, and application rides on `get_param` so a p-locked step and the LFO
+> compose. `ParameterBank` needs a `range(param_id)` accessor — it stores
+> `min`/`max` per slot and exposes neither, and every LFO host needs them for
+> `depth × range`.
+>
+> *One implementation note found while scoping:* the offset must be applied
+> inside `get_param`, not by writing the bank — the bank value has to stay the
+> base so p-locks, the state bus and later kits all see it (ADR-042 decision
+> 3), and so there is no feedback into `CMD_BUMP_PARAM` reads. And it must
+> clamp **only** the modulated param; clamping every read would change
+> behaviour for every unmodulated one.
+
 **Changes:** the 7 params join each engine's union doc; `LfoBlock` ticks
 once per sub-block (MM-C7's structure); application is
 
