@@ -714,7 +714,44 @@ restructures those. And a "silent samples cost nothing" argument is void
 anywhere a `process_*` carries sample-rate state — noise generators, filter
 memories, phase accumulators. MM-C9's LFO will add another.
 
-### MM-C8 — `LfoBlock` in `engine_dsp` (pure, unhosted)
+### MM-C8 — `LfoBlock` in `engine_dsp` (pure, unhosted) ✅ *(landed as two commits: `4be64cb`, `856356a`)*
+
+> **Split in two, because the halves are independent and one has a
+> prerequisite.** MM-C8a is `LfoBlock` alone. MM-C8b is the validation
+> assertion, which fires on #156 the moment it runs over every `ViewPlugin` —
+> so `Sampler` had to be fixed in the same commit or debug builds would panic.
+>
+> **MM §0 gains D6.** ADR-042 gives `lfo_fade` the range −1…+1 and the meaning
+> "fade-in (+) / fade-out (−) on trig", but no *time*. The reference hardware
+> measures it in sequencer steps; engines here receive no tempo (decision 5
+> stages sync deliberately), so `lfo_fade` is a fraction of
+> `LFO_FADE_MAX_SECS = 4.0` — about a bar and a half at 140 BPM.
+>
+> **Two things the tests found, both worth carrying:**
+>
+> `Hold` was resetting the phase before sampling, so every note sampled
+> `start_phase` and the mode emitted a constant. Sample-and-hold has to freeze
+> the *free-running* LFO at the instant of the note, so `Hold` joins `Free` in
+> not resetting.
+>
+> And a mutant making sine span half a cycle survived the whole suite: "starts
+> at zero rising" and "stays within −1…+1" both pass on a sine that never goes
+> negative. There is now a bipolarity check over every shape — and writing it
+> surfaced that at 16 sample points a *correct* saw bottoms out at −0.875,
+> because saw and ramp only approach their far rail at the wrap. The first
+> version of that test failed on correct code.
+>
+> **The assertion's one live finding is MM-C6 item 2.** `machine` is declared
+> on all six hosts and paged by none, so it is genuinely unreachable from any
+> surface. The test exempts exactly that message and asserts the count is
+> exactly **6**, so item 2 cannot land without this test failing and being
+> updated, and a seventh host cannot arrive unpaged. Do not relax it — delete
+> the exemption when the placement lands.
+>
+> *The validator could only ever catch half of #156.* `slice` was neither
+> declared nor paged, and a param in that state leaves nothing to check. The
+> other half needed reading the DSP — worth remembering before trusting the
+> assertion to find this class on its own.
 
 **Changes:** `crates/paraclete-nodes/src/engine_dsp.rs` — `LfoBlock`
 following the existing `AdState` shape (`:16-45`): plain struct,
