@@ -295,6 +295,38 @@ impl Model {
         self.composite.get(self.active_track).and_then(Option::as_ref)
     }
 
+    /// The engine label for `track` — what the contextual header draws after
+    /// the display name (`{display_name} — {engine_label}`).
+    ///
+    /// For a machine host this is the machine the track is **on**, read from
+    /// the variant set `sync_machine_selection` keeps current. `TrackInfo.name`
+    /// cannot answer it: it is captured once in `Model::new` from the startup
+    /// cap-doc, so it names the machine the node was *constructed* with and
+    /// kept reading `AnalogKick` on a track switched to `AnalogHiHat`, with
+    /// HiHat's params drawn underneath it (#161).
+    ///
+    /// Only the *engine's* own host counts. `variants` is every machine host
+    /// in the chain, engine first — but a chain whose engine is plain and
+    /// whose effect hosts machines would otherwise label the track with the
+    /// effect's machine, which is not what the header means.
+    pub fn engine_label(&self, track: usize) -> String {
+        let fallback = || {
+            self.tracks
+                .get(track)
+                .map(|t| t.name.clone())
+                .unwrap_or_default()
+        };
+        let Some(cv) = self.composite.get(track).and_then(Option::as_ref) else {
+            return fallback();
+        };
+        cv.variants
+            .iter()
+            .find(|set| set.node_id == cv.engine_node_id)
+            .and_then(|set| set.variants.iter().find(|v| v.value == set.active))
+            .map(|v| v.name.clone())
+            .unwrap_or_else(fallback)
+    }
+
     pub fn select_track(&mut self, i: usize) {
         if i < self.tracks.len() {
             self.active_track = i;

@@ -407,7 +407,11 @@ impl TheotokosApp {
                 Some(input::Hold::Rec) | None => None,
             },
             active_track: self.model.active_track,
-            track_names: self.model.tracks.iter().map(|t| t.name.clone()).collect(),
+            // #161: per-track engine label, machine-aware — not
+            // `TrackInfo.name`, which freezes at the built-with machine.
+            track_names: (0..self.model.tracks.len())
+                .map(|t| self.model.engine_label(t))
+                .collect(),
             display_names: self.model.tracks.iter().map(|t| t.display_name.clone()).collect(),
             trig_key_labels,
             track_key_labels,
@@ -2209,6 +2213,57 @@ mod tests {
             app.model.perf_page, 2,
             "track 0 never moved; its page selection must survive track 1's switch"
         );
+    }
+
+    // ── BUG-058 (#161) ───────────────────────────────────────────────────
+
+    /// The contextual header draws `{display_name} — {engine_label}`. Before
+    /// #161 the second half came from `TrackInfo.name`, captured once in
+    /// `Model::new` from the startup cap-doc — so it kept naming the machine
+    /// the node was *constructed* with while the params below it were the
+    /// machine the performer had switched to.
+    #[test]
+    fn the_engine_label_follows_the_machine_the_track_is_on() {
+        let bus = test_bus();
+        let mut app = machine_host_app(100, 200);
+        assert_eq!(app.model.engine_label(0), "Zero");
+
+        set_machine(&bus, 100, 1.0);
+        assert!(app.model.sync_machine_selection(&bus.borrow()));
+        assert_eq!(
+            app.model.engine_label(0),
+            "One",
+            "the header must name the machine the track is on, not the one it \
+             was built with"
+        );
+    }
+
+    /// `variants` lists every machine host in the chain, engine first. A plain
+    /// engine with a variant-bearing *effect* behind it must not borrow the
+    /// effect's machine name for the track header — the header names the
+    /// track's engine.
+    #[test]
+    fn a_chain_effects_machine_is_not_the_tracks_engine_label() {
+        let mut app = machine_host_app(100, 200);
+        {
+            let cv = app.model.composite[0].as_mut().unwrap();
+            // The host is a node behind the engine, not the engine itself.
+            cv.engine_node_id = 999;
+        }
+        assert_eq!(
+            app.model.engine_label(0),
+            "Host",
+            "falls back to the track's own engine name, not the effect's machine"
+        );
+    }
+
+    /// A track with no composite view at all (#152) keeps the startup name —
+    /// there is nothing better to say, and the header must not go blank.
+    #[test]
+    fn a_track_with_no_composite_view_keeps_its_startup_engine_name() {
+        let mut app = machine_host_app(100, 200);
+        app.model.composite = vec![None];
+        assert_eq!(app.model.engine_label(0), "Host");
     }
 
     // ── MM-C6 ────────────────────────────────────────────────────────────
