@@ -1,0 +1,74 @@
+# Fixture for INFRA-017 (#155)'s second half — the per-track effect chain the
+# default instrument does not wire.
+#
+# `FilterNode` and `DistortionNode` appear in **no** instrument file, so no
+# test-driver scenario can address them and neither has ever been observed by a
+# regression baseline. That is MM-C10's prerequisite: it restructures
+# `FilterNode`'s block loop into 64-sample sub-blocks, and `low_l`/`band_l`/
+# `low_r`/`band_r` are sample-rate filter state, so a restructure can
+# re-sequence them invisibly. MM-C7 is the reason to take that seriously — its
+# early-exit mutant was output-identical by every argument available on paper
+# and was caught by a baseline alone, with no unit test seeing it.
+#
+# Node ids follow the documented convention (AGENTS.md "App graph node IDs"):
+# 30-37 distortion, 40-47 filter. One track is enough — the point is to give
+# the two effect nodes a graph to live in, not to model a full kit.
+#
+# Also serves MM-C11's deferred "composite payoff" check: this is a real
+# two-node chain (engine + filter), so once MM-C10 gives `FilterNode` an LFO
+# the merged MOD page should stack both nodes' LFO blocks, 8-slot aligned.
+# Verify that here rather than in a unit fixture, as the spec insists.
+#
+# NOTE: no `sampler` node. `Sampler::new()` takes no sample path and the
+# instrument schema has no field for one, so a sampler here would load nothing
+# and render silence — a baseline of silence is exactly the trap #155 exists to
+# avoid. Covering `Sampler` needs that plumbing first.
+format_version: 1
+name: "paraclete-fx-fixture"
+bpm: 140.0
+
+nodes:
+  - id: 1
+    type: internal_clock
+
+  - id: 10
+    type: sequencer
+    display_name: "Kick"
+    default_note: 36
+
+  - id: 20
+    type: analog_engine:kick
+
+  # ── The chain under test ────────────────────────────────────────────────
+  - id: 40
+    type: filter
+  - id: 30
+    type: distortion
+
+  - id: 2
+    type: mix
+    channel_count: 8
+  - id: 200
+    type: reverb
+  - id: 60
+    type: audio_output
+
+edges:
+  - from: [1, "clock_out"]
+    to:   [10, "clock_in"]
+
+  - from: [10, "events_out"]
+    to:   [20, 0]
+
+  # engine -> filter -> distortion -> mix
+  - from: [20, 1]
+    to:   [40, 0]
+  - from: [40, 1]
+    to:   [30, 0]
+  - from: [30, 1]
+    to:   [2, 0]
+
+  - from: [2, 8]
+    to:   [200, 0]
+  - from: [200, 1]
+    to:   [60, 0]

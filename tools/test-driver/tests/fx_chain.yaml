@@ -1,0 +1,101 @@
+# INFRA-017 (#155), effects half — MM-C10's prerequisite.
+#
+# `FilterNode` and `DistortionNode` are observed by nothing today: they appear
+# in no instrument file, so `instrument-fx.yaml` exists to give them a graph.
+# MM-C10 restructures `FilterNode`'s block loop into 64-sample sub-blocks so it
+# can host an LFO, and its `low_l`/`band_l`/`low_r`/`band_r` are sample-rate
+# filter state — a restructure can re-sequence them without changing anything a
+# unit test looks at.
+#
+# The chain is engine(20) -> filter(40) -> distortion(30) -> mix -> reverb.
+#
+# Params are swept rather than set once, because a filter's *state* is what is
+# at risk: a static cutoff would let a broken restructure settle into the same
+# steady response and hide the difference. Cutoff moves across the sweep, and
+# resonance is taken high on one pass, where the SVF's feedback term makes the
+# state most sensitive.
+#
+# Verified non-silent when written, at the fingerprint's 50 ms resolution:
+#   pre-trigger  0.00-0.30 s  max window RMS 0.0000 (all 5 windows exactly 0)
+#   low cutoff   0.30-1.60 s  max window RMS 2.2440, no zero window
+#   high-res     1.80-3.20 s  max window RMS 2.2756, no zero window
+#   open + drive 3.40-5.00 s  max window RMS 2.3282, no zero window
+# Peak 3.25 — no limiter on the master bus, as with the other baselines.
+#
+# ── What this baseline does and does NOT catch ──────────────────────────────
+#
+# Tolerances are tightened to 0.2% (the other baselines run at 1.5%). The
+# deterministic render is bit-stable across repeated runs, so a tight bound is
+# safe, and at 1.5% this scenario missed a 2% filter-coefficient change
+# entirely — the reverb tail and the kick's own envelope dominate the windowed
+# RMS, and the filter is one stage in a chain rather than the whole voice.
+#
+# Measured by mutation, at 0.2%:
+#   filter cutoff coefficient    +2%    -> caught
+#   filter resonance coefficient +2%    -> caught
+#   distortion drive curve       +10%   -> MISSED
+#   filter state perturbed        1%/block -> MISSED
+#
+# **Read the last line before relying on this for MM-C10.** Re-sequencing
+# `low_l`/`band_l` is exactly what MM-C10's sub-block restructure risks, and
+# this scenario does not reliably see it: the SVF re-converges within a block
+# and the reverb smooths what is left. Distortion is masked because `tanh`
+# saturates — a large pre-gain change barely moves the output.
+#
+# So this is the **backstop, not the primary guard**. The primary guard for
+# MM-C10 is a per-node chunk-equivalence test of the shape the engines already
+# carry (`chunked_render_is_identical_to_one_unchunked_call`): render one
+# un-chunked block against the chunked sequence from identical state and
+# require bit-equality. That is what actually caught things in MM-C7, and it
+# does not depend on a signal surviving a reverb.
+format_version: 1
+instrument: instrument-fx.yaml
+duration_secs: 5
+output: /tmp/fx_chain.wav
+play: false
+
+timeline:
+  # ── Closed, low-resonance: the filter is doing most of the work ─────────
+  - at: 0.10
+    set_param: { target: "40", param: cutoff_hz, value: 400.0 }
+  - at: 0.10
+    set_param: { target: "40", param: resonance, value: 0.7 }
+  - at: 0.10
+    set_param: { target: "30", param: drive, value: 0.0 }
+  - at: 0.10
+    set_param: { target: "analog_engine:kick", param: decay, value: 1.2 }
+  - at: 0.30
+    trigger: { target: "analog_engine:kick", velocity: 1.0 }
+
+  - at: 1.00
+    set_param: { target: "40", param: cutoff_hz, value: 1200.0 }
+  - at: 1.10
+    trigger: { target: "analog_engine:kick", velocity: 0.7 }
+
+  # ── High resonance: where the SVF's state is most sensitive ─────────────
+  - at: 1.80
+    set_param: { target: "40", param: resonance, value: 3.5 }
+  - at: 1.80
+    set_param: { target: "40", param: cutoff_hz, value: 800.0 }
+  - at: 2.00
+    trigger: { target: "analog_engine:kick", velocity: 1.0 }
+
+  - at: 2.60
+    set_param: { target: "40", param: cutoff_hz, value: 300.0 }
+  - at: 2.70
+    trigger: { target: "analog_engine:kick", velocity: 1.0 }
+
+  # ── Open filter, distortion driven: exercises the second node ───────────
+  - at: 3.40
+    set_param: { target: "40", param: cutoff_hz, value: 8000.0 }
+  - at: 3.40
+    set_param: { target: "40", param: resonance, value: 0.7 }
+  - at: 3.40
+    set_param: { target: "30", param: drive, value: 0.8 }
+  - at: 3.60
+    trigger: { target: "analog_engine:kick", velocity: 1.0 }
+
+  - at: 4.30
+    set_param: { target: "30", param: drive, value: 0.2 }
+  - at: 4.40
+    trigger: { target: "analog_engine:kick", velocity: 0.6 }
