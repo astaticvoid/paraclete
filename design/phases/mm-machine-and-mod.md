@@ -943,8 +943,17 @@ param is impossible by construction.
 > LFO did nothing at all. `dest` is `Option<u32>` now. No engine could have
 > shown this — they name-hash, so their ids are never 0.
 >
-> **MM-C11's composite payoff is still not verified, and is now blocked on a
-> different defect: #160.** The engines declare `ports: vec![]` in their
+> **MM-C11's composite payoff is verified** — after fixing #160, which doing
+> the verification properly is what turned up. On `instrument-fx.yaml` track 0
+> answers `chain: [20, 40, 30]` and its merged MOD page carries **two** LFO
+> blocks: the engine's at slots 0-6 and the filter's at 8-14, 8-slot aligned so
+> the second starts on its own sub-page (ADR-042 amendment 3), each with its
+> own destination labels. That is decision 2's "more LFOs per track than the
+> reference hardware", observable on the wire.
+>
+> *The defect that was in the way, for the record:*
+>
+> **#160 — the engines declared `ports: vec![]`.** The engines declare `ports: vec![]` in their
 > cap-docs while `Node::ports()` returns the real list, so edge-derived chain
 > derivation never leaves the engine and `CompositeView::chain` is empty for
 > every track in the shipped app. On `instrument-fx.yaml` track 0 reports
