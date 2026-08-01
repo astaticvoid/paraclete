@@ -175,3 +175,26 @@ from a startup cap-doc snapshot, so its `active` and top-level `pages` report
 the machine a node was *constructed* with (#157). A client is not stuck — it
 watches `/node/{id}/param/machine` and draws the matching pre-merged variant,
 which is decision 1's model exactly.
+
+**Resolved 2026-08-01 (`5173748`, closes #157).** The limitation above no
+longer holds; it is left in place as record. `ViewRegistry` now carries a
+`MachineSelections` map shared with `AntiphonHandle`, which records a switch
+during `pump` — the same state-bus scan that already feeds the state mirror —
+for exactly the paths `machine_select_paths()` derives at startup.
+`ViewRegistry::assemble` passes that snapshot to `assemble_for`, so `active`
+and the merged `pages` follow the live machine.
+
+**Decision 1 is unaffected and was verified against the code, not just
+asserted.** No capability is re-queried and no query channel exists to
+re-query with: cap-docs are still collected once, MM-C5's pre-merged variants
+are still what gets picked from, and the read is of the state bus. This is
+decision 3's "watch `machine` and swap the displayed variant locally"
+performed server-side — the same thing `Model::sync_machine_selection` already
+does for Theotokos.
+
+Not covered by that fix, and open: the machine's **name**. `view_meta`'s
+`engine_name` is the `Rule` name fixed at build, and Theotokos's contextual
+header reads `TrackInfo.name` from the startup cap-doc — both still say
+`AnalogKick` on a track switched to `AnalogHiHat` (#161). Whether
+`engine_name` should change meaning is a wire-semantics question, not a bug
+fix; the active machine's name is already on the wire as `variants[i].name`.
