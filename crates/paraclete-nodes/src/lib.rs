@@ -189,6 +189,84 @@ mod view_validation {
     /// The validator must actually catch the class it exists for, or the test
     /// above is decoration. Rebuilds #156 in a fixture: a page ref naming a
     /// param the node does not declare.
+    /// #160 (BUG-057): a node's cap-doc must declare the same ports its
+    /// `Node::ports()` returns.
+    ///
+    /// All three voice nodes had `ports: vec![]` in their cap-doc while the
+    /// trait returned the real list. Chain derivation reads the **cap-doc**
+    /// (`main.rs`'s `is_audio_out`), so it never left the engine and
+    /// `CompositeView::chain` was empty for every track in the app — no
+    /// per-track effect could appear in a track's pages at all. It stayed
+    /// invisible because the default instrument wires no per-track effects.
+    #[test]
+    fn every_node_cap_doc_declares_the_ports_the_node_has() {
+        use crate::*;
+        use paraclete_node_api::Node;
+        fn check(name: &str, node: &dyn Node) {
+            let doc = node.capability_document();
+            let from_trait: Vec<(u32, &str)> = node
+                .ports()
+                .iter()
+                .map(|p| (p.id, p.name.as_str()))
+                .collect();
+            let from_doc: Vec<(u32, &str)> = doc
+                .ports
+                .iter()
+                .map(|p| (p.id, p.name.as_str()))
+                .collect();
+            assert_eq!(
+                from_doc, from_trait,
+                "{name}: cap-doc ports disagree with Node::ports() — chain \
+                 derivation reads the cap-doc, so this silently empties every \
+                 track's chain"
+            );
+        }
+        check("AnalogKick", &analog_engine::AnalogEngine::kick());
+        check("AnalogSnare", &analog_engine::AnalogEngine::snare());
+        check("AnalogHiHat", &analog_engine::AnalogEngine::hihat());
+        check("FmKick", &fm_engine::FmEngine::kick());
+        check("FmBell", &fm_engine::FmEngine::bell());
+        check("FmBass", &fm_engine::FmEngine::bass());
+        check("Sampler", &sampler::Sampler::new());
+        check("FilterNode", &filter::FilterNode::new());
+        check("DistortionNode", &distortion::DistortionNode::new());
+        check("ReverbNode", &reverb::ReverbNode::new());
+    }
+
+    /// A source has an audio output and no audio *input*; an effect has both.
+    /// That distinction is what `main.rs` uses to decide what is a track, and
+    /// #160's second half was it asking only about the output — so every
+    /// filter and distortion became its own track.
+    #[test]
+    fn sources_and_effects_are_distinguishable_by_their_ports() {
+        use crate::*;
+        use paraclete_node_api::{Node, PortDirection, PortType};
+        let is_audio = |n: &dyn Node, dir: PortDirection| {
+            n.ports()
+                .iter()
+                .any(|p| p.port_type == PortType::Audio && p.direction == dir)
+        };
+        for (name, n) in [
+            ("AnalogKick", Box::new(analog_engine::AnalogEngine::kick()) as Box<dyn Node>),
+            ("FmBass", Box::new(fm_engine::FmEngine::bass())),
+            ("Sampler", Box::new(sampler::Sampler::new())),
+        ] {
+            assert!(is_audio(n.as_ref(), PortDirection::Output), "{name} has audio out");
+            assert!(
+                !is_audio(n.as_ref(), PortDirection::Input),
+                "{name} must read as a source — the sampler's pitch/volume mod \
+                 ports are Modulation, not Audio, on purpose"
+            );
+        }
+        for (name, n) in [
+            ("FilterNode", Box::new(filter::FilterNode::new()) as Box<dyn Node>),
+            ("DistortionNode", Box::new(distortion::DistortionNode::new())),
+        ] {
+            assert!(is_audio(n.as_ref(), PortDirection::Input), "{name} has audio in");
+            assert!(is_audio(n.as_ref(), PortDirection::Output), "{name} has audio out");
+        }
+    }
+
     #[test]
     fn the_validator_catches_an_undeclared_page_ref() {
         use crate::sampler;

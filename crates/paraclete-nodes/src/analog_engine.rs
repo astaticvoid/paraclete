@@ -178,11 +178,7 @@ impl AnalogEngine {
             render_l:    Vec::new(),
             render_r:    Vec::new(),
             pending_initial_params: HashMap::new(),
-            ports: [
-                PortDescriptor { id: Self::PORT_EVENTS_IN,   name: "events_in".into(),   direction: PortDirection::Input,  port_type: PortType::Event },
-                PortDescriptor { id: Self::PORT_AUDIO_OUT_L, name: "audio_out_l".into(), direction: PortDirection::Output, port_type: PortType::Audio },
-                PortDescriptor { id: Self::PORT_AUDIO_OUT_R, name: "audio_out_r".into(), direction: PortDirection::Output, port_type: PortType::Audio },
-            ],
+            ports: Self::default_ports(),
         }
     }
 
@@ -351,6 +347,24 @@ impl AnalogEngine {
         out
     }
 
+    /// The node's ports, as **one** definition shared by the struct field and
+    /// the capability document.
+    ///
+    /// #160 (BUG-057): `build_doc` used to set `ports: vec![]` while
+    /// `Node::ports()` returned the real list, so the cap-doc and the node
+    /// disagreed. Chain derivation reads the *cap-doc*
+    /// (`main.rs` `is_audio_out`), so it never left the engine and
+    /// `CompositeView::chain` was empty for every track in the app — no
+    /// per-track effect could appear in a track's pages at all. Invisible
+    /// until `instrument-fx.yaml` became the first fixture to wire one.
+    fn default_ports() -> [PortDescriptor; 3] {
+        [
+            PortDescriptor { id: Self::PORT_EVENTS_IN,   name: "events_in".into(),   direction: PortDirection::Input,  port_type: PortType::Event },
+            PortDescriptor { id: Self::PORT_AUDIO_OUT_L, name: "audio_out_l".into(), direction: PortDirection::Output, port_type: PortType::Audio },
+            PortDescriptor { id: Self::PORT_AUDIO_OUT_R, name: "audio_out_r".into(), direction: PortDirection::Output, port_type: PortType::Audio },
+        ]
+    }
+
     fn build_doc(machine: AnalogMachine) -> CapabilityDocument {
         CapabilityDocument {
             // The active machine's name — a surface shows what is selected.
@@ -359,7 +373,7 @@ impl AnalogEngine {
             name: machine.doc_name().into(),
             vendor: "Paraclete".into(),
             version: (0, 6, 0),
-            ports: vec![],
+            ports: Self::default_ports().to_vec(),
             params: Self::union_params(machine),
             extensions: vec!["paraclete.instrument".into()],
             view: None,

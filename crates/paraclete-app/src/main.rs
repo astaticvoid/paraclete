@@ -953,12 +953,20 @@ fn build_view_registry(conf: &NodeConfigurator, summaries: &[NodeSummary]) -> Vi
         .map(|s| s.id)
         .collect();
 
-    // Deduplicate with any node that has audio output and a view Rule
-    // (covers engines whose type_tag isn't in the explicit list, including
-    // clap_plugin — review m10).
+    // Deduplicate with any node that is a *source*: audio output, a view
+    // Rule, and **no audio input**. Covers engines whose type_tag is not in
+    // the explicit list, including clap_plugin (review m10).
+    //
+    // #160 (BUG-057): this used to ask only for an audio output, which every
+    // effect also has — so a filter or distortion in a track's chain became
+    // its own track, and `instrument-fx.yaml` reported 4 tracks for its 2
+    // sequencers. It never showed before because the default instrument wires
+    // no per-track effects. "No audio input" is what separates a source from
+    // a processor; the samplers' `pitch_mod`/`volume_mod` are `Modulation`,
+    // not `Audio`, so they still qualify.
     let mut engine_set: std::collections::BTreeSet<u32> = engine_ids.into_iter().collect();
-    for (nid, _rule) in &rules {
-        if is_audio_out(&caps, *nid) {
+    for nid in rules.keys() {
+        if is_audio_out(&caps, *nid) && !is_audio_in(&caps, *nid) {
             engine_set.insert(*nid);
         }
     }
@@ -980,8 +988,13 @@ fn build_view_registry(conf: &NodeConfigurator, summaries: &[NodeSummary]) -> Vi
         let mut frontier: Vec<u32> = vec![engine_id];
         while let Some(current) = frontier.pop() {
             for &(src, tgt) in &edges {
-                if src == current && !visited.contains(&tgt) && !mix_ids.contains(&tgt) {
-                    if is_audio_out(&caps, src) && is_audio_in(&caps, tgt) {
+                if src == current
+                    && !visited.contains(&tgt)
+                    && !mix_ids.contains(&tgt)
+                    && is_audio_out(&caps, src)
+                    && is_audio_in(&caps, tgt)
+                {
+                    {
                         visited.insert(tgt);
                         // Only include chain nodes that have a view Rule.
                         if rules.contains_key(&tgt) {

@@ -145,12 +145,30 @@ fn advance_envelope(
 
 /// Static capability document for the Sampler. Called at new() and capability_document().
 /// Ports are overridden with the instance's port list in capability_document().
+/// The sampler's ports, as **one** definition shared by the struct field and
+/// the capability document — see #160 (BUG-057). The two used to disagree:
+/// `Node::ports()` returned these while the cap-doc said `vec![]`, and chain
+/// derivation reads the cap-doc.
+///
+/// `pitch_mod`/`volume_mod` are `Modulation`, not `Audio`, so a sampler still
+/// reads as "audio out, no audio in" — which is what distinguishes a source
+/// from an effect in `main.rs`'s track derivation.
+fn sampler_ports() -> [PortDescriptor; 5] {
+    [
+        PortDescriptor { id: Sampler::PORT_EVENTS_IN,   name: "events_in".into(),   direction: PortDirection::Input,  port_type: PortType::Event },
+        PortDescriptor { id: Sampler::PORT_AUDIO_OUT_L, name: "audio_out_l".into(), direction: PortDirection::Output, port_type: PortType::Audio },
+        PortDescriptor { id: Sampler::PORT_AUDIO_OUT_R, name: "audio_out_r".into(), direction: PortDirection::Output, port_type: PortType::Audio },
+        PortDescriptor { id: Sampler::PORT_PITCH_MOD,   name: "pitch_mod".into(),   direction: PortDirection::Input,  port_type: PortType::Modulation },
+        PortDescriptor { id: Sampler::PORT_VOLUME_MOD,  name: "volume_mod".into(),  direction: PortDirection::Input,  port_type: PortType::Modulation },
+    ]
+}
+
 fn sampler_capability_document() -> CapabilityDocument {
     CapabilityDocument {
         name: "Sampler".into(),
         vendor: "Paraclete".into(),
         version: (0, 5, 0),
-        ports: vec![],
+        ports: sampler_ports().to_vec(),
         params: vec![
             ParamDescriptor { id: param_hash("pitch"),     name: "pitch".into(),     min: -24.0, max: 24.0,  default: 0.0,   stepped: false, unit: ParamUnit::Semitones, display: None },
             ParamDescriptor { id: param_hash("volume"),    name: "volume".into(),    min: 0.0,   max: 1.0,   default: 1.0,   stepped: false, unit: ParamUnit::Generic,   display: None },
@@ -253,13 +271,7 @@ impl Sampler {
     fn build(sample_path: Option<String>) -> Self {
         Self {
             node_id: 0,
-            ports: [
-                PortDescriptor { id: Self::PORT_EVENTS_IN,   name: "events_in".into(),   direction: PortDirection::Input,  port_type: PortType::Event },
-                PortDescriptor { id: Self::PORT_AUDIO_OUT_L, name: "audio_out_l".into(), direction: PortDirection::Output, port_type: PortType::Audio },
-                PortDescriptor { id: Self::PORT_AUDIO_OUT_R, name: "audio_out_r".into(), direction: PortDirection::Output, port_type: PortType::Audio },
-                PortDescriptor { id: Self::PORT_PITCH_MOD,   name: "pitch_mod".into(),   direction: PortDirection::Input,  port_type: PortType::Modulation },
-                PortDescriptor { id: Self::PORT_VOLUME_MOD,  name: "volume_mod".into(),  direction: PortDirection::Input,  port_type: PortType::Modulation },
-            ],
+            ports: sampler_ports(),
             sample_data: vec![],
             sample_data_rate: 44100.0,
             sample_frames: 0,
