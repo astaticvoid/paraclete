@@ -270,3 +270,277 @@ pub fn debug_assert_view(doc: &CapabilityDocument) {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capability::{ParamDescriptor, ParamUnit};
+    use crate::rule::{
+        EnvelopeGroup, MachineVariant, MacroBinding, MacroCurve, PageRef, ParamOverlay,
+        RoutingSemantics, Rule,
+    };
+    use std::borrow::Cow;
+
+    const A: u32 = 100;
+    const B: u32 = 200;
+    const ABSENT: u32 = 999;
+
+    fn pd(id: u32, name: &'static str) -> ParamDescriptor {
+        ParamDescriptor {
+            id,
+            name: name.into(),
+            min: 0.0,
+            max: 1.0,
+            default: 0.0,
+            stepped: false,
+            unit: ParamUnit::Generic,
+            display: None,
+        }
+    }
+
+    fn page(id: u32, slot: u8) -> (u32, PageRef) {
+        (
+            id,
+            PageRef {
+                page: Cow::Borrowed("SRC"),
+                slot,
+            },
+        )
+    }
+
+    /// A minimal *valid* node: two declared params, both paged, nothing else.
+    /// Every case below is this with exactly one thing broken, so a failure
+    /// names the defect rather than the fixture.
+    fn clean() -> CapabilityDocument {
+        CapabilityDocument {
+            name: "Test".into(),
+            vendor: "test".into(),
+            version: (0, 1, 0),
+            ports: vec![],
+            params: vec![pd(A, "alpha"), pd(B, "beta")],
+            extensions: vec![],
+            view: Some(Rule {
+                name: Cow::Borrowed("Test"),
+                page_groups: Cow::Owned(vec![Cow::Borrowed("SRC")]),
+                param_pages: Cow::Owned(vec![page(A, 0), page(B, 1)]),
+                macros: Cow::Borrowed(&[]),
+                affordances: Cow::Borrowed(&[]),
+                envelopes: Cow::Borrowed(&[]),
+                routing: Cow::Borrowed(&[]),
+                diagram: None,
+                view_overrides: Cow::Borrowed(&[]),
+                variants: Cow::Borrowed(&[]),
+            }),
+        }
+    }
+
+    fn with_rule(f: impl FnOnce(&mut Rule)) -> CapabilityDocument {
+        let mut doc = clean();
+        let mut rule = doc.view.take().unwrap();
+        f(&mut rule);
+        doc.view = Some(rule);
+        doc
+    }
+
+    /// Two machines that both page `alpha` and both flag it `identity` —
+    /// the shape a real machine host has.
+    fn variant(name: &'static str, value: u32, identity: bool) -> MachineVariant {
+        MachineVariant {
+            value,
+            name: Cow::Borrowed(name),
+            page_groups: Cow::Owned(vec![Cow::Borrowed("SRC")]),
+            pages: Cow::Owned(vec![page(A, 0), page(B, 1)]),
+            overlays: Cow::Owned(vec![(
+                A,
+                ParamOverlay {
+                    min: 0.0,
+                    max: 1.0,
+                    default: 0.0,
+                    identity,
+                },
+            )]),
+        }
+    }
+
+    /// The baseline the whole module rests on: a well-formed node reports
+    /// nothing. Without this, every case below could pass on a validator that
+    /// always complains.
+    #[test]
+    fn a_clean_declaration_reports_nothing() {
+        assert_eq!(validate_view(&clean()), Vec::new());
+    }
+
+    #[test]
+    fn a_node_with_no_view_reports_nothing() {
+        let mut doc = clean();
+        doc.view = None;
+        assert!(validate_view(&doc).is_empty());
+    }
+
+    /// Every defect class, one deliberately-malformed fixture each.
+    ///
+    /// **This table is the point of the module.** `validate_view` exists to
+    /// fire, and every in-tree node is clean — so without a negative case per
+    /// branch, most of it had never executed even once (43% line coverage
+    /// after MM-C8b). An assertion nothing has ever seen fire is an assertion
+    /// nobody knows works.
+    #[test]
+    fn every_defect_class_is_reported() {
+        struct Case {
+            what: &'static str,
+            doc: CapabilityDocument,
+            expect: &'static str,
+        }
+
+        let cases = vec![
+            Case {
+                what: "page ref names an undeclared param (#47, #156)",
+                doc: with_rule(|r| {
+                    r.param_pages = Cow::Owned(vec![page(A, 0), page(B, 1), page(ABSENT, 2)]);
+                }),
+                expect: "does not declare",
+            },
+            Case {
+                what: "a declared param is on no page (`tune` before MM-C4)",
+                doc: with_rule(|r| {
+                    r.param_pages = Cow::Owned(vec![page(A, 0)]);
+                }),
+                expect: "appears on no page",
+            },
+            Case {
+                what: "an affordance names a param this view does not display",
+                doc: with_rule(|r| {
+                    r.affordances =
+                        Cow::Owned(vec![(ABSENT, AffordanceHint::FilterShape)]);
+                }),
+                expect: "does not display",
+            },
+            Case {
+                what: "an envelope curve points past the declared groups",
+                doc: with_rule(|r| {
+                    r.affordances = Cow::Owned(vec![(
+                        A,
+                        AffordanceHint::EnvelopeCurve { group_idx: 7 },
+                    )]);
+                }),
+                expect: "envelope group 7",
+            },
+            Case {
+                what: "an envelope group names a param this view does not display",
+                doc: with_rule(|r| {
+                    r.envelopes = Cow::Owned(vec![EnvelopeGroup {
+                        env_type: Cow::Borrowed("AD"),
+                        label: Cow::Borrowed("Amp"),
+                        param_ids: [ABSENT, 0, 0, 0],
+                    }]);
+                }),
+                expect: "does not display",
+            },
+            Case {
+                what: "a macro targets a param this view does not display",
+                doc: with_rule(|r| {
+                    r.macros = Cow::Owned(vec![MacroBinding {
+                        name: Cow::Borrowed("Sweep"),
+                        targets: Cow::Owned(vec![ABSENT]),
+                        curves: Cow::Owned(vec![MacroCurve::Linear]),
+                        page: None,
+                    }]);
+                }),
+                expect: "does not display",
+            },
+            Case {
+                what: "routing names an undeclared param",
+                doc: with_rule(|r| {
+                    r.routing = Cow::Owned(vec![(
+                        ABSENT,
+                        RoutingSemantics {
+                            destination: Cow::Borrowed("reverb"),
+                            source_label: Cow::Borrowed("Kick"),
+                        },
+                    )]);
+                }),
+                expect: "does not declare",
+            },
+            Case {
+                what: "a variant declares two overlays for one param",
+                doc: with_rule(|r| {
+                    let mut v = variant("One", 0, true);
+                    let mut o = v.overlays.to_vec();
+                    o.push(o[0]);
+                    v.overlays = Cow::Owned(o);
+                    r.variants = Cow::Owned(vec![v, variant("Two", 1, true)]);
+                }),
+                expect: "two overlays",
+            },
+            Case {
+                what: "`identity` flagged on one machine but not its sibling",
+                doc: with_rule(|r| {
+                    r.variants =
+                        Cow::Owned(vec![variant("One", 0, true), variant("Two", 1, false)]);
+                }),
+                expect: "not on",
+            },
+        ];
+
+        for c in cases {
+            let defects = validate_view(&c.doc);
+            assert!(
+                defects.iter().any(|d| d.message.contains(c.expect)),
+                "{}: expected a defect containing {:?}, got {:?}",
+                c.what,
+                c.expect,
+                defects.iter().map(|d| d.to_string()).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// A defect inside a variant names which machine it is in, so a message
+    /// about a six-machine host is actionable.
+    #[test]
+    fn a_variant_defect_names_its_variant() {
+        let doc = with_rule(|r| {
+            let mut v = variant("HiHat", 1, true);
+            v.pages = Cow::Owned(vec![page(A, 0), page(B, 1), page(ABSENT, 2)]);
+            r.variants = Cow::Owned(vec![variant("Kick", 0, true), v]);
+        });
+        let defects = validate_view(&doc);
+        let d = defects
+            .iter()
+            .find(|d| d.message.contains("does not declare"))
+            .expect("the bad page ref is reported");
+        assert_eq!(d.variant.as_deref(), Some("HiHat"));
+        assert!(d.to_string().starts_with("[variant HiHat]"));
+    }
+
+    /// The distinction MM-C8 exists for: a param only *one* machine pages is
+    /// legitimate and must not be reported, while an affordance naming it is
+    /// reported against the machines that do not display it. Amendment 5 as
+    /// literally written — "resolves in the union doc" — passes on both.
+    #[test]
+    fn a_param_only_one_machine_pages_is_legitimate() {
+        let doc = with_rule(|r| {
+            let mut only_a = variant("Sparse", 1, true);
+            only_a.pages = Cow::Owned(vec![page(A, 0)]);
+            r.variants = Cow::Owned(vec![variant("Full", 0, true), only_a]);
+        });
+        assert_eq!(
+            validate_view(&doc),
+            Vec::new(),
+            "`beta` is paged by one machine and absent from the other, which is \
+             exactly what per-machine pages are for"
+        );
+    }
+
+    #[test]
+    fn debug_assert_view_accepts_a_clean_declaration() {
+        debug_assert_view(&clean());
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid view declaration")]
+    fn debug_assert_view_panics_on_a_defect() {
+        debug_assert_view(&with_rule(|r| {
+            r.param_pages = Cow::Owned(vec![page(A, 0), page(B, 1), page(ABSENT, 2)]);
+        }));
+    }
+}
