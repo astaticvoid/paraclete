@@ -135,3 +135,103 @@ impl Node for AudioOutputNode {
     fn process(&mut self, _input: &ProcessInput, _output: &mut ProcessOutput) {}
     fn type_name(&self) -> &'static str { "AudioOutputNode" }
 }
+
+#[cfg(test)]
+mod view_validation {
+    use paraclete_node_api::{validate_view, CapabilityDocument};
+
+    /// Every node in the crate that declares a view, validated (MM-C8,
+    /// ADR-041 amendment 5 as widened).
+    ///
+    /// **Run over every `ViewPlugin`, not just the machine hosts** — #156 is
+    /// the proof that the defect class is not specific to them: `Sampler`
+    /// paged `loop` while its cap-doc declared only 8 params, `loop` not among
+    /// them, so it drew a working, lockable control under a `param_{id}`
+    /// label; `slice` was neither declared nor paged and so was unreachable
+    /// despite driving the DSP.
+    fn every_viewed_node() -> Vec<CapabilityDocument> {
+        use crate::*;
+        use paraclete_node_api::Node;
+        let mut docs: Vec<CapabilityDocument> = Vec::new();
+        for m in analog_engine::AnalogMachine::ALL {
+            docs.push(analog_engine::AnalogEngine::new(m).capability_document());
+        }
+        for m in fm_engine::FmMachine::ALL {
+            docs.push(fm_engine::FmEngine::new(m).capability_document());
+        }
+        docs.push(sampler::Sampler::new().capability_document());
+        docs.push(filter::FilterNode::new().capability_document());
+        docs.push(distortion::DistortionNode::new().capability_document());
+        docs.push(reverb::ReverbNode::new().capability_document());
+        docs.push(mix::MixNode::new(8).capability_document());
+        docs
+    }
+
+    /// **The one outstanding defect, listed explicitly so it closes itself.**
+    ///
+    /// `machine` is declared on every machine host and paged by none of them,
+    /// so it is genuinely unreachable from any surface — the validator is
+    /// telling the truth. That is MM-C6 item 2, deliberately left open: where
+    /// machine-select is declared is a performer-facing decision (ADR-041
+    /// amendment 2 says the TRIG page but not *who* pages it, and either
+    /// answer puts a new page ahead of SRC and shifts what page keys select).
+    ///
+    /// Listing it rather than relaxing the check means MM-C6 item 2 cannot
+    /// land without this test failing and being updated — and anything *else*
+    /// that regresses still fails today.
+    const KNOWN_UNPAGED_MACHINE: &str =
+        "`machine` (3775092334) is declared but appears on no page";
+
+    #[test]
+    fn every_node_view_declaration_is_valid() {
+        let mut unexpected: Vec<String> = Vec::new();
+        let mut machine_hosts = 0;
+        for doc in every_viewed_node() {
+            for d in validate_view(&doc) {
+                if d.message.starts_with(KNOWN_UNPAGED_MACHINE) {
+                    machine_hosts += 1;
+                    continue;
+                }
+                unexpected.push(format!("{}: {d}", doc.name));
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "invalid view declarations:\n  {}",
+            unexpected.join("\n  ")
+        );
+        assert_eq!(
+            machine_hosts, 6,
+            "exactly the six machine hosts (3 analog + 3 FM) should still have \
+             an unpaged `machine`. If this dropped to 0, MM-C6 item 2 landed — \
+             delete the exemption. If it grew, a new host arrived without \
+             paging its selector."
+        );
+    }
+
+    /// The validator must actually catch the class it exists for, or the test
+    /// above is decoration. Rebuilds #156 in a fixture: a page ref naming a
+    /// param the node does not declare.
+    #[test]
+    fn the_validator_catches_an_undeclared_page_ref() {
+        use crate::sampler;
+        use paraclete_node_api::{Node, PageRef, Rule};
+        use std::borrow::Cow;
+
+        let mut doc = sampler::Sampler::new().capability_document();
+        let mut rule = doc.view.clone().expect("sampler declares a view");
+        let mut pages = rule.param_pages.to_vec();
+        pages.push((
+            0xDEAD_BEEF,
+            PageRef { page: Cow::Borrowed("SRC"), slot: 7 },
+        ));
+        rule.param_pages = Cow::Owned(pages);
+        doc.view = Some(Rule { ..rule });
+
+        let defects = validate_view(&doc);
+        assert!(
+            defects.iter().any(|d| d.message.contains("3735928559")),
+            "an undeclared page ref must be reported: {defects:?}"
+        );
+    }
+}

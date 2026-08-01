@@ -151,6 +151,21 @@ fn sampler_capability_document() -> CapabilityDocument {
             ParamDescriptor { id: param_hash("attack"),    name: "attack".into(),    min: 0.001, max: 1.0,   default: 0.005, stepped: false, unit: ParamUnit::Seconds,   display: None },
             ParamDescriptor { id: param_hash("release"),   name: "release".into(),   min: 0.0,   max: 4.0,   default: 0.1,   stepped: false, unit: ParamUnit::Seconds,   display: None },
             ParamDescriptor { id: param_hash("root_note"), name: "root_note".into(), min: 0.0,   max: 127.0, default: 60.0,  stepped: true,  unit: ParamUnit::Generic,   display: None },
+            // #156 (BUG-055): both of these drive the DSP (`effective_node`)
+            // and are accepted as p-lock targets, but neither was declared.
+            // `loop` was *paged* while undeclared, so it drew a working,
+            // lockable control under a `param_{id}` label — BUG-037's shape on
+            // a node that is not a machine host. `slice` was neither declared
+            // nor paged, so it was unreachable despite being live.
+            ParamDescriptor { id: param_hash("loop"),      name: "loop".into(),      min: 0.0,   max: 1.0,   default: 0.0,   stepped: true,  unit: ParamUnit::Generic,   display: None },
+            // Upper bound, not the live count: `slices` is rebuilt from
+            // whatever sample is loaded, and a descriptor is static. 127
+            // matches how `base_slice` is persisted (one byte) with room to
+            // spare; an out-of-range index is already safe — `slices.get()`
+            // falls back rather than panicking. A range that tracked the
+            // loaded sample would need `ParamDisplayAdapter::Dynamic`, which
+            // panics on clone along the cap-doc path (ADR-042 amendment 5).
+            ParamDescriptor { id: param_hash("slice"),     name: "slice".into(),     min: 0.0,   max: 127.0, default: 0.0,   stepped: true,  unit: ParamUnit::Generic,   display: None },
         ],
         extensions: vec!["paraclete.instrument".into()],
     view: None,
@@ -449,6 +464,7 @@ impl ViewPlugin for Sampler {
                 (P_END,       PageRef { page: Cow::Borrowed("SRC"), slot: 2 }),
                 (P_ROOT_NOTE, PageRef { page: Cow::Borrowed("SRC"), slot: 3 }),
                 (P_LOOP,      PageRef { page: Cow::Borrowed("SRC"), slot: 4 }),
+                (P_SLICE,     PageRef { page: Cow::Borrowed("SRC"), slot: 5 }),
                 (P_VOLUME,    PageRef { page: Cow::Borrowed("AMP"), slot: 0 }),
                 (P_PAN,       PageRef { page: Cow::Borrowed("AMP"), slot: 1 }),
                 (P_ATTACK,    PageRef { page: Cow::Borrowed("AMP"), slot: 2 }),
@@ -927,11 +943,24 @@ mod tests {
         assert!(buf.channel(0).iter().all(|&x| x == 0.0));
     }
 
+    /// #156 (BUG-055): this counted 8 and **encoded the bug**. `loop` and
+    /// `slice` drove the DSP and were accepted as p-lock targets while being
+    /// declared nowhere, so the honest count was always 10 — a test asserting
+    /// 8 was pinning the undercount in place. Names are checked, not just the
+    /// number, so the next change to this list has to be deliberate.
     #[test]
-    fn sampler_capability_document_has_8_params() {
-        // pitch, volume, pan, start, end, attack, release, root_note
+    fn sampler_capability_document_declares_every_param_it_reads() {
         let s = Sampler::new();
-        assert_eq!(s.capability_document().params.len(), 8);
+        let doc = s.capability_document();
+        let mut names: Vec<&str> = doc.params.iter().map(|p| p.name.as_str()).collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            [
+                "attack", "end", "loop", "pan", "pitch", "release", "root_note",
+                "slice", "start", "volume"
+            ]
+        );
     }
 
     #[test]
@@ -940,12 +969,22 @@ mod tests {
         assert!(s.capability_document().extensions.iter().any(|e| e == "paraclete.instrument"));
     }
 
+    /// Was 8 for the same reason as above — `handle_param_lock` already
+    /// accepted `loop` and `slice`, so a sequencer could lock a param the
+    /// negotiated set did not mention.
     #[test]
-    fn sampler_negotiate_returns_8_lockable_params() {
+    fn sampler_negotiate_returns_every_declared_param_as_lockable() {
         let mut s = Sampler::new();
         let their_doc = CapabilityDocument::from_ports(&[]);
         let agreement = s.negotiate(&their_doc);
-        assert_eq!(agreement.lockable_params.len(), 8);
+        assert_eq!(agreement.lockable_params.len(), 10);
+        let names: Vec<&str> = agreement
+            .lockable_params
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert!(names.contains(&"loop"), "loop is lockable and now says so");
+        assert!(names.contains(&"slice"), "slice is lockable and now says so");
     }
 
     #[test]

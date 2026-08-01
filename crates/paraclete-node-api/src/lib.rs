@@ -24,6 +24,7 @@ pub mod surface;
 pub mod templates;
 pub mod tempo_source;
 pub mod transport;
+pub mod view_validate;
 
 pub use constants::TICKS_PER_BEAT;
 
@@ -64,6 +65,7 @@ pub use rule::{
     AffordanceHint, EnvelopeGroup, MachineVariant, MacroBinding, MacroCurve, PageRef, ParamOverlay,
     RoutingSemantics, Rule, ViewPlugin,
 };
+pub use view_validate::{debug_assert_view, validate_view, ViewDefect};
 
 pub use agreement::{ConnectionAgreement, ConnectionRecord, LockableParam};
 
