@@ -19,8 +19,10 @@ Loads `instrument.yaml`: a 4-track drum machine (kick, snare, hihat, FM bass →
 mix → reverb → output) at 140 BPM. Use `--instrument=<file>` for a different
 graph.
 
-Sequencers start empty — program steps with the keyboard (below) or a connected
-Launchpad. Esc or Ctrl-C to stop.
+`cargo run` opens **Theotokos**, the keyboard-first performance terminal
+(below). Sequencers start empty — program steps with the keyboard or a
+connected Launchpad. `Ctrl-C` stops; `Esc` is NO/back-out inside Theotokos,
+not quit.
 
 Hardware devices (Novation Launchpad, Elektron Digitakt, Arturia Keystep) open
 if connected and are skipped otherwise.
@@ -29,9 +31,11 @@ if connected and are skipped otherwise.
 
 ## Keyboard controls
 
-### Theotokos (keyboard-first performance: `--theotokos`)
+### Theotokos (keyboard-first performance — the default)
 
-`cargo run -- --theotokos` starts the keyboard-first performance terminal.
+`cargo run` starts the keyboard-first performance terminal; `--theotokos` is
+accepted but does nothing, since this is what you get unless you ask for
+`--emulator` (legacy grid) or `--no-tui` (headless).
 A fixed seven-region panel (ADR-044 D1) with one always-visible 2×8 trig
 strip for the *selected* track, TRK/PTN hold-chords for track/pattern
 select, an explicit ENC mode for the 8-encoder parameter bank, a shared
@@ -95,9 +99,11 @@ a future usability session, not a wiring gap. See BUG-038 —
 | `Backspace` | clear locks |
 | `Ctrl-C` | quit |
 
-### Emulator (legacy grid mirror)
+### Emulator (legacy grid mirror: `--emulator`)
 
-When no Launchpad is connected, the 8x8 grid maps to the keyboard:
+`cargo run -- --emulator` replaces Theotokos with the 8x8 Launchpad grid
+mapped to the keyboard. Theotokos does not fall back to it, so this flag is
+the only way in:
 ```
 1 2 3 4 5 6 7 8   select track row (0–7)
 Q W E R T Y U I   toggle steps in the active row
@@ -146,14 +152,15 @@ Full architecture reference: `design/architecture-core.md`.
 
 ```bash
 # Run
-cargo run                              # instrument.yaml + TUI
+cargo run                              # instrument.yaml + Theotokos
 cargo run -- --instrument=my.yaml      # custom instrument
-cargo run -- --no-tui                  # no terminal UI
+cargo run -- --emulator                # legacy Launchpad grid instead
+cargo run -- --no-tui                  # headless, no terminal UI
 cargo run -- --dev-ui                  # step/pattern on stderr
 cargo run -- --load=project.ron        # restore saved state
-cargo run -- --save=project.ron        # save state on exit
+cargo run -- --save=project.ron        # write state at startup (not on quit)
 cargo run -- --theoria-dir=web/packages/app/dist  # serve web client
-cargo run -- --theotokos              # keyboard-first performance terminal
+cargo run -- --token                   # require a 6-digit code (LAN is open by default)
 
 # Web client
 cd web && npm install && npm run build
@@ -161,8 +168,10 @@ cd web && npm install && npm run build
 # Generate drum samples
 cargo run -p gen-samples
 
-# CLAP plugins (output: target/debug/*.clap)
-cargo build --workspace -p paraclete-clap
+# CLAP plugins — the machine-* crates are the cdylibs; `paraclete-clap` is a
+# plain lib and builds no plugin on its own. Rename the artifact to `.clap`:
+#   target/debug/libparaclete_machine_kick.so  (.dylib on macOS)
+cargo build -p paraclete-machine-kick
 
 # Headless testing
 cargo run -p test-driver -- --trigger analog_engine:kick --at 1.0 -d 3
@@ -201,7 +210,7 @@ Connect devices before starting. Detected by USB name substring:
 
 | Device | Name substring | Fallback |
 |--------|---------------|---------|
-| Novation Launchpad X / MK2 | `"Launchpad"` | Terminal emulator |
+| Novation Launchpad X / MK2 | `"Launchpad"` | Skipped (`--emulator` for the grid) |
 | Elektron Digitakt | `"Digitakt"` | Skipped |
 | Arturia Keystep 37 | `"Keystep"` | Skipped |
 
@@ -211,7 +220,9 @@ Hardware behavior is scripted in Rhai profiles (`profiles/`).
 
 ## What works
 
-- 8-track graph: clock → sequencer → synth → distortion → filter → mix → audio
+- Up to 8 tracks: clock → sequencer → synth → distortion → filter → mix → audio
+  (the shipped `instrument.yaml` wires 4; `instrument-fx.yaml` shows a
+  filter/distortion chain)
 - Analog engine (kick, snare, hihat), FM engine (bass, bell, kick)
 - Sampler with Hermite pitch playback (symphonia WAV loading)
 - Step sequencer: swing, fill A/B, per-step probability and micro-timing,
@@ -220,7 +231,8 @@ Hardware behavior is scripted in Rhai profiles (`profiles/`).
 - Per-step CV locks with sample-and-hold output
 - Reverb on master bus
 - Declarative instrument definitions in YAML
-- Terminal UI: transport bar, encoder values, 16-step playhead
+- Theotokos performance terminal: seven-region panel, trig strip, hold-chords,
+  encoder mode, p-locks (the legacy `--emulator` grid remains)
 - Dynamic topology at runtime (`apply_patch`, ~5 ms silence)
 - Single-sample feedback via `LoopBreakNode`
 - `InnerGraphNode`: nodes that own a nested executor
@@ -246,16 +258,19 @@ crates/
   paraclete-app              GPL3 — binary entry point
   paraclete-clap             GPL3 — CLAP plugin output
   paraclete-clap-host        GPL3 — CLAP host (loads third-party .clap files)
-  paraclete-tui              GPL3 — terminal UI (display-only)
-  paraclete-theotokos        GPL3 — keyboard-first performance terminal
+  paraclete-tui              GPL3 — legacy emulator grid UI (display-only)
+  paraclete-theotokos        GPL3 — keyboard-first performance terminal (default)
   paraclete-graph-nodes      GPL3 — nodes owning an inner executor
   paraclete-antiphon         GPL3 — WebSocket interface server
-  paraclete-machine-*        GPL3 — single-node CLAP plugins
+  paraclete-view-assembly    GPL3 — page/rule assembly shared by web + terminal
+  paraclete-machine-*        GPL3 — one CLAP plugin per machine (5 crates)
 tools/
   gen-samples/          — drum sample generator
   test-driver/          — headless test/CI harness
+  lpx-debug/            — Launchpad X protocol probe
 profiles/               — Rhai hardware profile scripts
 samples/                — WAV files (not committed)
+web/                    — Theoria web client (npm workspaces: core, app)
 design/                 — architecture docs, ADRs, phase specs/reports
                           (open bugs + questions are GitHub Issues)
 ```
