@@ -92,6 +92,24 @@ impl ParameterBank {
 
     /// Set a parameter value directly (clamped to declared range).
     /// Use in `activate()`, `deserialize()`, or direct node-internal control.
+    /// The declared `(min, max)` of a slot, or `None` if the bank has no such
+    /// param.
+    ///
+    /// Added for MM-C9: an LFO's depth is a *fraction of the destination
+    /// param's range* (ADR-042 decision 1), so every hosting node needs the
+    /// range of a param it is modulating. The bank has stored `min`/`max` per
+    /// slot since P1 and exposed neither — reads clamp on write, so nothing
+    /// had needed to ask.
+    ///
+    /// Cheap enough for the audio thread: the same linear scan over < 32 slots
+    /// that `get` does, no allocation.
+    pub fn range(&self, param_id: u32) -> Option<(f64, f64)> {
+        self.slots
+            .iter()
+            .find(|s| s.param_id == param_id)
+            .map(|s| (s.min, s.max))
+    }
+
     pub fn set(&mut self, param_id: u32, value: f64) {
         if let Some(s) = self.slots.iter_mut().find(|s| s.param_id == param_id) {
             s.current = value.clamp(s.min, s.max);

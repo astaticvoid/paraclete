@@ -9,7 +9,10 @@ use paraclete_node_api::{
     midi::ChannelVoice2, CMD_TRIGGER,
 };
 
-use crate::engine_dsp::{AdState, note_to_hz, soft_clip, sub_blocks};
+use crate::engine_dsp::{
+    AdState, LfoHost, LfoMode, LfoSettings, LfoShape, LFO_PAGE_ORDER, lfo_params, note_to_hz,
+    soft_clip, sub_blocks,
+};
 
 fn fp(name: &str) -> u32 { ParamDescriptor::id_for_name(name) }
 
@@ -101,6 +104,9 @@ pub struct FmEngine {
     /// In-flight gain ramp for a machine switch (MM §0 D1).
     switch_fade: Option<SwitchFade>,
 
+    /// MM-C9: one LFO per hosting node (ADR-042 decision 1).
+    lfo: LfoHost,
+
     render_l: Vec<f32>,
     render_r: Vec<f32>,
 
@@ -133,6 +139,7 @@ impl FmEngine {
             velocity_level: 1.0,
             node_locks: Vec::new(),
             switch_fade: None,
+            lfo:            LfoHost::new(),
             render_l:   Vec::new(),
             render_r:   Vec::new(),
             pending_initial_params: HashMap::new(),
@@ -148,12 +155,64 @@ impl FmEngine {
     pub fn bell() -> Self { Self::new(FmMachine::Bell) }
     pub fn bass() -> Self { Self::new(FmMachine::Bass) }
 
-    /// Parameter read honoring per-cycle ParamLock overrides (ADR-019).
-    fn get_param(&self, param_id: u32) -> f32 {
+    /// **APPEND ONLY** — see `AnalogEngine::LFO_DESTS` for the full contract.
+    /// `lfo_dest` stores a one-based index into this, so a reorder re-points
+    /// every saved patch. `lfo_*` and `machine` are absent by construction.
+    const LFO_DESTS: &'static [u32] = &[
+        ParamDescriptor::id_for_name("tune"),
+        ParamDescriptor::id_for_name("decay"),
+        ParamDescriptor::id_for_name("ratio"),
+        ParamDescriptor::id_for_name("index"),
+        ParamDescriptor::id_for_name("feedback"),
+        ParamDescriptor::id_for_name("drive"),
+        ParamDescriptor::id_for_name("punch"),
+        ParamDescriptor::id_for_name("attack"),
+    ];
+
+    /// Bank/lock value, **before** the LFO — see `AnalogEngine::raw_param`.
+    fn raw_param(&self, param_id: u32) -> f32 {
         for &(id, val) in &self.node_locks {
             if id == param_id { return val as f32; }
         }
         self.bank.get(param_id) as f32
+    }
+
+    /// Parameter read honoring per-cycle ParamLock overrides (ADR-019) **and**
+    /// the LFO (ADR-042 amendment 1) — see `AnalogEngine::get_param`.
+    fn get_param(&self, param_id: u32) -> f32 {
+        self.lfo.apply(param_id, self.raw_param(param_id))
+    }
+
+    fn lfo_settings(&self) -> LfoSettings {
+        LfoSettings {
+            shape: LfoShape::from_value(self.raw_param(fp("lfo_shape"))),
+            mode: LfoMode::from_value(self.raw_param(fp("lfo_mode"))),
+            speed_hz: self.raw_param(fp("lfo_speed")),
+            start_phase: self.raw_param(fp("lfo_start_phase")),
+            fade: self.raw_param(fp("lfo_fade")),
+        }
+    }
+
+    /// One-based index into `LFO_DESTS`; 0 and out-of-range read as off.
+    fn lfo_dest_id(&self) -> u32 {
+        let v = self.raw_param(fp("lfo_dest"));
+        if !v.is_finite() || v < 1.0 {
+            return 0;
+        }
+        Self::LFO_DESTS.get(v as usize - 1).copied().unwrap_or(0)
+    }
+
+    fn update_lfo(&mut self, samples: usize) {
+        let dest = self.lfo_dest_id();
+        let range = self
+            .bank
+            .range(dest)
+            .map(|(lo, hi)| (lo as f32, hi as f32))
+            .unwrap_or((0.0, 1.0));
+        let depth = self.raw_param(fp("lfo_depth"));
+        let settings = self.lfo_settings();
+        let sr = self.sample_rate;
+        self.lfo.update(settings, dest, range, depth, sr, samples);
     }
 
     /// The params one machine actually reads. **Not** what the bank stores —
@@ -210,6 +269,9 @@ impl FmEngine {
             unit: ParamUnit::Generic,
             display: None,
         }];
+
+        // MM-C9: machine-invariant, so they join the union once.
+        out.extend(lfo_params(Self::LFO_DESTS.len()));
 
         for m in FmMachine::ALL {
             for p in Self::machine_params(m) {
@@ -351,6 +413,7 @@ impl FmEngine {
         }
         self.mod_env.trigger();
         self.amp_env.trigger();
+        self.lfo.trigger(self.lfo_settings());
         self.active = true;
     }
 
@@ -364,6 +427,7 @@ impl FmEngine {
             return;
         }
         for (lo, hi) in sub_blocks(start, end) {
+            self.update_lfo(hi - lo);
             match self.machine {
                 FmMachine::Kick => self.process_kick(lo, hi),
                 FmMachine::Bell => self.process_bell(lo, hi),
@@ -519,6 +583,11 @@ impl FmEngine {
         let mut refs = vec![
             (fp("machine"), PageRef { page: Cow::Borrowed("TRIG"), slot: 0 }),
             (fp("decay"), PageRef { page: Cow::Borrowed("AMP"), slot: 0 })];
+        // MM-C9: machine-invariant MOD page, laid out identically to
+        // AnalogEngine's so a performer's muscle memory carries across tracks.
+        for (i, id) in LFO_PAGE_ORDER.iter().enumerate() {
+            refs.push((*id, PageRef { page: Cow::Borrowed("MOD"), slot: i as u8 }));
+        }
         refs.push(src("tune", 0));
         match machine {
             FmMachine::Kick => {
@@ -568,7 +637,7 @@ impl FmEngine {
             .map(|&m| MachineVariant {
                 value: m.value(),
                 name: Cow::Borrowed(m.doc_name()),
-                page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
+                page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP"), Cow::Borrowed("MOD")]),
                 pages: Cow::Owned(Self::machine_page_refs(m)),
                 overlays: Cow::Owned(Self::machine_overlays(m)),
             })
@@ -581,7 +650,7 @@ impl ViewPlugin for FmEngine {
         let decay_id = fp("decay");
         Rule {
             name: Cow::Borrowed(self.machine.display_name()),
-            page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
+            page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP"), Cow::Borrowed("MOD")]),
             // Base fields stay the ACTIVE machine's, so a consumer that
             // ignores `variants` renders what it did before (ADR-041
             // decision 3). MM-C5 teaches composite assembly to prefer the
@@ -624,6 +693,11 @@ impl Node for FmEngine {
         buf.push((
             format!("/node/{}/state/env_level", self.node_id),
             StateBusValue::Float(self.amp_env.value as f64),
+        ));
+        // ADR-042 decision 7.
+        buf.push((
+            format!("/node/{}/state/lfo_phase", self.node_id),
+            StateBusValue::Float(self.lfo.phase() as f64),
         ));
     }
 
@@ -995,7 +1069,11 @@ mod tests {
         for m in FmMachine::ALL {
             let mut declared: Vec<u32> =
                 FmEngine::machine_params(m).iter().map(|p| p.id).collect();
-            declared.push(fp("machine")); // union-level, MM-C6 pages it
+            declared.push(fp("machine"));
+            // Same for the seven `lfo_*` params (MM-C9): one LFO per node, not
+            // per machine, so `machine_params` excludes them too while the MOD
+            // page carries them on every variant.
+            declared.extend(LFO_PAGE_ORDER); // union-level, MM-C6 pages it
             for (pid, page_ref) in FmEngine::machine_page_refs(m) {
                 assert!(
                     declared.contains(&pid),
@@ -1233,6 +1311,65 @@ mod tests {
                 whole.active, chunked.active,
                 "{m:?}: voice liveness must not depend on the chunking"
             );
+        }
+    }
+
+    /// MM §0 D3 — see `AnalogEngine`'s copy. `lfo_dest` stores a one-based
+    /// index into this table, so a reorder re-points every saved patch.
+    #[test]
+    fn the_lfo_dest_table_is_append_only() {
+        assert_eq!(
+            FmEngine::LFO_DESTS,
+            &[
+                fp("tune"), fp("decay"), fp("ratio"), fp("index"),
+                fp("feedback"), fp("drive"), fp("punch"), fp("attack"),
+            ],
+            "APPEND ONLY"
+        );
+    }
+
+    #[test]
+    fn the_dest_table_excludes_lfo_params_and_machine() {
+        for id in FmEngine::LFO_DESTS {
+            assert!(!LFO_PAGE_ORDER.contains(id), "an lfo_* param is a dest");
+            assert_ne!(*id, fp("machine"), "`machine` is a dest");
+        }
+    }
+
+    /// What keeps the four ADR-035 baselines valid after MM-C9.
+    #[test]
+    fn depth_zero_is_bit_identical_to_no_lfo() {
+        use crate::engine_dsp::LFO_SUB_BLOCK;
+        let mut eng = FmEngine::bass();
+        eng.activate(44100.0, 512);
+        eng.bank.set(fp("lfo_dest"), 3.0);
+        eng.bank.set(fp("lfo_speed"), 8.0);
+        let base = eng.raw_param(fp("ratio"));
+        for _ in 0..40 {
+            eng.update_lfo(LFO_SUB_BLOCK);
+            assert_eq!(eng.get_param(fp("ratio")), base);
+        }
+    }
+
+    /// The MOD page is `LFO_PAGE_ORDER` at slots 0..6 on every machine. Both
+    /// engines build from that same constant, which is what makes a
+    /// performer's muscle memory carry from an analog track to an FM one —
+    /// asserted against the constant rather than across engines, since a test
+    /// comparing two private functions could only reach one of them.
+    #[test]
+    fn every_machine_carries_the_shared_mod_page() {
+        for m in FmMachine::ALL {
+            let mod_page: Vec<(u32, u8)> = FmEngine::machine_page_refs(m)
+                .into_iter()
+                .filter(|(_, r)| r.page.as_ref() == "MOD")
+                .map(|(id, r)| (id, r.slot))
+                .collect();
+            let want: Vec<(u32, u8)> = LFO_PAGE_ORDER
+                .iter()
+                .enumerate()
+                .map(|(i, id)| (*id, i as u8))
+                .collect();
+            assert_eq!(mod_page, want, "{m:?}'s MOD page");
         }
     }
 

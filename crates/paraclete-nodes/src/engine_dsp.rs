@@ -5,6 +5,8 @@
 //! whatever item happened to come first. MM-C7 put a `const` there and clippy
 //! noticed; `//!` is what a module doc should have been all along.
 
+use paraclete_node_api::{ParamDescriptor, ParamUnit};
+
 // ── Sub-block rate ────────────────────────────────────────────────────────────
 
 /// Control-rate chunk, in samples (MM §0 D2, ADR-042 amendment 4).
@@ -348,6 +350,171 @@ impl LfoBlock {
     /// 0–1, for `/node/{id}/state/lfo_phase`.
     pub fn phase(&self) -> f32 {
         self.phase
+    }
+}
+
+/// The seven `lfo_*` params, as a hosting node declares them (ADR-042
+/// decision 1). One full encoder page.
+///
+/// `dest_table_len` is the host's own dest-table length — see
+/// [`lfo_dest_param`] for why the range is the table's and not the doc's.
+#[allow(dead_code)]
+pub(crate) fn lfo_params(dest_table_len: usize) -> Vec<ParamDescriptor> {
+    let p = |name: &'static str, min: f64, max: f64, default: f64, stepped: bool| {
+        ParamDescriptor {
+            id: ParamDescriptor::id_for_name(name),
+            name: name.into(),
+            min,
+            max,
+            default,
+            stepped,
+            unit: ParamUnit::Generic,
+            display: None,
+        }
+    };
+    vec![
+        p("lfo_shape", 0.0, (LfoShape::ALL.len() - 1) as f64, 0.0, true),
+        // 0.01-64 Hz. The exponential taper ADR-042 names is a *display*
+        // concern: the stored value is linear Hz, so a p-lock or a scene
+        // interpolates in Hz and a surface can curve the knob however it likes
+        // without changing what is stored.
+        p("lfo_speed", 0.01, 64.0, 1.0, false),
+        p("lfo_mode", 0.0, (LfoMode::ALL.len() - 1) as f64, 0.0, true),
+        p("lfo_start_phase", 0.0, 1.0, 0.0, false),
+        p("lfo_fade", -1.0, 1.0, 0.0, false),
+        lfo_dest_param(dest_table_len),
+        p("lfo_depth", -1.0, 1.0, 0.0, false),
+    ]
+}
+
+/// `lfo_dest`: `0` = off, `1..=N` = one-based index into the host's
+/// **append-only dest table**.
+///
+/// ADR-042's body and its amendment 2 disagree here, and MM §1 freezes this
+/// surface, so the reading is recorded rather than left implicit. The body
+/// says "index into the node's declared params"; amendment 2 replaces the
+/// storage with the target's name-hash id, *and* introduces the append-only
+/// per-engine dest table.
+///
+/// Storing the **table index** is what landed (user decision, 2026-07-31).
+/// Amendment 2's objection is that *declaration order* is unstable — but the
+/// table it mandates is append-only and separate from declaration order, so an
+/// index into it is exactly as stable as an id: appends never move existing
+/// entries. Once the table exists, putting the id in the bank as well buys no
+/// stability and costs the encoder, because a name-hash needs `0..u32::MAX`
+/// and `ViewMetaParam::options` (MM-C5) is a *value-indexed* label array —
+/// it cannot describe a param whose values are hashes. A dense `0..=N` maps
+/// onto it exactly.
+///
+/// The stability this depends on is the table being append-only; both engines
+/// carry a test pinning their table's head so a reorder fails loudly (MM §0
+/// D3).
+#[allow(dead_code)]
+pub(crate) fn lfo_dest_param(dest_table_len: usize) -> ParamDescriptor {
+    ParamDescriptor {
+        id: ParamDescriptor::id_for_name("lfo_dest"),
+        name: "lfo_dest".into(),
+        min: 0.0,
+        max: dest_table_len as f64,
+        default: 0.0,
+        stepped: true,
+        unit: ParamUnit::Generic,
+        display: None,
+    }
+}
+
+/// MOD page order for the seven `lfo_*` params — slot `i` gets
+/// `LFO_PAGE_ORDER[i]`. Shared so both engines lay the page out identically
+/// and a performer's muscle memory carries across tracks.
+#[allow(dead_code)]
+pub(crate) const LFO_PAGE_ORDER: [u32; 7] = [
+    ParamDescriptor::id_for_name("lfo_dest"),
+    ParamDescriptor::id_for_name("lfo_depth"),
+    ParamDescriptor::id_for_name("lfo_shape"),
+    ParamDescriptor::id_for_name("lfo_speed"),
+    ParamDescriptor::id_for_name("lfo_mode"),
+    ParamDescriptor::id_for_name("lfo_start_phase"),
+    ParamDescriptor::id_for_name("lfo_fade"),
+];
+
+/// An `LfoBlock` plus the per-sub-block resolution of where its output goes.
+///
+/// Shared by both machine engines, and by `Sampler`/`FilterNode` at MM-C10, so
+/// the application rule lives in exactly one place.
+#[allow(dead_code)]
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct LfoHost {
+    block: LfoBlock,
+    /// Param the LFO is modulating this sub-block; `0` = nothing.
+    dest: u32,
+    /// Additive offset for `dest`, already `depth x range x wave`.
+    offset: f32,
+    /// `dest`'s declared range, for the clamp.
+    dest_range: (f32, f32),
+}
+
+#[allow(dead_code)]
+impl LfoHost {
+    pub fn new() -> Self {
+        LfoHost {
+            block: LfoBlock::new(),
+            dest: 0,
+            offset: 0.0,
+            dest_range: (0.0, 1.0),
+        }
+    }
+
+    /// A note arrived.
+    pub fn trigger(&mut self, s: LfoSettings) {
+        self.block.trigger(s);
+    }
+
+    /// Advance the LFO and latch what it does to which param for this
+    /// sub-block. Call once per sub-block, before the machine renders.
+    ///
+    /// `dest` of 0 (off) latches a zero offset rather than skipping the tick —
+    /// the phase must keep running so `/state/lfo_phase` stays live and
+    /// switching a destination on does not jump.
+    pub fn update(
+        &mut self,
+        s: LfoSettings,
+        dest: u32,
+        dest_range: (f32, f32),
+        depth: f32,
+        sample_rate: f32,
+        samples: usize,
+    ) {
+        let wave = self.block.tick(s, sample_rate, samples);
+        self.dest = dest;
+        self.dest_range = dest_range;
+        let span = dest_range.1 - dest_range.0;
+        // The `dest == 0` arm is belt to `apply`'s brace, not load-bearing:
+        // `apply` short-circuits on `dest != 0`, so the offset is never read
+        // when the LFO is off. Kept so `offset` is meaningful on its own (in a
+        // debugger, or to a future reader) rather than holding a stale value —
+        // a mutant removing it is genuinely equivalent, which is why no test
+        // kills it.
+        self.offset = if dest == 0 { 0.0 } else { depth * span * wave };
+    }
+
+    /// `base` with this sub-block's modulation applied, if `param_id` is the
+    /// destination.
+    ///
+    /// **Only the modulated param is clamped.** Every other read returns
+    /// `base` untouched — the bank already clamps on write, and clamping
+    /// unconditionally here would be a behaviour change for every param the
+    /// LFO is not touching.
+    #[inline]
+    pub fn apply(&self, param_id: u32, base: f32) -> f32 {
+        if self.dest != 0 && param_id == self.dest {
+            (base + self.offset).clamp(self.dest_range.0, self.dest_range.1)
+        } else {
+            base
+        }
+    }
+
+    pub fn phase(&self) -> f32 {
+        self.block.phase()
     }
 }
 

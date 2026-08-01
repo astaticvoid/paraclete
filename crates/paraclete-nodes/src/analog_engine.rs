@@ -10,7 +10,10 @@ use paraclete_node_api::{
     midi::ChannelVoice2, CMD_TRIGGER,
 };
 
-use crate::engine_dsp::{AdState, note_to_hz, soft_clip, sub_blocks, svf_lp_sample, xorshift};
+use crate::engine_dsp::{
+    AdState, LfoHost, LfoMode, LfoSettings, LfoShape, LFO_PAGE_ORDER, lfo_params, note_to_hz,
+    soft_clip, sub_blocks, svf_lp_sample, xorshift,
+};
 
 fn ap(name: &str) -> u32 { ParamDescriptor::id_for_name(name) }
 
@@ -119,6 +122,10 @@ pub struct AnalogEngine {
     /// In-flight gain ramp for a machine switch (MM §0 D1).
     switch_fade: Option<SwitchFade>,
 
+    /// MM-C9: one LFO per hosting node (ADR-042 decision 1), ticked once per
+    /// 64-sample sub-block in MM-C7's loop.
+    lfo: LfoHost,
+
     render_l:    Vec<f32>,
     render_r:    Vec<f32>,
 
@@ -154,6 +161,7 @@ impl AnalogEngine {
             last_note:   36, // C2 — matches current_hz's initial value
             velocity_level: 1.0,
             switch_fade: None,
+            lfo:            LfoHost::new(),
             render_l:    Vec::new(),
             render_r:    Vec::new(),
             pending_initial_params: HashMap::new(),
@@ -169,11 +177,90 @@ impl AnalogEngine {
     pub fn snare() -> Self { Self::new(AnalogMachine::Snare) }
     pub fn hihat() -> Self { Self::new(AnalogMachine::HiHat) }
 
-    fn get_param(&self, param_id: u32) -> f32 {
+    /// **APPEND ONLY.** `lfo_dest` stores a one-based index into this table,
+    /// so inserting or reordering an entry silently re-points every saved
+    /// patch at a different destination — the same contract as
+    /// `AnalogMachine::ALL`, and the thing that makes storing the index as
+    /// stable as storing a name-hash id (see `lfo_dest_param`).
+    ///
+    /// `lfo_*` params are absent by construction (no self-modulation, ADR-042
+    /// review m14) and so is `machine` — modulating an identity param would be
+    /// per-step machine switching by the back door (ADR-041 §0 A4).
+    ///
+    /// Machine-invariant: the table is the union across machines, so a dest
+    /// keeps meaning the same param when the machine changes. A machine that
+    /// does not read its destination simply hears nothing, which is the same
+    /// thing that happens to any inert param.
+    const LFO_DESTS: &'static [u32] = &[
+        ParamDescriptor::id_for_name("tune"),
+        ParamDescriptor::id_for_name("tone"),
+        ParamDescriptor::id_for_name("decay"),
+        ParamDescriptor::id_for_name("punch"),
+        ParamDescriptor::id_for_name("drive"),
+        ParamDescriptor::id_for_name("snap"),
+        ParamDescriptor::id_for_name("noise"),
+        ParamDescriptor::id_for_name("open"),
+    ];
+
+    /// Bank/lock value, **before** the LFO. Used for the `lfo_*` params
+    /// themselves, so an LFO can never modulate its own controls even if a
+    /// dest table were mis-declared.
+    fn raw_param(&self, param_id: u32) -> f32 {
         for &(id, val) in &self.node_locks {
             if id == param_id { return val as f32; }
         }
         self.bank.get(param_id) as f32
+    }
+
+    /// Parameter read honoring per-cycle ParamLock overrides **and** the LFO.
+    ///
+    /// ADR-042 amendment 1: the base is the `get_param()` result, i.e. the
+    /// p-locked value when a lock is in force, so the LFO breathes on top of a
+    /// locked step rather than replacing it — locks never defeat the LFO nor
+    /// vice versa. The bank itself is untouched, so p-locks, the state bus and
+    /// (later) kits all still see the base, and `CMD_BUMP_PARAM` reads do not
+    /// feed back on themselves.
+    fn get_param(&self, param_id: u32) -> f32 {
+        self.lfo.apply(param_id, self.raw_param(param_id))
+    }
+
+    /// The `lfo_*` params as the block wants them, read raw.
+    fn lfo_settings(&self) -> LfoSettings {
+        LfoSettings {
+            shape: LfoShape::from_value(self.raw_param(ap("lfo_shape"))),
+            mode: LfoMode::from_value(self.raw_param(ap("lfo_mode"))),
+            speed_hz: self.raw_param(ap("lfo_speed")),
+            start_phase: self.raw_param(ap("lfo_start_phase")),
+            fade: self.raw_param(ap("lfo_fade")),
+        }
+    }
+
+    /// Resolve `lfo_dest` to a param id, or 0 for off. One-based: value 1 is
+    /// `LFO_DESTS[0]`. An out-of-range index reads as off rather than clamping
+    /// to a neighbour — a malformed value must not quietly modulate something.
+    fn lfo_dest_id(&self) -> u32 {
+        let v = self.raw_param(ap("lfo_dest"));
+        if !v.is_finite() || v < 1.0 {
+            return 0;
+        }
+        Self::LFO_DESTS
+            .get(v as usize - 1)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// Advance the LFO one sub-block and latch what it modulates.
+    fn update_lfo(&mut self, samples: usize) {
+        let dest = self.lfo_dest_id();
+        let range = self
+            .bank
+            .range(dest)
+            .map(|(lo, hi)| (lo as f32, hi as f32))
+            .unwrap_or((0.0, 1.0));
+        let depth = self.raw_param(ap("lfo_depth"));
+        let settings = self.lfo_settings();
+        let sr = self.sample_rate;
+        self.lfo.update(settings, dest, range, depth, sr, samples);
     }
 
     /// The params one machine actually reads. **Not** what the bank stores —
@@ -226,6 +313,11 @@ impl AnalogEngine {
             unit: ParamUnit::Generic,
             display: None,
         }];
+
+        // MM-C9: the seven `lfo_*` params are machine-invariant — one LFO per
+        // node, not per machine — so they join the union once rather than
+        // through the per-machine merge below.
+        out.extend(lfo_params(Self::LFO_DESTS.len()));
 
         for m in AnalogMachine::ALL {
             for p in Self::machine_params(m) {
@@ -391,6 +483,7 @@ impl AnalogEngine {
         self.noise_env.trigger();
         self.osc_phase = 0.0;
         self.active    = true;
+        self.lfo.trigger(self.lfo_settings());
     }
 
     /// Render `[start, end)` with the current voice state, dispatched by
@@ -421,6 +514,10 @@ impl AnalogEngine {
             return;
         }
         for (lo, hi) in sub_blocks(start, end) {
+            // MM-C9: the LFO advances once per sub-block, before the machine
+            // reads its params — that is the whole reason MM-C7 built this
+            // loop, since a `process_*` reads every param once up front.
+            self.update_lfo(hi - lo);
             match self.machine {
                 AnalogMachine::Kick  => self.process_kick(lo, hi),
                 AnalogMachine::Snare => self.process_snare(lo, hi),
@@ -537,6 +634,13 @@ impl AnalogEngine {
         let mut refs = vec![
             (ap("machine"), PageRef { page: Cow::Borrowed("TRIG"), slot: 0 }),
             (ap("decay"), PageRef { page: Cow::Borrowed("AMP"), slot: 0 })];
+        // MM-C9: the LFO is one full encoder page (ADR-042 decision 1) and is
+        // machine-invariant, so every variant carries the same MOD block.
+        // Placement lands here rather than in MM-C11 because a declared param
+        // that no page reaches is exactly what MM-C8b's assertion refuses.
+        for (i, id) in LFO_PAGE_ORDER.iter().enumerate() {
+            refs.push((*id, PageRef { page: Cow::Borrowed("MOD"), slot: i as u8 }));
+        }
         match machine {
             AnalogMachine::Kick => {
                 refs.push((ap("tune"),  PageRef { page: Cow::Borrowed("SRC"), slot: 0 }));
@@ -593,7 +697,7 @@ impl AnalogEngine {
             .map(|&m| MachineVariant {
                 value: m.value(),
                 name: Cow::Borrowed(m.doc_name()),
-                page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
+                page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP"), Cow::Borrowed("MOD")]),
                 pages: Cow::Owned(Self::machine_page_refs(m)),
                 overlays: Cow::Owned(Self::machine_overlays(m)),
             })
@@ -624,7 +728,7 @@ impl ViewPlugin for AnalogEngine {
 
         Rule {
             name: Cow::Borrowed(display_name),
-            page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
+            page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP"), Cow::Borrowed("MOD")]),
             param_pages: Cow::Owned(page_refs),
             macros: Cow::Borrowed(&[]),
             affordances: Cow::Owned(affordances),
@@ -657,6 +761,11 @@ impl Node for AnalogEngine {
         buf.push((
             format!("/node/{}/state/env_level", self.node_id),
             StateBusValue::Float(self.amp_env.value as f64),
+        ));
+        // ADR-042 decision 7: surfaces draw a live LFO position from this.
+        buf.push((
+            format!("/node/{}/state/lfo_phase", self.node_id),
+            StateBusValue::Float(self.lfo.phase() as f64),
         ));
     }
 
@@ -1066,6 +1175,217 @@ mod tests {
         assert_eq!(sub_blocks(0, 500).count(), 8);
     }
 
+    // ── MM-C9: the LFO, hosted ───────────────────────────────────────────
+
+    use crate::engine_dsp::LFO_SUB_BLOCK;
+
+    fn set_lfo(eng: &mut AnalogEngine, pairs: &[(&str, f64)]) {
+        for (name, v) in pairs {
+            eng.bank.set(ap(name), *v);
+        }
+    }
+
+    /// The dest table is the stability guarantee behind storing an *index*
+    /// rather than a name-hash id, so a reorder has to fail loudly (MM §0 D3).
+    #[test]
+    fn the_lfo_dest_table_is_append_only() {
+        assert_eq!(
+            AnalogEngine::LFO_DESTS,
+            &[
+                ap("tune"), ap("tone"), ap("decay"), ap("punch"),
+                ap("drive"), ap("snap"), ap("noise"), ap("open"),
+            ],
+            "APPEND ONLY — `lfo_dest` stores a one-based index into this, so \
+             reordering silently re-points every saved patch"
+        );
+    }
+
+    /// No self-modulation (ADR-042 review m14) and no modulating identity
+    /// (ADR-041 §0 A4 — that would be per-step machine switching by the back
+    /// door).
+    #[test]
+    fn the_dest_table_excludes_lfo_params_and_machine() {
+        for id in AnalogEngine::LFO_DESTS {
+            assert!(!LFO_PAGE_ORDER.contains(id), "an lfo_* param is a dest");
+            assert_ne!(*id, ap("machine"), "`machine` is a dest");
+        }
+    }
+
+    /// `lfo_dest = 0` is off, and so is an index past the end — a malformed
+    /// value must not quietly modulate a neighbour.
+    #[test]
+    fn dest_zero_and_out_of_range_are_both_off() {
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        assert_eq!(eng.lfo_dest_id(), 0, "default is off");
+        set_lfo(&mut eng, &[("lfo_dest", 1.0)]);
+        assert_eq!(eng.lfo_dest_id(), ap("tune"), "one-based: 1 is the first entry");
+        set_lfo(&mut eng, &[("lfo_dest", 8.0)]);
+        assert_eq!(eng.lfo_dest_id(), ap("open"), "and 8 is the last");
+        // The bank clamps writes to the descriptor's 0..N, so a *bank* value
+        // can never be out of range — defence in depth, and worth knowing.
+        set_lfo(&mut eng, &[("lfo_dest", 99.0)]);
+        assert_eq!(
+            eng.lfo_dest_id(),
+            ap("open"),
+            "a bank write past the end is clamped by the bank to the last entry"
+        );
+        // A p-lock bypasses the bank entirely (that is the point of
+        // `node_locks`), so this is the path that can actually carry a bad
+        // index — along with a malformed project. It must read as off rather
+        // than modulating a neighbour.
+        eng.node_locks.push((ap("lfo_dest"), 99.0));
+        assert_eq!(eng.lfo_dest_id(), 0, "an out-of-range lock is off, not clamped");
+        eng.node_locks.clear();
+        eng.node_locks.push((ap("lfo_dest"), f64::NAN));
+        assert_eq!(eng.lfo_dest_id(), 0, "and so is a non-finite one");
+    }
+
+    /// Depth 0 must be *exactly* the unmodulated read — this is what makes
+    /// the four ADR-035 baselines still valid after MM-C9.
+    #[test]
+    fn depth_zero_is_bit_identical_to_no_lfo() {
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        set_lfo(&mut eng, &[("lfo_dest", 2.0), ("lfo_depth", 0.0), ("lfo_speed", 8.0)]);
+        let base = eng.raw_param(ap("tone"));
+        for _ in 0..40 {
+            eng.update_lfo(LFO_SUB_BLOCK);
+            assert_eq!(eng.get_param(ap("tone")), base);
+        }
+    }
+
+    /// The LFO rides on `get_param`, so it moves the value the machine reads
+    /// while leaving the bank alone (ADR-042 decision 3).
+    #[test]
+    fn the_lfo_moves_the_read_value_but_never_the_bank() {
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        // tone: 200..8000 on Kick's overlay, union 200..18000.
+        set_lfo(
+            &mut eng,
+            &[("lfo_dest", 2.0), ("lfo_depth", 1.0), ("lfo_speed", 4.0),
+              ("lfo_shape", 1.0), ("lfo_mode", 1.0), ("tone", 4000.0)],
+        );
+        eng.retrigger(60, 1.0);
+
+        let bank_before = eng.bank.get(ap("tone"));
+        let mut seen: Vec<f32> = Vec::new();
+        for _ in 0..200 {
+            eng.update_lfo(LFO_SUB_BLOCK);
+            seen.push(eng.get_param(ap("tone")));
+        }
+        assert!(
+            seen.iter().any(|v| (*v - 4000.0).abs() > 1.0),
+            "the LFO must actually move the read value"
+        );
+        assert_eq!(
+            eng.bank.get(ap("tone")),
+            bank_before,
+            "and must never write the bank — p-locks, the state bus and kits \
+             all read the base"
+        );
+        let (lo, hi) = eng.bank.range(ap("tone")).unwrap();
+        for v in &seen {
+            assert!(
+                *v as f64 >= lo - 1e-3 && *v as f64 <= hi + 1e-3,
+                "modulated value {v} left the declared range {lo}..{hi}"
+            );
+        }
+    }
+
+    /// Only the **destination** is modulated. Nothing else on the node moves,
+    /// and in particular nothing else gets the destination's clamp — an LFO on
+    /// `tone` (200..8000) must not squeeze `decay` (0.01..2.0) into that range.
+    ///
+    /// A mutant dropping the `param_id == dest` check survived the whole suite
+    /// until this existed: every other test reads the destination, so applying
+    /// the offset everywhere looked identical.
+    #[test]
+    fn only_the_destination_param_is_modulated() {
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        set_lfo(
+            &mut eng,
+            &[("lfo_dest", 2.0), ("lfo_depth", 1.0), ("lfo_speed", 4.0),
+              ("lfo_shape", 2.0), ("lfo_mode", 1.0), ("tone", 4000.0),
+              ("decay", 0.5), ("drive", 0.25)],
+        );
+        eng.retrigger(60, 1.0);
+
+        let mut tone_moved = false;
+        for _ in 0..200 {
+            eng.update_lfo(LFO_SUB_BLOCK);
+            if (eng.get_param(ap("tone")) - 4000.0).abs() > 1.0 {
+                tone_moved = true;
+            }
+            assert_eq!(
+                eng.get_param(ap("decay")),
+                0.5,
+                "`decay` is not the destination and must not move — nor be \
+                 clamped into `tone`'s 200..8000 range"
+            );
+            assert_eq!(eng.get_param(ap("drive")), 0.25, "nor `drive`");
+        }
+        assert!(tone_moved, "the destination really was being modulated");
+    }
+
+    /// ADR-042 amendment 1: the base is the `get_param()` result, so a
+    /// p-locked step and the LFO **compose** — the lock is not defeated by the
+    /// LFO, and the LFO does not start from the bank while a lock is in force.
+    #[test]
+    fn an_lfo_breathes_on_top_of_a_p_locked_step() {
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        set_lfo(
+            &mut eng,
+            &[("lfo_dest", 2.0), ("lfo_depth", 0.5), ("lfo_speed", 4.0),
+              ("lfo_shape", 2.0), ("lfo_mode", 1.0), ("tone", 4000.0)],
+        );
+        // Square wave, so the offset is a constant +/- within a half cycle and
+        // the arithmetic is checkable rather than approximate.
+        eng.retrigger(60, 1.0);
+        eng.update_lfo(LFO_SUB_BLOCK);
+        let unlocked = eng.get_param(ap("tone"));
+        let offset = unlocked - 4000.0;
+        assert!(offset.abs() > 1.0, "the LFO is doing something");
+
+        // Now the same instant, with a p-lock in force on the same param.
+        eng.node_locks.push((ap("tone"), 1000.0));
+        let locked = eng.get_param(ap("tone"));
+        assert!(
+            (locked - (1000.0 + offset)).abs() < 1e-3,
+            "expected lock + offset ({}), got {locked} — a lock-only result \
+             would be 1000 and an offset-from-bank result {unlocked}",
+            1000.0 + offset
+        );
+    }
+
+    /// The seven params are on the MOD page, in one block, identically on
+    /// every machine — MM-C11 draws it, but the placement has to exist now or
+    /// MM-C8b's assertion refuses the declaration.
+    #[test]
+    fn every_machine_carries_the_same_mod_page() {
+        let mut first: Option<Vec<(u32, u8)>> = None;
+        for m in AnalogMachine::ALL {
+            let mod_page: Vec<(u32, u8)> = AnalogEngine::machine_page_refs(m)
+                .into_iter()
+                .filter(|(_, r)| r.page.as_ref() == "MOD")
+                .map(|(id, r)| (id, r.slot))
+                .collect();
+            let want: Vec<(u32, u8)> = LFO_PAGE_ORDER
+                .iter()
+                .enumerate()
+                .map(|(i, id)| (*id, i as u8))
+                .collect();
+            assert_eq!(mod_page, want, "{m:?}'s MOD page");
+            match &first {
+                None => first = Some(mod_page),
+                Some(f) => assert_eq!(*f, mod_page, "{m:?}'s MOD page differs"),
+            }
+        }
+    }
+
     #[test]
     fn analog_hihat_open_extends_decay() {
         let mut eng_closed = AnalogEngine::hihat();
@@ -1405,6 +1725,10 @@ mod tests {
             // on the TRIG page (ADR-041 §0 A2); without this it would look like
             // an unresolvable ref the moment that lands.
             declared.push(ap("machine"));
+            // Same for the seven `lfo_*` params (MM-C9): one LFO per node, not
+            // per machine, so `machine_params` excludes them too while the MOD
+            // page carries them on every variant.
+            declared.extend(LFO_PAGE_ORDER);
             for (pid, page_ref) in AnalogEngine::machine_page_refs(m) {
                 assert!(
                     declared.contains(&pid),
