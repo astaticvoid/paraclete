@@ -251,23 +251,21 @@ impl AnalogEngine {
     /// Resolve `lfo_dest` to a param id, or 0 for off. One-based: value 1 is
     /// `LFO_DESTS[0]`. An out-of-range index reads as off rather than clamping
     /// to a neighbour — a malformed value must not quietly modulate something.
-    fn lfo_dest_id(&self) -> u32 {
+    fn lfo_dest_id(&self) -> Option<u32> {
         let v = self.raw_param(ap("lfo_dest"));
         if !v.is_finite() || v < 1.0 {
-            return 0;
+            return None;
         }
-        Self::LFO_DESTS
-            .get(v as usize - 1)
-            .copied()
-            .unwrap_or(0)
+        Self::LFO_DESTS.get(v as usize - 1).copied()
     }
 
     /// Advance the LFO one sub-block and latch what it modulates.
     fn update_lfo(&mut self, samples: usize) {
         let dest = self.lfo_dest_id();
-        let range = self
-            .bank
-            .range(dest)
+        // Only meaningful when there IS a destination; `update` ignores the
+        // range when `dest` is `None`.
+        let range = dest
+            .and_then(|d| self.bank.range(d))
             .map(|(lo, hi)| (lo as f32, hi as f32))
             .unwrap_or((0.0, 1.0));
         let depth = self.raw_param(ap("lfo_depth"));
@@ -1285,17 +1283,17 @@ mod tests {
     fn dest_zero_and_out_of_range_are_both_off() {
         let mut eng = AnalogEngine::kick();
         eng.activate(44100.0, 512);
-        assert_eq!(eng.lfo_dest_id(), 0, "default is off");
+        assert_eq!(eng.lfo_dest_id(), None, "default is off");
         set_lfo(&mut eng, &[("lfo_dest", 1.0)]);
-        assert_eq!(eng.lfo_dest_id(), ap("tune"), "one-based: 1 is the first entry");
+        assert_eq!(eng.lfo_dest_id(), Some(ap("tune")), "one-based: 1 is the first entry");
         set_lfo(&mut eng, &[("lfo_dest", 8.0)]);
-        assert_eq!(eng.lfo_dest_id(), ap("open"), "and 8 is the last");
+        assert_eq!(eng.lfo_dest_id(), Some(ap("open")), "and 8 is the last");
         // The bank clamps writes to the descriptor's 0..N, so a *bank* value
         // can never be out of range — defence in depth, and worth knowing.
         set_lfo(&mut eng, &[("lfo_dest", 99.0)]);
         assert_eq!(
             eng.lfo_dest_id(),
-            ap("open"),
+            Some(ap("open")),
             "a bank write past the end is clamped by the bank to the last entry"
         );
         // A p-lock bypasses the bank entirely (that is the point of
@@ -1303,10 +1301,10 @@ mod tests {
         // index — along with a malformed project. It must read as off rather
         // than modulating a neighbour.
         eng.node_locks.push((ap("lfo_dest"), 99.0));
-        assert_eq!(eng.lfo_dest_id(), 0, "an out-of-range lock is off, not clamped");
+        assert_eq!(eng.lfo_dest_id(), None, "an out-of-range lock is off, not clamped");
         eng.node_locks.clear();
         eng.node_locks.push((ap("lfo_dest"), f64::NAN));
-        assert_eq!(eng.lfo_dest_id(), 0, "and so is a non-finite one");
+        assert_eq!(eng.lfo_dest_id(), None, "and so is a non-finite one");
     }
 
     /// Depth 0 must be *exactly* the unmodulated read — this is what makes

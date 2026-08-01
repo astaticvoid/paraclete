@@ -489,8 +489,14 @@ impl ParamDisplay for LfoDestLabels {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LfoHost {
     block: LfoBlock,
-    /// Param the LFO is modulating this sub-block; `0` = nothing.
-    dest: u32,
+    /// Param the LFO is modulating this sub-block; `None` = nothing.
+    ///
+    /// **`Option`, not a `0` sentinel.** `FilterNode` numbers its params
+    /// `0, 1, 2` rather than name-hashing them, so `PARAM_CUTOFF == 0` — a
+    /// zero sentinel silently read the filter's main destination as "off",
+    /// and the LFO did nothing at all. Caught by MM-C10's coefficient-cache
+    /// test; a node that name-hashes its ids would never have shown it.
+    dest: Option<u32>,
     /// Additive offset for `dest`, already `depth x range x wave`.
     offset: f32,
     /// `dest`'s declared range, for the clamp.
@@ -502,7 +508,7 @@ impl LfoHost {
     pub fn new() -> Self {
         LfoHost {
             block: LfoBlock::new(),
-            dest: 0,
+            dest: None,
             offset: 0.0,
             dest_range: (0.0, 1.0),
         }
@@ -516,13 +522,13 @@ impl LfoHost {
     /// Advance the LFO and latch what it does to which param for this
     /// sub-block. Call once per sub-block, before the machine renders.
     ///
-    /// `dest` of 0 (off) latches a zero offset rather than skipping the tick —
-    /// the phase must keep running so `/state/lfo_phase` stays live and
+    /// A `None` destination latches a zero offset rather than skipping the
+    /// tick — the phase must keep running so `/state/lfo_phase` stays live and
     /// switching a destination on does not jump.
     pub fn update(
         &mut self,
         s: LfoSettings,
-        dest: u32,
+        dest: Option<u32>,
         dest_range: (f32, f32),
         depth: f32,
         sample_rate: f32,
@@ -538,7 +544,7 @@ impl LfoHost {
         // debugger, or to a future reader) rather than holding a stale value —
         // a mutant removing it is genuinely equivalent, which is why no test
         // kills it.
-        self.offset = if dest == 0 { 0.0 } else { depth * span * wave };
+        self.offset = if dest.is_none() { 0.0 } else { depth * span * wave };
     }
 
     /// `base` with this sub-block's modulation applied, if `param_id` is the
@@ -550,7 +556,7 @@ impl LfoHost {
     /// LFO is not touching.
     #[inline]
     pub fn apply(&self, param_id: u32, base: f32) -> f32 {
-        if self.dest != 0 && param_id == self.dest {
+        if self.dest == Some(param_id) {
             (base + self.offset).clamp(self.dest_range.0, self.dest_range.1)
         } else {
             base

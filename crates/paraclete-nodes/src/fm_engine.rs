@@ -207,19 +207,20 @@ impl FmEngine {
     }
 
     /// One-based index into `LFO_DESTS`; 0 and out-of-range read as off.
-    fn lfo_dest_id(&self) -> u32 {
+    fn lfo_dest_id(&self) -> Option<u32> {
         let v = self.raw_param(fp("lfo_dest"));
         if !v.is_finite() || v < 1.0 {
-            return 0;
+            return None;
         }
-        Self::LFO_DESTS.get(v as usize - 1).copied().unwrap_or(0)
+        Self::LFO_DESTS.get(v as usize - 1).copied()
     }
 
     fn update_lfo(&mut self, samples: usize) {
         let dest = self.lfo_dest_id();
-        let range = self
-            .bank
-            .range(dest)
+        // Only meaningful when there IS a destination; `update` ignores the
+        // range when `dest` is `None`.
+        let range = dest
+            .and_then(|d| self.bank.range(d))
             .map(|(lo, hi)| (lo as f32, hi as f32))
             .unwrap_or((0.0, 1.0));
         let depth = self.raw_param(fp("lfo_depth"));

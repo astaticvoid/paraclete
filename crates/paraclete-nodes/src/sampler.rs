@@ -13,6 +13,10 @@ use paraclete_node_api::{
     PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, Rule, UmpMessage,
     ViewPlugin, midi::ChannelVoice2,
 };
+use crate::engine_dsp::{
+    lfo_params, sub_blocks, LfoDestLabels, LfoHost, LfoMode, LfoSettings, LfoShape,
+    LFO_PAGE_ORDER,
+};
 
 // ── Sampler envelope phase ─────────────────────────────────────────────────────
 
@@ -35,6 +39,11 @@ const P_END:       u32 = ParamDescriptor::id_for_name("end");
 const P_ATTACK:    u32 = ParamDescriptor::id_for_name("attack");
 const P_RELEASE:   u32 = ParamDescriptor::id_for_name("release");
 const P_ROOT_NOTE: u32 = ParamDescriptor::id_for_name("root_note");
+/// MM-C10 dest names, in `Sampler::DESTS` order. **APPEND ONLY.**
+static SAMPLER_DEST_NAMES: &[&str] =
+    &["pitch", "volume", "pan", "start", "end", "attack", "release"];
+static SAMPLER_DEST_LABELS: LfoDestLabels = LfoDestLabels(SAMPLER_DEST_NAMES);
+
 const P_LOOP:      u32 = ParamDescriptor::id_for_name("loop");
 const P_SLICE:     u32 = ParamDescriptor::id_for_name("slice");
 
@@ -166,7 +175,11 @@ fn sampler_capability_document() -> CapabilityDocument {
             // loaded sample would need `ParamDisplayAdapter::Dynamic`, which
             // panics on clone along the cap-doc path (ADR-042 amendment 5).
             ParamDescriptor { id: param_hash("slice"),     name: "slice".into(),     min: 0.0,   max: 127.0, default: 0.0,   stepped: true,  unit: ParamUnit::Generic,   display: None },
-        ],
+        ]
+        .into_iter()
+        // MM-C10: `Sampler` hosts an LFO (ADR-042 decision 6's rollout order).
+        .chain(lfo_params(SAMPLER_DEST_NAMES.len(), Some(&SAMPLER_DEST_LABELS)))
+        .collect(),
         extensions: vec!["paraclete.instrument".into()],
     view: None,
     }
@@ -214,6 +227,8 @@ pub struct Sampler {
     pub(crate) connection_records: Vec<ConnectionRecord>,
 
     // Pre-allocated render buffers — no audio-thread allocation.
+    /// MM-C10: one LFO per hosting node (ADR-042 decision 6).
+    lfo: LfoHost,
     render_l: Vec<f32>,
     render_r: Vec<f32>,
 
@@ -260,6 +275,7 @@ impl Sampler {
             output_sample_rate: 44100.0,
             sample_path,
             connection_records: Vec::new(),
+            lfo: LfoHost::new(),
             render_l: Vec::new(),
             render_r: Vec::new(),
             pending_initial_params: HashMap::new(),
@@ -284,10 +300,59 @@ impl Sampler {
         }
     }
 
-    fn effective_node(&self, param_id: u32) -> f64 {
+    /// Lock-or-bank value, **before** the LFO — used for the `lfo_*` params
+    /// themselves, so an LFO can never modulate its own controls.
+    fn raw_node(&self, param_id: u32) -> f64 {
         self.node_locks.get(&param_id)
             .map(|l| l.locked_value)
             .unwrap_or_else(|| self.base_for(param_id))
+    }
+
+    /// The value the DSP reads: p-lock or bank, with the LFO on top
+    /// (ADR-042 amendment 1 — the base is the *locked* value where a lock is
+    /// in force, so a locked step and the LFO compose).
+    fn effective_node(&self, param_id: u32) -> f64 {
+        self.lfo.apply(param_id, self.raw_node(param_id) as f32) as f64
+    }
+
+    /// **APPEND ONLY** — `lfo_dest` stores a one-based index into this.
+    ///
+    /// `root_note` and `slice` are excluded: both are stepped selectors, not
+    /// continuous settings — modulating them at LFO rate re-pitches or
+    /// re-points the sample rather than shaping it. `loop` likewise. The set
+    /// is the params a performer would actually sweep.
+    const DESTS: &'static [u32] = &[P_PITCH, P_VOLUME, P_PAN, P_START, P_END, P_ATTACK, P_RELEASE];
+
+    fn lfo_settings(&self) -> LfoSettings {
+        LfoSettings {
+            shape: LfoShape::from_value(self.raw_node(param_hash("lfo_shape")) as f32),
+            mode: LfoMode::from_value(self.raw_node(param_hash("lfo_mode")) as f32),
+            speed_hz: self.raw_node(param_hash("lfo_speed")) as f32,
+            start_phase: self.raw_node(param_hash("lfo_start_phase")) as f32,
+            fade: self.raw_node(param_hash("lfo_fade")) as f32,
+        }
+    }
+
+    fn lfo_dest_id(&self) -> Option<u32> {
+        let v = self.raw_node(param_hash("lfo_dest"));
+        if !v.is_finite() || v < 1.0 {
+            return None;
+        }
+        Self::DESTS.get(v as usize - 1).copied()
+    }
+
+    fn update_lfo(&mut self, samples: usize) {
+        let dest = self.lfo_dest_id();
+        // Only meaningful when there IS a destination; `update` ignores the
+        // range when `dest` is `None`.
+        let range = dest
+            .and_then(|d| self.bank.range(d))
+            .map(|(lo, hi)| (lo as f32, hi as f32))
+            .unwrap_or((0.0, 1.0));
+        let depth = self.raw_node(param_hash("lfo_depth")) as f32;
+        let settings = self.lfo_settings();
+        let sr = self.output_sample_rate;
+        self.lfo.update(settings, dest, range, depth, sr, samples);
     }
 
     fn trigger_voice(&mut self, note: u8, velocity: u16, _sample_offset: u32) {
@@ -333,7 +398,19 @@ impl Sampler {
     /// node-level parameter state as of this span. Playback reads the
     /// sample data through a 4-point Hermite interpolator; envelope and
     /// velocity are per-voice. A no-op span leaves the zeroed buffer.
+    /// MM-C10: chunk the span into `LFO_SUB_BLOCK` pieces, tick the LFO once
+    /// per chunk, then render. Same structure as the engines' `render_span`
+    /// (MM-C7) and for the same reason — `render_chunk` reads every param once
+    /// before its sample loop, so nothing re-reads a modulated one within a
+    /// span.
     fn render_voices_span(&mut self, start: usize, end: usize, pitch_mod: f64, volume_mod: f64) {
+        for (lo, hi) in sub_blocks(start, end) {
+            self.update_lfo(hi - lo);
+            self.render_chunk(lo, hi, pitch_mod, volume_mod);
+        }
+    }
+
+    fn render_chunk(&mut self, start: usize, end: usize, pitch_mod: f64, volume_mod: f64) {
         if start >= end { return; }
 
         let eff_volume = (self.effective_node(P_VOLUME) + volume_mod).clamp(0.0, 1.0);
@@ -457,7 +534,11 @@ impl ViewPlugin for Sampler {
     fn to_rule(&self, _node_id: u64, _sub_nodes: &[(u64, &dyn ViewPlugin)]) -> Rule {
         Rule {
             name: Cow::Borrowed("Sampler"),
-            page_groups: Cow::Owned(vec![Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
+            page_groups: Cow::Owned(vec![
+                Cow::Borrowed("SRC"),
+                Cow::Borrowed("AMP"),
+                Cow::Borrowed("MOD"),
+            ]),
             param_pages: Cow::Owned(vec![
                 (P_PITCH,     PageRef { page: Cow::Borrowed("SRC"), slot: 0 }),
                 (P_START,     PageRef { page: Cow::Borrowed("SRC"), slot: 1 }),
@@ -469,9 +550,16 @@ impl ViewPlugin for Sampler {
                 (P_PAN,       PageRef { page: Cow::Borrowed("AMP"), slot: 1 }),
                 (P_ATTACK,    PageRef { page: Cow::Borrowed("AMP"), slot: 2 }),
                 (P_RELEASE,   PageRef { page: Cow::Borrowed("AMP"), slot: 3 }),
-            ]),
+            ]
+            .into_iter()
+            .chain(LFO_PAGE_ORDER.iter().enumerate().map(|(i, id)| {
+                (*id, PageRef { page: Cow::Borrowed("MOD"), slot: i as u8 })
+            }))
+            .collect::<Vec<_>>()),
             macros: Cow::Borrowed(&[]),
-            affordances: Cow::Borrowed(&[]),
+            affordances: Cow::Owned(vec![
+                (param_hash("lfo_shape"), paraclete_node_api::AffordanceHint::LfoShape),
+            ]),
             envelopes: Cow::Borrowed(&[]),
             routing: Cow::Borrowed(&[]),
             diagram: None,
@@ -957,7 +1045,11 @@ mod tests {
         assert_eq!(
             names,
             [
-                "attack", "end", "loop", "pan", "pitch", "release", "root_note",
+                "attack", "end",
+                // MM-C10: the seven `lfo_*` params, one per host.
+                "lfo_depth", "lfo_dest", "lfo_fade", "lfo_mode", "lfo_shape",
+                "lfo_speed", "lfo_start_phase",
+                "loop", "pan", "pitch", "release", "root_note",
                 "slice", "start", "volume"
             ]
         );
@@ -977,7 +1069,10 @@ mod tests {
         let mut s = Sampler::new();
         let their_doc = CapabilityDocument::from_ports(&[]);
         let agreement = s.negotiate(&their_doc);
-        assert_eq!(agreement.lockable_params.len(), 10);
+        // 10 sampler params + the 7 `lfo_*` (MM-C10). The LFO params are
+        // deliberately lockable — ADR-042 decision 4 makes depth/speed/dest
+        // p-lockable per step, which is the point of them being bank params.
+        assert_eq!(agreement.lockable_params.len(), 17);
         let names: Vec<&str> = agreement
             .lockable_params
             .iter()
