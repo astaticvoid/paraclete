@@ -366,6 +366,22 @@ Platform crates (outside the five layers):
   pushes into it. The old returning signature is forbidden (allocates per cycle).
 - **`deserialize()` AFTER `activate()`** for ParameterBank nodes. `activate()`
   resets the bank to defaults; `deserialize()` re-applies saved values on top.
+- **Node persistence is `ParameterBank::serialize`/`deserialize`** (#154), not
+  a hand-written param list per node. If a node's whole persistable state is
+  its bank, `Node::serialize` is a two-line delegate; if it has one extra
+  field, append your own section after `bank.serialize()` — `deserialize`
+  reads `count` pairs and ignores trailing bytes. `Sampler` predates this and
+  keeps its own v3 format.
+  **A param id is a persistence key, so it is append-only.** Both engines
+  derive ids from `ParamDescriptor::id_for_name` (stable as long as the *name*
+  is — renaming a param orphans every saved value for it, silently, because
+  `set` no-ops on an unknown id). `FilterNode`/`DistortionNode`/`ReverbNode`
+  use hand-assigned constants (`const PARAM_CUTOFF: u32 = 0`); each has a
+  guard test pinning them. **Never derive an id from how many params a node
+  declares** — `MixNode` does (`id: i as u32` over a configurable count),
+  which is why it is not wired to the helper (#164). Stepped params that index
+  a table (`machine` → `AnalogMachine::ALL`, `lfo_dest` → `DESTS`) persist the
+  index, so those tables are append-only too, each with a guard test.
 - **ParamLock must NOT go through `bank.handle_commands()`.** Route to a
   per-cycle `node_locks: Vec<(u32, f64)>` cleared at the top of each `process()`;
   check your param getter against it before falling back to the bank. Otherwise

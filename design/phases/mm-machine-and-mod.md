@@ -1107,3 +1107,40 @@ cannot implement or test them (D5):
 7. A user-paired session before the milestone closes — machine switch and
    LFO depth are both performance gestures, and this phase has no session
    gate written into it otherwise.
+
+---
+
+## §7. Post-phase note — 2026-08-01, the defect pass before §6.7
+
+Appended after MM went code-complete, recording work done *between* code
+completion and the §6.7 session. The body above is unchanged.
+
+**MM-C3's third required test now exists.** §MM-C3's test list asked for
+"the corruption path itself: serialize with a value that is legal on HiHat
+and out of range on Kick, deserialize with Kick active, assert the value is
+unchanged." That could not be written when MM-C3 landed, because
+`AnalogEngine` had no `serialize`/`deserialize` at all (#154) — the guard
+went through `set_initial_params` instead, and said so in its doc comment.
+#154 shipped 2026-08-01, and
+`a_saved_value_belonging_to_an_unselected_machine_survives_the_load`
+(`analog_engine.rs`) is the test as originally specified. Both guards are
+kept: `initial_params` is a second, independent route into the same clamping
+`set()`, and it runs *inside* `activate()` rather than after it.
+
+So §3.4 — "the bank's `min`/`max` are the union range for the lifetime of
+the node" — is load-bearing for real now rather than in principle. Before
+#154 there was no load path to corrupt; the invariant was untestable on the
+path it was written about.
+
+**Also closed in that pass, all found by MM's own reviews:** #152 (a track
+that failed to assemble shifted every later track's params), #157
+(`view_meta` reported the machine a node was built with), #161's Theotokos
+half (the panel header did the same). **Still open going into §6.7:** #161's
+wire half (`engine_name` — a protocol-semantics decision, see ADR-041's
+implementation note), #158, #162, #163, #164, #165, #166.
+
+**Carried into §4's open questions:** #164 and #166 both turn on a param id
+being a persistence key. Nothing in MM assumed that — the bank was a runtime
+store when MM-C3 was written — so kits (P11, §5) inherit it: a kit that
+stores `machine` stores an index into `AnalogMachine::ALL`, which is now
+append-only with a guard test (`the_machine_table_is_append_only`).
