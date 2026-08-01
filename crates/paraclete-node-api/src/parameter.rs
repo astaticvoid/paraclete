@@ -128,7 +128,65 @@ impl ParameterBank {
     pub fn iter_values(&self) -> impl Iterator<Item = (&str, f64)> + '_ {
         self.slots.iter().map(|s| (s.name.as_str(), s.current))
     }
+
+    /// The whole bank as bytes, for `Node::serialize()`.
+    ///
+    /// `[version u8][count u16][(param_id u32, value f64) * count]`, all
+    /// little-endian. Keyed by **`param_id`, not slot order**, so the format
+    /// survives a node reordering or inserting parameters — which a
+    /// positional list does not, and which is why this is a shared helper
+    /// rather than five hand-written param lists. `ParamDescriptor::id_for_name`
+    /// hashes the name, so an id is stable as long as the canonical name is.
+    ///
+    /// Not for the audio thread: it allocates. `serialize()` is a main-thread
+    /// call (`project.rs`).
+    pub fn serialize(&self) -> Vec<u8> {
+        let mut buf = Vec::with_capacity(3 + self.slots.len() * 12);
+        buf.push(BANK_FORMAT_VERSION);
+        buf.extend_from_slice(&(self.slots.len() as u16).to_le_bytes());
+        for s in &self.slots {
+            buf.extend_from_slice(&s.param_id.to_le_bytes());
+            buf.extend_from_slice(&s.current.to_le_bytes());
+        }
+        buf
+    }
+
+    /// Apply bytes from [`serialize`](Self::serialize).
+    ///
+    /// **Call from `deserialize()`, never from `activate()`** — `activate()`
+    /// rebuilds the bank at defaults, so values applied there are discarded
+    /// (the `deserialize()`-after-`activate()` convention).
+    ///
+    /// Tolerant by construction, because a project file outlives the code
+    /// that wrote it: an id no longer declared is skipped, a param added
+    /// since the save keeps its default, and a truncated or malformed buffer
+    /// stops at the last whole pair rather than panicking. Values still go
+    /// through `set`, so they clamp to the slot's declared range.
+    pub fn deserialize(&mut self, data: &[u8]) {
+        if data.first() != Some(&BANK_FORMAT_VERSION) || data.len() < 3 {
+            return;
+        }
+        let count = u16::from_le_bytes([data[1], data[2]]) as usize;
+        for i in 0..count {
+            let off = 3 + i * 12;
+            let Some(chunk) = data.get(off..off + 12) else {
+                return;
+            };
+            let param_id = u32::from_le_bytes(chunk[0..4].try_into().unwrap());
+            let value = f64::from_le_bytes(chunk[4..12].try_into().unwrap());
+            // A NaN would poison the slot for the rest of the session and
+            // `clamp` does not filter it; the default is the safer answer.
+            if value.is_finite() {
+                self.set(param_id, value);
+            }
+        }
+    }
 }
+
+/// Bump only for a change no `deserialize` above can read; adding a parameter
+/// or reordering slots does **not** need one — that is the point of keying on
+/// `param_id`.
+const BANK_FORMAT_VERSION: u8 = 1;
 
 /// Push one `/node/{node_id}/param/{param_name}` = Float(value) entry per
 /// declared slot. Appends to `buf`; does not clear it.
@@ -214,6 +272,152 @@ mod tests {
             arg0: param_id as i64,
             arg1: value,
         }
+    }
+
+    // ── #154: bank serialization ─────────────────────────────────────────
+
+    #[test]
+    fn a_bank_round_trips_its_values() {
+        let mut bank = ParameterBank::from_capability_document(&make_doc());
+        bank.set(cutoff_id(), 4321.0);
+        bank.set(res_id(), 2.5);
+        let bytes = bank.serialize();
+
+        // A fresh bank is at defaults, the way `activate()` leaves one.
+        let mut loaded = ParameterBank::from_capability_document(&make_doc());
+        assert_eq!(loaded.get(cutoff_id()), 1000.0);
+        loaded.deserialize(&bytes);
+
+        assert_eq!(loaded.get(cutoff_id()), 4321.0);
+        assert_eq!(loaded.get(res_id()), 2.5);
+    }
+
+    /// Keyed by `param_id`, not slot order — so a node that inserts a
+    /// parameter before an existing one still reads old saves correctly. A
+    /// positional format would silently shift every value by one slot, which
+    /// is the whole reason this is a shared helper rather than five
+    /// hand-written param lists.
+    #[test]
+    fn a_parameter_inserted_before_the_others_does_not_shift_the_rest() {
+        let mut bank = ParameterBank::from_capability_document(&make_doc());
+        bank.set(cutoff_id(), 4321.0);
+        bank.set(res_id(), 2.5);
+        let bytes = bank.serialize();
+
+        let mut doc = make_doc();
+        doc.params.insert(
+            0,
+            crate::capability::ParamDescriptor {
+                id: crate::capability::ParamDescriptor::id_for_name("drive"),
+                name: "drive".into(),
+                min: 0.0,
+                max: 1.0,
+                default: 0.25,
+                stepped: false,
+                unit: crate::capability::ParamUnit::Generic,
+                display: None,
+            },
+        );
+        let mut loaded = ParameterBank::from_capability_document(&doc);
+        loaded.deserialize(&bytes);
+
+        assert_eq!(loaded.get(cutoff_id()), 4321.0, "not shifted by the insert");
+        assert_eq!(loaded.get(res_id()), 2.5);
+        assert_eq!(
+            loaded.get(crate::capability::ParamDescriptor::id_for_name("drive")),
+            0.25,
+            "a param added since the save keeps its default"
+        );
+    }
+
+    /// A project file outlives the code that wrote it, so every malformed
+    /// shape has to be survivable — a node that panics here takes the load
+    /// with it.
+    #[test]
+    fn a_malformed_buffer_leaves_the_bank_at_its_defaults() {
+        let good = {
+            let mut b = ParameterBank::from_capability_document(&make_doc());
+            b.set(cutoff_id(), 4321.0);
+            b.serialize()
+        };
+
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("empty", vec![]),
+            ("version only", vec![BANK_FORMAT_VERSION]),
+            ("unknown version", {
+                let mut v = good.clone();
+                v[0] = 99;
+                v
+            }),
+            ("truncated mid-pair", good[..good.len() - 3].to_vec()),
+            ("count larger than payload", {
+                let mut v = good.clone();
+                v[1] = 200;
+                v
+            }),
+        ];
+
+        for (label, bytes) in cases {
+            let mut bank = ParameterBank::from_capability_document(&make_doc());
+            bank.deserialize(&bytes);
+            assert_eq!(
+                bank.get(res_id()),
+                0.7,
+                "{label}: an untouched param must keep its default"
+            );
+        }
+    }
+
+    /// An id the node no longer declares is skipped rather than resurrecting
+    /// a slot; `set` already no-ops on an unknown id, and this pins it as the
+    /// contract rather than an accident.
+    #[test]
+    fn a_value_for_a_retired_parameter_is_dropped() {
+        let mut bytes = vec![BANK_FORMAT_VERSION];
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(
+            &crate::capability::ParamDescriptor::id_for_name("long_gone").to_le_bytes(),
+        );
+        bytes.extend_from_slice(&5.0f64.to_le_bytes());
+
+        let mut bank = ParameterBank::from_capability_document(&make_doc());
+        bank.deserialize(&bytes);
+        assert_eq!(bank.get(cutoff_id()), 1000.0);
+        assert_eq!(bank.get(res_id()), 0.7);
+    }
+
+    /// `clamp` propagates NaN, so a NaN reaching a slot would stay there for
+    /// the session and poison every read of it.
+    #[test]
+    fn a_non_finite_value_does_not_reach_a_slot() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut bytes = vec![BANK_FORMAT_VERSION];
+            bytes.extend_from_slice(&1u16.to_le_bytes());
+            bytes.extend_from_slice(&cutoff_id().to_le_bytes());
+            bytes.extend_from_slice(&bad.to_le_bytes());
+
+            let mut bank = ParameterBank::from_capability_document(&make_doc());
+            bank.deserialize(&bytes);
+            assert_eq!(bank.get(cutoff_id()), 1000.0, "{bad} must be rejected");
+        }
+    }
+
+    /// The `deserialize()`-after-`activate()` convention, stated as a test:
+    /// `activate()` rebuilds the bank at defaults, so a value applied before
+    /// it is gone. This is the ordering `project.rs:281-287` relies on.
+    #[test]
+    fn rebuilding_the_bank_discards_values_applied_before_it() {
+        let mut bank = ParameterBank::from_capability_document(&make_doc());
+        bank.set(cutoff_id(), 4321.0);
+        let bytes = bank.serialize();
+
+        bank.deserialize(&bytes);
+        bank = ParameterBank::from_capability_document(&make_doc()); // "activate()"
+        assert_eq!(
+            bank.get(cutoff_id()),
+            1000.0,
+            "deserialize before activate is discarded — hence the convention"
+        );
     }
 
     #[test]

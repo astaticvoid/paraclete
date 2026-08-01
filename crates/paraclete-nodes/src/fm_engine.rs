@@ -718,6 +718,16 @@ impl Node for FmEngine {
 
     // published_state() runs on the main thread after process() returns
     // on the audio thread — no concurrent access to self.amp_env.value.
+    /// See `AnalogEngine::serialize` — same reasoning, same union bank. The
+    /// bank is all of it; operator phase and envelope state are transient.
+    fn serialize(&self) -> Vec<u8> {
+        self.bank.serialize()
+    }
+
+    fn deserialize(&mut self, data: &[u8]) {
+        self.bank.deserialize(data);
+    }
+
     fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
         buf.push((

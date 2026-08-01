@@ -134,6 +134,15 @@ impl Node for DistortionNode {
         }
     }
 
+    /// Bank only (#154) — this node is stateless between blocks.
+    fn serialize(&self) -> Vec<u8> {
+        self.bank.serialize()
+    }
+
+    fn deserialize(&mut self, data: &[u8]) {
+        self.bank.deserialize(data);
+    }
+
     fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
     }

@@ -785,6 +785,29 @@ impl Node for AnalogEngine {
 
     // published_state() runs on the main thread after process() returns
     // on the audio thread — no concurrent access to self.amp_env.value.
+    /// The bank is the whole of this node's persistable state — everything
+    /// else (envelopes, oscillator phase, the switch fade) is transient DSP
+    /// that `activate()` resets. Until #154 this node inherited the trait
+    /// default and every sound edit was lost on save.
+    ///
+    /// `machine` is a bank slot, so the selected machine round-trips with the
+    /// rest. It lands on the first `process()`: `activate()` leaves
+    /// `active == false`, so `poll_machine_param` snaps rather than fading —
+    /// there is nothing sounding to declick at load time.
+    ///
+    /// The **union** bank is what makes this lossless. `deserialize` clamps
+    /// each value to its slot range (`bank.set`), and the range is the union
+    /// across machines and is never narrowed (MM §3.4) — so a value belonging
+    /// to a machine that is not currently selected survives the round trip
+    /// instead of being truncated to the active machine's ceiling.
+    fn serialize(&self) -> Vec<u8> {
+        self.bank.serialize()
+    }
+
+    fn deserialize(&mut self, data: &[u8]) {
+        self.bank.deserialize(data);
+    }
+
     fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
         buf.push((
@@ -1619,9 +1642,15 @@ mod tests {
     ///
     /// HiHat's `tone` reaches 18 kHz; Kick's stops at 8 kHz. A Kick-constructed
     /// engine must still store 18 kHz, because the value belongs to a machine
-    /// the user may select later. This is the corruption path from MM §3.4 —
-    /// #154 means a project save cannot exercise it yet, so it goes through
-    /// `set_initial_params` instead.
+    /// the user may select later. This is the corruption path from MM §3.4.
+    ///
+    /// It was written against `set_initial_params` because #154 meant a
+    /// project save could not exercise it at all. That is no longer true —
+    /// `a_saved_value_belonging_to_an_unselected_machine_survives_the_load`
+    /// now covers the same invariant through the real save/load path. This
+    /// one stays: `initial_params` is a second, independent route into the
+    /// same clamping `set()`, and it runs inside `activate()` rather than
+    /// after it.
     #[test]
     fn a_value_legal_on_another_machine_survives_loading_under_this_one() {
         let hihat_tone_max = AnalogEngine::machine_params(AnalogMachine::HiHat)
@@ -1684,6 +1713,95 @@ mod tests {
                 want,
                 "param {pid} changed across a machine round trip"
             );
+        }
+    }
+
+    // ── #154: project persistence ─────────────────────────────────────────
+
+    /// The corruption path MM §3.4 was actually about, now that it exists.
+    /// `a_value_legal_on_another_machine_survives_loading_under_this_one`
+    /// had to go through `set_initial_params` because this node had no
+    /// `serialize`/`deserialize` at all; #154 added them, so the real
+    /// save → `activate()` → `deserialize()` sequence can be asserted.
+    ///
+    /// HiHat's `tone` reaches 18 kHz, Kick's stops at 8 kHz. Save a
+    /// HiHat-legal tone while the engine is on Kick and it must come back
+    /// intact — narrowing the bank to the active machine would truncate it
+    /// on **load**, silently, and the next save would persist the truncation.
+    #[test]
+    fn a_saved_value_belonging_to_an_unselected_machine_survives_the_load() {
+        let hihat_tone_max = AnalogEngine::machine_params(AnalogMachine::HiHat)
+            .into_iter()
+            .find(|p| p.id == ap("tone"))
+            .expect("HiHat declares tone")
+            .max;
+
+        let mut saved = AnalogEngine::kick();
+        saved.activate(44100.0, 512);
+        saved.bank.set(ap("tone"), hihat_tone_max);
+        let bytes = saved.serialize();
+        assert!(!bytes.is_empty(), "the trait default returns an empty Vec");
+
+        let mut loaded = AnalogEngine::kick();
+        loaded.activate(44100.0, 512); // resets the bank to defaults
+        loaded.deserialize(&bytes);
+
+        assert_eq!(
+            loaded.bank.get(ap("tone")),
+            hihat_tone_max,
+            "a HiHat-legal tone was truncated to Kick's ceiling on load"
+        );
+    }
+
+    /// `machine` is a bank slot, so the selected machine is part of what a
+    /// project saves. It lands on the first `process()`: `activate()` leaves
+    /// the voice inactive, so `poll_machine_param` snaps with no fade.
+    #[test]
+    fn the_selected_machine_is_part_of_what_a_project_saves() {
+        let mut saved = AnalogEngine::kick();
+        saved.activate(44100.0, 512);
+        saved.bank.set(ap("machine"), AnalogMachine::HiHat.value() as f64);
+        let bytes = saved.serialize();
+
+        let mut loaded = AnalogEngine::kick();
+        loaded.activate(44100.0, 512);
+        loaded.deserialize(&bytes);
+        assert_eq!(
+            loaded.bank.get(ap("machine")),
+            AnalogMachine::HiHat.value() as f64
+        );
+
+        loaded.poll_machine_param();
+        assert_eq!(
+            loaded.machine,
+            AnalogMachine::HiHat,
+            "a loaded project must come up on the machine it was saved on"
+        );
+    }
+
+    /// Every param, not just the two above — a hand-written serializer that
+    /// forgot a slot would pass a spot check.
+    #[test]
+    fn every_bank_param_survives_a_save_and_load() {
+        let mut saved = AnalogEngine::kick();
+        saved.activate(44100.0, 512);
+
+        // Distinctive point inside each union range, derived rather than
+        // written as literals; skip `machine`, which is stepped.
+        let doc = AnalogEngine::build_doc(AnalogMachine::Kick);
+        let mut expected: Vec<(u32, f64)> = Vec::new();
+        for p in doc.params.iter().filter(|p| p.id != ap("machine")) {
+            let v = p.min + (p.max - p.min) * 0.31;
+            saved.bank.set(p.id, v);
+            expected.push((p.id, v));
+        }
+
+        let mut loaded = AnalogEngine::kick();
+        loaded.activate(44100.0, 512);
+        loaded.deserialize(&saved.serialize());
+
+        for (pid, want) in expected {
+            assert_eq!(loaded.bank.get(pid), want, "param {pid} was lost on load");
         }
     }
 

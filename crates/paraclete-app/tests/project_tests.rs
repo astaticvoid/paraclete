@@ -1,8 +1,10 @@
 use paraclete_app::project::{
     load_project, save_project, ProfileBinding, Project, ProjectError, ProjectMetadata,
 };
-use paraclete_node_api::Node;
-use paraclete_nodes::{InternalClock, Sequencer};
+use paraclete_node_api::{Node, ParamDescriptor};
+use paraclete_nodes::{
+    AnalogEngine, DistortionNode, FilterNode, FmEngine, InternalClock, ReverbNode, Sequencer,
+};
 use paraclete_runtime::NodeConfigurator;
 
 const SR: f32 = 44100.0;
@@ -76,6 +78,122 @@ fn project_save_then_load_restores_state() {
     );
 
     let _ = std::fs::remove_file(&tmp);
+}
+
+/// #154: the five param-bearing nodes that inherited the trait defaults —
+/// `serialize() -> vec![]` and a no-op `deserialize()` — so patterns survived
+/// a save and **sound did not**. Every tweak to a kick's decay, a filter's
+/// cutoff or the reverb's room size was lost.
+///
+/// Drives the real `save_project` / `load_project` pair rather than the nodes'
+/// own round trip, because the ordering this depends on lives in
+/// `project.rs:281-287`: `add_node` activates (resetting the bank to
+/// defaults), and only then may `deserialize` run.
+#[test]
+fn project_save_then_load_restores_engine_and_effect_params() {
+    let tmp = std::env::temp_dir().join("paraclete_param_roundtrip_test.ron");
+    let pid = |name: &str| ParamDescriptor::id_for_name(name);
+
+    // (node id, param name, value to store) — one per previously-lossy node.
+    // `cutoff_hz`, not the canonical `cutoff`: FilterNode declares it that way
+    // (`filter.rs:109`), which is its own deviation from AGENTS.md's canonical
+    // name list and is not this test's to change.
+    let edits: [(u32, &str, f64); 5] = [
+        (20, "decay", 0.42),
+        (27, "tune", 7.0),
+        (40, "cutoff_hz", 3210.0),
+        (30, "drive", 0.77),
+        (200, "wet", 0.31),
+    ];
+
+    // `initial` is applied inside `activate()`, which `add_node` runs — the
+    // one route into a node's bank that does not need the audio thread.
+    let build = |initial: bool| {
+        let pick = |name: &str| -> std::collections::HashMap<String, f64> {
+            let mut m = std::collections::HashMap::new();
+            if initial {
+                if let Some((_, n, v)) = edits.iter().find(|(_, n, _)| *n == name) {
+                    m.insert(n.to_string(), *v);
+                }
+            }
+            m
+        };
+        let mut conf = NodeConfigurator::new(SR, BLOCK);
+        conf.add_node(1, Box::new(InternalClock::new()));
+        let mut e20 = AnalogEngine::kick();
+        e20.set_initial_params(&pick("decay"));
+        conf.add_node(20, Box::new(e20));
+        let mut e27 = FmEngine::bass();
+        e27.set_initial_params(&pick("tune"));
+        conf.add_node(27, Box::new(e27));
+        let mut e40 = FilterNode::new();
+        e40.set_initial_params(&pick("cutoff_hz"));
+        conf.add_node(40, Box::new(e40));
+        let mut e30 = DistortionNode::new();
+        e30.set_initial_params(&pick("drive"));
+        conf.add_node(30, Box::new(e30));
+        let mut e200 = ReverbNode::new();
+        e200.set_initial_params(&pick("wet"));
+        conf.add_node(200, Box::new(e200));
+        conf
+    };
+
+    let mut conf = build(true);
+    let mut fresh = build(false);
+    for (id, name, value) in edits {
+        assert_eq!(
+            read_param(conf.node_mut(id).expect("node exists"), pid(name)),
+            value,
+            "node {id}: fixture could not store {name}={value} — is it in range?"
+        );
+        assert_ne!(
+            read_param(fresh.node_mut(id).expect("node exists"), pid(name)),
+            value,
+            "node {id}: {name}'s probe value equals its default, so the test \
+             would pass on a node that persists nothing"
+        );
+    }
+
+    save_project(&tmp, &conf, make_metadata(), empty_profiles()).expect("save should succeed");
+
+    // Loaded into nodes built at their defaults — so anything correct here
+    // came out of the file, not out of the fixture.
+    let mut conf2 = build(false);
+    let warnings = load_project(&tmp, &mut conf2).expect("load should succeed");
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+
+    for (id, name, value) in edits {
+        let node = conf2.node_mut(id).expect("node exists");
+        assert_eq!(
+            read_param(node, pid(name)),
+            value,
+            "node {id}: {name} did not survive save/load"
+        );
+    }
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+/// Read a live param off a node via the state bus it publishes, so the test
+/// asserts on what the node actually reports rather than reaching into its
+/// bank.
+fn read_param(node: &dyn Node, param_id: u32) -> f64 {
+    let mut buf = Vec::new();
+    node.published_state(&mut buf);
+    const SUFFIX: &str = "/param/";
+    for (path, value) in buf {
+        if let Some(idx) = path.find(SUFFIX) {
+            let name = &path[idx + SUFFIX.len()..];
+            if ParamDescriptor::id_for_name(name) == param_id {
+                return match value {
+                    paraclete_node_api::StateBusValue::Float(f) => f,
+                    paraclete_node_api::StateBusValue::Int(i) => i as f64,
+                    other => panic!("unexpected value for {path}: {other:?}"),
+                };
+            }
+        }
+    }
+    panic!("no published param with id {param_id}");
 }
 
 #[test]

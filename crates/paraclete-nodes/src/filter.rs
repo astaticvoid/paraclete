@@ -264,6 +264,17 @@ impl Node for FilterNode {
         self.pending_initial_params = params.clone();
     }
 
+    /// Bank only (#154). The SVF's `low`/`band` memory and the cached
+    /// coefficients are transient — persisting filter state would reload a
+    /// snapshot of a waveform mid-flight.
+    fn serialize(&self) -> Vec<u8> {
+        self.bank.serialize()
+    }
+
+    fn deserialize(&mut self, data: &[u8]) {
+        self.bank.deserialize(data);
+    }
+
     fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
     }
