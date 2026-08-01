@@ -131,9 +131,14 @@ cargo run -p test-driver -- <scenario>.yaml --check-baseline    # diff; exit 1 o
 #   plock_authoring     node 10 -> 20, authored p-locks     (analog Kick)
 #   analog_machines     nodes 21, 22, and both at once      (analog Snare, HiHat)
 #   fm_machines         node 27 driven through all three    (FM Kick, Bell, Bass)
-# Together these observe all six voice machines. `Sampler`, `FilterNode` and
-# `DistortionNode` still have none — they are in no instrument file, so covering
-# them needs a fixture first (#155).
+#   fx_chain            engine -> filter -> distortion       (uses instrument-fx.yaml)
+# The first four observe all six voice machines. `fx_chain` covers FilterNode
+# and DistortionNode, which appear in no other instrument file — but read its
+# header before trusting it: at 0.2% tolerance it catches filter-coefficient
+# changes and MISSES filter-state re-sequencing, which is the hazard a
+# sub-block restructure actually poses. `Sampler` still has no coverage at all
+# (`Sampler::new()` takes no sample path and the instrument schema has no field
+# for one, so a sampler in a fixture renders silence) — #155.
 
 # Interactive mode: JSON-lines REPL for live engine interrogation
 cargo run -p test-driver -- --interactive --instrument instrument.yaml
