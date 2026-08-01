@@ -30,6 +30,16 @@ pub struct NodeDef {
     /// match the downstream engine's trigger reference (36 for the synth
     /// drum engines; omit for samplers, whose root_note is 60).
     pub default_note: Option<u8>,
+    /// Sampler only (#159 / INFRA-019): path to the `.wav` this sampler loads,
+    /// relative to the working directory — e.g. `samples/kick.wav`, which
+    /// `cargo run -p gen-samples` produces.
+    ///
+    /// Without this a `sampler` node loads nothing and renders **silence**,
+    /// and since baseline mode does not evaluate a scenario's assertions
+    /// (`test-driver/src/main.rs`), a sampler scenario would fingerprint as
+    /// zeros and pass forever. That is the trap #155 exists to avoid, and it
+    /// is why `Sampler` had no regression coverage at all until this existed.
+    pub sample: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]

@@ -1,0 +1,97 @@
+# INFRA-017 (#155), sampler half — unblocked by #159.
+#
+# `Sampler` had no regression coverage at all until now, and could not have
+# had any: `Sampler::new()` took no sample path and the instrument schema had
+# no field for one, so a sampler in a fixture loaded nothing and rendered
+# silence. Baseline mode does not evaluate a scenario's artifact assertions —
+# the fingerprint *is* the check — so a silent sampler would have fingerprinted
+# as zeros and passed forever.
+#
+# Node 23 in `instrument-fx.yaml`, loading `samples/kick.wav` (produced by
+# `cargo run -p gen-samples`, already a documented pre-flight step).
+#
+# MM-C10 restructures `Sampler`'s render into 64-sample sub-blocks so it can
+# host an LFO. What that threatens is per-voice playback state — `pos`, the
+# envelope, and the interpolation between them — so the sweeps here move
+# `pitch` (which changes the read rate), `start`/`end` (which move the window),
+# and `loop` (which changes what happens at the boundary). A single static
+# trigger would let a broken restructure land on the same steady result.
+#
+# Verified non-silent when written, at the fingerprint's 50 ms resolution:
+#   pre-trigger  0.00-0.30 s  max window RMS 0.0000 (all 5 windows exactly 0)
+#   unity        0.30-0.90 s  max window RMS 0.5247, no zero window
+#   pitch -12    1.00-1.70 s  max window RMS 0.6839, no zero window
+#   pitch +7     1.80-2.30 s  max window RMS 0.4460, no zero window
+#   window       2.50-3.10 s  max window RMS 0.2816, no zero window
+#   loop         3.30-4.20 s  max window RMS 0.6349, no zero window
+#   overlap      4.30-5.00 s  max window RMS 0.9390, no zero window
+#
+# Tolerances are tightened to 0.2%, and unlike `fx_chain` this one is genuinely
+# sensitive: the sampler goes dry to the mix, with no reverb smoothing what a
+# restructure disturbs. Measured by mutation —
+#   playback rate           +0.2%   -> caught
+#   playback position step  +0.1%   -> caught
+# So for MM-C10's `Sampler` half this is a real guard, not only a backstop.
+format_version: 1
+instrument: instrument-fx.yaml
+duration_secs: 5
+output: /tmp/sampler_chain.wav
+play: false
+
+timeline:
+  # ── Plain playback at unity pitch ───────────────────────────────────────
+  - at: 0.10
+    set_param: { target: "23", param: volume, value: 1.0 }
+  - at: 0.10
+    set_param: { target: "23", param: start, value: 0.0 }
+  - at: 0.10
+    set_param: { target: "23", param: end, value: 1.0 }
+  - at: 0.30
+    trigger: { target: "23", velocity: 1.0 }
+
+  # ── Pitched down, then up: changes the sample read rate ──────────────────
+  - at: 0.90
+    set_param: { target: "23", param: pitch, value: -12.0 }
+  - at: 1.00
+    trigger: { target: "23", velocity: 1.0 }
+
+  - at: 1.70
+    set_param: { target: "23", param: pitch, value: 7.0 }
+  - at: 1.80
+    trigger: { target: "23", velocity: 0.8 }
+
+  # ── A window into the middle of the sample ───────────────────────────────
+  - at: 2.30
+    set_param: { target: "23", param: pitch, value: 0.0 }
+  - at: 2.30
+    set_param: { target: "23", param: start, value: 0.25 }
+  - at: 2.30
+    set_param: { target: "23", param: end, value: 0.75 }
+  - at: 2.50
+    trigger: { target: "23", velocity: 1.0 }
+
+  # ── Looping: the boundary a chunked render is most likely to disturb ─────
+  - at: 3.10
+    set_param: { target: "23", param: loop, value: 1.0 }
+  - at: 3.10
+    set_param: { target: "23", param: start, value: 0.1 }
+  - at: 3.10
+    set_param: { target: "23", param: end, value: 0.3 }
+  - at: 3.10
+    set_param: { target: "23", param: release, value: 1.5 }
+  - at: 3.30
+    trigger: { target: "23", velocity: 1.0 }
+
+  # ── Overlapping voices: Sampler is 4-voice, so this exercises the pool ───
+  - at: 4.20
+    set_param: { target: "23", param: loop, value: 0.0 }
+  - at: 4.20
+    set_param: { target: "23", param: start, value: 0.0 }
+  - at: 4.20
+    set_param: { target: "23", param: end, value: 1.0 }
+  - at: 4.30
+    trigger: { target: "23", velocity: 1.0 }
+  - at: 4.40
+    trigger: { target: "23", velocity: 0.7 }
+  - at: 4.50
+    trigger: { target: "23", velocity: 0.5 }

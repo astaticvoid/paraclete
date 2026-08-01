@@ -140,7 +140,13 @@ fn construct_node(
                 None => Box::new(seq),
             }
         }
-        "sampler" => Box::new(Sampler::new()),
+        // #159: an instrument file may name the sample. `Sampler::with_path`
+        // has always existed; only the route from the instrument file did not,
+        // which is why no fixture could give a sampler anything to play.
+        "sampler" => match node_def.sample.as_deref() {
+            Some(path) => Box::new(Sampler::with_path(path)),
+            None => Box::new(Sampler::new()),
+        },
         "analog_engine:kick" => Box::new(AnalogEngine::kick()),
         "analog_engine:snare" => Box::new(AnalogEngine::snare()),
         "analog_engine:hihat" => Box::new(AnalogEngine::hihat()),

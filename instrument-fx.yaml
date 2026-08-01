@@ -19,10 +19,10 @@
 # the merged MOD page should stack both nodes' LFO blocks, 8-slot aligned.
 # Verify that here rather than in a unit fixture, as the spec insists.
 #
-# NOTE: no `sampler` node. `Sampler::new()` takes no sample path and the
-# instrument schema has no field for one, so a sampler here would load nothing
-# and render silence — a baseline of silence is exactly the trap #155 exists to
-# avoid. Covering `Sampler` needs that plumbing first.
+# The sampler track exists as of #159, which added `sample:` to the instrument
+# schema — before that `Sampler::new()` took no path, so a sampler here would
+# have loaded nothing and rendered silence, and a baseline of silence is
+# exactly the trap #155 exists to avoid.
 format_version: 1
 name: "paraclete-fx-fixture"
 bpm: 140.0
@@ -38,6 +38,18 @@ nodes:
 
   - id: 20
     type: analog_engine:kick
+
+  # ── Sampler track (#159) ────────────────────────────────────────────────
+  # `samples/kick.wav` is produced by `cargo run -p gen-samples`, which is
+  # already a documented pre-flight step. Its own sequencer, so the sampler
+  # can be triggered independently of the engine track.
+  - id: 11
+    type: sequencer
+    display_name: "Smp"
+  - id: 23
+    type: sampler
+    display_name: "Smp"
+    sample: "samples/kick.wav"
 
   # ── The chain under test ────────────────────────────────────────────────
   - id: 40
@@ -59,6 +71,14 @@ edges:
 
   - from: [10, "events_out"]
     to:   [20, 0]
+  - from: [1, "clock_out"]
+    to:   [11, "clock_in"]
+  - from: [11, "events_out"]
+    to:   [23, 0]
+
+  # sampler -> mix (dry; the effect chain under test is the engine's)
+  - from: [23, 1]
+    to:   [2, 1]
 
   # engine -> filter -> distortion -> mix
   - from: [20, 1]
