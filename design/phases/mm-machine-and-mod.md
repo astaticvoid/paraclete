@@ -950,7 +950,28 @@ Per ADR-042 decision 6's rollout order. Same structure; `FilterNode` has no
 > from the dest set is the boring option, and should be stated rather than
 > assumed.
 
-### MM-C11 — MOD page display and `LfoShape`
+### MM-C11 — MOD page display and `LfoShape` ✅ *(landed, `c8d55d4`)*
+
+> **D4 is corrected by what landed, and the correction is the useful part.**
+> D4 said dest labels must be built *surface-side*, on the reasoning that a
+> descriptor-side display is unusable. That reasoning is ADR-042 amendment 5's
+> and it is about `ParamDisplayAdapter::Dynamic`, which panics on clone
+> (`capability.rs:63`) along a cap-doc path that clones. **`Static` has
+> neither problem**, and these labels are known at compile time — they are the
+> names of the params in the host's own dest table. The engine joins them once
+> and the cap-doc carries them, so a client labels the encoder while knowing
+> nothing about LFOs. A test clones the whole doc, which is what would panic
+> under `Dynamic`.
+>
+> The plumbing is **generic**: `ParamInfo::options` is filled from any stepped
+> descriptor that declares a display. `lfo_dest` is its first user; a sampler
+> slice selector or a filter type needs no further work.
+>
+> **The composite payoff below is NOT verified, and cannot be until MM-C10.**
+> It asks for a real two-node chain stacking an engine's LFO and a filter's on
+> one MOD page — but `FilterNode` does not host an LFO until MM-C10, and no
+> instrument file wires a filter at all. **Do this verification as part of
+> MM-C10**, with a real chain as the spec insists, not a unit fixture.
 
 **Changes:** MOD page content in composite views (the canonical order
 already reserves the slot — `CANONICAL_PAGE_ORDER` in
