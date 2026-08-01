@@ -539,9 +539,27 @@ mutated file with `mv` gives it the backup's older mtime; cargo compares
 mtimes and re-runs the **mutant's** binary. A mutation harness must `touch`
 after every write, and a run that ends green is not proof it did.
 
-### MM-C6 — Theotokos: variant-aware pages, machine-select, lock rejection *(3 of 4 landed, `a9996c1`)*
+### MM-C6 — Theotokos: variant-aware pages, machine-select, lock rejection ✅ *(landed, `a9996c1` + `313e5ca`)*
 
-> **Items 1, 3 and 4 landed in `a9996c1`; item 2 is open and is a decision,
+> **Item 2 was answered by the user (2026-07-31): the engines declare it**,
+> at TRIG slot 0 in every variant (`313e5ca`). Theotokos-only synthesis would
+> have left `machine` unreachable from Theoria permanently and left MM-C5's
+> `stepped`/`options` wire fields with no producer; it also re-creates
+> design-process learning 5's shape, a client re-implementing what the server
+> should have merged. Verified on the wire against the running graph — track 0
+> answers `TRIG machine@0 [stepped] ['AnalogKick','AnalogSnare','AnalogHiHat']`
+> with no client code written to get it.
+>
+> **The page-index shift is real and is entailed by ADR-041 amendment 2, not by
+> this implementation choice.** TRIG is first in `CANONICAL_PAGE_ORDER`, so a
+> page now sits at index 0 ahead of SRC and page keys 1-6 select different
+> pages than they did. The only way to avoid it was to not use a page at all
+> (a command, or a Settings entry), which contradicts the amendment. **Flag it
+> at the next paired session.**
+>
+> *Original framing, kept for the record:*
+>
+> **Items 1, 3 and 4 landed in `a9996c1`; item 2 was open and is a decision,
 > not a task.** What landed: the host's identity param is polled off the state
 > bus each frame and its variant's pre-merged pages swapped in; the encoder
 > shows and clamps the selected machine's overlay rather than the bank's
@@ -813,8 +831,28 @@ assertion ever proves insufficient.
 directions; the dest table's head is asserted so a reorder fails loudly
 (D3).
 
-### MM-C9 — Host `LfoBlock` in both machine engines
+### MM-C9 — Host `LfoBlock` in both machine engines ✅ *(landed, `159c16e`)*
 
+> **The `lfo_dest` question below was answered by the user (2026-07-31): store
+> the one-based table index.** The reasoning, since MM §1 freezes this surface:
+> amendment 2's objection is to *declaration order*, but the append-only table
+> it mandates is separate from declaration order, so an index into it is
+> exactly as stable as a name-hash id. Once the table exists, storing the id
+> too buys no stability and costs the encoder — `ViewMetaParam::options`
+> (MM-C5) is a **value-indexed** label array and cannot describe hash-valued
+> params, while a dense `0..=N` maps onto it exactly.
+>
+> Also landed here, ahead of MM-C11: the MOD page *placement*. A declared param
+> that no page reaches is what MM-C8b's assertion refuses, so the seven params
+> had to be placed the moment they were declared. MM-C11 still owns the
+> display, the `LfoShape` affordance and the dest labels.
+>
+> **All four baselines stayed bit-identical**, because `lfo_depth` and
+> `lfo_dest` both default to 0. That is the property to re-check first if a
+> later commit ever makes them drift.
+>
+> *Original blocker, kept for the record:*
+>
 > **BLOCKED on one decision, and it is a freeze.** `lfo_dest`'s stored form is
 > contradictory between ADR-042's body and its own amendment, and §1 says
 > *"the param surface is frozen by this phase so sync lands later with no
