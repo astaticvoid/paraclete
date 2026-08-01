@@ -839,6 +839,28 @@ fn collect_node_summaries(conf: &NodeConfigurator, ids: &InstrumentIds) -> Vec<N
         .collect()
 }
 
+/// Value-indexed labels for a stepped param that declares a `ParamDisplay`.
+///
+/// `None` for anything continuous, anything without a display, or a range too
+/// wide to index densely — the same 256 ceiling `machine_options` uses, and
+/// for the same reason: a descriptor is free to declare a huge range and this
+/// must not allocate over it.
+fn stepped_labels(p: &paraclete_node_api::ParamDescriptor) -> Option<Vec<Option<String>>> {
+    const MAX_DENSE: f64 = 256.0;
+    let display = p.display.as_ref()?;
+    if !p.stepped || !p.min.is_finite() || !p.max.is_finite() || p.min != 0.0 {
+        return None;
+    }
+    if p.max < 0.0 || p.max >= MAX_DENSE {
+        return None;
+    }
+    Some(
+        (0..=p.max as usize)
+            .map(|i| Some(display.format(i as f64)))
+            .collect(),
+    )
+}
+
 fn build_view_registry(conf: &NodeConfigurator, summaries: &[NodeSummary]) -> ViewRegistry {
     use paraclete_node_api::{CapabilityDocument, PortType};
 
@@ -858,6 +880,12 @@ fn build_view_registry(conf: &NodeConfigurator, summaries: &[NodeSummary]) -> Vi
                     id: p.id,
                     name: p.name.to_string(),
                     stepped: p.stepped,
+                    // MM-C11 / MM §0 D4: a stepped param that declares a
+                    // display gets value-indexed labels on the wire. Built
+                    // here, once at startup, because assembly must not depend
+                    // on `ParamDisplayAdapter` — and this is the only place
+                    // that holds both the descriptor and the view.
+                    options: stepped_labels(p),
                     default: p.default,
                 })
                 .collect();

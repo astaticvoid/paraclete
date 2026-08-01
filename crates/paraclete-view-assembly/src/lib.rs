@@ -61,6 +61,14 @@ pub struct ParamInfo {
     pub name: String,
     /// Integer-stepped parameter (`ParamDescriptor::stepped`).
     pub stepped: bool,
+    /// Value-indexed labels from the descriptor's `ParamDisplay`, when it has
+    /// one — `options[v]` names value `v` (MM-C11 / MM §0 D4).
+    ///
+    /// Built by the caller rather than here, because assembly does not depend
+    /// on `ParamDisplayAdapter`. It is how `lfo_dest` gets its destination
+    /// names to a surface that knows nothing about LFOs, and it works for any
+    /// stepped param that declares a static display.
+    pub options: Option<Vec<Option<String>>>,
     /// The cap-doc default. For a machine host's identity param this **is**
     /// the machine it was constructed on: `union_params(active)` gives the
     /// identity param `active.value()` as its default
@@ -577,12 +585,16 @@ fn merge_page(
             // The identity param is stepped over the machine set whether or
             // not the node's descriptor says so; every other param takes the
             // cap-doc's word for it.
+            let info = nodes.get(&nid).and_then(|i| i.param(*param_id));
             let is_identity = c.identity_param == Some(*param_id);
-            let stepped = is_identity
-                || nodes
-                    .get(&nid)
-                    .and_then(|info| info.param(*param_id))
-                    .is_some_and(|p| p.stepped);
+            let stepped = is_identity || info.is_some_and(|p| p.stepped);
+            // The identity param's names come from the variant list; every
+            // other stepped param's come from its descriptor's display.
+            let options = if is_identity {
+                c.options.clone()
+            } else {
+                info.and_then(|p| p.options.clone())
+            };
 
             params.push(CompositeParam {
                 node_id: nid,
@@ -594,7 +606,7 @@ fn merge_page(
                 slot,
                 routing,
                 stepped,
-                options: if is_identity { c.options.clone() } else { None },
+                options,
             });
         }
 
@@ -679,6 +691,7 @@ mod tests {
                     id: *pid,
                     name: n.to_string(),
                     stepped: false,
+                    options: None,
                     default: 0.0,
                 })
                 .collect(),
@@ -697,6 +710,7 @@ mod tests {
                     id: pid,
                     name: n.to_string(),
                     stepped,
+                    options: None,
                     default,
                 })
                 .collect(),
@@ -1711,6 +1725,45 @@ mod tests {
             "only the identity param carries machine names"
         );
         assert!(!src.params[0].stepped);
+    }
+
+    /// MM-C11 / MM §0 D4: a stepped param that is *not* a machine selector
+    /// still gets value-indexed labels, from its descriptor's display. This is
+    /// how `lfo_dest` names its destinations to a surface that knows nothing
+    /// about LFOs — the identity param's names come from the variant list, and
+    /// everything else's from here.
+    #[test]
+    fn a_stepped_param_carries_labels_from_its_descriptor() {
+        let mut rules = HashMap::new();
+        rules.insert(20, make_rule_slotted("Eng", &["MOD"], &[(1, "MOD", 0)]));
+        let mut nodes = HashMap::new();
+        let mut info = node_info_full("Eng", &[("lfo_dest", 1, true, 0.0)]);
+        info.params[0].options = Some(vec![
+            Some("off".into()),
+            Some("tune".into()),
+            Some("tone".into()),
+        ]);
+        nodes.insert(20, info);
+        let chains = vec![TrackChain {
+            engine_node_id: 20,
+            chain_ids: vec![],
+        }];
+        let cv = assemble(&rules, &chains, 0, &nodes).unwrap();
+        let p = &cv.pages[0].params[0];
+        assert!(p.stepped);
+        assert_eq!(
+            p.options.as_deref().unwrap(),
+            [
+                Some("off".to_string()),
+                Some("tune".to_string()),
+                Some("tone".to_string())
+            ],
+            "no variants involved — the labels come from the descriptor"
+        );
+        assert!(
+            cv.variants.is_empty(),
+            "and this node is not a machine host at all"
+        );
     }
 
     /// `stepped` is the cap-doc's, for every param that is not the selector.

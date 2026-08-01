@@ -10,7 +10,8 @@ use paraclete_node_api::{
 };
 
 use crate::engine_dsp::{
-    AdState, LfoHost, LfoMode, LfoSettings, LfoShape, LFO_PAGE_ORDER, lfo_params, note_to_hz,
+    AdState, LfoDestLabels, LfoHost, LfoMode, LfoSettings, LfoShape, LFO_PAGE_ORDER,
+    lfo_params, note_to_hz,
     soft_clip, sub_blocks,
 };
 
@@ -114,6 +115,18 @@ pub struct FmEngine {
 
     ports: [PortDescriptor; 3],
 }
+
+/// The dest table as **names**, in the same order as `FmEngine::LFO_DESTS`.
+///
+/// Two lists rather than one because `ParamDescriptor::id_for_name` is a
+/// `const fn` over a `&str` but there is no stable way to map an array of
+/// names to an array of ids in a `const` initialiser. A test asserts they
+/// correspond entry-for-entry, so a drift fails loudly rather than mislabelling
+/// an encoder.
+static FM_DEST_NAMES: &[&str] = &["tune", "decay", "ratio", "index", "feedback", "drive", "punch", "attack"];
+
+/// MM §0 D4: the cap-doc carries the `lfo_dest` labels, statically.
+static FM_DEST_LABELS: LfoDestLabels = LfoDestLabels(FM_DEST_NAMES);
 
 impl FmEngine {
     pub const PORT_EVENTS_IN:   u32 = 0;
@@ -271,7 +284,7 @@ impl FmEngine {
         }];
 
         // MM-C9: machine-invariant, so they join the union once.
-        out.extend(lfo_params(Self::LFO_DESTS.len()));
+        out.extend(lfo_params(Self::LFO_DESTS.len(), Some(&FM_DEST_LABELS)));
 
         for m in FmMachine::ALL {
             for p in Self::machine_params(m) {
@@ -659,6 +672,8 @@ impl ViewPlugin for FmEngine {
             macros: Cow::Borrowed(&[]),
             affordances: Cow::Owned(vec![
                 (decay_id, AffordanceHint::EnvelopeCurve { group_idx: 0 }),
+                // MM-C11: see AnalogEngine's copy — first real LfoShape.
+                (fp("lfo_shape"), AffordanceHint::LfoShape),
             ]),
             envelopes: Cow::Owned(vec![EnvelopeGroup {
                 env_type: Cow::Borrowed("AD"),
@@ -1325,6 +1340,57 @@ mod tests {
                 fp("feedback"), fp("drive"), fp("punch"), fp("attack"),
             ],
             "APPEND ONLY"
+        );
+    }
+
+    /// The id table and the name table are two lists that must stay in step —
+    /// there is no stable way to derive one from the other in a `const`
+    /// initialiser, so this is what stops a drift from silently mislabelling
+    /// an encoder.
+    #[test]
+    fn the_dest_ids_and_names_correspond() {
+        assert_eq!(FM_DEST_NAMES.len(), FmEngine::LFO_DESTS.len());
+        for (name, id) in FM_DEST_NAMES.iter().zip(FmEngine::LFO_DESTS) {
+            assert_eq!(fp(name), *id, "`{name}` does not hash to its table entry");
+        }
+    }
+
+    /// MM §0 D4: the cap-doc carries the `lfo_dest` labels, so a surface can
+    /// name the destinations without knowing anything about LFOs. Static, not
+    /// dynamic — ADR-042 amendment 5 ruled out `Dynamic` because it panics on
+    /// clone, and the cap-doc path clones.
+    #[test]
+    fn lfo_dest_labels_reach_the_cap_doc_and_survive_a_clone() {
+        let doc = FmEngine::bass().capability_document();
+        let d = doc
+            .params
+            .iter()
+            .find(|p| p.id == fp("lfo_dest"))
+            .expect("lfo_dest is declared");
+        let display = d.display.as_ref().expect("labels are declared");
+        assert_eq!(display.format(0.0), "off");
+        assert_eq!(display.format(1.0), FM_DEST_NAMES[0]);
+        assert_eq!(
+            display.format(FM_DEST_NAMES.len() as f64),
+            *FM_DEST_NAMES.last().unwrap()
+        );
+        assert_eq!(display.format(999.0), "off", "past the end reads as off");
+        assert_eq!(display.parse("off"), Some(0.0));
+        assert_eq!(display.parse(FM_DEST_NAMES[0]), Some(1.0));
+        // The whole doc is cloned on the mainline cap-doc path; `Dynamic`
+        // would panic here.
+        let _ = doc.clone();
+    }
+
+    /// MM-C11: the first real `LfoShape` in the tree — the hint has existed
+    /// since ADR-032 and nothing ever emitted it (§2.6.5's known gap).
+    #[test]
+    fn lfo_shape_declares_the_lfo_shape_affordance() {
+        let rule = FmEngine::bass().to_rule(0, &[]);
+        assert!(
+            rule.affordances.iter().any(|(pid, hint)| *pid == fp("lfo_shape")
+                && matches!(hint, AffordanceHint::LfoShape)),
+            "lfo_shape must carry the LfoShape affordance"
         );
     }
 

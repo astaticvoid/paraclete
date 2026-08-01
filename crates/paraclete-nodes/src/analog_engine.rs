@@ -11,7 +11,8 @@ use paraclete_node_api::{
 };
 
 use crate::engine_dsp::{
-    AdState, LfoHost, LfoMode, LfoSettings, LfoShape, LFO_PAGE_ORDER, lfo_params, note_to_hz,
+    AdState, LfoDestLabels, LfoHost, LfoMode, LfoSettings, LfoShape, LFO_PAGE_ORDER,
+    lfo_params, note_to_hz,
     soft_clip, sub_blocks, svf_lp_sample, xorshift,
 };
 
@@ -133,6 +134,18 @@ pub struct AnalogEngine {
 
     ports: [PortDescriptor; 3],
 }
+
+/// The dest table as **names**, in the same order as `AnalogEngine::LFO_DESTS`.
+///
+/// Two lists rather than one because `ParamDescriptor::id_for_name` is a
+/// `const fn` over a `&str` but there is no stable way to map an array of
+/// names to an array of ids in a `const` initialiser. A test asserts they
+/// correspond entry-for-entry, so a drift fails loudly rather than mislabelling
+/// an encoder.
+static ANALOG_DEST_NAMES: &[&str] = &["tune", "tone", "decay", "punch", "drive", "snap", "noise", "open"];
+
+/// MM §0 D4: the cap-doc carries the `lfo_dest` labels, statically.
+static ANALOG_DEST_LABELS: LfoDestLabels = LfoDestLabels(ANALOG_DEST_NAMES);
 
 impl AnalogEngine {
     pub const PORT_EVENTS_IN:   u32 = 0;
@@ -317,7 +330,7 @@ impl AnalogEngine {
         // MM-C9: the seven `lfo_*` params are machine-invariant — one LFO per
         // node, not per machine — so they join the union once rather than
         // through the per-machine merge below.
-        out.extend(lfo_params(Self::LFO_DESTS.len()));
+        out.extend(lfo_params(Self::LFO_DESTS.len(), Some(&ANALOG_DEST_LABELS)));
 
         for m in AnalogMachine::ALL {
             for p in Self::machine_params(m) {
@@ -718,6 +731,10 @@ impl ViewPlugin for AnalogEngine {
         let affordances = vec![
             (decay_id, AffordanceHint::EnvelopeCurve { group_idx: 0 }),
             (tone_id,  AffordanceHint::FilterShape),
+            // MM-C11: the first real `LfoShape` declaration in the tree,
+            // closing the known ADR-032 §2.6.5 gap — the hint existed and
+            // nothing had ever emitted it.
+            (ap("lfo_shape"), AffordanceHint::LfoShape),
         ];
 
         let env = EnvelopeGroup {
@@ -1203,6 +1220,57 @@ mod tests {
     /// No self-modulation (ADR-042 review m14) and no modulating identity
     /// (ADR-041 §0 A4 — that would be per-step machine switching by the back
     /// door).
+    /// The id table and the name table are two lists that must stay in step —
+    /// there is no stable way to derive one from the other in a `const`
+    /// initialiser, so this is what stops a drift from silently mislabelling
+    /// an encoder.
+    #[test]
+    fn the_dest_ids_and_names_correspond() {
+        assert_eq!(ANALOG_DEST_NAMES.len(), AnalogEngine::LFO_DESTS.len());
+        for (name, id) in ANALOG_DEST_NAMES.iter().zip(AnalogEngine::LFO_DESTS) {
+            assert_eq!(ap(name), *id, "`{name}` does not hash to its table entry");
+        }
+    }
+
+    /// MM §0 D4: the cap-doc carries the `lfo_dest` labels, so a surface can
+    /// name the destinations without knowing anything about LFOs. Static, not
+    /// dynamic — ADR-042 amendment 5 ruled out `Dynamic` because it panics on
+    /// clone, and the cap-doc path clones.
+    #[test]
+    fn lfo_dest_labels_reach_the_cap_doc_and_survive_a_clone() {
+        let doc = AnalogEngine::kick().capability_document();
+        let d = doc
+            .params
+            .iter()
+            .find(|p| p.id == ap("lfo_dest"))
+            .expect("lfo_dest is declared");
+        let display = d.display.as_ref().expect("labels are declared");
+        assert_eq!(display.format(0.0), "off");
+        assert_eq!(display.format(1.0), ANALOG_DEST_NAMES[0]);
+        assert_eq!(
+            display.format(ANALOG_DEST_NAMES.len() as f64),
+            *ANALOG_DEST_NAMES.last().unwrap()
+        );
+        assert_eq!(display.format(999.0), "off", "past the end reads as off");
+        assert_eq!(display.parse("off"), Some(0.0));
+        assert_eq!(display.parse(ANALOG_DEST_NAMES[0]), Some(1.0));
+        // The whole doc is cloned on the mainline cap-doc path; `Dynamic`
+        // would panic here.
+        let _ = doc.clone();
+    }
+
+    /// MM-C11: the first real `LfoShape` in the tree — the hint has existed
+    /// since ADR-032 and nothing ever emitted it (§2.6.5's known gap).
+    #[test]
+    fn lfo_shape_declares_the_lfo_shape_affordance() {
+        let rule = AnalogEngine::kick().to_rule(0, &[]);
+        assert!(
+            rule.affordances.iter().any(|(pid, hint)| *pid == ap("lfo_shape")
+                && matches!(hint, AffordanceHint::LfoShape)),
+            "lfo_shape must carry the LfoShape affordance"
+        );
+    }
+
     #[test]
     fn the_dest_table_excludes_lfo_params_and_machine() {
         for id in AnalogEngine::LFO_DESTS {

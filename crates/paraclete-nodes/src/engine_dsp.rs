@@ -5,7 +5,7 @@
 //! whatever item happened to come first. MM-C7 put a `const` there and clippy
 //! noticed; `//!` is what a module doc should have been all along.
 
-use paraclete_node_api::{ParamDescriptor, ParamUnit};
+use paraclete_node_api::{ParamDescriptor, ParamDisplay, ParamDisplayAdapter, ParamUnit};
 
 // ── Sub-block rate ────────────────────────────────────────────────────────────
 
@@ -359,7 +359,10 @@ impl LfoBlock {
 /// `dest_table_len` is the host's own dest-table length — see
 /// [`lfo_dest_param`] for why the range is the table's and not the doc's.
 #[allow(dead_code)]
-pub(crate) fn lfo_params(dest_table_len: usize) -> Vec<ParamDescriptor> {
+pub(crate) fn lfo_params(
+    dest_table_len: usize,
+    dest_labels: Option<&'static (dyn ParamDisplay + 'static)>,
+) -> Vec<ParamDescriptor> {
     let p = |name: &'static str, min: f64, max: f64, default: f64, stepped: bool| {
         ParamDescriptor {
             id: ParamDescriptor::id_for_name(name),
@@ -382,7 +385,7 @@ pub(crate) fn lfo_params(dest_table_len: usize) -> Vec<ParamDescriptor> {
         p("lfo_mode", 0.0, (LfoMode::ALL.len() - 1) as f64, 0.0, true),
         p("lfo_start_phase", 0.0, 1.0, 0.0, false),
         p("lfo_fade", -1.0, 1.0, 0.0, false),
-        lfo_dest_param(dest_table_len),
+        lfo_dest_param(dest_table_len, dest_labels),
         p("lfo_depth", -1.0, 1.0, 0.0, false),
     ]
 }
@@ -410,7 +413,10 @@ pub(crate) fn lfo_params(dest_table_len: usize) -> Vec<ParamDescriptor> {
 /// carry a test pinning their table's head so a reorder fails loudly (MM §0
 /// D3).
 #[allow(dead_code)]
-pub(crate) fn lfo_dest_param(dest_table_len: usize) -> ParamDescriptor {
+pub(crate) fn lfo_dest_param(
+    dest_table_len: usize,
+    labels: Option<&'static (dyn ParamDisplay + 'static)>,
+) -> ParamDescriptor {
     ParamDescriptor {
         id: ParamDescriptor::id_for_name("lfo_dest"),
         name: "lfo_dest".into(),
@@ -419,7 +425,7 @@ pub(crate) fn lfo_dest_param(dest_table_len: usize) -> ParamDescriptor {
         default: 0.0,
         stepped: true,
         unit: ParamUnit::Generic,
-        display: None,
+        display: labels.map(ParamDisplayAdapter::Static),
     }
 }
 
@@ -436,6 +442,44 @@ pub(crate) const LFO_PAGE_ORDER: [u32; 7] = [
     ParamDescriptor::id_for_name("lfo_start_phase"),
     ParamDescriptor::id_for_name("lfo_fade"),
 ];
+
+/// Value labels for a host's `lfo_dest` encoder (MM §0 D4).
+///
+/// ADR-042 amendment 5 ruled out a *dynamic* descriptor display —
+/// `ParamDisplayAdapter::Dynamic` panics on clone and the cap-doc path clones.
+/// A **static** one has neither problem, and the labels here are known at
+/// compile time: they are the names of the params in the host's dest table.
+/// So the cap-doc carries them, which is what lets a surface label the encoder
+/// without knowing anything about LFOs (D4's "built from the dest table plus
+/// the cap-doc's param names", with the engine doing the joining once).
+///
+/// Index 0 is `off`; `1..=N` are the dest table's entries in order.
+#[allow(dead_code)]
+pub(crate) struct LfoDestLabels(pub &'static [&'static str]);
+
+impl ParamDisplay for LfoDestLabels {
+    fn format(&self, value: f64) -> String {
+        if !value.is_finite() || value < 1.0 {
+            return "off".to_string();
+        }
+        match self.0.get(value as usize - 1) {
+            Some(name) => (*name).to_string(),
+            // Unreachable through the bank, which clamps to the declared
+            // range; reachable through a p-lock, which bypasses it.
+            None => "off".to_string(),
+        }
+    }
+
+    fn parse(&self, s: &str) -> Option<f64> {
+        if s.eq_ignore_ascii_case("off") {
+            return Some(0.0);
+        }
+        self.0
+            .iter()
+            .position(|n| n.eq_ignore_ascii_case(s))
+            .map(|i| (i + 1) as f64)
+    }
+}
 
 /// An `LfoBlock` plus the per-sub-block resolution of where its output goes.
 ///
