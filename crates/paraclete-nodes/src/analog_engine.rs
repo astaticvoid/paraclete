@@ -1718,6 +1718,29 @@ mod tests {
 
     // ── #154: project persistence ─────────────────────────────────────────
 
+    /// `AnalogMachine::ALL` is declared append-only in prose (`ALL`'s doc
+    /// comment) and nothing enforced it. #154 made `machine` a persisted
+    /// value, so the numeric index now lives in project files: inserting a
+    /// machine anywhere but the end boots every previously-saved project on
+    /// the wrong voice, and `from_value` clamps rather than erroring, so
+    /// nothing complains. Extend the array; never reorder it.
+    #[test]
+    fn the_machine_table_is_append_only() {
+        assert_eq!(
+            AnalogMachine::ALL,
+            [
+                AnalogMachine::Kick,
+                AnalogMachine::Snare,
+                AnalogMachine::HiHat
+            ]
+        );
+        // `value()` is a separate `match`, so the two can drift apart.
+        for (i, m) in AnalogMachine::ALL.iter().enumerate() {
+            assert_eq!(m.value(), i as u32, "{m:?} does not sit at its own value");
+            assert_eq!(AnalogMachine::from_value(i as u32), *m);
+        }
+    }
+
     /// The corruption path MM §3.4 was actually about, now that it exists.
     /// `a_value_legal_on_another_machine_survives_loading_under_this_one`
     /// had to go through `set_initial_params` because this node had no

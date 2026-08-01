@@ -352,6 +352,33 @@ mod tests {
     use super::*;
     use paraclete_node_api::{AudioBuffer, EventOutputBuffer, ExtendedEventSlab, TransportInfo};
 
+    /// Both tables are declared APPEND ONLY in prose and, until #154, nothing
+    /// enforced it. They are now written into project files — `lfo_dest`
+    /// stores a one-based index into `DESTS`, and every param value is keyed
+    /// by these id constants — so a reorder or a renumber silently re-points
+    /// saved patches instead of failing. Extend these arrays; never reorder
+    /// them. (AGENTS.md design-learning 9: declared-but-unenforced contracts
+    /// rot silently.)
+    #[test]
+    fn the_persisted_id_tables_are_append_only() {
+        assert_eq!(
+            [PARAM_CUTOFF, PARAM_RESONANCE, PARAM_FILTER_TYPE],
+            [0, 1, 2],
+            "param id constants are persisted verbatim by ParameterBank::serialize"
+        );
+        assert_eq!(
+            FilterNode::DESTS,
+            &[PARAM_CUTOFF, PARAM_RESONANCE],
+            "`lfo_dest` stores a one-based index into this"
+        );
+        assert_eq!(FILTER_DEST_NAMES, &["cutoff_hz", "resonance"]);
+        assert_eq!(
+            FILTER_DEST_NAMES.len(),
+            FilterNode::DESTS.len(),
+            "the label table and the id table must stay in step"
+        );
+    }
+
     fn run_filter(filter: &mut FilterNode, input_val: f32, frames: usize) -> Vec<f32> {
         let mut src = AudioBuffer::new(2, frames);
         let mut dst = AudioBuffer::new(2, frames);

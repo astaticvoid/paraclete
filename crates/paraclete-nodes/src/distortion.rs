@@ -179,6 +179,15 @@ mod tests {
     use super::*;
     use paraclete_node_api::{AudioBuffer, EventOutputBuffer, ExtendedEventSlab, TransportInfo};
 
+    /// These constants are written verbatim into project files by
+    /// `ParameterBank::serialize` (#154), so they are append-only now:
+    /// renumbering one re-points every saved value silently, because `set`
+    /// no-ops on an id it does not recognise.
+    #[test]
+    fn the_persisted_param_ids_are_append_only() {
+        assert_eq!([PARAM_DRIVE, PARAM_OUTPUT_LEVEL, PARAM_BLEND], [0, 1, 2]);
+    }
+
     fn run_distortion(dist: &mut DistortionNode, input_val: f32) -> f32 {
         let block = 64usize;
         let mut src = AudioBuffer::new(2, block);

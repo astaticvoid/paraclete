@@ -320,6 +320,24 @@ mod tests {
     use super::*;
     use paraclete_node_api::{AudioBuffer, EventOutputBuffer, ExtendedEventSlab, TransportInfo};
 
+    /// Written verbatim into project files by `ParameterBank::serialize`
+    /// (#154) — append-only from here. Renumbering silently re-points every
+    /// saved value, since `set` no-ops on an unrecognised id.
+    #[test]
+    fn the_persisted_param_ids_are_append_only() {
+        assert_eq!(
+            [
+                PARAM_ROOM_SIZE,
+                PARAM_DAMPING,
+                PARAM_WET,
+                PARAM_DRY,
+                PARAM_WIDTH,
+                PARAM_PRE_DELAY
+            ],
+            [0, 1, 2, 3, 4, 5]
+        );
+    }
+
     fn run_reverb(reverb: &mut ReverbNode, input_l: &[f32], input_r: &[f32]) -> (Vec<f32>, Vec<f32>) {
         let frames = input_l.len().min(input_r.len());
         let mut src = AudioBuffer::new(2, frames);

@@ -35,7 +35,28 @@ pub struct ParameterBank {
 impl ParameterBank {
     /// Build from a capability document. Call at `activate()` time.
     /// Sets `current = default` for all declared parameters.
+    ///
+    /// **Param ids must be unique within the document.** `get`/`set` resolve
+    /// by first match, so a duplicate makes the second slot unreachable —
+    /// and since [`serialize`](Self::serialize) keys on `param_id`, a
+    /// duplicate also means a project file applies one slot's saved value to
+    /// the other on load. Enforced by `debug_assert` rather than by type: it
+    /// is a property of the node's own declaration, and the check would
+    /// otherwise cost a scan on every `activate()` in release.
     pub fn from_capability_document(doc: &CapabilityDocument) -> Self {
+        debug_assert!(
+            {
+                let mut ids: Vec<u32> = doc.params.iter().map(|p| p.id).collect();
+                ids.sort_unstable();
+                let before = ids.len();
+                ids.dedup();
+                ids.len() == before
+            },
+            "`{}` declares a duplicate param id — the second slot is \
+             unreachable through get/set, and a project load would apply one \
+             slot's saved value to the other",
+            doc.name
+        );
         let slots = doc
             .params
             .iter()
@@ -65,17 +86,28 @@ impl ParameterBank {
     /// Apply `CMD_SET_PARAM` and `CMD_BUMP_PARAM` from `input.commands`.
     /// All other `type_id` values are silently ignored.
     /// Allocation-free. Call before any DSP logic in `process()`.
+    ///
+    /// Non-finite `arg1` is dropped, for the reason spelled out on
+    /// [`set`](Self::set) — `clamp` propagates NaN, and one NaN command would
+    /// leave the slot poisoned for the rest of the session. `BUMP` checks the
+    /// *result*, not just the delta, so a finite delta added to a slot that
+    /// somehow reached infinity still cannot store NaN.
     pub fn handle_commands(&mut self, commands: &[NodeCommand]) {
         for cmd in commands {
             if cmd.type_id == CMD_SET_PARAM {
                 let param_id = cmd.arg0 as u32;
                 if let Some(s) = self.slots.iter_mut().find(|s| s.param_id == param_id) {
-                    s.current = cmd.arg1.clamp(s.min, s.max);
+                    if cmd.arg1.is_finite() {
+                        s.current = cmd.arg1.clamp(s.min, s.max);
+                    }
                 }
             } else if cmd.type_id == CMD_BUMP_PARAM {
                 let param_id = cmd.arg0 as u32;
                 if let Some(s) = self.slots.iter_mut().find(|s| s.param_id == param_id) {
-                    s.current = (s.current + cmd.arg1).clamp(s.min, s.max);
+                    let next = s.current + cmd.arg1;
+                    if next.is_finite() {
+                        s.current = next.clamp(s.min, s.max);
+                    }
                 }
             }
         }
@@ -110,7 +142,21 @@ impl ParameterBank {
             .map(|s| (s.min, s.max))
     }
 
+    /// Store a value, clamped to the slot's declared range. Unknown ids and
+    /// non-finite values are dropped.
+    ///
+    /// **The `is_finite` check is the load-bearing half.** `f64::clamp`
+    /// *propagates* NaN rather than rejecting it, so without this a NaN would
+    /// sit in the slot for the rest of the session and poison every read of
+    /// it. It lives here rather than in each caller because every route into
+    /// a slot needs it: a project file (`deserialize`), a `CMD_SET_PARAM`
+    /// from a surface (`handle_commands`), and `initial_params` from an
+    /// instrument file — which is YAML, and YAML spells `.nan` and `.inf`
+    /// natively.
     pub fn set(&mut self, param_id: u32, value: f64) {
+        if !value.is_finite() {
+            return;
+        }
         if let Some(s) = self.slots.iter_mut().find(|s| s.param_id == param_id) {
             s.current = value.clamp(s.min, s.max);
         }
@@ -135,8 +181,45 @@ impl ParameterBank {
     /// little-endian. Keyed by **`param_id`, not slot order**, so the format
     /// survives a node reordering or inserting parameters — which a
     /// positional list does not, and which is why this is a shared helper
-    /// rather than five hand-written param lists. `ParamDescriptor::id_for_name`
-    /// hashes the name, so an id is stable as long as the canonical name is.
+    /// rather than a hand-written param list per node.
+    ///
+    /// # Precondition: a param's id must be stable across versions of the node
+    ///
+    /// This format is only as stable as the ids the node declares, and the
+    /// codebase has two legitimate ways of producing them:
+    ///
+    /// - **`ParamDescriptor::id_for_name`** (both engines) — hashes the name,
+    ///   so the id is stable exactly as long as the canonical name is.
+    ///   Conversely, **renaming a param orphans every saved value for it**:
+    ///   `set` no-ops on an unknown id, so the value silently reverts to the
+    ///   default and the next save persists that.
+    /// - **Hand-assigned constants** (`FilterNode`, `DistortionNode`,
+    ///   `ReverbNode` — `const PARAM_CUTOFF: u32 = 0` and friends) — stable
+    ///   as long as nobody renumbers them. Treat those constants as
+    ///   append-only now that they are written into project files.
+    ///
+    /// What is **not** safe is an id *derived from how many params the node
+    /// happens to declare*. That reintroduces the failure keying on id was
+    /// meant to prevent: change the count and every saved value lands on the
+    /// wrong slot. `MixNode` does exactly that (`mix.rs`, `id: i as u32` over
+    /// a `num_inputs` set from the instrument file, with `master_gain` at
+    /// `num_inputs`), which is why it is **not** wired to this helper — a
+    /// project saved with 8 inputs and reloaded with 4 would land input 4's
+    /// gain on the master fader. See the issue tracker before wiring it.
+    ///
+    /// # Extending it
+    ///
+    /// `deserialize` reads exactly `count` pairs and **ignores anything
+    /// after them**, so a node with one non-bank field of its own can append
+    /// its own section:
+    ///
+    /// ```ignore
+    /// fn serialize(&self) -> Vec<u8> {
+    ///     let mut buf = self.bank.serialize();
+    ///     buf.extend_from_slice(&self.sample_path_bytes());
+    ///     buf
+    /// }
+    /// ```
     ///
     /// Not for the audio thread: it allocates. `serialize()` is a main-thread
     /// call (`project.rs`).
@@ -174,11 +257,8 @@ impl ParameterBank {
             };
             let param_id = u32::from_le_bytes(chunk[0..4].try_into().unwrap());
             let value = f64::from_le_bytes(chunk[4..12].try_into().unwrap());
-            // A NaN would poison the slot for the rest of the session and
-            // `clamp` does not filter it; the default is the safer answer.
-            if value.is_finite() {
-                self.set(param_id, value);
-            }
+            // `set` drops unknown ids and non-finite values; see its doc.
+            self.set(param_id, value);
         }
     }
 }
@@ -386,8 +466,69 @@ mod tests {
         assert_eq!(bank.get(res_id()), 0.7);
     }
 
+    /// **Pins the on-disk layout.** Every other format test round-trips
+    /// through the same code, so a symmetric change to `serialize` *and*
+    /// `deserialize` — endianness, field order, an extra header byte — would
+    /// pass the whole suite while making every existing project file
+    /// unreadable at the same version byte. This is the assertion that
+    /// notices. If it fails, either revert the layout change or bump
+    /// `BANK_FORMAT_VERSION` and teach `deserialize` the old shape.
+    #[test]
+    fn the_on_disk_layout_is_exactly_this() {
+        let mut bank = ParameterBank::from_capability_document(&make_doc());
+        bank.set(cutoff_id(), 2000.0);
+        bank.set(res_id(), 1.0);
+
+        let mut want = vec![1u8]; // version
+        want.extend_from_slice(&2u16.to_le_bytes()); // count
+        want.extend_from_slice(&cutoff_id().to_le_bytes());
+        want.extend_from_slice(&2000.0f64.to_le_bytes());
+        want.extend_from_slice(&res_id().to_le_bytes());
+        want.extend_from_slice(&1.0f64.to_le_bytes());
+
+        assert_eq!(bank.serialize(), want);
+        assert_eq!(want.len(), 3 + 2 * 12, "3-byte header, 12 bytes per pair");
+        // Spelled out, so a change from little- to big-endian fails here and
+        // not only in a user's project file six months later.
+        assert_eq!(&want[1..3], &[2, 0], "count is little-endian");
+    }
+
+    /// The format's extension point: `deserialize` reads `count` pairs and
+    /// ignores the rest, so a node can append a section of its own after
+    /// `bank.serialize()`.
+    #[test]
+    fn trailing_bytes_after_the_pairs_are_ignored() {
+        let mut bank = ParameterBank::from_capability_document(&make_doc());
+        bank.set(cutoff_id(), 4321.0);
+        let mut bytes = bank.serialize();
+        bytes.extend_from_slice(b"a node's own section");
+
+        let mut loaded = ParameterBank::from_capability_document(&make_doc());
+        loaded.deserialize(&bytes);
+        assert_eq!(loaded.get(cutoff_id()), 4321.0);
+        assert_eq!(loaded.get(res_id()), 0.7);
+    }
+
     /// `clamp` propagates NaN, so a NaN reaching a slot would stay there for
-    /// the session and poison every read of it.
+    /// the session and poison every read of it. The guard lives in `set`, so
+    /// it covers the command path and `initial_params` too — the latter comes
+    /// from YAML, which spells `.nan` and `.inf` natively.
+    #[test]
+    fn a_non_finite_value_cannot_reach_a_slot_by_any_route() {
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let mut bank = ParameterBank::from_capability_document(&make_doc());
+
+            bank.set(cutoff_id(), bad);
+            assert_eq!(bank.get(cutoff_id()), 1000.0, "{bad} via set");
+
+            bank.handle_commands(&[cmd(CMD_SET_PARAM, cutoff_id(), bad)]);
+            assert_eq!(bank.get(cutoff_id()), 1000.0, "{bad} via CMD_SET_PARAM");
+
+            bank.handle_commands(&[cmd(CMD_BUMP_PARAM, cutoff_id(), bad)]);
+            assert_eq!(bank.get(cutoff_id()), 1000.0, "{bad} via CMD_BUMP_PARAM");
+        }
+    }
+
     #[test]
     fn a_non_finite_value_does_not_reach_a_slot() {
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
