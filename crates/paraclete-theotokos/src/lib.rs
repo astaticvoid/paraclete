@@ -2153,6 +2153,64 @@ mod tests {
         );
     }
 
+    /// The #152 × MM-C6 seam: `sync_machine_selection` walks *every* track, so
+    /// it is the one caller that indexes `composite` directly rather than
+    /// through `active_composite()`. It must step over a hole, sync the hosts
+    /// after it, and — because a switch on any track sets `changed` — must not
+    /// clamp a viewless active track's page selection to 0 on the way out.
+    #[test]
+    fn a_machine_switch_syncs_past_a_track_with_no_composite_view() {
+        let bus = test_bus();
+        let mut app = test_app(
+            1,
+            vec![200, 201],
+            vec![100, 101],
+            vec!["T1".into(), "T2".into()],
+        );
+        let mut caps = machine_host_caps(101);
+        // Track 0's engine has no composite view but *does* declare pages, so
+        // its page count comes from the engine-local `Rule` fallback. Without
+        // that fallback in the clamp the switch below drags it back to page 0.
+        caps.get_mut(&100).unwrap().view = Some(Rule {
+            name: "Engine".into(),
+            page_groups: Cow::Owned(vec!["TRIG".into(), "SRC".into(), "AMP".into()]),
+            param_pages: Cow::Borrowed(&[]),
+            macros: Cow::Borrowed(&[]),
+            affordances: Cow::Borrowed(&[]),
+            envelopes: Cow::Borrowed(&[]),
+            routing: Cow::Borrowed(&[]),
+            diagram: None,
+            view_overrides: Cow::Borrowed(&[]),
+            variants: Cow::Borrowed(&[]),
+        });
+        app.model.caps = caps;
+        app.model.composite = vec![None, Some(machine_host_view(101))];
+
+        // Sit on track 0 — the hole, on its third page — while track 1's
+        // machine moves.
+        app.model.select_track(0);
+        app.model.perf_page = 2;
+        set_machine(&bus, 101, 1.0);
+
+        assert!(
+            app.model.sync_machine_selection(&bus.borrow()),
+            "the host on track 1 moved, so the panel repaints"
+        );
+        assert_eq!(
+            app.model.composite[1].as_ref().unwrap().variants[0].active,
+            1,
+            "the track after the hole still syncs"
+        );
+        assert!(
+            app.model.composite[0].is_none(),
+            "and the hole is still a hole"
+        );
+        assert_eq!(
+            app.model.perf_page, 2,
+            "track 0 never moved; its page selection must survive track 1's switch"
+        );
+    }
+
     // ── MM-C6 ────────────────────────────────────────────────────────────
 
     fn page_param_names(app: &TheotokosApp) -> Vec<String> {

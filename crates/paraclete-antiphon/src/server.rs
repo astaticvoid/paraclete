@@ -40,7 +40,9 @@ const IO_POLL: Duration = Duration::from_millis(15);
 /// wide-range params like a 200–8000 Hz cutoff (found 2026-07-10).
 const BUMP_DELTA_RANGE_FRAC: f64 = 0.5;
 
-/// Immutable per-session data shared with every client thread.
+/// Per-session data shared with every client thread. Immutable except for
+/// `view_registry.selections`, which carries interior mutability (#157) —
+/// client threads read it while the main thread writes it.
 pub struct SessionInfo {
     pub token: String,
     pub device_id: u32,

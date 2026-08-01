@@ -310,9 +310,13 @@ impl Model {
             .and_then(|(t, s)| if t == self.active_track { Some(s) } else { None })
     }
 
-    pub fn select_perf_page(&mut self, idx: usize) {
-        let max = self
-            .active_composite()
+    /// How many pages the active track has: its composite view's, or — for a
+    /// track with no composite view (#152) — the engine-local `Rule`'s page
+    /// groups, the same fallback `resolve_page_params_n` and
+    /// `page_sub_page_count` take. Shared so the three cannot disagree about
+    /// how many pages a viewless track has.
+    pub fn page_count_for_active_track(&self) -> usize {
+        self.active_composite()
             .map(|cv| cv.pages.len())
             .unwrap_or_else(|| {
                 let gen_id = self.tracks[self.active_track].generator_id;
@@ -321,8 +325,11 @@ impl Model {
                     .and_then(|c| c.view.as_ref())
                     .map(|r| r.page_groups.len())
                     .unwrap_or(0)
-            });
-        if idx >= max {
+            })
+    }
+
+    pub fn select_perf_page(&mut self, idx: usize) {
+        if idx >= self.page_count_for_active_track() {
             return;
         }
         self.perf_page = idx;
@@ -547,7 +554,13 @@ impl Model {
             // A machine with fewer pages can leave the selection past the end,
             // and one with a shorter page can leave the sub-page past the end.
             // Both would render an empty bank that no key could escape.
-            let pages = self.active_composite().map(|cv| cv.pages.len()).unwrap_or(0);
+            //
+            // Through the same fallback `select_perf_page` uses: another
+            // track switching machine sets `changed`, and a viewless active
+            // track (#152) still has its `Rule`'s pages. Clamping it to 0
+            // here would snap the performer to page 0 of a track that never
+            // moved.
+            let pages = self.page_count_for_active_track();
             if self.perf_page >= pages {
                 self.perf_page = pages.saturating_sub(1);
             }

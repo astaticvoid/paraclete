@@ -36,16 +36,20 @@ impl MachineSelections {
         Self::default()
     }
 
-    /// Record `node_id`'s current machine. A poisoned lock is dropped rather
-    /// than propagated: a stale view beats taking down a client thread.
+    /// Record `node_id`'s current machine.
+    ///
+    /// A poisoned lock is recovered through `into_inner()` rather than
+    /// propagated or skipped. Nothing under this lock can panic today (a
+    /// `HashMap` insert and a clone), but *dropping* the write on poison
+    /// would silently reinstate BUG-056 for the rest of the process, and an
+    /// empty map is not a stale view — it is a reset one.
     pub fn set(&self, node_id: u32, value: u32) {
-        if let Ok(mut m) = self.0.lock() {
-            m.insert(node_id, value);
-        }
+        let mut m = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        m.insert(node_id, value);
     }
 
     pub fn snapshot(&self) -> HashMap<u32, u32> {
-        self.0.lock().map(|m| m.clone()).unwrap_or_default()
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
@@ -56,6 +60,11 @@ pub struct ViewRegistry {
     pub node_infos: HashMap<u32, NodeInfo>,
     /// Live machine selection, shared with `AntiphonHandle`. Empty by
     /// default, which reproduces the pre-#157 cap-doc-default behaviour.
+    ///
+    /// **Cloning a `ViewRegistry` shares this map — it is not a deep copy.**
+    /// That is what the derived `Clone` cannot say and what makes the app's
+    /// `view_registry.clone()` into `AntiphonServer::spawn` work: the handle
+    /// writing selections and the session assembling from them hold one map.
     pub selections: MachineSelections,
 }
 
@@ -419,6 +428,55 @@ mod tests {
             ..registry()
         };
         assert!(reg.machine_select_paths().is_empty());
+    }
+
+    /// The #152 × #157 seam. A track whose engine carries no view `Rule`
+    /// makes `assemble` return `None` — a `clap_plugin` track is exactly that
+    /// (`ClapPluginNode`'s cap-doc has `view: None`). The scan must step over
+    /// it and still name the hosts on the tracks around it, not stop at the
+    /// first failure.
+    #[test]
+    fn a_track_that_cannot_assemble_does_not_hide_the_hosts_around_it() {
+        let mut reg = registry();
+        // Track 0 is viewless (engine 30 has no `Rule`); track 1 is the host.
+        reg.chains.insert(
+            0,
+            TrackChain {
+                engine_node_id: 30,
+                chain_ids: vec![],
+            },
+        );
+        assert!(
+            paraclete_view_assembly::assemble(&reg.rules, &reg.chains, 0, &reg.node_infos)
+                .is_none(),
+            "fixture precondition: track 0 really does fail to assemble"
+        );
+        assert_eq!(
+            reg.machine_select_paths(),
+            HashMap::from([("/node/20/param/machine".to_string(), 20u32)]),
+            "track 1's host is still watched"
+        );
+    }
+
+    /// Two machine hosts in one chain. Nothing in the tree has one today
+    /// (both engines are track sources), so this pins the behaviour before
+    /// something does — a variant-bearing effect behind a variant-bearing
+    /// engine must contribute its own watched path, not be shadowed.
+    #[test]
+    fn every_machine_host_in_a_chain_gets_its_own_watched_path() {
+        let mut reg = registry();
+        reg.rules.insert(30, machine_rule());
+        reg.chains[0].chain_ids = vec![30];
+        let infos = reg.node_infos.get(&20).unwrap().clone();
+        reg.node_infos.insert(30, infos);
+
+        assert_eq!(
+            reg.machine_select_paths(),
+            HashMap::from([
+                ("/node/20/param/machine".to_string(), 20u32),
+                ("/node/30/param/machine".to_string(), 30u32),
+            ])
+        );
     }
 
     #[test]

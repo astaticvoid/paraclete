@@ -88,8 +88,15 @@ pub struct AntiphonHandle {
     /// the audio thread so its allocation is fine.
     cmd_rx: mpsc::Receiver<NodeCommand>,
     /// State-bus paths that carry a machine selection, from
-    /// `ViewRegistry::machine_select_paths()`. Built once at spawn; a machine
-    /// host cannot appear at runtime (no re-query, ADR-041 decision 1).
+    /// `ViewRegistry::machine_select_paths()`.
+    ///
+    /// Built once at spawn, because the registry as a whole is a startup
+    /// snapshot — `rules`, `chains` and `node_infos` are frozen there too.
+    /// (Not because topology is immutable: `apply_patch` exists and
+    /// `publish_topology` below is the declared hook for wiring it. A node
+    /// added at runtime would get no watched path and its `view_meta` would
+    /// freeze at its built-with machine; whoever wires that hook has to
+    /// rebuild this alongside the rest of the registry.)
     machine_select_paths: HashMap<String, u32>,
     /// The registry's own selection map, shared. `pump` is the only writer
     /// (#157).
