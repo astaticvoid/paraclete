@@ -362,8 +362,12 @@ fn main() {
     let mut theotokos_opt: Option<(TheotokosApp, CrosstermTerminal)> = None;
     if theotokos {
         // TK1 C3: build composite views + edge-derived track map.
-        let composite: Vec<CompositeView> = (0..ids.sequencers.len())
-            .filter_map(|t| {
+        // `map`, never `filter_map`: the Vec is indexed by track, so dropping a
+        // track that fails to assemble shifted every later track down one and
+        // Theotokos then rendered — and edited — the wrong track's params
+        // (BUG-053, #152). A hole stays a hole.
+        let composite: Vec<Option<CompositeView>> = (0..ids.sequencers.len())
+            .map(|t| {
                 paraclete_view_assembly::assemble(
                     &view_registry.rules,
                     &view_registry.chains,

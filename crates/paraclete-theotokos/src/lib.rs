@@ -41,8 +41,10 @@ pub struct TheotokosConfig {
     /// second half.
     pub display_names: Vec<String>,
     pub caps: HashMap<u32, CapabilityDocument>,
-    /// TK1 C3: composite views, one per track, same order as tracks.
-    pub composite: Vec<CompositeView>,
+    /// TK1 C3: composite views, one per track, same order as tracks —
+    /// index-aligned, `None` where assembly failed (#152). Never compact this
+    /// with `filter_map`; a hole must stay a hole.
+    pub composite: Vec<Option<CompositeView>>,
     pub fps: u64,
 }
 
@@ -1970,7 +1972,7 @@ mod tests {
     fn machine_host_app(node_id: u32, seq_id: u32) -> TheotokosApp {
         let mut app = test_app(1, vec![seq_id], vec![node_id], vec!["Host".into()]);
         app.model.caps = machine_host_caps(node_id);
-        app.model.composite = vec![machine_host_view(node_id)];
+        app.model.composite = vec![Some(machine_host_view(node_id))];
         app.model.perf_page = 0;
         app
     }
@@ -2106,10 +2108,55 @@ mod tests {
         }
     }
 
+    // ── BUG-053 (#152) ───────────────────────────────────────────────────
+
+    /// `composite` is indexed by track, so a track whose view fails to
+    /// assemble has to hold `None` and keep its slot. The app built the Vec
+    /// with `filter_map` until #152, which dropped the failing track and
+    /// shifted every later one down an index — selecting track 0 then
+    /// rendered *and edited* track 1's params.
+    #[test]
+    fn a_track_that_fails_to_assemble_does_not_shift_the_tracks_after_it() {
+        const PID: u32 = 7777;
+        let mut app = test_app(
+            1,
+            vec![200, 201],
+            vec![100, 101],
+            vec!["T1".into(), "T2".into()],
+        );
+        app.model.composite = vec![None, Some(composite_view_with_param(101, PID))];
+
+        app.model.select_track(1);
+        assert_eq!(
+            app.model
+                .resolve_page_params_n(8)
+                .iter()
+                .map(|p| p.0)
+                .collect::<Vec<_>>(),
+            [101],
+            "track 1's view is at index 1 and stays there"
+        );
+        assert_eq!(app.model.page_groups_for_active_track(), ["P1"]);
+
+        app.model.select_track(0);
+        assert!(
+            app.model
+                .resolve_page_params_n(8)
+                .iter()
+                .all(|p| p.0 != 101),
+            "track 0 has no composite view of its own — it must fall back to \
+             the engine-local Rule, never borrow track 1's params"
+        );
+        assert!(
+            app.model.page_groups_for_active_track().is_empty(),
+            "and it must not show track 1's page labels either"
+        );
+    }
+
     // ── MM-C6 ────────────────────────────────────────────────────────────
 
     fn page_param_names(app: &TheotokosApp) -> Vec<String> {
-        app.model.composite[0].pages[0]
+        app.model.composite[0].as_ref().unwrap().pages[0]
             .params
             .iter()
             .map(|p| p.name.clone())
@@ -2130,7 +2177,7 @@ mod tests {
             app.model.sync_machine_selection(&bus.borrow()),
             "a machine change must report dirty so the panel repaints"
         );
-        assert_eq!(app.model.composite[0].variants[0].active, 1);
+        assert_eq!(app.model.composite[0].as_ref().unwrap().variants[0].active, 1);
         assert_eq!(
             page_param_names(&app),
             ["machine", "tone"],
@@ -2195,7 +2242,7 @@ mod tests {
     #[test]
     fn a_node_without_variants_still_uses_its_descriptor_range() {
         let mut app = machine_host_app(100, 200);
-        app.model.composite[0].variants.clear();
+        app.model.composite[0].as_mut().unwrap().variants.clear();
         let tone = app
             .model
             .resolve_encoder_params()
@@ -2245,13 +2292,13 @@ mod tests {
         let mut app = machine_host_app(100, 200);
         // Strip the flag from the FIRST variant only — the one a naive
         // "read the active machine's overlays" would consult.
-        for o in app.model.composite[0].variants[0].variants[0]
+        for o in app.model.composite[0].as_mut().unwrap().variants[0].variants[0]
             .overlays
             .iter_mut()
         {
             o.identity = false;
         }
-        assert_eq!(app.model.composite[0].variants[0].active, 0, "on machine 0");
+        assert_eq!(app.model.composite[0].as_ref().unwrap().variants[0].active, 0, "on machine 0");
         assert!(
             app.model.is_identity_param(100, MACHINE_PID),
             "the flag survives on machine 1, so the param is still identity"
@@ -2300,7 +2347,7 @@ mod tests {
                 !app.model.sync_machine_selection(&bus.borrow()),
                 "{bad} names no variant and must change nothing"
             );
-            assert_eq!(app.model.composite[0].variants[0].active, 0);
+            assert_eq!(app.model.composite[0].as_ref().unwrap().variants[0].active, 0);
             assert_eq!(page_param_names(&app), ["machine", "tone", "punch"]);
         }
     }
@@ -2314,14 +2361,14 @@ mod tests {
         let mut app = machine_host_app(100, 200);
         set_machine(&bus, 100, 1.0);
         app.model.sync_machine_selection(&bus.borrow());
-        assert_eq!(app.model.composite[0].variants[0].active, 1);
+        assert_eq!(app.model.composite[0].as_ref().unwrap().variants[0].active, 1);
 
         let empty = test_bus();
         assert!(
             !app.model.sync_machine_selection(&empty.borrow()),
             "no published value means no opinion, not machine 0"
         );
-        assert_eq!(app.model.composite[0].variants[0].active, 1);
+        assert_eq!(app.model.composite[0].as_ref().unwrap().variants[0].active, 1);
     }
 
     fn kc(c: char) -> KeyEvent {
@@ -2641,7 +2688,7 @@ mod tests {
     #[test]
     fn encoder_column_is_the_declared_slot_not_the_rank() {
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
-        app.model.composite = vec![composite_view_with_slots(100, &[(1, 0), (2, 2), (3, 5)])];
+        app.model.composite = vec![Some(composite_view_with_slots(100, &[(1, 0), (2, 2), (3, 5)]))];
 
         let bank = app.model.resolve_encoder_params();
         let occupied: Vec<usize> = bank
@@ -2664,7 +2711,7 @@ mod tests {
     fn jogging_an_undeclared_column_is_a_no_op() {
         let bus = test_bus();
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
-        app.model.composite = vec![composite_view_with_slots(100, &[(1, 0), (2, 2)])];
+        app.model.composite = vec![Some(composite_view_with_slots(100, &[(1, 0), (2, 2)]))];
         app.model.enc = true;
 
         // Encoder 2 (column 1) is a declared gap.
@@ -2688,7 +2735,7 @@ mod tests {
     #[test]
     fn sub_page_two_rebases_slots_to_columns() {
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
-        app.model.composite = vec![composite_view_with_slots(100, &[(1, 0), (2, 9)])];
+        app.model.composite = vec![Some(composite_view_with_slots(100, &[(1, 0), (2, 9)]))];
 
         let first = app.model.resolve_encoder_params();
         assert!(first[0].is_some(), "slot 0 on sub-page 1");
@@ -2800,7 +2847,7 @@ mod tests {
                 unit: ParamUnit::Generic,
                 display: None,
             });
-        app.model.composite = vec![composite_view_with_param(100, param_id)];
+        app.model.composite = vec![Some(composite_view_with_param(100, param_id))];
 
         app.handle_keys(&bus, &[kc('q')]); // bare Trig1, ENC on
 
@@ -3534,7 +3581,7 @@ mod tests {
             unit: ParamUnit::Generic,
             display: None,
         });
-        app.model.composite = vec![composite_view_with_param(100, param_id)];
+        app.model.composite = vec![Some(composite_view_with_param(100, param_id))];
 
         let params = app.model.resolve_encoder_params();
         assert_eq!(
@@ -3567,7 +3614,7 @@ mod tests {
             unit: ParamUnit::Generic,
             display: None,
         });
-        app.model.composite = vec![composite_view_with_param(100, param_id)];
+        app.model.composite = vec![Some(composite_view_with_param(100, param_id))];
 
         app.handle_keys(&bus, &[func_trig('q')]); // EncoderJog{col:0, dir:Next}
 
@@ -3600,7 +3647,7 @@ mod tests {
             unit: ParamUnit::Generic,
             display: None,
         });
-        app.model.composite = vec![composite_view_with_param(100, param_id)];
+        app.model.composite = vec![Some(composite_view_with_param(100, param_id))];
         app.model.lock_target = Some((0, 0));
         bus.borrow_mut()
             .write("/node/100/param/cutoff", StateBusValue::Float(5000.0));

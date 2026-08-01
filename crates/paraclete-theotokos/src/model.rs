@@ -105,8 +105,15 @@ pub struct Model {
     pub clock_id: u32,
     pub page_windows: Vec<usize>,
     pub caps: HashMap<u32, CapabilityDocument>,
-    /// TK1 C3: composite views, one per track.
-    pub composite: Vec<CompositeView>,
+    /// TK1 C3: composite views, one per track — **index-aligned with
+    /// `tracks`**, so a track whose assembly fails holds `None` rather than
+    /// being absent. It used to be a dense `Vec<CompositeView>` built with
+    /// `filter_map`, which silently shifted every later track down one index:
+    /// selecting track N then rendered *and edited* track N+1 (BUG-053, #152).
+    /// `None` is the honest answer for a track with no chain entry or an
+    /// engine carrying no view `Rule`, and it routes to the same engine-local
+    /// `Rule` fallback a viewless track always took.
+    pub composite: Vec<Option<CompositeView>>,
     pub perf_page: usize,
     pub slot_a: Option<SlotBinding>,
     pub slot_b: Option<SlotBinding>,
@@ -229,7 +236,7 @@ impl Model {
         gen_names: &[String],
         display_names: &[String],
         caps: HashMap<u32, CapabilityDocument>,
-        composite: Vec<CompositeView>,
+        composite: Vec<Option<CompositeView>>,
     ) -> Self {
         let count = seq_ids.len().min(gen_ids.len());
         let tracks: Vec<TrackInfo> = (0..count)
@@ -281,6 +288,13 @@ impl Model {
         model
     }
 
+    /// The active track's composite view, if it assembled. Every read goes
+    /// through here so the `None`-per-track alignment of `composite` (#152)
+    /// cannot be re-flattened by a future call site.
+    pub fn active_composite(&self) -> Option<&CompositeView> {
+        self.composite.get(self.active_track).and_then(Option::as_ref)
+    }
+
     pub fn select_track(&mut self, i: usize) {
         if i < self.tracks.len() {
             self.active_track = i;
@@ -298,8 +312,7 @@ impl Model {
 
     pub fn select_perf_page(&mut self, idx: usize) {
         let max = self
-            .composite
-            .get(self.active_track)
+            .active_composite()
             .map(|cv| cv.pages.len())
             .unwrap_or_else(|| {
                 let gen_id = self.tracks[self.active_track].generator_id;
@@ -349,7 +362,7 @@ impl Model {
     /// cluster means routing it through the same placement, not re-deriving
     /// one here.
     pub fn resolve_page_params_n(&self, n: usize) -> Vec<(u32, u32, String, f64, f64)> {
-        if let Some(cv) = self.composite.get(self.active_track) {
+        if let Some(cv) = self.active_composite() {
             if let Some(page) = cv.pages.get(self.perf_page) {
                 if !page.params.is_empty() {
                     return page
@@ -435,7 +448,7 @@ impl Model {
     /// is all of them but the two engines — the caller then uses the
     /// descriptor, exactly as before MM-C6.
     pub fn active_overlay(&self, node_id: u32, param_id: u32) -> Option<&CompositeOverlay> {
-        let cv = self.composite.get(self.active_track)?;
+        let cv = self.active_composite()?;
         let set = cv.variants.iter().find(|s| s.node_id == node_id)?;
         let variant = set.variants.iter().find(|v| v.value == set.active)?;
         variant.overlays.iter().find(|o| o.param_id == param_id)
@@ -453,8 +466,7 @@ impl Model {
     /// missed repeat costs nothing here; MM-C8's assertion is what will say
     /// the declaration itself is inconsistent.
     pub fn is_identity_param(&self, node_id: u32, param_id: u32) -> bool {
-        self.composite
-            .get(self.active_track)
+        self.active_composite()
             .and_then(|cv| cv.variants.iter().find(|s| s.node_id == node_id))
             .is_some_and(|set| {
                 set.variants.iter().any(|v| {
@@ -483,7 +495,12 @@ impl Model {
     pub fn sync_machine_selection(&mut self, bus: &StateBusHandle) -> bool {
         let mut changed = false;
         for track in 0..self.composite.len() {
-            let hosts: Vec<(u32, u32, u32)> = self.composite[track]
+            // A track that failed to assemble holds `None` and keeps its index
+            // (#152); it simply has no hosts to sync.
+            let Some(view) = self.composite[track].as_ref() else {
+                continue;
+            };
+            let hosts: Vec<(u32, u32, u32)> = view
                 .variants
                 .iter()
                 .filter_map(|s| Some((s.node_id, s.select_param?, s.active)))
@@ -502,7 +519,10 @@ impl Model {
                 if want == active {
                     continue;
                 }
-                let Some(idx) = self.composite[track]
+                let view = self.composite[track]
+                    .as_mut()
+                    .expect("`hosts` is only non-empty for an assembled track");
+                let Some(idx) = view
                     .variants
                     .iter()
                     .find(|s| s.node_id == node_id)
@@ -511,7 +531,7 @@ impl Model {
                     continue;
                 };
                 let pages = {
-                    let set = self.composite[track]
+                    let set = view
                         .variants
                         .iter_mut()
                         .find(|s| s.node_id == node_id)
@@ -519,7 +539,7 @@ impl Model {
                     set.active = want;
                     set.variants[idx].pages.clone()
                 };
-                self.composite[track].pages = pages;
+                view.pages = pages;
                 changed = true;
             }
         }
@@ -527,11 +547,7 @@ impl Model {
             // A machine with fewer pages can leave the selection past the end,
             // and one with a shorter page can leave the sub-page past the end.
             // Both would render an empty bank that no key could escape.
-            let pages = self
-                .composite
-                .get(self.active_track)
-                .map(|cv| cv.pages.len())
-                .unwrap_or(0);
+            let pages = self.active_composite().map(|cv| cv.pages.len()).unwrap_or(0);
             if self.perf_page >= pages {
                 self.perf_page = pages.saturating_sub(1);
             }
@@ -586,7 +602,7 @@ impl Model {
         // `slot - lo` is the column and is unique per param.
         let column = |slot: u8| (slot as u16).checked_sub(lo).map(|c| c as usize);
 
-        if let Some(cv) = self.composite.get(self.active_track) {
+        if let Some(cv) = self.active_composite() {
             if let Some(page) = cv.pages.get(self.perf_page) {
                 if !page.params.is_empty() {
                     for p in page
@@ -697,7 +713,7 @@ impl Model {
     /// drives the same-Pg-key-toggles-sub-page gesture and the render
     /// indicator.
     pub fn page_sub_page_count(&self) -> usize {
-        let composite_max = self.composite.get(self.active_track).and_then(|cv| {
+        let composite_max = self.active_composite().and_then(|cv| {
             cv.pages
                 .get(self.perf_page)
                 .and_then(|page| page.params.iter().map(|p| p.slot).max())
@@ -795,7 +811,7 @@ impl Model {
 
     pub fn page_groups_for_active_track(&self) -> Vec<String> {
         // TK1 C3: composite page labels first.
-        if let Some(cv) = self.composite.get(self.active_track) {
+        if let Some(cv) = self.active_composite() {
             if !cv.pages.is_empty() {
                 return cv.pages.iter().map(|p| p.label.clone()).collect();
             }
@@ -1032,7 +1048,7 @@ impl Model {
                 });
                 // Also check composite chain nodes
                 if !found {
-                    if let Some(cv) = self.composite.get(self.active_track) {
+                    if let Some(cv) = self.active_composite() {
                         for page in &cv.pages {
                             for cp in &page.params {
                                 let cap = self.caps.get(&cp.node_id);
