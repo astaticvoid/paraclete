@@ -511,7 +511,14 @@ impl FmEngine {
         let src = |name: &str, slot: u8| {
             (fp(name), PageRef { page: Cow::Borrowed(SRC), slot })
         };
-        let mut refs = vec![(fp("decay"), PageRef { page: Cow::Borrowed("AMP"), slot: 0 })];
+        // MM-C6 item 2 / ADR-041 amendment 2: machine-select lives on the
+        // TRIG page. Declared by the engine, not synthesized by one surface,
+        // so every surface inherits it through the machinery MM-C5 built —
+        // and so `machine` stops being a declared param that no page reaches.
+        // Slot 0 of TRIG on every machine: a shared param never moves.
+        let mut refs = vec![
+            (fp("machine"), PageRef { page: Cow::Borrowed("TRIG"), slot: 0 }),
+            (fp("decay"), PageRef { page: Cow::Borrowed("AMP"), slot: 0 })];
         refs.push(src("tune", 0));
         match machine {
             FmMachine::Kick => {
@@ -561,7 +568,7 @@ impl FmEngine {
             .map(|&m| MachineVariant {
                 value: m.value(),
                 name: Cow::Borrowed(m.doc_name()),
-                page_groups: Cow::Owned(vec![Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
+                page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
                 pages: Cow::Owned(Self::machine_page_refs(m)),
                 overlays: Cow::Owned(Self::machine_overlays(m)),
             })
@@ -574,7 +581,7 @@ impl ViewPlugin for FmEngine {
         let decay_id = fp("decay");
         Rule {
             name: Cow::Borrowed(self.machine.display_name()),
-            page_groups: Cow::Owned(vec![Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
+            page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
             // Base fields stay the ACTIVE machine's, so a consumer that
             // ignores `variants` renders what it did before (ADR-041
             // decision 3). MM-C5 teaches composite assembly to prefer the

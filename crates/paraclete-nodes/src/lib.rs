@@ -167,45 +167,22 @@ mod view_validation {
         docs
     }
 
-    /// **The one outstanding defect, listed explicitly so it closes itself.**
-    ///
-    /// `machine` is declared on every machine host and paged by none of them,
-    /// so it is genuinely unreachable from any surface — the validator is
-    /// telling the truth. That is MM-C6 item 2, deliberately left open: where
-    /// machine-select is declared is a performer-facing decision (ADR-041
-    /// amendment 2 says the TRIG page but not *who* pages it, and either
-    /// answer puts a new page ahead of SRC and shifts what page keys select).
-    ///
-    /// Listing it rather than relaxing the check means MM-C6 item 2 cannot
-    /// land without this test failing and being updated — and anything *else*
-    /// that regresses still fails today.
-    const KNOWN_UNPAGED_MACHINE: &str =
-        "`machine` (3775092334) is declared but appears on no page";
-
+    /// No exemptions. MM-C6 item 2 landed, so `machine` is paged on TRIG by
+    /// every host and the last known defect is gone — the count this used to
+    /// assert was 6, and the assertion existed precisely so that closing it
+    /// would force this test to be updated rather than quietly pass.
     #[test]
     fn every_node_view_declaration_is_valid() {
-        let mut unexpected: Vec<String> = Vec::new();
-        let mut machine_hosts = 0;
+        let mut defects: Vec<String> = Vec::new();
         for doc in every_viewed_node() {
             for d in validate_view(&doc) {
-                if d.message.starts_with(KNOWN_UNPAGED_MACHINE) {
-                    machine_hosts += 1;
-                    continue;
-                }
-                unexpected.push(format!("{}: {d}", doc.name));
+                defects.push(format!("{}: {d}", doc.name));
             }
         }
         assert!(
-            unexpected.is_empty(),
+            defects.is_empty(),
             "invalid view declarations:\n  {}",
-            unexpected.join("\n  ")
-        );
-        assert_eq!(
-            machine_hosts, 6,
-            "exactly the six machine hosts (3 analog + 3 FM) should still have \
-             an unpaged `machine`. If this dropped to 0, MM-C6 item 2 landed — \
-             delete the exemption. If it grew, a new host arrived without \
-             paging its selector."
+            defects.join("\n  ")
         );
     }
 

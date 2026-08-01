@@ -529,7 +529,14 @@ impl AnalogEngine {
     /// the pre-MM code is half of #47 (BUG-037), and per-machine pages are how
     /// MM-C4 closes that class.
     fn machine_page_refs(machine: AnalogMachine) -> Vec<(u32, PageRef)> {
-        let mut refs = vec![(ap("decay"), PageRef { page: Cow::Borrowed("AMP"), slot: 0 })];
+        // MM-C6 item 2 / ADR-041 amendment 2: machine-select lives on the
+        // TRIG page. Declared by the engine, not synthesized by one surface,
+        // so every surface inherits it through the machinery MM-C5 built —
+        // and so `machine` stops being a declared param that no page reaches.
+        // Slot 0 of TRIG on every machine: a shared param never moves.
+        let mut refs = vec![
+            (ap("machine"), PageRef { page: Cow::Borrowed("TRIG"), slot: 0 }),
+            (ap("decay"), PageRef { page: Cow::Borrowed("AMP"), slot: 0 })];
         match machine {
             AnalogMachine::Kick => {
                 refs.push((ap("tune"),  PageRef { page: Cow::Borrowed("SRC"), slot: 0 }));
@@ -586,7 +593,7 @@ impl AnalogEngine {
             .map(|&m| MachineVariant {
                 value: m.value(),
                 name: Cow::Borrowed(m.doc_name()),
-                page_groups: Cow::Owned(vec![Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
+                page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
                 pages: Cow::Owned(Self::machine_page_refs(m)),
                 overlays: Cow::Owned(Self::machine_overlays(m)),
             })
@@ -617,7 +624,7 @@ impl ViewPlugin for AnalogEngine {
 
         Rule {
             name: Cow::Borrowed(display_name),
-            page_groups: Cow::Owned(vec![Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
+            page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP")]),
             param_pages: Cow::Owned(page_refs),
             macros: Cow::Borrowed(&[]),
             affordances: Cow::Owned(affordances),
