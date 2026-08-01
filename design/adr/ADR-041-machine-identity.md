@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | ✅ Accepted (2026-07-23) |
+| **Status** | ✅ Implemented in MM (2026-08-01) — accepted 2026-07-23 |
 | **Author** | Agent (drafted at user request) |
 | **Ratification** | Ratified by user 2026-07-23, as written (no amendments) |
 | **Scope** | `paraclete-node-api` (Rule extension), machine-host engines (`AnalogEngine`, `FmEngine`, future `FmVoice`), `paraclete-view-assembly`, surfaces (variant-aware page display), ADR-039 kit apply |
@@ -128,8 +128,50 @@ Findings 1 B / 10 M / 4 m across ADR-041/042/043; this ADR's amendments:
 5. Validation debt (review m15 → BUG-037): a debug-build assertion that
    every page/variant param ref resolves in the union doc.
 
-## Implementation note (to be added when implemented)
+## Implementation note
 
 ```text
-ADR-041 implemented in [phase] (YYYY-MM-DD).
+ADR-041 implemented in MM (2026-08-01), commits MM-C0 through MM-C6.
 ```
+
+**Where each decision landed.** `machine` is a stepped bank param on both
+engines (MM-C3, MM-C4); the bank stores the **widest-envelope union** and is
+never narrowed, with per-machine ranges in `MachineVariant::overlays`
+(amendment 1). Variants reach composite assembly and the wire in MM-C5, and
+Theotokos in MM-C6. Machine-select sits at TRIG slot 0, declared by the
+engines (amendment 2).
+
+**Three things the implementation decided that the ADR left open**, recorded
+here because the phase spec is where the reasoning lives (`design/phases/
+mm-machine-and-mod.md`, §0 D1–D6):
+
+1. **The declick is a 5 ms fade-out with no fade-in, but the ramp is
+   bidirectional.** Decision 4 resets voice state on switch, so there is
+   nothing to fade *in* to — but a switch that is cancelled or retargeted
+   part-way must return to unity continuously, or it clicks in the other
+   direction.
+2. **Amendment 2 said TRIG but not who declares it.** The engines do, so every
+   surface inherits the control through the merged view rather than each
+   surface synthesising its own. Consequence, flagged for the session: TRIG is
+   first in `CANONICAL_PAGE_ORDER`, so a page now sits at index 0 ahead of SRC
+   and page keys 1-6 select different pages than they did.
+3. **Amendment 5's assertion, as literally written, would have passed on
+   BUG-037's successor** — "resolves in the union doc" is satisfied by a page
+   naming a param the *active* machine lacks. `validate_view`
+   (`paraclete-node-api`) therefore checks per variant, and runs over every
+   `ViewPlugin` rather than only the machine hosts. That widening is what
+   caught #156.
+
+**One hazard this ADR's shape creates, mitigated by assertion rather than
+structurally.** §0 A1 puts the `identity` flag on the *overlay*, so it must be
+repeated in every variant; miss one and p-lock rejection stops working for that
+machine alone. `validate_view` checks the flag is consistent, and Theotokos
+reads the union across variants so a miss costs nothing at the point of use. A
+`Rule`-level `identity_params` list would remove the hazard structurally; that
+deviates from the ratified shape and was not taken.
+
+**Known limitation, filed not worked around:** Antiphon assembles `view_meta`
+from a startup cap-doc snapshot, so its `active` and top-level `pages` report
+the machine a node was *constructed* with (#157). A client is not stuck — it
+watches `/node/{id}/param/machine` and draws the matching pre-merged variant,
+which is decision 1's model exactly.

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |-------|-------|
-| **Status** | ✅ Accepted (2026-07-23) |
+| **Status** | ✅ Implemented in MM (2026-08-01) — accepted 2026-07-23 |
 | **Author** | Agent (drafted at user request) |
 | **Ratification** | Ratified by user 2026-07-23, as written (no amendments) |
 | **Scope** | `paraclete-nodes/engine_dsp` (new `LfoBlock`), machine engines + `Sampler` + `FilterNode`, `Rule` MOD pages, `LfoShape` affordance |
@@ -130,8 +130,52 @@ MOD page is the groovebox path.
    along the mainline cap-doc path, and the wire never carries options —
    descriptor-side dynamic display is not usable as specced.
 
-## Implementation note (to be added when implemented)
+## Implementation note
 
 ```text
-ADR-042 implemented in [phase] (YYYY-MM-DD).
+ADR-042 implemented in MM (2026-08-01), commits MM-C7 through MM-C11.
 ```
+
+**Where each decision landed.** `LfoBlock` is in `engine_dsp` (MM-C8a), hosted
+by both machine engines (MM-C9) and by `Sampler` and `FilterNode` (MM-C10),
+ticked once per 64-sample sub-block — the structure amendment 4 called "new
+required engine structure", built in MM-C7 as a pure refactor first. MOD page
+content, the first real `LfoShape` and dest labels are MM-C11.
+`/node/{id}/state/lfo_phase` is published by every host.
+
+**Decisions the implementation had to make** (phase spec §0 D2, D3, D6):
+
+1. **Sub-blocks nest inside event-split spans, measured from the span start**
+   (D2). A span boundary is already a discontinuity, so aligning to it costs
+   nothing and keeps absolute block offsets out of `render_span`.
+2. **`lfo_fade` is a fraction of a 4-second maximum** (D6). The ADR gives the
+   param a range and a direction but no *time*; the reference hardware measures
+   it in sequencer steps and engines receive no tempo (decision 5 stages sync
+   deliberately), so seconds were the only unit available.
+3. **`lfo_dest` stores a one-based index into an append-only per-engine dest
+   table** (user decision, 2026-07-31). Amendment 2 replaced index storage with
+   the name-hash id because *declaration order* is unstable — but the
+   append-only table it mandates is separate from declaration order, so an
+   index into it is exactly as stable, and a hash cannot be described by
+   `ViewMetaParam::options`, which is value-indexed.
+
+**Amendment 5 is narrower than it reads, and MM-C11 relies on that.** It rules
+out a *dynamic* descriptor display, because `ParamDisplayAdapter::Dynamic`
+panics on clone and the cap-doc path clones. `Static` has neither problem and
+these labels are compile-time constants, so the engine joins them once and the
+cap-doc carries them — a client labels the dest encoder knowing nothing about
+LFOs. A test clones the whole doc, which is what would panic under `Dynamic`.
+
+**Decision 2's payoff is verified on a real chain, not a fixture.** On
+`instrument-fx.yaml`, track 0 assembles as `[engine, filter, distortion]` and
+its merged MOD page carries two LFO blocks — the engine's at slots 0-6, the
+filter's at 8-14, 8-slot aligned per amendment 3 so the second starts on its
+own sub-page, each with its own destination labels. Getting there required
+fixing #160: the engines declared empty ports in their cap-docs, so chain
+derivation never left the engine and no track had a chain at all. A unit
+fixture would have "passed" this check while the shipped app could not
+assemble a two-node track.
+
+**Staged deliberately, not missing:** tempo-synced LFO (decision 5 / OQ-M2 —
+the param surface is frozen so sync lands with no surface change), LFO2
+(OQ-M1), and per-sample application for pitch-class dests (OQ-M3).
