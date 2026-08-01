@@ -1019,6 +1019,9 @@ fn build_view_registry(conf: &NodeConfigurator, summaries: &[NodeSummary]) -> Vi
         rules,
         chains,
         node_infos,
+        // Empty at build; `AntiphonHandle::pump` fills it from the state bus
+        // so `view_meta` reports the machine a node is *on* (#157).
+        selections: Default::default(),
     }
 }
 

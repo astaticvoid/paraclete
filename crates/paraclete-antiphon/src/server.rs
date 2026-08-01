@@ -411,6 +411,7 @@ mod tests {
                 rules: HashMap::new(),
                 chains: Vec::new(),
                 node_infos: HashMap::new(),
+                selections: Default::default(),
             },
         }
     }
@@ -555,7 +556,7 @@ mod tests {
                 playing: false,
                 bpm: 120.0,
             },
-            view_registry: ViewRegistry { rules: HashMap::new(), chains: Vec::new(), node_infos: HashMap::new() },
+            view_registry: ViewRegistry { rules: HashMap::new(), chains: Vec::new(), node_infos: HashMap::new(), selections: Default::default() },
         };
         // A sane per-detent delta passes through unclamped…
         let FrameAction::Command(cmd) = route_frame(
@@ -635,6 +636,7 @@ mod semantic_tests {
                 rules: HashMap::new(),
                 chains: Vec::new(),
                 node_infos: HashMap::new(),
+                selections: Default::default(),
             },
         }
     }

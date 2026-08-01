@@ -87,6 +87,13 @@ pub struct AntiphonHandle {
     /// consumer (the main loop) — `std::sync::mpsc`, not `rtrb`; this is off
     /// the audio thread so its allocation is fine.
     cmd_rx: mpsc::Receiver<NodeCommand>,
+    /// State-bus paths that carry a machine selection, from
+    /// `ViewRegistry::machine_select_paths()`. Built once at spawn; a machine
+    /// host cannot appear at runtime (no re-query, ADR-041 decision 1).
+    machine_select_paths: HashMap<String, u32>,
+    /// The registry's own selection map, shared. `pump` is the only writer
+    /// (#157).
+    selections: crate::view::MachineSelections,
 }
 
 impl AntiphonHandle {
@@ -157,6 +164,18 @@ impl AntiphonHandle {
             }
             self.state_shadow.insert(path.to_string(), coerced);
             self.pending.insert(path.to_string(), coerced);
+
+            // #157: a machine switch has to reach `view_meta`, which is
+            // assembled on a client thread from `ViewRegistry`. Change-only is
+            // enough — the shadow starts empty, so a host's first published
+            // value always lands here. Negative/non-finite is dropped rather
+            // than cast, mirroring the engines' `from_value` (a malformed
+            // project can carry either in the bank slot).
+            if let Some(&node_id) = self.machine_select_paths.get(path) {
+                if coerced.is_finite() && coerced >= 0.0 {
+                    self.selections.set(node_id, coerced as u32);
+                }
+            }
 
             // Overflow: flush this batch immediately and keep diffing —
             // no path is ever dropped.
@@ -327,6 +346,8 @@ impl AntiphonServer {
         transport: TransportSummary,
         view_registry: crate::view::ViewRegistry,
     ) -> std::io::Result<(TheoriaSurfaceNode, AntiphonHandle)> {
+        let machine_select_paths = view_registry.machine_select_paths();
+        let selections = view_registry.selections.clone();
         let clients = Arc::new(Mutex::new(ClientTable::new()));
         let (node, producers) = TheoriaSurfaceNode::new(Kerygma::new(Arc::clone(&clients)));
         debug_assert_eq!(producers.len(), MAX_CLIENTS);
@@ -365,6 +386,8 @@ impl AntiphonServer {
                 last_flush_ms: None,
                 context_dirty: false,
                 cmd_rx,
+                machine_select_paths,
+                selections,
             },
         ))
     }
@@ -413,6 +436,7 @@ mod tests {
                 rules: HashMap::new(),
                 chains: Vec::new(),
                 node_infos: HashMap::new(),
+                selections: Default::default(),
             },
         )
         .expect("spawn");
@@ -481,6 +505,13 @@ mod pump_tests {
 
     /// Build a handle wired to one test client; returns the frame receiver.
     fn test_handle() -> (AntiphonHandle, mpsc::Receiver<String>) {
+        test_handle_watching(HashMap::new())
+    }
+
+    /// `test_handle`, with `machine_select_paths` preloaded (#157).
+    fn test_handle_watching(
+        machine_select_paths: HashMap<String, u32>,
+    ) -> (AntiphonHandle, mpsc::Receiver<String>) {
         let (tx, rx) = mpsc::channel();
         let mut table = ClientTable::new();
         table.allocate(tx).expect("one slot");
@@ -494,6 +525,8 @@ mod pump_tests {
             last_flush_ms: None,
             context_dirty: false,
             cmd_rx,
+            machine_select_paths,
+            selections: Default::default(),
         };
         (handle, rx)
     }
@@ -514,6 +547,57 @@ mod pump_tests {
             })
             .flatten()
             .collect()
+    }
+
+    /// #157: `pump` is the only thing that keeps `ViewRegistry::selections`
+    /// current, so a machine switch published to the bus has to land there —
+    /// otherwise `view_meta` keeps reporting the built-with machine.
+    #[test]
+    fn pump_records_a_machine_switch_for_view_assembly() {
+        let watched = HashMap::from([("/node/20/param/machine".to_string(), 20u32)]);
+        let (mut h, _rx) = test_handle_watching(watched);
+        let selections = h.selections.clone();
+        let mut bus = StateBusHandle::new();
+
+        bus.write("/node/20/param/machine", StateBusValue::Float(0.0));
+        bus.write("/node/20/param/decay", StateBusValue::Float(0.4));
+        h.pump(&bus, 0);
+        assert_eq!(
+            selections.snapshot(),
+            HashMap::from([(20u32, 0u32)]),
+            "the host's first published value seeds the map; `decay` is not a \
+             selector and must not appear"
+        );
+
+        bus.write("/node/20/param/machine", StateBusValue::Float(2.0));
+        h.pump(&bus, 40);
+        assert_eq!(selections.snapshot(), HashMap::from([(20u32, 2u32)]));
+    }
+
+    /// A malformed project can carry a negative or non-finite value in the
+    /// bank slot. Casting either to `u32` is UB-adjacent nonsense (`-1.0 as
+    /// u32` saturates to 0, `NaN as u32` to 0), so the switch is dropped and
+    /// the last good selection stands — the engines' own `from_value` clamps
+    /// the same way.
+    #[test]
+    fn pump_drops_a_nonsense_machine_value_rather_than_casting_it() {
+        let watched = HashMap::from([("/node/20/param/machine".to_string(), 20u32)]);
+        let (mut h, _rx) = test_handle_watching(watched);
+        let selections = h.selections.clone();
+        let mut bus = StateBusHandle::new();
+
+        bus.write("/node/20/param/machine", StateBusValue::Float(1.0));
+        h.pump(&bus, 0);
+
+        for bad in [-1.0, f64::NAN, f64::INFINITY] {
+            bus.write("/node/20/param/machine", StateBusValue::Float(bad));
+            h.pump(&bus, 40);
+            assert_eq!(
+                selections.snapshot(),
+                HashMap::from([(20u32, 1u32)]),
+                "{bad} must not move the selection"
+            );
+        }
     }
 
     #[test]
@@ -789,6 +873,8 @@ mod semantic_channel_tests {
             last_flush_ms: None,
             context_dirty: false,
             cmd_rx,
+            machine_select_paths: HashMap::new(),
+            selections: Default::default(),
         };
 
         tx.send(NodeCommand {

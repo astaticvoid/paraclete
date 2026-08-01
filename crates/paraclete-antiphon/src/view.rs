@@ -5,6 +5,7 @@
 //! Theoria clients expect.  Wire format is unchanged.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use paraclete_node_api::{AffordanceHint, Rule};
 use paraclete_view_assembly::{CompositeView, NodeInfo, TrackChain};
@@ -14,22 +15,88 @@ use crate::protocol::{
     ViewMetaPage, ViewMetaParam, ViewMetaRouting, ViewMetaVariant, ViewMetaVariantSet,
 };
 
+/// Which machine each machine-host node is *currently* on, by node id.
+///
+/// Assembly with no selection falls back to each host's cap-doc default — the
+/// machine the node was **built** with — and cap-docs are collected once, at
+/// startup, before the executor owns the nodes (ADR-041 decision 1: there is
+/// no re-query and none is being added). So without this, a client that
+/// switched a track to `AnalogSnare` kept being told `active: 0` and drawn
+/// `AnalogKick`'s pages for the rest of the process's life (BUG-056, #157).
+///
+/// Written on the main thread from the state bus during `AntiphonHandle::pump`
+/// and read by WS client threads assembling `view_meta`, so the map is behind
+/// a `Mutex` — both ends are off the audio thread. Cloning shares the map:
+/// the copy the server holds and the copy `pump` writes are the same one.
+#[derive(Clone, Default)]
+pub struct MachineSelections(Arc<Mutex<HashMap<u32, u32>>>);
+
+impl MachineSelections {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Record `node_id`'s current machine. A poisoned lock is dropped rather
+    /// than propagated: a stale view beats taking down a client thread.
+    pub fn set(&self, node_id: u32, value: u32) {
+        if let Ok(mut m) = self.0.lock() {
+            m.insert(node_id, value);
+        }
+    }
+
+    pub fn snapshot(&self) -> HashMap<u32, u32> {
+        self.0.lock().map(|m| m.clone()).unwrap_or_default()
+    }
+}
+
 #[derive(Clone)]
 pub struct ViewRegistry {
     pub rules: HashMap<u32, Rule>,
     pub chains: Vec<TrackChain>,
     pub node_infos: HashMap<u32, NodeInfo>,
+    /// Live machine selection, shared with `AntiphonHandle`. Empty by
+    /// default, which reproduces the pre-#157 cap-doc-default behaviour.
+    pub selections: MachineSelections,
 }
 
 impl ViewRegistry {
     pub fn assemble(&self, track_id: u32, nonce: Option<String>) -> Option<ServerMsg> {
-        let cv = paraclete_view_assembly::assemble(
+        let cv = paraclete_view_assembly::assemble_for(
             &self.rules,
             &self.chains,
             track_id,
             &self.node_infos,
+            &self.selections.snapshot(),
         )?;
         Some(composite_to_view_meta(cv, track_id, nonce))
+    }
+
+    /// `/node/{id}/param/{name}` → node id, for every machine host in every
+    /// track chain. This is the set of state-bus paths whose value *is* a
+    /// machine selection; `pump` watches exactly these.
+    ///
+    /// Built by assembling each track once at startup, because the identity
+    /// param is decided inside assembly (`CompositeVariantSet::select_param`)
+    /// and re-deriving it here would be a second implementation of the same
+    /// rule — the drift `PageNav.tsx` already demonstrated.
+    pub fn machine_select_paths(&self) -> HashMap<String, u32> {
+        let mut out = HashMap::new();
+        for track in 0..self.chains.len() as u32 {
+            let Some(cv) = paraclete_view_assembly::assemble(
+                &self.rules,
+                &self.chains,
+                track,
+                &self.node_infos,
+            ) else {
+                continue;
+            };
+            for set in cv.variants {
+                if let Some(name) = set.select_param_name {
+                    out.insert(format!("/node/{}/param/{}", set.node_id, name), set.node_id);
+                }
+            }
+        }
+        out
     }
 }
 
@@ -225,6 +292,7 @@ mod tests {
 
     fn registry() -> ViewRegistry {
         ViewRegistry {
+            selections: MachineSelections::new(),
             rules: HashMap::from([(20u32, machine_rule())]),
             chains: vec![TrackChain {
                 engine_node_id: 20,
@@ -283,6 +351,74 @@ mod tests {
         let src = pages.iter().find(|p| p.id == "SRC").unwrap();
         assert_eq!(src.params[0].stepped, None, "a continuous param sends no flag");
         assert!(src.params[0].options.is_none());
+    }
+
+    /// BUG-056 (#157). Assembly with no selection resolves every machine host
+    /// from its cap-doc default — the machine the node was *built* with — and
+    /// cap-docs are collected once at startup. So a client that switched a
+    /// track to machine 1 kept being told `active: 0`, with machine 0's pages,
+    /// for the rest of the process's life.
+    #[test]
+    fn view_meta_reports_the_machine_the_node_is_on_not_the_one_it_was_built_with() {
+        // Give machine 1 an empty SRC page, so the switch is observable in the
+        // merged pages and not only in `active`.
+        let mut rule = machine_rule();
+        let mut vs = rule.variants.to_vec();
+        vs[1].pages = Cow::Owned(vec![(
+            MACHINE,
+            PageRef {
+                page: Cow::Borrowed("TRIG"),
+                slot: 0,
+            },
+        )]);
+        rule.variants = Cow::Owned(vs);
+        let reg = ViewRegistry {
+            rules: HashMap::from([(20u32, rule)]),
+            ..registry()
+        };
+
+        let drawn = |msg: ServerMsg| {
+            let (pages, variants) = view_meta(msg);
+            let ids: Vec<String> = pages.into_iter().map(|p| p.id).collect();
+            (variants[0].active, ids)
+        };
+
+        assert_eq!(
+            drawn(reg.assemble(0, None).unwrap()),
+            (0, vec!["TRIG".to_string(), "SRC".to_string()]),
+            "with no selection recorded, the cap-doc default still stands"
+        );
+
+        reg.selections.set(20, 1);
+        assert_eq!(
+            drawn(reg.assemble(0, None).unwrap()),
+            (1, vec!["TRIG".to_string()]),
+            "after the switch, `active` and the merged pages must both follow"
+        );
+    }
+
+    /// The path `pump` has to watch to keep `selections` current. Derived from
+    /// assembly rather than re-implemented, so it cannot name a param the
+    /// assembler does not treat as the selector.
+    #[test]
+    fn machine_select_paths_names_the_hosts_identity_param() {
+        assert_eq!(
+            registry().machine_select_paths(),
+            HashMap::from([("/node/20/param/machine".to_string(), 20u32)])
+        );
+    }
+
+    /// A chain of ordinary nodes has no selector to watch — `pump` must not
+    /// be handed a path that never carries a machine.
+    #[test]
+    fn a_plain_track_contributes_no_machine_select_path() {
+        let mut rule = machine_rule();
+        rule.variants = Cow::Borrowed(&[]);
+        let reg = ViewRegistry {
+            rules: HashMap::from([(20u32, rule)]),
+            ..registry()
+        };
+        assert!(reg.machine_select_paths().is_empty());
     }
 
     #[test]
