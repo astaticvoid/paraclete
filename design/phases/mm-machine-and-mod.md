@@ -921,6 +921,35 @@ param is impossible by construction.
 Per ADR-042 decision 6's rollout order. Same structure; `FilterNode` has no
 `render_span` equivalent, so its sub-block loop is new here.
 
+> **Prerequisite (#155, second half): neither node is observed by any
+> baseline.** This is the same hole MM-C7's prerequisite existed to close, on
+> the two nodes it did not cover — and MM-C7 is the reason to take it
+> seriously rather than a formality. Its `if !self.active { break; }` mutant
+> was output-identical by every argument available on paper and was caught by
+> `analog_machines` alone; no unit test saw it. `FilterNode` carries exactly
+> the same hazard class in a worse place: `low_l`/`band_l`/`low_r`/`band_r`
+> are sample-rate filter state, so any restructuring of its block loop can
+> re-sequence them invisibly.
+>
+> **It needs a fixture first, which is the actual work.** `Sampler`,
+> `FilterNode` and `DistortionNode` appear in *no* instrument file — the
+> default `instrument.yaml` wires 4 tracks with no sampler and no per-track
+> effects — so there is nothing for a scenario to address. Build
+> `instrument-fx.yaml` (a sampler track and an engine→filter→distortion
+> chain), then baseline it, then restructure.
+>
+> **A second thing MM-C10 must decide, which MM-C9 did not have to.**
+> `FilterNode` recomputes its coefficients only when `cutoff_hz`/`resonance`
+> change (`filter.rs:185-188`). An LFO on either makes that cache wrong every
+> sub-block, so the guard has to become "recompute when the *effective* value
+> moved", not "when the bank moved". Getting this wrong is silent: the filter
+> simply keeps its old coefficients and the LFO does nothing audible.
+>
+> Dest tables for both nodes are open. `filter_type` is a stepped selector
+> rather than a continuous param and reads as machine-class; excluding it
+> from the dest set is the boring option, and should be stated rather than
+> assumed.
+
 ### MM-C11 — MOD page display and `LfoShape`
 
 **Changes:** MOD page content in composite views (the canonical order
