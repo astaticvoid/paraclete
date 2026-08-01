@@ -137,6 +137,7 @@ mod tests {
             plugin_path: None,
             channel_count: None,
             default_note: None,
+            sample: None,
         }
     }
 
