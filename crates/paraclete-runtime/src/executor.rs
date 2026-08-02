@@ -67,6 +67,13 @@ pub struct NodeExecutor {
     /// signal_input_routes[slot_idx] = Vec<(dst_port, kind, src_slot, src_port)>.
     signal_input_routes: Vec<Vec<(u32, SignalPortKind, usize, u32)>>,
 
+    /// Slots whose `audio_out` feeds no other node (graph sinks, BUG-047).
+    /// The final output sums ONLY these: in a serial chain (engine → mix →
+    /// reverb → output) every stage's `audio_out` holds the accumulated
+    /// signal, so summing all nodes counted the bus ~3×. Pre-computed at
+    /// construction; never mutated.
+    sink_slots: Vec<usize>,
+
     /// Scratch slices for per-slot signal I/O — no audio-thread allocation.
     signal_out_scratch: Vec<SignalOutputSlot>,
     signal_in_scratch: Vec<SignalInputSlot>,
@@ -239,10 +246,21 @@ impl NodeExecutor {
             .max()
             .unwrap_or(0);
 
+        // BUG-047: sinks = nodes no other node reads audio from. Pre-computed
+        // once; the per-cycle final output sums only these.
+        let mut audio_consumed = vec![false; n];
+        for routes in &audio_routes {
+            for &src in routes {
+                audio_consumed[src] = true;
+            }
+        }
+        let sink_slots: Vec<usize> = (0..n).filter(|&i| !audio_consumed[i]).collect();
+
         Self {
             nodes: slots,
             event_routes,
             audio_routes,
+            sink_slots,
             incoming: (0..n).map(|_| Vec::with_capacity(16)).collect(),
             deferred_events: (0..n).map(|_| Vec::with_capacity(8)).collect(),
             transport: TransportInfo::default(),
@@ -714,8 +732,11 @@ impl NodeExecutor {
         debug_assert_eq!(out_interleaved.len(), frames * channels);
         out_interleaved.fill(0.0);
 
-        for slot in &self.nodes {
-            let buf = &slot.audio_out;
+        // BUG-047: sum only graph sinks. Every stage of a serial chain holds
+        // the accumulated signal in its own audio_out; summing all nodes
+        // counted the bus once per stage (engine + mix + reverb ≈ 3×).
+        for &slot_idx in &self.sink_slots {
+            let buf = &self.nodes[slot_idx].audio_out;
             for frame in 0..frames {
                 for ch in 0..channels.min(buf.channels()) {
                     out_interleaved[frame * channels + ch] += buf.channel(ch)[frame];

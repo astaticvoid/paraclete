@@ -50,6 +50,12 @@ nodes:
   - id: 2
     type: mix
     channel_count: 8
+    # BUG-047 compensation (2026-08-02): the executor now sums only graph
+    # sinks, so the bus is heard once instead of ~3×. master_gain 1.33 is a
+    # measured stand-in restoring the single-kick level to ~-3 dBFS; tune by
+    # ear in a listening pass.
+    initial_params:
+      master_gain: 1.33
   - id: 200
     type: reverb
   - id: 60

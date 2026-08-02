@@ -132,7 +132,31 @@ impl Default for AudioOutputNode {
 
 impl Node for AudioOutputNode {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
-    fn process(&mut self, _input: &ProcessInput, _output: &mut ProcessOutput) {}
+    /// BUG-047: the graph sink. Copies (and sums, for parallel sends) every
+    /// audio input into this node's own `audio_out` — the executor's final
+    /// output is the sum of sink nodes only, so a no-op here would silence
+    /// the whole graph. A parallel send (engine → output + engine → reverb →
+    /// output) lands as two input buffers and is summed here, which is how
+    /// dry + wet reaches the master.
+    fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
+        let Some(out) = output.audio_outputs.first_mut() else {
+            return;
+        };
+        let frames = input.block_size.min(out.frames());
+        for ch in 0..out.channels() {
+            out.channel_mut(ch)[..frames].fill(0.0);
+        }
+        for audio_in in input.audio_inputs {
+            let chs = audio_in.channels().min(out.channels());
+            for ch in 0..chs {
+                let src = audio_in.channel(ch);
+                let dst = out.channel_mut(ch);
+                for f in 0..frames.min(src.len()) {
+                    dst[f] += src[f];
+                }
+            }
+        }
+    }
     fn type_name(&self) -> &'static str { "AudioOutputNode" }
 }
 
