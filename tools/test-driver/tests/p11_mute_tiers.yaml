@@ -106,8 +106,9 @@ assert:
   - at: 9.5
     path: /node/10/state/pattern_muted
     eq: 0
-  # Audio: unmuted since <=9.0, so the window at 10.0 (capture [7.1, 7.5]
-  # ≈ wall [9.47, 10.0]) is several kicks deep.
+  # Audio: unmuted since <=9.0. The 800ms window at 10.0 (capture
+  # [6.7, 7.5] ≈ wall [8.93, 10.0]) spans >1.5 kick spacings, so at
+  # least one post-unmute kick is guaranteed inside it for every P.
   - at: 10.0
     peak_gte: 0.01
-    window_ms: 400
+    window_ms: 800

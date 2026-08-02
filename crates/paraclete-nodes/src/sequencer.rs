@@ -2069,6 +2069,12 @@ impl Sequencer {
         self.chain = chain;
         self.chain_pos = 0;
         self.cued_pattern = None;
+        // Defensive (review M2, P11 C4): a blob load replaces the whole
+        // pattern bank, so a prepared mute held for a pattern that no
+        // longer exists must not land on some future wrap. The spec only
+        // mandates clear-on-stop; this covers the load-while-running edge.
+        self.pending_global_mute = None;
+        self.pending_pattern_mute = None;
         self.patterns = patterns;
         // TK1 C1: loaded locks must be published on the next cycle.
         self.locks_dirty.set(true);
