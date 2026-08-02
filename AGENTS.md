@@ -266,7 +266,13 @@ through the `log` crate — no bare `eprintln!` / `println!` in library code
 | `log::warn!()` | Non-fatal issues (Launchpad not found, RT scheduling denied, rtkit unavailable) |
 | `log::error!()` | Fatal conditions that exit the process |
 
-`RUST_LOG` controls verbosity at runtime (default: `info`).  The `[paraclete]`
+`RUST_LOG` controls verbosity at runtime. **The default is `error`, not
+`info`** — `main()` calls bare `env_logger::init()` (`main.rs:45`), and
+env_logger's default filter is Error. Startup milestones printed with the
+`[paraclete]` prefix are `eprintln!`/custom prints and always show, but
+`log::info!` output (e.g. PerformState's `[kit] ...` lines) is **silent
+until `RUST_LOG=info`** — set it when a live session needs the app's own
+log as evidence.  The `[paraclete]`
 prefix is **not** used in log messages — the logger adds its own module/target
 prefix.
 
