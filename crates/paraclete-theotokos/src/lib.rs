@@ -3497,6 +3497,47 @@ mod tests {
         assert_eq!(app.pending[1].arg0, 3, "step arg must be the focused step");
     }
 
+    /// A second jog on the same locked step must build on the value already
+    /// stored there, not restart from the live param — otherwise a lock can
+    /// never be moved further than one increment from the live value.
+    ///
+    /// The accumulation is not local: it round-trips through the sequencer's
+    /// published `/node/{seq}/state/locks`, so this feeds that string back in
+    /// the exact format `Sequencer::published_state` writes it
+    /// (`"s{step}:{nid}:{pid}={:.6}"`, `sequencer.rs:1564`). A format drift on
+    /// either side silently reverts jogging to "always one increment", which
+    /// is why the stored value here is far enough from zero to be unmistakable.
+    ///
+    /// `encoder_jog_routes_to_lock_when_step_focused` above covers the command
+    /// *pair*; it asserts nothing about `arg1`, which is what this adds.
+    #[test]
+    fn a_second_jog_accumulates_from_the_stored_lock_value() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.lock_target = Some((0, 3));
+
+        app.handle_keys(&bus, &[func_trig('q')]);
+        let v1 = app.pending[1].arg1;
+        let node_id = app.pending[0].arg0 as u32;
+        let param_id = app.pending[0].arg1 as u32;
+        app.pending.clear();
+
+        // Exactly `Sequencer::published_state`'s format: "s{step}:{nid}:{pid}={:.6}"
+        bus.borrow_mut().write(
+            "/node/200/state/locks",
+            paraclete_node_api::StateBusValue::Text(format!("s3:{node_id}:{param_id}=0.250000")),
+        );
+
+        app.handle_keys(&bus, &[func_trig('q')]);
+        let v2 = app.pending[1].arg1;
+
+        assert!(
+            v2 > 0.25,
+            "second jog must accumulate from the stored lock 0.25 — \
+             v1={v1}, v2={v2}, node={node_id}, param={param_id}"
+        );
+    }
+
     /// TK2.2 C4 (E5): a resolved jog records the name of the param it
     /// moved, regardless of whether it landed as a lock or a live bump —
     /// `render_status_line` decides that framing separately, from the
