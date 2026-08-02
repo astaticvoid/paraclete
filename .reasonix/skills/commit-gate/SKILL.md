@@ -15,22 +15,38 @@ cargo test --workspace
 ```
 Exit 0 required. If a test failure is pre-existing and unrelated, document it in the commit message body as `Pre-existing: <test name> — <reason>`.
 
-### Gate 2: Live test (functionality-changing commits)
+### Gate 2: Test trifecta (functionality-changing commits)
 
-If this commit changes *behavior* (feature, bug fix, semantics):
-- It must carry (or point at) a debug-harness live test that proves the
-  behavior end-to-end through the running graph — a test-driver scenario
-  with assertions under `tools/test-driver/tests/`, run green before commit:
-  ```bash
-  timeout 120 cargo run -p test-driver -- tools/test-driver/tests/<scenario>.yaml
-  ```
+Every functionality-changing commit meets all three legs (the standing
+directive; "trifecta review" in session shorthand):
+
+**Leg 1 — unit tests** for the new logic: the functions/edge cases added by
+this commit have `#[test]` coverage. Logic without unit tests has not met
+the gate.
+
+**Leg 2 — harness live test** proving the behavior through the running graph —
+a test-driver scenario with assertions under `tools/test-driver/tests/`, run
+green before commit:
+```bash
+timeout 120 cargo run -p test-driver -- tools/test-driver/tests/<scenario>.yaml
+```
 - A scenario counts as coverage only if it has been **mutation-checked**:
   break the code it covers, confirm the scenario fails, restore. A live
   test that has never been seen to fail is not evidence.
 - If the harness cannot reach the functionality, that is a **defect in the
   harness** — fix the harness in this commit. Harness gaps are not waivers.
-- Refactor/doc commits with no observable behavior change are exempt; say
-  "no live test — behavior unchanged" in the commit message body.
+
+**Leg 3 — autonomous real-app live session** (per feature milestone, once the
+surface gesture exists): run the actual app and drive the actual surface with
+`RUST_LOG=info` (the app's own `log::info!` lines are the evidence channel —
+silent otherwise; see AGENTS.md Logging). Panel readouts come from the ENC
+bank cells, not the envelope gauge. Driving recipes: AGENTS.md "Driving the
+panel from an agent". A feature that was only harness-tested has not been
+verified; a feature with no surface gesture yet records that gap explicitly
+(#184's shape) instead of skipping silently.
+
+Refactor/doc commits with no observable behavior change are exempt; say
+"no live test — behavior unchanged" in the commit message body.
 
 ### Gate 3: Clippy clean on touched crates
 ```bash

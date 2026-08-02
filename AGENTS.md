@@ -95,30 +95,49 @@ the `commit-gate` skill — invoke it before every commit. In summary:
 |------|------------|
 | Tests | `cargo test --workspace` exit 0 |
 | Clippy | Zero new warnings on touched crates |
-| Live test | A functionality-changing commit carries a debug-harness live test proving the behavior end-to-end (test-driver scenario with assertions, run green before commit). If the harness cannot reach the functionality, that is a defect in the harness — fix the harness in the same commit. Doc/refactor commits with no behavior change are exempt; say so in the message. |
+| Test trifecta | A functionality-changing commit carries **unit tests** for the new logic AND a **debug-harness live test** (test-driver scenario with assertions, run green before commit, mutation-checked); the feature is then verified by an **autonomous real-app live session** (drive the actual surface, read panel + app log) before it counts as done. If the harness cannot reach the functionality, that is a defect in the harness — fix the harness in the same commit. A feature whose surface gesture doesn't exist yet records that explicitly (e.g. the P11 C6 gaps) instead of silently skipping. Doc/refactor commits with no behavior change are exempt; say so in the message. |
 | Code review | Subagent review (Flash) on the diff, with spec/ADR context |
 | Issue ref | `Fixes #N` / `Refs #N` in commit message |
 | Design review | If ADR/spec/protocol changed: `design-review` pass (Flash) |
 | Working tree | `git status` clean or explicitly accounted for |
 
-**The live-test gate is about the running graph, not unit tests.** A unit test
-proves a function; a live test proves the function works when the graph is
-built, the clock is running, and the state bus is live — the debug harness
-(`tools/test-driver`, ADR-033) renders and asserts on the result. Concretely:
-the commit adds (or points at) a scenario under `tools/test-driver/tests/`
-that drives the new behavior through the harness and asserts on its effect
-(state-bus read, audio peak, artifact scan); the scenario must have been
-mutation-checked — break the code the scenario covers and confirm the scenario
-fails — before it counts as coverage. A live test that has never been seen to
-fail is not evidence. "The debug frame doesn't allow testing this" is a
-harness defect, filed and fixed, not a waiver.
+**The test trifecta is three legs, and all three are required** (the
+standing directive; "trifecta review" in session shorthand):
+
+1. **Unit tests** prove the new logic in isolation — the function, the edge
+   case, the boundary. A functionality commit that adds logic without unit
+   tests for it has not met the gate.
+2. **Harness live test** proves the logic works when the graph is built, the
+   clock is running, and the state bus is live — `tools/test-driver` (ADR-033)
+   renders and asserts on the result. Concretely: the commit adds (or points
+   at) a scenario under `tools/test-driver/tests/` that drives the new
+   behavior and asserts on its effect (state-bus read, audio peak, artifact
+   scan); the scenario must have been **mutation-checked** — break the code
+   the scenario covers and confirm the scenario fails — before it counts as
+   coverage. A live test that has never been seen to fail is not evidence.
+   "The debug frame doesn't allow testing this" is a harness defect, filed
+   and fixed, not a waiver.
+3. **Autonomous real-app live session** runs the actual app and drives the
+   actual surface — the agent's own hands, not the harness's. Theotokos in
+   kitty (see "Driving the panel from an agent") or Theoria in the browser;
+   evidence is the panel readout AND the app's own log. Run with
+   `RUST_LOG=info` (see Logging — the `[kit]`-style info lines are silent
+   otherwise). Read param values from the ENC bank cells, not the envelope
+   gauge (which is live level). One session per feature milestone (once the
+   surface gesture exists) is the unit of verification, and its outcome goes
+   in the phase report / session notes — a feature that was only
+   harness-tested has not been verified. If no surface gesture exists yet
+   (unbuilt UI), say exactly that; it is a tracked gap (#184's shape), not a
+   silent skip.
 
 **Testability is planned, not bolted on.** Every phase spec's commit plan maps
-each commit to its live test (the P11 §4 test-coverage model), and the harness
-verbs a phase needs land **before** the commits that need them — a phase that
-adds app-level operations must first give test-driver the verbs to drive and
-observe them. If a commit in the plan has no harness reach, the plan is
-missing a harness commit; fix the plan, not the coverage.
+each commit to its tests (unit + harness; the P11 §4 test-coverage model), and
+the harness verbs a phase needs land **before** the commits that need them — a
+phase that adds app-level operations must first give test-driver the verbs to
+drive and observe them. If a commit in the plan has no harness reach, the plan
+is missing a harness commit; fix the plan, not the coverage. The phase plan
+also names the live-session milestone(s) — which commit's completion triggers
+the real-app session.
 
 **Code review is mandatory, not advisory.** The orchestrator must run a Flash
 subagent review after every implementation commit or logical batch. Do not skip
@@ -814,9 +833,10 @@ untangle. Pushing to a remote still requires explicit user approval.
 
 1. `cargo test --workspace` green
 2. `cargo clippy --workspace` clean on touched crates (diff against baseline)
-3. **Live test: a functionality-changing commit's debug-harness scenario runs
-   green** (see the Stage-gates Live-test gate; a harness gap is a harness
-   defect, fixed in the same commit — never waived silently)
+3. **Test trifecta: unit tests for the new logic + the debug-harness scenario
+   runs green + the feature's live-session milestone is signed off** (see the
+   Stage-gates Test-trifecta gate; a harness gap is a harness defect, fixed in
+   the same commit — never waived silently)
 4. Subagent code review (Flash) on the diff — **mandatory, not advisory**
 5. Issue referenced in commit message (`Fixes #N`)
 6. Design review (via `design-review` skill) if ADR/spec/protocol changed
