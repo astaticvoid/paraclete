@@ -153,6 +153,11 @@ pub struct StepParamLock {
 }
 
 impl Step {
+    /// Maximum per-step CV locks (P11 C3). Like `LOCK_CAP_PER_STEP`, step
+    /// construction reserves this capacity so `copy_into`'s clamped
+    /// `Vec::push`/extend never allocates on the audio thread.
+    pub(crate) const CV_LOCK_CAP: usize = 4;
+
     pub fn empty() -> Self {
         Step {
             active: false,
@@ -162,7 +167,7 @@ impl Step {
             param_locks: Vec::with_capacity(Sequencer::LOCK_CAP_PER_STEP),
             condition: TrigCondition::default(),
             timing: StepTiming::default(),
-            cv_locks: Vec::new(),
+            cv_locks: Vec::with_capacity(Self::CV_LOCK_CAP),
         }
     }
 }
@@ -197,10 +202,55 @@ impl Pattern {
     pub fn empty(steps: usize) -> Self {
         let pages = steps.div_ceil(PAGE_SIZE).max(1);
         Pattern {
-            steps: vec![Step::empty(); steps],
+            // Built per-step, NOT via `vec![Step::empty(); n]`: cloning the
+            // first step would clone its Vecs with clone-capacity (length),
+            // discarding the reserved LOCK_CAP_PER_STEP / CV_LOCK_CAP that
+            // copy_into relies on for allocation-free audio-thread copies.
+            steps: (0..steps).map(|_| Step::empty()).collect(),
             length: steps,
             page_loop: (0, (pages - 1) as u8),
             swing: 0.0,
+        }
+    }
+
+    /// Copy this pattern's data into `dest` without allocation (P11 C3).
+    ///
+    /// `dest` must be pre-allocated with at least `self.steps.len()` steps,
+    /// each step's `param_locks` reserved to `LOCK_CAP_PER_STEP` and
+    /// `cv_locks` reserved to `CV_LOCK_CAP` — exactly what construction-time
+    /// patterns and the temp-save shadow provide. Used on the audio thread by
+    /// `CMD_TEMP_SAVE`/`CMD_TEMP_RELOAD`, so no `Vec` may grow: every copy is
+    /// an element write into existing capacity. CV locks exceeding
+    /// `CV_LOCK_CAP` are clamped (truncated), the same policy as
+    /// `CMD_SET_STEP_LOCK`. Pattern-level state (`length`, `page_loop`,
+    /// `swing`) is copied along with the steps so a reload restores the whole
+    /// pattern.
+    pub(crate) fn copy_into(&self, dest: &mut Pattern) {
+        debug_assert!(dest.steps.len() >= self.steps.len());
+        debug_assert!(dest.steps.iter().all(|s| {
+            s.param_locks.capacity() >= Sequencer::LOCK_CAP_PER_STEP
+                && s.cv_locks.capacity() >= Step::CV_LOCK_CAP
+        }));
+        // Defensive clamps: a corrupt blob could load a pattern larger than
+        // the construction-time shadow — never index or play past `dest` on
+        // the audio thread. The debug_asserts above flag the violation.
+        let n = dest.steps.len().min(self.steps.len());
+        dest.length = self.length.min(dest.steps.len());
+        dest.page_loop = self.page_loop;
+        dest.swing = self.swing;
+        for (i, step) in self.steps.iter().take(n).enumerate() {
+            let d = &mut dest.steps[i];
+            d.active = step.active;
+            d.note = step.note;
+            d.velocity = step.velocity;
+            d.length = step.length;
+            d.timing = step.timing;
+            d.condition = step.condition.clone();
+            d.param_locks.clear();
+            d.param_locks.extend_from_slice(&step.param_locks);
+            d.cv_locks.clear();
+            let cv_limit = Step::CV_LOCK_CAP.min(step.cv_locks.len());
+            d.cv_locks.extend_from_slice(&step.cv_locks[..cv_limit]);
         }
     }
 }
@@ -314,6 +364,11 @@ pub struct Sequencer {
     /// itself closes independent of transport ticks. Default 120 BPM
     /// before any transport has been observed.
     last_bpm: f32,
+
+    /// P11 C3: shadow copy of the active pattern for temp save/reload.
+    /// Pre-allocated at build; RAM-only, never serialized.
+    shadow_pattern: Pattern,
+    shadow_has_data: bool,
 }
 
 impl Sequencer {
@@ -366,6 +421,12 @@ impl Sequencer {
     /// next `process` window (sample offset 0); a second command in the
     /// same window replaces the pending one.
     pub const CMD_TRIG_NOW: u32 = 38;
+
+    /// P11 C3: node-side type ids for the app's temp-save/reload broadcast.
+    /// The canonical definitions live in `paraclete_node_api::command` as
+    /// `u8` (39/40); these are the `u32` ids the `handle_commands` match sees.
+    pub(crate) const CMD_TEMP_SAVE: u32 = paraclete_node_api::command::CMD_TEMP_SAVE as u32;
+    pub(crate) const CMD_TEMP_RELOAD: u32 = paraclete_node_api::command::CMD_TEMP_RELOAD as u32;
 
     /// Runtime step capacity per pattern (P10: 8 pages × 8 steps). The
     /// serialized format stores counts as plain integers and does not depend
@@ -506,6 +567,8 @@ impl Sequencer {
             pending_live_trig: None,
             live_gate_samples_left: None,
             last_bpm: 120.0,
+            shadow_pattern: Pattern::empty(Self::STEP_CAPACITY),
+            shadow_has_data: false,
         }
     }
 
@@ -854,6 +917,21 @@ impl Sequencer {
                         ((cmd.arg1.clamp(0.0, 1.0) * 65535.0) as u32).min(65535) as u16
                     };
                     self.pending_live_trig = Some((note, velocity));
+                }
+                Self::CMD_TEMP_SAVE => {
+                    // P11 C3: snapshot the active pattern into the
+                    // pre-allocated shadow slot (allocation-free copy_into).
+                    let active = self.active_index();
+                    self.patterns[active].copy_into(&mut self.shadow_pattern);
+                    self.shadow_has_data = true;
+                }
+                Self::CMD_TEMP_RELOAD if self.shadow_has_data => {
+                    // P11 C3: restore the shadow into the active pattern.
+                    // One-shot: the shadow is cleared once restored, so a
+                    // second reload without a new save is a no-op.
+                    let active = self.active_index();
+                    self.shadow_pattern.copy_into(&mut self.patterns[active]);
+                    self.shadow_has_data = false;
                 }
                 _ => {}
             }
@@ -1734,7 +1812,7 @@ impl Sequencer {
                     value,
                 });
             }
-            let mut cv_locks = Vec::new();
+            let mut cv_locks = Vec::with_capacity(Step::CV_LOCK_CAP);
             if version >= 2 {
                 let Some(cv_count) = r.u8().map(|v| v as usize) else {
                     return;
@@ -1856,10 +1934,15 @@ impl Sequencer {
             }
             if steps.len() < Self::STEP_CAPACITY {
                 // Padded steps carry this instance's default note (BUG-022),
-                // not the Step::empty() constant.
-                let mut pad = Step::empty();
-                pad.note = self.default_note;
-                steps.resize(Self::STEP_CAPACITY, pad);
+                // not the Step::empty() constant. Pushed per-step, NOT via
+                // `resize`: clone-padding would discard the reserved lock
+                // capacities that copy_into relies on for allocation-free
+                // audio-thread copies.
+                while steps.len() < Self::STEP_CAPACITY {
+                    let mut pad = Step::empty();
+                    pad.note = self.default_note;
+                    steps.push(pad);
+                }
             }
             let length = length.clamp(1, steps.len());
             // Sanitize the window like CMD_SET_PAGE_LOOP would (corrupt or
@@ -2044,7 +2127,10 @@ fn read_step_record(r: &mut ByteReader) -> Option<Step> {
         });
     }
     let cv_count = r.u8()? as usize;
-    let mut cv_locks = Vec::with_capacity(cv_count);
+    // Reserve CV_LOCK_CAP regardless of the loaded count so every loaded
+    // step satisfies copy_into's capacity contract (no audio-thread
+    // allocation on CMD_TEMP_RELOAD into a loaded pattern).
+    let mut cv_locks = Vec::with_capacity(cv_count.max(Step::CV_LOCK_CAP));
     for _ in 0..cv_count {
         let idx = r.u16()?;
         let val = r.f32()?;
@@ -5576,54 +5662,239 @@ mod tests {
     /// step-boundary path, which could silently overwrite a still-open live
     /// gate without ever closing it. Fixed by centralizing the close inside
     /// `emit_note_on_at`; this reproduces the exact orphan scenario.
+    // ── P11 C3: temp save/reload (shadow pattern + copy_into) ───────────────
+
+    fn temp_save_cmd() -> NodeCommand {
+        NodeCommand {
+            target_id: 0,
+            type_id: Sequencer::CMD_TEMP_SAVE,
+            arg0: 0,
+            arg1: 0.0,
+        }
+    }
+
+    fn temp_reload_cmd() -> NodeCommand {
+        NodeCommand {
+            target_id: 0,
+            type_id: Sequencer::CMD_TEMP_RELOAD,
+            arg0: 0,
+            arg1: 0.0,
+        }
+    }
+
     #[test]
-    fn trig_now_open_gate_is_not_orphaned_by_next_pattern_step() {
-        let mut seq = Sequencer::new();
-        seq.set_step(0, 61, 32768, true);
-        seq.set_step(1, 62, 32768, true);
+    fn copy_into_copies_steps_locks_and_pattern_state() {
+        let mut src = Pattern::empty(Sequencer::STEP_CAPACITY);
+        let mut dest = Pattern::empty(Sequencer::STEP_CAPACITY);
 
-        let mut all_events: Vec<Event> = Vec::new();
+        // Pre-fill a destination lock that must be cleared by the copy
+        // (proves copy_into replaces, not appends to, stale content).
+        dest.steps[0]
+            .param_locks
+            .push(StepParamLock { node_id: 9, param_id: 9, value: 0.9 });
 
-        // Enter the pattern: fires step 0 (note 61).
-        all_events.extend(run_seq(
-            &mut seq,
-            &[transport_tick(0, true, true, false, false)],
-        ));
-
-        // Advance to just short of step 1's boundary (step_period = 240 ticks).
-        for t in 1..=235u32 {
-            all_events.extend(run_seq(
-                &mut seq,
-                &[transport_tick(t, true, false, false, false)],
-            ));
+        // Distinctive state across every copied dimension.
+        src.length = 24;
+        src.page_loop = (1, 2);
+        src.swing = 0.25;
+        src.steps[0].active = true;
+        src.steps[0].note = 61;
+        src.steps[0].velocity = 20000;
+        src.steps[0].length = 0.5;
+        src.steps[0].timing.micro_offset = -3;
+        src.steps[0].condition = TrigCondition::Simple {
+            repeat: RepeatCondition::NthOfM { n: 2, m: 4 },
+            fill: FillCondition::FillA,
+            probability: 75,
+        };
+        src.steps[0].param_locks.push(StepParamLock {
+            node_id: 1,
+            param_id: 2,
+            value: 0.5,
+        });
+        // More CV locks than CV_LOCK_CAP: the copy must clamp.
+        for i in 0..6u16 {
+            src.steps[0].cv_locks.push((i, i as f32));
         }
+        src.steps[1].active = true;
+        src.steps[1].note = 48;
 
-        // Fire a live trig here: its sample-counted gate easily outlives the
-        // handful of ticks remaining before step 1 fires.
-        all_events.extend(run_seq_with_cmds_events(&mut seq, &[trig_now_cmd(99, 0.7)]));
+        src.copy_into(&mut dest);
 
-        // Cross step 1's boundary.
-        for t in 236..=240u32 {
-            all_events.extend(run_seq(
-                &mut seq,
-                &[transport_tick(t, true, false, false, false)],
-            ));
-        }
-
-        let note_offs: Vec<u8> = all_events
-            .iter()
-            .filter_map(|e| match e {
-                Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(n))) => {
-                    Some(u8::from(n.note_number()))
-                }
-                _ => None,
-            })
-            .collect();
-        assert!(
-            note_offs.contains(&99),
-            "a live trig's still-open gate must be closed (not silently overwritten) \
-             when the next pattern step fires; got note-offs {:?}",
-            note_offs
+        assert_eq!(dest.length, 24, "length copied");
+        assert_eq!(dest.page_loop, (1, 2), "page_loop copied");
+        assert_eq!(dest.swing, 0.25, "swing copied");
+        assert_eq!(dest.steps[0].active, true);
+        assert_eq!(dest.steps[0].note, 61);
+        assert_eq!(dest.steps[0].velocity, 20000);
+        assert_eq!(dest.steps[0].length, 0.5);
+        assert_eq!(dest.steps[0].timing.micro_offset, -3);
+        assert_eq!(dest.steps[0].condition, src.steps[0].condition);
+        assert_eq!(
+            dest.steps[0].param_locks.len(),
+            1,
+            "stale destination lock cleared; exactly the source lock copied"
         );
+        assert_eq!(dest.steps[0].param_locks[0].node_id, 1);
+        assert_eq!(dest.steps[0].param_locks[0].param_id, 2);
+        assert_eq!(dest.steps[0].param_locks[0].value, 0.5);
+        assert_eq!(
+            dest.steps[0].cv_locks.len(),
+            Step::CV_LOCK_CAP,
+            "CV locks beyond CV_LOCK_CAP are clamped"
+        );
+        assert_eq!(
+            dest.steps[0].cv_locks,
+            src.steps[0].cv_locks[..Step::CV_LOCK_CAP].to_vec()
+        );
+        assert_eq!(dest.steps[1].note, 48);
+        assert_eq!(dest.steps[2].active, false, "untouched step stays default");
+    }
+
+    #[test]
+    fn copy_into_does_not_reallocate_destination_locks() {
+        // P11 C3: copy_into runs on the audio thread (CMD_TEMP_SAVE /
+        // CMD_TEMP_RELOAD) and must never grow a lock Vec. Pre-reserved
+        // capacity (LOCK_CAP_PER_STEP / CV_LOCK_CAP) must be preserved.
+        let mut src = Pattern::empty(Sequencer::STEP_CAPACITY);
+        let mut dest = Pattern::empty(Sequencer::STEP_CAPACITY);
+        for i in 0..Sequencer::LOCK_CAP_PER_STEP as u16 {
+            src.steps[0]
+                .param_locks
+                .push(StepParamLock { node_id: i as u32, param_id: 0, value: 0.1 });
+        }
+        for i in 0..Step::CV_LOCK_CAP as u16 {
+            src.steps[0].cv_locks.push((i, i as f32));
+        }
+
+        src.copy_into(&mut dest);
+
+        assert_eq!(dest.steps[0].param_locks.len(), Sequencer::LOCK_CAP_PER_STEP);
+        assert_eq!(
+            dest.steps[0].param_locks.capacity(),
+            Sequencer::LOCK_CAP_PER_STEP,
+            "param_locks must not reallocate"
+        );
+        assert_eq!(dest.steps[0].cv_locks.len(), Step::CV_LOCK_CAP);
+        assert_eq!(
+            dest.steps[0].cv_locks.capacity(),
+            Step::CV_LOCK_CAP,
+            "cv_locks must not reallocate"
+        );
+    }
+
+    #[test]
+    fn temp_save_reload_round_trip() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.set_step(0, 60, 32768, true);
+
+        run_seq_with_cmds(&mut seq, &[temp_save_cmd()]);
+        assert!(seq.shadow_has_data, "save arms the shadow");
+
+        // Mutate after the save: erase step 0 and rewrite it as note 72.
+        run_seq_with_cmds(
+            &mut seq,
+            &[
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP,
+                    arg0: 0,
+                    arg1: 72.0,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_CLEAR,
+                    arg0: 0,
+                    arg1: 0.0,
+                },
+            ],
+        );
+        assert!(!seq.patterns[0].steps[0].active, "sanity: mutated after save");
+
+        run_seq_with_cmds(&mut seq, &[temp_reload_cmd()]);
+
+        assert!(
+            !seq.shadow_has_data,
+            "a reload consumes the shadow (one-shot snapshot)"
+        );
+        assert!(seq.patterns[0].steps[0].active, "reload restores step 0");
+        assert_eq!(seq.patterns[0].steps[0].note, 60, "reload restores note");
+    }
+
+    #[test]
+    fn temp_save_uses_active_pattern() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        // Playback/editing works on pattern 1, not pattern 0.
+        seq.active_pattern = 1;
+        seq.set_step(0, 70, 32768, true);
+
+        run_seq_with_cmds(&mut seq, &[temp_save_cmd()]);
+
+        // Mutate pattern 1, then reload: the saved pattern 1 state returns,
+        // and pattern 0 was never touched.
+        seq.set_step(0, 71, 32768, false);
+        run_seq_with_cmds(&mut seq, &[temp_reload_cmd()]);
+
+        assert!(seq.patterns[1].steps[0].active, "active pattern restored");
+        assert_eq!(seq.patterns[1].steps[0].note, 70);
+        assert!(
+            !seq.patterns[0].steps[0].active,
+            "inactive pattern untouched by temp save/reload"
+        );
+    }
+
+    #[test]
+    fn temp_reload_without_save_is_noop() {
+        let mut seq = Sequencer::new();
+        seq.set_step(0, 60, 32768, true);
+        seq.set_step(1, 61, 32768, true);
+        let before_bits = seq.steps_bitfield();
+
+        run_seq_with_cmds(&mut seq, &[temp_reload_cmd()]);
+
+        assert!(!seq.shadow_has_data);
+        assert_eq!(seq.steps_bitfield(), before_bits, "no-op without a save");
+    }
+
+    #[test]
+    fn temp_save_reload_works_after_deserialize() {
+        // A project load rebuilds pattern steps from the blob; those steps
+        // must still satisfy copy_into's reserved-capacity contract, or a
+        // temp reload into the loaded active pattern would reallocate on the
+        // audio thread (or trip the debug_asserts).
+        let mut seq = Sequencer::new();
+        seq.set_step(0, 63, 32768, true);
+        seq.set_step(2, 64, 20000, false);
+
+        let blob = seq.serialize();
+        let mut loaded = Sequencer::new();
+        loaded.deserialize(&blob);
+        assert!(loaded.patterns[0].steps[0].active, "sanity: load restored steps");
+        assert_eq!(loaded.patterns[0].steps[2].note, 64);
+
+        // Temp save on the loaded sequencer, mutate, reload.
+        run_seq_with_cmds(&mut loaded, &[temp_save_cmd()]);
+        assert!(loaded.shadow_has_data);
+        run_seq_with_cmds(
+            &mut loaded,
+            &[NodeCommand {
+                target_id: 0,
+                type_id: Sequencer::CMD_CLEAR,
+                arg0: 0,
+                arg1: 0.0,
+            }],
+        );
+        assert!(
+            !loaded.patterns[0].steps[0].active,
+            "sanity: cleared after save"
+        );
+
+        run_seq_with_cmds(&mut loaded, &[temp_reload_cmd()]);
+
+        assert!(loaded.patterns[0].steps[0].active, "reload restores into loaded pattern");
+        assert_eq!(loaded.patterns[0].steps[0].note, 63);
+        assert_eq!(loaded.patterns[0].steps[2].note, 64);
     }
 }

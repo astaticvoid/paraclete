@@ -8,8 +8,8 @@
 //!   3. publishes `/context/perform` for surfaces.
 //!
 //! `AppOp` commands drained from surfaces (`execute`) drive kit save/load,
-//! bind/unbind, and perform-mode toggling. `TempSave`/`TempReload` and
-//! `KitCommit`/`KitReload` are C3 stubs.
+//! bind/unbind, perform-mode toggling, and temp save/reload.
+//! `KitCommit`/`KitReload` remain C3 stubs.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -91,12 +91,48 @@ impl PerformState {
             AppOp::BindKit { slot, kit } => self.bind_kit(slot, kit),
             AppOp::SetPerformMode(on) => self.set_perform_mode(on),
             AppOp::TempSave => {
-                // C3.
-                info!("[temp] save — stub");
+                // P11 C3 (ADR-039): snapshot param state and broadcast the
+                // engine-side pattern shadow in the same main-loop tick, so
+                // both halves of the volatile snapshot are taken together.
+                // 1. Capture param state into the temp snapshot (same
+                //    cap-doc/bus-read as kit capture).
+                self.temp_param_snapshot = Some(capture_kit_entries(conf, bus));
+                // 2. Broadcast CMD_TEMP_SAVE to every sequencer (node ids
+                //    10-17 — the app graph's sequencer range).
+                for seq_id in 10u32..=17 {
+                    let cmd = NodeCommand {
+                        target_id: seq_id,
+                        type_id: paraclete_node_api::command::CMD_TEMP_SAVE as u32,
+                        arg0: 0,
+                        arg1: 0.0,
+                    };
+                    if conf.send_command(cmd).is_err() {
+                        log::warn!("[temp_save] ring full sending to seq {seq_id}");
+                    }
+                }
+                info!("[temp_save] snapshot saved");
             }
             AppOp::TempReload => {
-                // C3.
-                info!("[temp] reload — stub");
+                // P11 C3: broadcast the engine-side restore, then replay the
+                // param snapshot. The pattern restore lands at the node; the
+                // params replay chunked (16/tick) via apply_pending.
+                // 1. Broadcast CMD_TEMP_RELOAD to every sequencer.
+                for seq_id in 10u32..=17 {
+                    let cmd = NodeCommand {
+                        target_id: seq_id,
+                        type_id: paraclete_node_api::command::CMD_TEMP_RELOAD as u32,
+                        arg0: 0,
+                        arg1: 0.0,
+                    };
+                    if conf.send_command(cmd).is_err() {
+                        log::warn!("[temp_reload] ring full sending to seq {seq_id}");
+                    }
+                }
+                // 2. Replay the param snapshot (if any was saved).
+                if let Some(entries) = self.temp_param_snapshot.clone() {
+                    self.apply_pending = entries;
+                }
+                info!("[temp_reload] snapshot reloaded");
             }
         }
     }

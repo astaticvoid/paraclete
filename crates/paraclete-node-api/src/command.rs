@@ -32,6 +32,13 @@ pub const CMD_BUMP_PARAM: u32 = 1;
 /// (`AnalogEngine`, `FmEngine`, `Sampler`) rather than being node-type-specific.
 pub const CMD_TRIGGER: u32 = 19;
 
+/// P11 C3: snapshot the active pattern into the sequencer's pre-allocated
+/// shadow slot (node-specific, ADR-039 reserves 39–45 for the P11 family).
+pub const CMD_TEMP_SAVE: u8 = 39;
+
+/// P11 C3: restore the shadow pattern into the active pattern.
+pub const CMD_TEMP_RELOAD: u8 = 40;
+
 #[cfg(test)]
 mod tests {
     use super::*;
