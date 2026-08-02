@@ -178,9 +178,17 @@ fn a_real_engines_stepped_selectors_carry_their_names() {
             .iter()
             .filter_map(|o| o.as_deref())
             .collect();
+        // #179: the dest list is per-machine now, so this asserts against the
+        // machine actually under test rather than a fixed name. A HiHat has
+        // no `tune` destination at all — which is the point of #179, and the
+        // reason this assertion could not stay as `contains("tune")`.
         assert!(
-            dest_names.contains(&"tune"),
-            "{label}: dest names must be the real table; got {dest_names:?}"
+            !dest_names.is_empty(),
+            "{label}: every machine offers at least one destination"
+        );
+        assert!(
+            dest_names.iter().all(|n| !n.is_empty()),
+            "{label}: a named entry must not be blank; got {dest_names:?}"
         );
 
         // Route 2 — the Rule's `variants`, via `machine_options`. No display

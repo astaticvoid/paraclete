@@ -127,10 +127,30 @@ pub struct FmEngine {
 /// names to an array of ids in a `const` initialiser. A test asserts they
 /// correspond entry-for-entry, so a drift fails loudly rather than mislabelling
 /// an encoder.
+/// #179: no longer the offered list, and there is no union label adapter any
+/// more — the cap-doc carries the ACTIVE machine's labels
+/// (`FmEngine::dest_labels`), because a machine-invariant list named
+/// destinations the machine could not reach. This survives as the union
+/// *envelope*: the set every per-machine table must draw from, which is what
+/// keeps `LFO_DESTS.len()` — the width `lfo_dest` persists at — honest.
+/// Referenced by the append-only tests.
+#[allow(dead_code)]
 static FM_DEST_NAMES: &[&str] = &["tune", "decay", "ratio", "index", "feedback", "drive", "punch", "attack"];
 
-/// MM §0 D4: the cap-doc carries the `lfo_dest` labels, statically.
-static FM_DEST_LABELS: LfoDestLabels = LfoDestLabels(FM_DEST_NAMES);
+
+// ── Per-machine destination tables (#179) ────────────────────────────────────
+//
+// **Each list is APPEND ONLY** — `lfo_dest` persists a one-based index into
+// the active machine's list. See `AnalogEngine`'s equivalent for the full
+// contract; `the_per_machine_dest_tables_are_append_only` and
+// `every_machines_dests_are_exactly_its_params` hold both families to it.
+static FM_KICK_DEST_NAMES: &[&str] = &["tune", "punch", "decay", "feedback", "drive"];
+static FM_BELL_DEST_NAMES: &[&str] = &["tune", "ratio", "index", "decay", "feedback"];
+static FM_BASS_DEST_NAMES: &[&str] = &["tune", "ratio", "index", "attack", "decay", "drive"];
+
+static FM_KICK_DEST_LABELS: LfoDestLabels = LfoDestLabels(FM_KICK_DEST_NAMES);
+static FM_BELL_DEST_LABELS: LfoDestLabels = LfoDestLabels(FM_BELL_DEST_NAMES);
+static FM_BASS_DEST_LABELS: LfoDestLabels = LfoDestLabels(FM_BASS_DEST_NAMES);
 
 impl FmEngine {
     pub const PORT_EVENTS_IN:   u32 = 0;
@@ -242,12 +262,35 @@ impl FmEngine {
     }
 
     /// One-based index into `LFO_DESTS`; 0 and out-of-range read as off.
+    /// The destination names offered on `machine` (#179), in index order.
+    fn dest_names(machine: FmMachine) -> &'static [&'static str] {
+        match machine {
+            FmMachine::Kick => FM_KICK_DEST_NAMES,
+            FmMachine::Bell => FM_BELL_DEST_NAMES,
+            FmMachine::Bass => FM_BASS_DEST_NAMES,
+        }
+    }
+
+    fn dest_labels(machine: FmMachine) -> &'static LfoDestLabels {
+        match machine {
+            FmMachine::Kick => &FM_KICK_DEST_LABELS,
+            FmMachine::Bell => &FM_BELL_DEST_LABELS,
+            FmMachine::Bass => &FM_BASS_DEST_LABELS,
+        }
+    }
+
+    /// Resolve `lfo_dest` against the **active machine's** table (#179).
+    /// One-based; an index past the machine's list reads as off, which is
+    /// also what a dest belonging to a longer-listed machine does after a
+    /// switch — see `AnalogEngine::apply_machine_switch`.
     fn lfo_dest_id(&self) -> Option<u32> {
         let v = self.raw_param(fp("lfo_dest"));
         if !v.is_finite() || v < 1.0 {
             return None;
         }
-        Self::LFO_DESTS.get(v as usize - 1).copied()
+        Self::dest_names(self.machine)
+            .get(v as usize - 1)
+            .map(|n| fp(n))
     }
 
     fn update_lfo(&mut self, samples: usize) {
@@ -320,7 +363,13 @@ impl FmEngine {
         }];
 
         // MM-C9: machine-invariant, so they join the union once.
-        out.extend(lfo_params(Self::LFO_DESTS.len(), Some(&FM_DEST_LABELS)));
+        // #179: union WIDTH (never narrowed — see this function's header),
+        // active machine's LABELS. `machine_overlays` narrows what the encoder
+        // can reach; indices between the two are gaps by construction.
+        out.extend(lfo_params(
+            Self::LFO_DESTS.len(),
+            Some(Self::dest_labels(active)),
+        ));
 
         for m in FmMachine::ALL {
             for p in Self::machine_params(m) {
@@ -697,6 +746,16 @@ impl FmEngine {
                 identity: true,
             },
         )];
+        // #179: the dest encoder reaches only this machine's destinations.
+        out.push((
+            fp("lfo_dest"),
+            ParamOverlay {
+                min: 0.0,
+                max: Self::dest_names(machine).len() as f64,
+                default: 0.0,
+                identity: false,
+            },
+        ));
         for p in Self::machine_params(machine) {
             out.push((
                 p.id,
@@ -1424,6 +1483,21 @@ mod tests {
     /// an encoder.
     #[test]
     fn the_dest_ids_and_names_correspond() {
+        // #179: and every per-machine table must draw from this union, since
+        // `LFO_DESTS.len()` is the width the bank persists `lfo_dest` at. A
+        // machine list longer than the union would truncate on load.
+        for names in [FM_KICK_DEST_NAMES, FM_BELL_DEST_NAMES, FM_BASS_DEST_NAMES] {
+            assert!(
+                names.len() <= FmEngine::LFO_DESTS.len(),
+                "a machine cannot offer more dests than the bank can store"
+            );
+            for n in names {
+                assert!(
+                    FM_DEST_NAMES.contains(n),
+                    "{n} is offered by a machine but absent from the union envelope"
+                );
+            }
+        }
         assert_eq!(FM_DEST_NAMES.len(), FmEngine::LFO_DESTS.len());
         for (name, id) in FM_DEST_NAMES.iter().zip(FmEngine::LFO_DESTS) {
             assert_eq!(fp(name), *id, "`{name}` does not hash to its table entry");
@@ -1436,25 +1510,163 @@ mod tests {
     /// clone, and the cap-doc path clones.
     #[test]
     fn lfo_dest_labels_reach_the_cap_doc_and_survive_a_clone() {
-        let doc = FmEngine::bass().capability_document();
-        let d = doc
-            .params
-            .iter()
-            .find(|p| p.id == fp("lfo_dest"))
-            .expect("lfo_dest is declared");
-        let display = d.display.as_ref().expect("labels are declared");
-        assert_eq!(display.format(0.0), "off");
-        assert_eq!(display.format(1.0), FM_DEST_NAMES[0]);
-        assert_eq!(
-            display.format(FM_DEST_NAMES.len() as f64),
-            *FM_DEST_NAMES.last().unwrap()
+        // #179: per-machine labels — see AnalogEngine's twin for the contract.
+        for (eng, names) in [
+            (FmEngine::kick(), FM_KICK_DEST_NAMES),
+            (FmEngine::bell(), FM_BELL_DEST_NAMES),
+            (FmEngine::bass(), FM_BASS_DEST_NAMES),
+        ] {
+            let doc = eng.capability_document();
+            let d = doc
+                .params
+                .iter()
+                .find(|p| p.id == fp("lfo_dest"))
+                .expect("lfo_dest is declared");
+            let display = d.display.as_ref().expect("labels are declared");
+            assert_eq!(display.format(0.0), "off");
+            assert_eq!(display.format(1.0), names[0]);
+            assert_eq!(display.format(names.len() as f64), *names.last().unwrap());
+            assert_eq!(
+                display.format(names.len() as f64 + 1.0),
+                "",
+                "past this machine's table is a gap, not another choice"
+            );
+            assert_eq!(display.parse("off"), Some(0.0));
+            assert_eq!(display.parse(names[0]), Some(1.0));
+
+            let labels = d.value_labels().expect("a stepped param with a display");
+            assert_eq!(labels.len(), FmEngine::LFO_DESTS.len() + 1);
+            for (i, want) in names.iter().enumerate() {
+                assert_eq!(labels[i + 1].as_deref(), Some(*want));
+            }
+            for slot in labels.iter().skip(names.len() + 1) {
+                assert_eq!(slot.as_deref(), None, "a gap must not be drawable");
+            }
+
+            // The whole doc is cloned on the mainline cap-doc path; `Dynamic`
+            // would panic here.
+            let _ = doc.clone();
+        }
+    }
+
+    /// #179, FM half — see `AnalogEngine::every_machines_dests_are_exactly_its_params`.
+    #[test]
+    fn every_machines_dests_are_exactly_its_params() {
+        for machine in FmMachine::ALL {
+            let mut read: Vec<String> = FmEngine::machine_params(machine)
+                .iter()
+                .map(|p| p.name.to_string())
+                .collect();
+            let mut offered: Vec<String> = FmEngine::dest_names(machine)
+                .iter()
+                .map(|n| n.to_string())
+                .collect();
+            read.sort();
+            offered.sort();
+            assert_eq!(
+                offered, read,
+                "{machine:?}: every destination offered must be a param this \
+                 machine reads, and every param it reads must be offered"
+            );
+        }
+    }
+
+    /// **APPEND ONLY** — `lfo_dest` persists a one-based index into the active
+    /// machine's table (#179).
+    #[test]
+    fn the_per_machine_dest_tables_are_append_only() {
+        assert_eq!(FM_KICK_DEST_NAMES, &["tune", "punch", "decay", "feedback", "drive"]);
+        assert_eq!(FM_BELL_DEST_NAMES, &["tune", "ratio", "index", "decay", "feedback"]);
+        assert_eq!(FM_BASS_DEST_NAMES, &["tune", "ratio", "index", "attack", "decay", "drive"]);
+    }
+
+    /// Union-wide in the bank, per-machine on the encoder (#179) — the pair
+    /// that makes a per-machine index safe to persist.
+    #[test]
+    fn the_dest_range_is_union_wide_in_the_bank_and_per_machine_on_the_encoder() {
+        for machine in FmMachine::ALL {
+            let doc = FmEngine::new(machine).capability_document();
+            let d = doc
+                .params
+                .iter()
+                .find(|p| p.id == fp("lfo_dest"))
+                .expect("lfo_dest is declared");
+            assert_eq!(d.max, FmEngine::LFO_DESTS.len() as f64);
+
+            let overlay = FmEngine::machine_overlays(machine)
+                .into_iter()
+                .find(|(id, _)| *id == fp("lfo_dest"))
+                .map(|(_, o)| o)
+                .expect("the overlay narrows the encoder");
+            assert_eq!(overlay.max, FmEngine::dest_names(machine).len() as f64);
+            assert!(!overlay.identity, "`lfo_dest` is a setting, not identity");
+        }
+    }
+
+    /// Every dest index modulates exactly the param it names, on every
+    /// machine (#179 extends session #5's audit to the per-machine tables).
+    #[test]
+    fn every_dest_index_modulates_exactly_the_param_it_names() {
+        use crate::engine_dsp::LFO_SUB_BLOCK;
+        let mut failures: Vec<String> = Vec::new();
+        for machine in FmMachine::ALL {
+            let observed: Vec<u32> = FmEngine::union_params(machine)
+                .iter()
+                .map(|p| p.id)
+                .collect();
+            let name_of = |id: u32| -> String {
+                FmEngine::union_params(machine)
+                    .iter()
+                    .find(|p| p.id == id)
+                    .map(|p| p.name.to_string())
+                    .unwrap_or_else(|| format!("id:{id}"))
+            };
+
+            for (i, expected_name) in FmEngine::dest_names(machine).iter().enumerate() {
+                let mut eng = FmEngine::new(machine);
+                eng.activate(44100.0, 512);
+                for (name, v) in [
+                    ("lfo_dest", (i + 1) as f64),
+                    ("lfo_depth", 1.0),
+                    ("lfo_speed", 4.0),
+                    ("lfo_shape", 0.0),
+                    ("lfo_mode", 1.0),
+                ] {
+                    eng.bank.set(fp(name), v);
+                }
+                eng.retrigger(60, 1.0);
+
+                let base: Vec<f32> = observed.iter().map(|id| eng.raw_param(*id)).collect();
+                let mut moved = vec![false; observed.len()];
+                for _ in 0..200 {
+                    eng.update_lfo(LFO_SUB_BLOCK);
+                    for (k, id) in observed.iter().enumerate() {
+                        if (eng.get_param(*id) - base[k]).abs() > 1e-6 {
+                            moved[k] = true;
+                        }
+                    }
+                }
+                let actually_moved: Vec<String> = observed
+                    .iter()
+                    .zip(&moved)
+                    .filter(|(_, m)| **m)
+                    .map(|(id, _)| name_of(*id))
+                    .collect();
+                if actually_moved != vec![expected_name.to_string()] {
+                    failures.push(format!(
+                        "  {machine:?} lfo_dest={} expected [{}] but moved {:?}",
+                        i + 1,
+                        expected_name,
+                        actually_moved
+                    ));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "dest index -> modulated param mismatch:\n{}",
+            failures.join("\n")
         );
-        assert_eq!(display.format(999.0), "off", "past the end reads as off");
-        assert_eq!(display.parse("off"), Some(0.0));
-        assert_eq!(display.parse(FM_DEST_NAMES[0]), Some(1.0));
-        // The whole doc is cloned on the mainline cap-doc path; `Dynamic`
-        // would panic here.
-        let _ = doc.clone();
     }
 
     /// MM-C11: the first real `LfoShape` in the tree — the hint has existed

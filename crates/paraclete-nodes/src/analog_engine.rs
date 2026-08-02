@@ -145,10 +145,45 @@ pub struct AnalogEngine {
 /// names to an array of ids in a `const` initialiser. A test asserts they
 /// correspond entry-for-entry, so a drift fails loudly rather than mislabelling
 /// an encoder.
+/// #179: no longer the offered list, and there is no union label adapter any
+/// more — the cap-doc carries the ACTIVE machine's labels
+/// (`AnalogEngine::dest_labels`), because a machine-invariant list named
+/// destinations the machine could not reach. This survives as the union
+/// *envelope*: the set every per-machine table must draw from, which is what
+/// keeps `LFO_DESTS.len()` — the width `lfo_dest` persists at — honest.
+/// Referenced by the append-only tests.
+#[allow(dead_code)]
 static ANALOG_DEST_NAMES: &[&str] = &["tune", "tone", "decay", "punch", "drive", "snap", "noise", "open"];
 
-/// MM §0 D4: the cap-doc carries the `lfo_dest` labels, statically.
-static ANALOG_DEST_LABELS: LfoDestLabels = LfoDestLabels(ANALOG_DEST_NAMES);
+
+// ── Per-machine destination tables (#179) ────────────────────────────────────
+//
+// **Each list is APPEND ONLY**, for the same reason `AnalogMachine::ALL` is:
+// `lfo_dest` persists a one-based index into the *active machine's* list, so
+// inserting or reordering an entry re-points every saved patch on that machine
+// at a different param. `the_per_machine_dest_tables_are_append_only` pins all
+// three heads so a reorder fails loudly rather than silently.
+//
+// A machine's list must name exactly the params that machine reads. The union
+// table above stayed machine-invariant through MM, which meant three to five of
+// its eight entries did nothing on any given machine — on a HiHat, five of
+// eight — and selecting one was indistinguishable from a broken LFO. That cost
+// most of session #5's LFO round. `every_machines_dests_are_exactly_its_params`
+// asserts the correspondence in both directions, so neither an inert entry nor
+// a missing one can be introduced.
+//
+// Declared as names rather than derived by filtering `ANALOG_DEST_NAMES`
+// against `machine_params`, because a derived list is append-only only by
+// accident: adding `punch` to HiHat would insert it *before* `open` in union
+// order and shift the index of a param that was already there. Written out,
+// the append-only contract is something you can see and a test can pin.
+static KICK_DEST_NAMES:  &[&str] = &["tune", "punch", "decay", "drive", "tone"];
+static SNARE_DEST_NAMES: &[&str] = &["tune", "snap", "noise", "decay", "tone"];
+static HIHAT_DEST_NAMES: &[&str] = &["tone", "decay", "open"];
+
+static KICK_DEST_LABELS:  LfoDestLabels = LfoDestLabels(KICK_DEST_NAMES);
+static SNARE_DEST_LABELS: LfoDestLabels = LfoDestLabels(SNARE_DEST_NAMES);
+static HIHAT_DEST_LABELS: LfoDestLabels = LfoDestLabels(HIHAT_DEST_NAMES);
 
 impl AnalogEngine {
     pub const PORT_EVENTS_IN:   u32 = 0;
@@ -320,15 +355,37 @@ impl AnalogEngine {
         }
     }
 
-    /// Resolve `lfo_dest` to a param id, or 0 for off. One-based: value 1 is
-    /// `LFO_DESTS[0]`. An out-of-range index reads as off rather than clamping
-    /// to a neighbour — a malformed value must not quietly modulate something.
+    /// The destination names offered on `machine` (#179), in index order.
+    fn dest_names(machine: AnalogMachine) -> &'static [&'static str] {
+        match machine {
+            AnalogMachine::Kick => KICK_DEST_NAMES,
+            AnalogMachine::Snare => SNARE_DEST_NAMES,
+            AnalogMachine::HiHat => HIHAT_DEST_NAMES,
+        }
+    }
+
+    fn dest_labels(machine: AnalogMachine) -> &'static LfoDestLabels {
+        match machine {
+            AnalogMachine::Kick => &KICK_DEST_LABELS,
+            AnalogMachine::Snare => &SNARE_DEST_LABELS,
+            AnalogMachine::HiHat => &HIHAT_DEST_LABELS,
+        }
+    }
+
+    /// Resolve `lfo_dest` to a param id, or `None` for off.
+    ///
+    /// One-based against the **active machine's** table (#179): value 1 is
+    /// `dest_names(machine)[0]`. An out-of-range index reads as off rather
+    /// than clamping to a neighbour — a malformed value, or one belonging to
+    /// a machine with a longer list, must not quietly modulate something.
     fn lfo_dest_id(&self) -> Option<u32> {
         let v = self.raw_param(ap("lfo_dest"));
         if !v.is_finite() || v < 1.0 {
             return None;
         }
-        Self::LFO_DESTS.get(v as usize - 1).copied()
+        Self::dest_names(self.machine)
+            .get(v as usize - 1)
+            .map(|n| ap(n))
     }
 
     /// Advance the LFO one sub-block and latch what it modulates.
@@ -400,7 +457,16 @@ impl AnalogEngine {
         // MM-C9: the seven `lfo_*` params are machine-invariant — one LFO per
         // node, not per machine — so they join the union once rather than
         // through the per-machine merge below.
-        out.extend(lfo_params(Self::LFO_DESTS.len(), Some(&ANALOG_DEST_LABELS)));
+        // #179: the WIDTH stays the union — narrowing the bank to the active
+        // machine is the mistake this function's header warns about, and it
+        // would truncate a `lfo_dest` belonging to a machine with a longer
+        // list on load. The LABELS are the active machine's, so only its own
+        // destinations are named; `machine_overlays` narrows what the encoder
+        // can reach. Indices between the two are gaps by construction.
+        out.extend(lfo_params(
+            Self::LFO_DESTS.len(),
+            Some(Self::dest_labels(active)),
+        ));
 
         for m in AnalogMachine::ALL {
             for p in Self::machine_params(m) {
@@ -561,6 +627,17 @@ impl AnalogEngine {
     /// **The bank is not rebuilt.** Rebuilding is `activate()`'s job and it
     /// resets every slot to defaults — the same cross-machine data loss the
     /// union bank exists to prevent, by a different route (MM §3.5).
+    /// #179: `lfo_dest` is deliberately **not** translated across a switch.
+    ///
+    /// The index keeps its value and its meaning follows the machine, so a
+    /// dest the new machine does not offer reads as off (`lfo_dest_id`
+    /// bounds-checks against the active table) and comes back unchanged on
+    /// switching away and back. Remapping by param name was tried and is
+    /// worse: a destination the other machine lacks has nowhere to go, so it
+    /// collapses to off and a Kick -> HiHat -> Kick round trip loses it —
+    /// breaking the losslessness MM §6.2 guarantees and
+    /// `machine_round_trip_preserves_every_param` pins. Leaving the number
+    /// alone costs a re-pointed LFO on a live switch and nothing else.
     fn apply_machine_switch(&mut self, target: AnalogMachine) {
         self.machine = target;
         self.osc_phase = 0.0;
@@ -788,6 +865,19 @@ impl AnalogEngine {
                 identity: true,
             },
         )];
+        // #179: the dest encoder reaches only this machine's destinations.
+        // The bank keeps the union width so nothing truncates on load; this is
+        // the surface-facing narrowing, and it is what stops a performer
+        // selecting a destination the machine does not read.
+        out.push((
+            ap("lfo_dest"),
+            ParamOverlay {
+                min: 0.0,
+                max: Self::dest_names(machine).len() as f64,
+                default: 0.0,
+                identity: false,
+            },
+        ));
         for p in Self::machine_params(machine) {
             out.push((
                 p.id,
@@ -1462,6 +1552,21 @@ mod tests {
     /// an encoder.
     #[test]
     fn the_dest_ids_and_names_correspond() {
+        // #179: and every per-machine table must draw from this union, since
+        // `LFO_DESTS.len()` is the width the bank persists `lfo_dest` at. A
+        // machine list longer than the union would truncate on load.
+        for names in [KICK_DEST_NAMES, SNARE_DEST_NAMES, HIHAT_DEST_NAMES] {
+            assert!(
+                names.len() <= AnalogEngine::LFO_DESTS.len(),
+                "a machine cannot offer more dests than the bank can store"
+            );
+            for n in names {
+                assert!(
+                    ANALOG_DEST_NAMES.contains(n),
+                    "{n} is offered by a machine but absent from the union envelope"
+                );
+            }
+        }
         assert_eq!(ANALOG_DEST_NAMES.len(), AnalogEngine::LFO_DESTS.len());
         for (name, id) in ANALOG_DEST_NAMES.iter().zip(AnalogEngine::LFO_DESTS) {
             assert_eq!(ap(name), *id, "`{name}` does not hash to its table entry");
@@ -1474,25 +1579,52 @@ mod tests {
     /// clone, and the cap-doc path clones.
     #[test]
     fn lfo_dest_labels_reach_the_cap_doc_and_survive_a_clone() {
-        let doc = AnalogEngine::kick().capability_document();
-        let d = doc
-            .params
-            .iter()
-            .find(|p| p.id == ap("lfo_dest"))
-            .expect("lfo_dest is declared");
-        let display = d.display.as_ref().expect("labels are declared");
-        assert_eq!(display.format(0.0), "off");
-        assert_eq!(display.format(1.0), ANALOG_DEST_NAMES[0]);
-        assert_eq!(
-            display.format(ANALOG_DEST_NAMES.len() as f64),
-            *ANALOG_DEST_NAMES.last().unwrap()
-        );
-        assert_eq!(display.format(999.0), "off", "past the end reads as off");
-        assert_eq!(display.parse("off"), Some(0.0));
-        assert_eq!(display.parse(ANALOG_DEST_NAMES[0]), Some(1.0));
-        // The whole doc is cloned on the mainline cap-doc path; `Dynamic`
-        // would panic here.
-        let _ = doc.clone();
+        // #179: the labels are the ACTIVE machine's, so each machine names
+        // exactly its own destinations. The descriptor's `max` stays the union
+        // width — the bank must never truncate a value belonging to a machine
+        // with a longer list — so indices between a machine's count and the
+        // union width are gaps, and a gap must read as EMPTY rather than
+        // "off": five decoy "off" entries on a HiHat is the drawing bug the
+        // labels exist to prevent.
+        for (eng, names) in [
+            (AnalogEngine::kick(), KICK_DEST_NAMES),
+            (AnalogEngine::snare(), SNARE_DEST_NAMES),
+            (AnalogEngine::hihat(), HIHAT_DEST_NAMES),
+        ] {
+            let doc = eng.capability_document();
+            let d = doc
+                .params
+                .iter()
+                .find(|p| p.id == ap("lfo_dest"))
+                .expect("lfo_dest is declared");
+            let display = d.display.as_ref().expect("labels are declared");
+            assert_eq!(display.format(0.0), "off");
+            assert_eq!(display.format(1.0), names[0]);
+            assert_eq!(display.format(names.len() as f64), *names.last().unwrap());
+            assert_eq!(
+                display.format(names.len() as f64 + 1.0),
+                "",
+                "past this machine's table is a gap, not another choice"
+            );
+            assert_eq!(display.format(999.0), "");
+            assert_eq!(display.parse("off"), Some(0.0));
+            assert_eq!(display.parse(names[0]), Some(1.0));
+
+            // And the value-indexed view a client actually reads: named
+            // entries up to the machine's count, `None` past it.
+            let labels = d.value_labels().expect("a stepped param with a display");
+            assert_eq!(labels.len(), AnalogEngine::LFO_DESTS.len() + 1);
+            for (i, want) in names.iter().enumerate() {
+                assert_eq!(labels[i + 1].as_deref(), Some(*want));
+            }
+            for slot in labels.iter().skip(names.len() + 1) {
+                assert_eq!(slot.as_deref(), None, "a gap must not be drawable");
+            }
+
+            // The whole doc is cloned on the mainline cap-doc path; `Dynamic`
+            // would panic here.
+            let _ = doc.clone();
+        }
     }
 
     /// MM-C11: the first real `LfoShape` in the tree — the hint has existed
@@ -1524,15 +1656,22 @@ mod tests {
         assert_eq!(eng.lfo_dest_id(), None, "default is off");
         set_lfo(&mut eng, &[("lfo_dest", 1.0)]);
         assert_eq!(eng.lfo_dest_id(), Some(ap("tune")), "one-based: 1 is the first entry");
-        set_lfo(&mut eng, &[("lfo_dest", 8.0)]);
-        assert_eq!(eng.lfo_dest_id(), Some(ap("open")), "and 8 is the last");
+        set_lfo(&mut eng, &[("lfo_dest", KICK_DEST_NAMES.len() as f64)]);
+        assert_eq!(eng.lfo_dest_id(), Some(ap("tone")), "and 5 is Kick's last");
+        // #179: past THIS machine's table but inside the bank's union width.
+        // Reachable by switching from a machine with a longer list, and it
+        // must read as off rather than pointing at a param this machine does
+        // not have.
+        set_lfo(&mut eng, &[("lfo_dest", KICK_DEST_NAMES.len() as f64 + 1.0)]);
+        assert_eq!(eng.lfo_dest_id(), None, "past Kick's table is off");
         // The bank clamps writes to the descriptor's 0..N, so a *bank* value
         // can never be out of range — defence in depth, and worth knowing.
         set_lfo(&mut eng, &[("lfo_dest", 99.0)]);
         assert_eq!(
             eng.lfo_dest_id(),
-            Some(ap("open")),
-            "a bank write past the end is clamped by the bank to the last entry"
+            None,
+            "a bank write past the end clamps to the UNION width, which is \
+             still past this machine's table — so, off"
         );
         // A p-lock bypasses the bank entirely (that is the point of
         // `node_locks`), so this is the path that can actually carry a bad
@@ -1551,7 +1690,7 @@ mod tests {
     fn depth_zero_is_bit_identical_to_no_lfo() {
         let mut eng = AnalogEngine::kick();
         eng.activate(44100.0, 512);
-        set_lfo(&mut eng, &[("lfo_dest", 2.0), ("lfo_depth", 0.0), ("lfo_speed", 8.0)]);
+        set_lfo(&mut eng, &[("lfo_dest", 5.0), ("lfo_depth", 0.0), ("lfo_speed", 8.0)]); // #179: `tone` is 5 on Kick
         let base = eng.raw_param(ap("tone"));
         for _ in 0..40 {
             eng.update_lfo(LFO_SUB_BLOCK);
@@ -1568,7 +1707,8 @@ mod tests {
         // tone: 200..8000 on Kick's overlay, union 200..18000.
         set_lfo(
             &mut eng,
-            &[("lfo_dest", 2.0), ("lfo_depth", 1.0), ("lfo_speed", 4.0),
+            // #179: `tone` is index 5 on Kick's own dest table.
+            &[("lfo_dest", 5.0), ("lfo_depth", 1.0), ("lfo_speed", 4.0),
               ("lfo_shape", 1.0), ("lfo_mode", 1.0), ("tone", 4000.0)],
         );
         eng.retrigger(60, 1.0);
@@ -1611,7 +1751,8 @@ mod tests {
         eng.activate(44100.0, 512);
         set_lfo(
             &mut eng,
-            &[("lfo_dest", 2.0), ("lfo_depth", 1.0), ("lfo_speed", 4.0),
+            // #179: `tone` is index 5 on Kick's own dest table.
+            &[("lfo_dest", 5.0), ("lfo_depth", 1.0), ("lfo_speed", 4.0),
               ("lfo_shape", 2.0), ("lfo_mode", 1.0), ("tone", 4000.0),
               ("decay", 0.5), ("drive", 0.25)],
         );
@@ -1634,49 +1775,139 @@ mod tests {
         assert!(tone_moved, "the destination really was being modulated");
     }
 
-    /// Session #5 audit: the dest table is **machine-invariant** (one
-    /// `LFO_DESTS` for the node) while `machine_params` is per-machine, so on
-    /// any given machine some dest indices point at a param that machine
-    /// never reads. Selecting one is silently inert — verified in the session
-    /// by rendering: on a Kick, dests 6/7/8 produced output bit-identical to
-    /// a depth-0 control on every metric.
+    /// #179: **no dest index is inert on any machine.**
     ///
-    /// This pins the current matrix so a change to either list is deliberate
-    /// and visible. It asserts what *is*, not what *ought to be* — the
-    /// usability problem it documents is filed, not fixed here.
+    /// The inverse of what this test used to assert. Through MM the dest table
+    /// was machine-invariant (one `LFO_DESTS` per node) while `machine_params`
+    /// was per-machine, so on a Kick dests 6/7/8 pointed at params
+    /// `process_kick` never reads, on a Snare 4/5/8, and on a HiHat five of
+    /// eight did nothing. That earlier test pinned the matrix as a record of
+    /// the defect, not a specification; this replaces it with the property
+    /// that made it a defect.
+    ///
+    /// Both directions, because either alone is satisfiable by a mistake: a
+    /// dest naming a param the machine does not read is the original bug, and
+    /// a param the machine reads with no dest is a destination silently
+    /// dropped from the offer.
     #[test]
-    fn some_dest_indices_are_inert_on_each_machine() {
-        let inert_for = |machine: AnalogMachine| -> Vec<&'static str> {
-            let read: Vec<u32> = AnalogEngine::machine_params(machine)
+    fn every_machines_dests_are_exactly_its_params() {
+        for machine in AnalogMachine::ALL {
+            let mut read: Vec<String> = AnalogEngine::machine_params(machine)
                 .iter()
-                .map(|p| p.id)
+                .map(|p| p.name.to_string())
                 .collect();
-            ANALOG_DEST_NAMES
+            let mut offered: Vec<String> = AnalogEngine::dest_names(machine)
                 .iter()
-                .enumerate()
-                .filter(|(i, _)| !read.contains(&AnalogEngine::LFO_DESTS[*i]))
-                .map(|(_, n)| *n)
-                .collect()
-        };
+                .map(|n| n.to_string())
+                .collect();
+            read.sort();
+            offered.sort();
+            assert_eq!(
+                offered, read,
+                "{machine:?}: every destination offered must be a param this \
+                 machine reads, and every param it reads must be offered"
+            );
+        }
+    }
 
+    /// `lfo_dest` persists a one-based index into the **active machine's**
+    /// table, so each table is append-only for exactly the reason
+    /// `AnalogMachine::ALL` is: inserting or reordering an entry re-points
+    /// every saved patch on that machine at a different param (#179, and the
+    /// same contract MM §0 D3 gave the union table).
+    #[test]
+    fn the_per_machine_dest_tables_are_append_only() {
+        assert_eq!(KICK_DEST_NAMES, &["tune", "punch", "decay", "drive", "tone"]);
+        assert_eq!(SNARE_DEST_NAMES, &["tune", "snap", "noise", "decay", "tone"]);
+        assert_eq!(HIHAT_DEST_NAMES, &["tone", "decay", "open"]);
+    }
+
+    /// The bank's `lfo_dest` range stays the **union** width while the
+    /// encoder's overlay narrows to the machine (#179).
+    ///
+    /// This is the pair that makes per-machine tables safe to persist. Narrow
+    /// the bank instead and a Kick patch's `lfo_dest = 5` truncates to 3 the
+    /// moment it is loaded into a node sitting on HiHat — on load, silently,
+    /// and then saved back that way. It is the same trap `union_params`'
+    /// header describes for every other param.
+    #[test]
+    fn the_dest_range_is_union_wide_in_the_bank_and_per_machine_on_the_encoder() {
+        for machine in AnalogMachine::ALL {
+            let doc = AnalogEngine::new(machine).capability_document();
+            let d = doc
+                .params
+                .iter()
+                .find(|p| p.id == ap("lfo_dest"))
+                .expect("lfo_dest is declared");
+            assert_eq!(
+                d.max,
+                AnalogEngine::LFO_DESTS.len() as f64,
+                "{machine:?}: the bank must hold any machine's index"
+            );
+
+            let overlay = AnalogEngine::machine_overlays(machine)
+                .into_iter()
+                .find(|(id, _)| *id == ap("lfo_dest"))
+                .map(|(_, o)| o)
+                .expect("the overlay narrows the encoder");
+            assert_eq!(
+                overlay.max,
+                AnalogEngine::dest_names(machine).len() as f64,
+                "{machine:?}: the encoder must reach only its own dests"
+            );
+            assert!(!overlay.identity, "`lfo_dest` is a setting, not identity");
+        }
+    }
+
+    /// A value belonging to a machine with a longer list survives a switch
+    /// away and back (#179).
+    ///
+    /// Translating `lfo_dest` by param name on a switch was tried and is
+    /// worse: a destination the other machine lacks has nowhere to go, so it
+    /// collapses to off and the round trip loses it — breaking MM §6.2, which
+    /// `machine_round_trip_preserves_every_param` pins. Leaving the number
+    /// alone means the LFO goes quiet while the other machine is selected and
+    /// comes back exactly as it was.
+    #[test]
+    fn a_dest_that_the_other_machine_lacks_survives_a_round_trip() {
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        // 2 is `punch` on Kick; HiHat has no `punch` at any index.
+        set_lfo(&mut eng, &[("lfo_dest", 2.0)]);
+        assert_eq!(eng.lfo_dest_id(), Some(ap("punch")));
+
+        eng.apply_machine_switch(AnalogMachine::HiHat);
+        assert_eq!(eng.bank.get(ap("lfo_dest")), 2.0, "the stored index is untouched");
         assert_eq!(
-            inert_for(AnalogMachine::Kick),
-            vec!["snap", "noise", "open"],
-            "Kick reads tune/punch/decay/drive/tone"
+            eng.lfo_dest_id(),
+            Some(ap("decay")),
+            "on HiHat index 2 is `decay` — the number keeps its value and its \
+             meaning follows the machine"
         );
+
+        eng.apply_machine_switch(AnalogMachine::Kick);
+        assert_eq!(eng.lfo_dest_id(), Some(ap("punch")), "and comes back intact");
+    }
+
+    /// The other half: an index past the new machine's table is off, not a
+    /// neighbour. Kick offers 5 destinations, HiHat 3.
+    #[test]
+    fn a_dest_past_the_new_machines_table_reads_as_off() {
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        set_lfo(&mut eng, &[("lfo_dest", 5.0)]);
+        assert_eq!(eng.lfo_dest_id(), Some(ap("tone")), "5 is `tone` on Kick");
+
+        eng.apply_machine_switch(AnalogMachine::HiHat);
         assert_eq!(
-            inert_for(AnalogMachine::Snare),
-            vec!["punch", "drive", "open"],
-            "Snare reads tune/snap/noise/decay/tone"
+            eng.lfo_dest_id(),
+            None,
+            "HiHat has only 3 dests, so 5 modulates nothing rather than \
+             landing on whatever sits nearby"
         );
-        assert_eq!(
-            inert_for(AnalogMachine::HiHat),
-            vec!["tune", "punch", "drive", "snap", "noise"],
-            "HiHat declares only tone/decay/open — 5 of 8 dests do nothing \
-             audible. Note `retrigger` reads `tune` for EVERY machine into \
-             `current_hz` (:501); `process_hihat` simply never uses it, so \
-             the outcome is inert while the read still happens"
-        );
+
+        eng.apply_machine_switch(AnalogMachine::Kick);
+        assert_eq!(eng.lfo_dest_id(), Some(ap("tone")));
     }
 
     /// Session #5 audit: walk **every** one-based `lfo_dest` index and record
@@ -1708,10 +1939,14 @@ mod tests {
         // the failure this test exists to prevent. Includes `machine` and the
         // seven `lfo_*` controls, so an LFO that reached its own controls
         // would be caught.
-        let observed: Vec<u32> = AnalogEngine::union_params(AnalogMachine::Kick)
-            .iter()
-            .map(|p| p.id)
-            .collect();
+        //
+        // #179: per machine now. The dest table used to be machine-invariant,
+        // so this walked one table against one machine and said nothing about
+        // the other two — where three to five of the eight entries modulated
+        // a param that machine does not read.
+        let observed = |m: AnalogMachine| -> Vec<u32> {
+            AnalogEngine::union_params(m).iter().map(|p| p.id).collect()
+        };
         let name_of = |id: u32| -> String {
             AnalogEngine::union_params(AnalogMachine::Kick)
                 .iter()
@@ -1719,61 +1954,64 @@ mod tests {
                 .map(|p| p.name.to_string())
                 .unwrap_or_else(|| format!("id:{id}"))
         };
-        assert!(
-            ANALOG_DEST_NAMES
-                .iter()
-                .all(|n| observed.contains(&ap(n))),
-            "sanity: every dest must be observable in the union bank"
-        );
 
         let mut failures: Vec<String> = Vec::new();
 
-        for (i, expected_name) in ANALOG_DEST_NAMES.iter().enumerate() {
-            let idx = (i + 1) as f64;
-            let mut eng = AnalogEngine::kick();
-            eng.activate(44100.0, 512);
-            set_lfo(
-                &mut eng,
-                &[
-                    ("lfo_dest", idx),
-                    ("lfo_depth", 1.0),
-                    ("lfo_speed", 4.0),
-                    ("lfo_shape", 0.0), // Tri: sweeps the full -1..+1
-                    ("lfo_mode", 1.0),  // Trig: deterministic phase from the note
-                ],
+        for machine in AnalogMachine::ALL {
+            let observed = observed(machine);
+            let names = AnalogEngine::dest_names(machine);
+            assert!(
+                names.iter().all(|n| observed.contains(&ap(n))),
+                "sanity: every {machine:?} dest must be observable in the bank"
             );
-            eng.retrigger(60, 1.0);
 
-            // Unmodulated baselines, read through `raw_param` so the LFO is
-            // excluded by construction rather than by timing.
-            let base: Vec<f32> = observed.iter().map(|id| eng.raw_param(*id)).collect();
-            let mut moved = vec![false; observed.len()];
+            for (i, expected_name) in names.iter().enumerate() {
+                let idx = (i + 1) as f64;
+                let mut eng = AnalogEngine::new(machine);
+                eng.activate(44100.0, 512);
+                set_lfo(
+                    &mut eng,
+                    &[
+                        ("lfo_dest", idx),
+                        ("lfo_depth", 1.0),
+                        ("lfo_speed", 4.0),
+                        ("lfo_shape", 0.0), // Tri: sweeps the full -1..+1
+                        ("lfo_mode", 1.0),  // Trig: deterministic phase
+                    ],
+                );
+                eng.retrigger(60, 1.0);
 
-            // 200 x 64 samples / 44100 = 0.29 s; at 4 Hz that is 1.16 cycles,
-            // so a Tri covers its whole -1..+1 excursion with margin.
-            for _ in 0..200 {
-                eng.update_lfo(LFO_SUB_BLOCK);
-                for (k, id) in observed.iter().enumerate() {
-                    if (eng.get_param(*id) - base[k]).abs() > 1e-6 {
-                        moved[k] = true;
+                // Unmodulated baselines, read through `raw_param` so the LFO
+                // is excluded by construction rather than by timing.
+                let base: Vec<f32> = observed.iter().map(|id| eng.raw_param(*id)).collect();
+                let mut moved = vec![false; observed.len()];
+
+                // 200 x 64 samples / 44100 = 0.29 s; at 4 Hz that is 1.16
+                // cycles, so a Tri covers its whole excursion with margin.
+                for _ in 0..200 {
+                    eng.update_lfo(LFO_SUB_BLOCK);
+                    for (k, id) in observed.iter().enumerate() {
+                        if (eng.get_param(*id) - base[k]).abs() > 1e-6 {
+                            moved[k] = true;
+                        }
                     }
                 }
-            }
 
-            let actually_moved: Vec<String> = observed
-                .iter()
-                .zip(&moved)
-                .filter(|(_, m)| **m)
-                .map(|(id, _)| name_of(*id))
-                .collect();
+                let actually_moved: Vec<String> = observed
+                    .iter()
+                    .zip(&moved)
+                    .filter(|(_, m)| **m)
+                    .map(|(id, _)| name_of(*id))
+                    .collect();
 
-            if actually_moved != vec![expected_name.to_string()] {
-                failures.push(format!(
-                    "  lfo_dest={} expected [{}] but moved {:?}",
-                    i + 1,
-                    expected_name,
-                    actually_moved
-                ));
+                if actually_moved != vec![expected_name.to_string()] {
+                    failures.push(format!(
+                        "  {machine:?} lfo_dest={} expected [{}] but moved {:?}",
+                        i + 1,
+                        expected_name,
+                        actually_moved
+                    ));
+                }
             }
         }
 
@@ -1793,7 +2031,8 @@ mod tests {
         eng.activate(44100.0, 512);
         set_lfo(
             &mut eng,
-            &[("lfo_dest", 2.0), ("lfo_depth", 0.5), ("lfo_speed", 4.0),
+            // #179: `tone` is index 5 on Kick's own dest table.
+            &[("lfo_dest", 5.0), ("lfo_depth", 0.5), ("lfo_speed", 4.0),
               ("lfo_shape", 2.0), ("lfo_mode", 1.0), ("tone", 4000.0)],
         );
         // Square wave, so the offset is a constant +/- within a half cycle and

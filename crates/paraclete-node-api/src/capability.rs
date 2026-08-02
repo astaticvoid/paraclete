@@ -139,7 +139,16 @@ impl ParamDescriptor {
         }
         Some(
             (0..=self.max as usize)
-                .map(|i| Some(display.format(i as f64)))
+                .map(|i| match display.format(i as f64) {
+                    // An empty label is a display declining to name this
+                    // value: the slot exists in the range but there is no
+                    // choice there. Kept as `None` rather than an empty
+                    // string so a client skips it the same way it skips a
+                    // gap in a machine's variant list — drawing a nameless
+                    // entry invents a choice that selects nothing.
+                    s if s.is_empty() => None,
+                    s => Some(s),
+                })
                 .collect(),
         )
     }

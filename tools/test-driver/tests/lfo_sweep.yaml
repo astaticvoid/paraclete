@@ -13,10 +13,16 @@
 #   node 20 (analog Kick), dest 1 `tune`  — the delta-on-the-latched-base path
 #                                           (`swept_hz`), the one #175 added
 #   node 27 (FM Bass),     dest 1 `tune`  — the same path in the other family
-#   node 20,               dest 5 `drive` — an ordinary per-render-span read,
+#   node 20,               dest 4 `drive` — an ordinary per-render-span read,
 #                                           so a regression that breaks only
 #                                           the pitch path is distinguishable
 #                                           from one that breaks the LFO host
+#
+# Dest indices are into the ACTIVE MACHINE's table since #179, not a shared
+# union: on an analog Kick 1..5 are tune/punch/decay/drive/tone. This was
+# `dest 5` when written, which meant `drive` under the old machine-invariant
+# table and means `tone` now — the drift that made the change visible here and
+# nowhere else.
 #
 # `lfo_mode` 1 is Trig: the phase resets from the note, so the fingerprint is
 # deterministic rather than depending on where a free-running LFO happened to
@@ -61,7 +67,7 @@ timeline:
 
   # ── Round 2: same node, dest `drive` — an ordinary per-span read.
   - at: 2.4
-    set_param: { target: "analog_engine:kick", param: lfo_dest, value: 5 }
+    set_param: { target: "analog_engine:kick", param: lfo_dest, value: 4 }
 
   # ── Round 3: FM Bass on `tune`, the other family's pitch path.
   - at: 4.0

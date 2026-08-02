@@ -464,9 +464,19 @@ impl ParamDisplay for LfoDestLabels {
         }
         match self.0.get(value as usize - 1) {
             Some(name) => (*name).to_string(),
-            // Unreachable through the bank, which clamps to the declared
-            // range; reachable through a p-lock, which bypasses it.
-            None => "off".to_string(),
+            // #179: past this machine's table. Empty, not "off" — the
+            // descriptor's `max` is the *union* width (so the bank never
+            // truncates a value belonging to a machine with a longer list),
+            // while the labels are the active machine's, so indices between
+            // the two are real gaps. `ParamDescriptor::value_labels` turns an
+            // empty label into `None`, which is how a client is told there is
+            // no choice here. Naming them all "off" would draw five identical
+            // decoy entries on a HiHat.
+            //
+            // Also reachable through a p-lock, which bypasses the bank's
+            // clamp; `lfo_dest_id` independently reads an unknown index as
+            // off, so nothing is modulated either way.
+            None => String::new(),
         }
     }
 
