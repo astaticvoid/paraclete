@@ -95,10 +95,30 @@ the `commit-gate` skill — invoke it before every commit. In summary:
 |------|------------|
 | Tests | `cargo test --workspace` exit 0 |
 | Clippy | Zero new warnings on touched crates |
+| Live test | A functionality-changing commit carries a debug-harness live test proving the behavior end-to-end (test-driver scenario with assertions, run green before commit). If the harness cannot reach the functionality, that is a defect in the harness — fix the harness in the same commit. Doc/refactor commits with no behavior change are exempt; say so in the message. |
 | Code review | Subagent review (Flash) on the diff, with spec/ADR context |
 | Issue ref | `Fixes #N` / `Refs #N` in commit message |
 | Design review | If ADR/spec/protocol changed: `design-review` pass (Flash) |
 | Working tree | `git status` clean or explicitly accounted for |
+
+**The live-test gate is about the running graph, not unit tests.** A unit test
+proves a function; a live test proves the function works when the graph is
+built, the clock is running, and the state bus is live — the debug harness
+(`tools/test-driver`, ADR-033) renders and asserts on the result. Concretely:
+the commit adds (or points at) a scenario under `tools/test-driver/tests/`
+that drives the new behavior through the harness and asserts on its effect
+(state-bus read, audio peak, artifact scan); the scenario must have been
+mutation-checked — break the code the scenario covers and confirm the scenario
+fails — before it counts as coverage. A live test that has never been seen to
+fail is not evidence. "The debug frame doesn't allow testing this" is a
+harness defect, filed and fixed, not a waiver.
+
+**Testability is planned, not bolted on.** Every phase spec's commit plan maps
+each commit to its live test (the P11 §4 test-coverage model), and the harness
+verbs a phase needs land **before** the commits that need them — a phase that
+adds app-level operations must first give test-driver the verbs to drive and
+observe them. If a commit in the plan has no harness reach, the plan is
+missing a harness commit; fix the plan, not the coverage.
 
 **Code review is mandatory, not advisory.** The orchestrator must run a Flash
 subagent review after every implementation commit or logical batch. Do not skip
@@ -297,6 +317,21 @@ cargo run -p test-driver -- <scenario>.yaml --check-baseline    # diff; exit 1 o
 # coverage (it became possible at #159, which gave the instrument schema a
 # sample path — before that a sampler in a fixture rendered silence and would
 # have fingerprinted as zeros). #155 stays open for what is still uncovered.
+
+# P11 LIVE scenarios (the app-level P11 ops run through the same
+# PerformState the app main loop drains into — test-driver dispatch_any):
+#   p11_kit_capture_apply   C0+C2: capture is opt-in via `in_kit` (a sound
+#     param is captured and restored; a structural param is not) — the two
+#     assertions prove both directions on one save.
+#   p11_temp_save_reload    C3: AppTempSave/AppTempReload — pattern half
+#     restored (audible 4-on-the-floor comes back after a clear) AND param
+#     half (decay 0.1 exact on the bus).
+#   p11_bind_kit_apply      C2: pattern-switch kit-apply fires outside
+#     perform mode and is suppressed inside it; pattern lengths are
+#     shortened to 2 steps because the default is 64 (~6.9s wraps) and
+#     set_length acts on the active pattern only.
+# All three are mutation-checked (each fails when the code it covers is
+# broken) and are part of the Live-test gate for any P11-touching commit.
 
 # Interactive mode: JSON-lines REPL for live engine interrogation
 cargo run -p test-driver -- --interactive --instrument instrument.yaml
@@ -773,10 +808,13 @@ untangle. Pushing to a remote still requires explicit user approval.
 
 1. `cargo test --workspace` green
 2. `cargo clippy --workspace` clean on touched crates (diff against baseline)
-3. Subagent code review (Flash) on the diff — **mandatory, not advisory**
-4. Issue referenced in commit message (`Fixes #N`)
-5. Design review (via `design-review` skill) if ADR/spec/protocol changed
-6. Working tree clean or explicitly accounted for
+3. **Live test: a functionality-changing commit's debug-harness scenario runs
+   green** (see the Stage-gates Live-test gate; a harness gap is a harness
+   defect, fixed in the same commit — never waived silently)
+4. Subagent code review (Flash) on the diff — **mandatory, not advisory**
+5. Issue referenced in commit message (`Fixes #N`)
+6. Design review (via `design-review` skill) if ADR/spec/protocol changed
+7. Working tree clean or explicitly accounted for
 
 Design/doc changes in separate commits from code. Phase reports and ADR bodies
 are append-only. Close the issue a commit resolves in that commit's message.
