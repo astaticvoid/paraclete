@@ -102,6 +102,15 @@ trusting a baseline as coverage for a behaviour, check the scenario actually
 exercises it: perturb the thing under test and confirm the fingerprint moves.
 A baseline you have never seen fail is not evidence.
 
+**`--check-baseline` reports drift on stderr.** A loop that runs it with
+`2>/dev/null` and greps stdout for `FAIL` reports every scenario clean, no
+matter what drifted. This happened twice in one session while checking the
+#169 and #175 fixes; both conclusions survived re-checking with `2>&1`, but
+they had not actually been verified when reported. Exit code is the reliable
+signal (0 pass, 1 drift), and `2>&1` is what makes a grep honest. Same family
+as the three mutation-harness lies below: the check appears to run and its
+result means nothing.
+
 **Two perturbations, not one** — that is what repairing `plock_authoring`
 taught. Removing the p-lock moved the fingerprint, which only proves the
 scenario does *something* the baseline notices. Reinstating the **defect**
@@ -486,8 +495,26 @@ Tools (`tools/`, not shipped): `gen-samples` (pre-flight sample generation),
   guard test pinning them. **Never derive an id from how many params a node
   declares** — `MixNode` does (`id: i as u32` over a configurable count),
   which is why it is not wired to the helper (#164). Stepped params that index
-  a table (`machine` → `AnalogMachine::ALL`, `lfo_dest` → `DESTS`) persist the
-  index, so those tables are append-only too, each with a guard test.
+  a table (`machine` → `AnalogMachine::ALL`, `lfo_dest` → the engine's dest
+  table) persist the index, so those tables are append-only too, each with a
+  guard test.
+  **`lfo_dest` indexes a PER-MACHINE table** (#179): each machine offers
+  exactly the params it reads, so there are six append-only tables across the
+  two engine families, not two. A machine-invariant list left three to five of
+  eight destinations inert on any given machine — five of eight on a HiHat —
+  and selecting one was indistinguishable from a broken LFO.
+  The split that makes a per-machine index safe to persist, and the thing to
+  preserve if you touch this: the **bank** keeps the *union* width so a value
+  belonging to a machine with a longer list is never truncated on load, while
+  the **overlay** narrows what the encoder can reach to the active machine.
+  Labels are the active machine's, and an index between the two is a gap —
+  `LfoDestLabels` returns `""` there and `ParamDescriptor::value_labels` turns
+  that into `None` so a client skips it rather than drawing a decoy.
+  `lfo_dest` is **not** translated across a machine switch. Remapping by param
+  name looks right and is not: a destination the other machine lacks collapses
+  to off, so a Kick → HiHat → Kick round trip loses it, breaking the
+  losslessness MM §6.2 guarantees. Leaving the number alone means the LFO goes
+  quiet while the other machine is selected and returns exactly as it was.
 - **ParamLock must NOT go through `bank.handle_commands()`.** Route to a
   `node_locks: Vec<(u32, f64)>` and check your param getter against it before
   falling back to the bank. Otherwise the locked value bleeds into subsequent
