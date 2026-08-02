@@ -493,8 +493,11 @@ Tools (`tools/`, not shipped): `gen-samples` (pre-flight sample generation),
   `set` no-ops on an unknown id). `FilterNode`/`DistortionNode`/`ReverbNode`
   use hand-assigned constants (`const PARAM_CUTOFF: u32 = 0`); each has a
   guard test pinning them. **Never derive an id from how many params a node
-  declares** — `MixNode` does (`id: i as u32` over a configurable count),
-  which is why it is not wired to the helper (#164). Stepped params that index
+  declares** — `MixNode` used to (`id: i as u32` over a configurable count,
+  with `master_gain` at `num_inputs`), which is why it was not wired to the
+  helper until BUG-060; it now derives ids from per-input names
+  (`input_gain_{i}`, `master_gain`), stable across a count change — keep them
+  name-derived. Stepped params that index
   a table (`machine` → `AnalogMachine::ALL`, `lfo_dest` → the engine's dest
   table) persist the index, so those tables are append-only too, each with a
   guard test.
