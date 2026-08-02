@@ -5,8 +5,9 @@
 > 2026-07-23). The implementation blueprint (`p11-interfaces.md`) is
 > written when P11 is next to start, per the house front-load rule.
 >
-> **Authored:** 2026-07-23. **Status:** drafted at user request; awaiting
-> problem-statement acceptance with ADR-039 ratification.
+> **Authored:** 2026-07-23. **Status:** ✅ Accepted 2026-08-02.
+> ADR-039 ratified 2026-07-23. Milestone #17 open.
+> Implementation spec: `p11-interfaces.md` (written 2026-08-02, design-reviewed).
 
 ---
 

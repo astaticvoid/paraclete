@@ -1261,3 +1261,14 @@ incomplete MM work — none of them is a defect in what MM built. Closing MM
 and carrying #175/#176/#178/#179 forward is defensible; so is holding it until
 the MOD page is performable, since §6.3's criterion says the merged page
 works, and it does, while the page a performer meets does not. A user call.
+
+## §7 — Closure (2026-08-02)
+
+**Milestone closed.** All four LFO usability defects (#175, #176, #178, #179)
+were fixed and shipped after this report was drafted:
+- `2defb1b` — #175: `swept_hz()` applies LFO delta per sub-block on `tune`
+- `0a1158d` — #176: Theotokos reads stepped-selector labels via `option_label`
+- `38c4f53` — #178: `update_lfo()` uses per-machine `dest_ranges` not union bank
+- `4bebf22` — #179: per-machine dest tables replace the union `LFO_DESTS`
+
+The MOD page is performable. P11 is the next phase.
