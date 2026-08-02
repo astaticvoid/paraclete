@@ -39,6 +39,19 @@ pub const CMD_TEMP_SAVE: u8 = 39;
 /// P11 C3: restore the shadow pattern into the active pattern.
 pub const CMD_TEMP_RELOAD: u8 = 40;
 
+/// P11 C4: set or toggle the active pattern's muted flag. `arg0`:
+/// 0 = off, 1 = on, 2 = toggle.
+pub const CMD_SET_PATTERN_MUTE: u8 = 41;
+
+/// P11 C4: defer a global-mute change to the next pattern wrap. `arg0`:
+/// 0 = off, 1 = on. The sequencer stores the pending value and applies it
+/// at its own wrap (ADR-039 decision 6 — per-node, sample-deterministic).
+pub const CMD_PREPARE_MUTE: u8 = 42;
+
+/// P11 C4: defer a pattern-mute change for the active pattern to the next
+/// pattern wrap. `arg0`: 0 = off, 1 = on. Applied at the wrap and cleared.
+pub const CMD_PREPARE_PATTERN_MUTE: u8 = 43;
+
 #[cfg(test)]
 mod tests {
     use super::*;

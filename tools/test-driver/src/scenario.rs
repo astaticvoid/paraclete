@@ -164,6 +164,30 @@ pub enum TimelineAction {
     TempReload {
         target: String,
     },
+    /// P11 C4: set or toggle the target sequencer's active-pattern mute
+    /// (`CMD_SET_PATTERN_MUTE`). `value`: 0 = off, 1 = on, 2 = toggle.
+    SetPatternMute {
+        target: String,
+        value: i64,
+    },
+    /// P11 C4: defer a global-mute change to the target sequencer's next
+    /// pattern wrap (`CMD_PREPARE_MUTE`). `value`: 0 = off, 1 = on.
+    PrepareMute {
+        target: String,
+        value: i64,
+    },
+    /// P11 C4: defer a pattern-mute change to the target sequencer's next
+    /// pattern wrap (`CMD_PREPARE_PATTERN_MUTE`). `value`: 0 = off, 1 = on.
+    PreparePatternMute {
+        target: String,
+        value: i64,
+    },
+    /// P11 C4: rewind the transport clock (`CMD_CLOCK_REWIND`) — resets
+    /// every sequencer's playhead to the start of its window, giving a
+    /// scenario a known wrap phase to schedule deferred actions against.
+    ClockRewind {
+        target: String,
+    },
     /// P11 C2: app-level — capture current in_kit param state into a
     /// named kit (first free slot), via `PerformState::execute`.
     KitSave {
@@ -302,6 +326,21 @@ pub enum ResolvedActionKind {
         target_id: u32,
     },
     TempReload {
+        target_id: u32,
+    },
+    SetPatternMute {
+        target_id: u32,
+        value: i64,
+    },
+    PrepareMute {
+        target_id: u32,
+        value: i64,
+    },
+    PreparePatternMute {
+        target_id: u32,
+        value: i64,
+    },
+    ClockRewind {
         target_id: u32,
     },
     KitSave {

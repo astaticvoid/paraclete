@@ -187,13 +187,16 @@ pub const PAGE_SIZE: usize = 8;
 /// `start*8` — that wrap is the pattern's cycle boundary. `swing` is
 /// authoritative for emission and serialization (P10 C2); the ParameterBank
 /// `swing` slot is a write-through conduit for encoders, never the source
-/// of truth.
+/// of truth. `muted` (P11 C4) is the per-pattern mute tier — an independent
+/// second tier alongside the bank global mute; effective mute is
+/// `global OR pattern` in `is_muted()`.
 #[derive(Clone, Debug)]
 pub struct Pattern {
     pub steps: Vec<Step>,
     pub length: usize,
     pub page_loop: (u8, u8),
     pub swing: f32,
+    pub muted: bool,
 }
 
 impl Pattern {
@@ -210,6 +213,7 @@ impl Pattern {
             length: steps,
             page_loop: (0, (pages - 1) as u8),
             swing: 0.0,
+            muted: false,
         }
     }
 
@@ -238,6 +242,7 @@ impl Pattern {
         dest.length = self.length.min(dest.steps.len());
         dest.page_loop = self.page_loop;
         dest.swing = self.swing;
+        dest.muted = self.muted;
         for (i, step) in self.steps.iter().take(n).enumerate() {
             let d = &mut dest.steps[i];
             d.active = step.active;
@@ -339,7 +344,7 @@ pub struct Sequencer {
     /// Keyed to `self.node_id` at first `published_state()` call.
     /// The `track_name`, `locks` entries and all VALUEs are still computed
     /// fresh each call.
-    state_path_cache: std::sync::OnceLock<[String; 19]>,
+    state_path_cache: std::sync::OnceLock<[String; 20]>,
 
     /// TK1 C1: current lock target set by CMD_SET_LOCK_TARGET.
     lock_target: Option<(u32, u32)>,
@@ -369,6 +374,15 @@ pub struct Sequencer {
     /// Pre-allocated at build; RAM-only, never serialized.
     shadow_pattern: Pattern,
     shadow_has_data: bool,
+
+    /// P11 C4: deferred global-mute change (CMD_PREPARE_MUTE) held until
+    /// the next pattern wrap, where it is applied to the bank and cleared.
+    /// Cleared on `global_stop` so a stale mute cannot land on the first
+    /// wrap after a restart.
+    pending_global_mute: Option<bool>,
+    /// P11 C4: deferred pattern-mute change (CMD_PREPARE_PATTERN_MUTE)
+    /// held for the pattern that was active when the command arrived.
+    pending_pattern_mute: Option<bool>,
 }
 
 impl Sequencer {
@@ -427,6 +441,15 @@ impl Sequencer {
     /// `u8` (39/40); these are the `u32` ids the `handle_commands` match sees.
     pub(crate) const CMD_TEMP_SAVE: u32 = paraclete_node_api::command::CMD_TEMP_SAVE as u32;
     pub(crate) const CMD_TEMP_RELOAD: u32 = paraclete_node_api::command::CMD_TEMP_RELOAD as u32;
+
+    /// P11 C4: node-side ids for the mute-tier family (canonical `u8`
+    /// definitions in `paraclete_node_api::command`; 41–43 of the reserved
+    /// 39–45 P11 range).
+    pub(crate) const CMD_SET_PATTERN_MUTE: u32 =
+        paraclete_node_api::command::CMD_SET_PATTERN_MUTE as u32;
+    pub(crate) const CMD_PREPARE_MUTE: u32 = paraclete_node_api::command::CMD_PREPARE_MUTE as u32;
+    pub(crate) const CMD_PREPARE_PATTERN_MUTE: u32 =
+        paraclete_node_api::command::CMD_PREPARE_PATTERN_MUTE as u32;
 
     /// Runtime step capacity per pattern (P10: 8 pages × 8 steps). The
     /// serialized format stores counts as plain integers and does not depend
@@ -569,6 +592,8 @@ impl Sequencer {
             last_bpm: 120.0,
             shadow_pattern: Pattern::empty(Self::STEP_CAPACITY),
             shadow_has_data: false,
+            pending_global_mute: None,
+            pending_pattern_mute: None,
         }
     }
 
@@ -933,6 +958,27 @@ impl Sequencer {
                     self.shadow_pattern.copy_into(&mut self.patterns[active]);
                     self.shadow_has_data = false;
                 }
+                Self::CMD_SET_PATTERN_MUTE => {
+                    // P11 C4: arg0 0 = off, 1 = on, 2 = toggle. Immediate
+                    // tier change on the active pattern.
+                    let active = self.active_index();
+                    let p = &mut self.patterns[active];
+                    p.muted = match cmd.arg0 {
+                        0 => false,
+                        1 => true,
+                        _ => !p.muted,
+                    };
+                }
+                Self::CMD_PREPARE_MUTE => {
+                    // P11 C4 (ADR-039 decision 6): hold a global-mute change
+                    // until the next pattern wrap. arg0: 0 = off, 1 = on.
+                    self.pending_global_mute = Some(cmd.arg0 != 0);
+                }
+                Self::CMD_PREPARE_PATTERN_MUTE => {
+                    // P11 C4: deferred per-pattern mute for the active
+                    // pattern. arg0: 0 = off, 1 = on.
+                    self.pending_pattern_mute = Some(cmd.arg0 != 0);
+                }
                 _ => {}
             }
         }
@@ -1039,6 +1085,11 @@ impl Sequencer {
 
         if k.flags.global_stop {
             self.playing = false;
+            // P11 C4: prepared mutes must not survive a stop — a stale mute
+            // applied at the first wrap after restart is an unintended side
+            // effect the performer never asked for.
+            self.pending_global_mute = None;
+            self.pending_pattern_mute = None;
             if self.gate_open {
                 self.emit_note_off(sample_offset, output);
             }
@@ -1182,6 +1233,21 @@ impl Sequencer {
             if wrapped {
                 self.cycle_state.loop_count = self.cycle_state.loop_count.wrapping_add(1);
 
+                // P11 C4 (ADR-039 decision 6): prepared mutes apply exactly
+                // at this wrap — sample-deterministic, no app polling. The
+                // pattern tier targets the pattern that was active when the
+                // command arrived (what the performer was hearing), before
+                // any cue/chain switch below retargets playback.
+                if let Some(v) = self.pending_global_mute.take() {
+                    self.bank.set(
+                        ParamDescriptor::id_for_name("mute"),
+                        if v { 1.0 } else { 0.0 },
+                    );
+                }
+                if let Some(v) = self.pending_pattern_mute.take() {
+                    self.patterns[pat].muted = v;
+                }
+
                 // An explicit cue wins over the chain for this one boundary
                 // (spec 4.2) — the chain does not advance that cycle.
                 if let Some(cue) = self.cued_pattern.take() {
@@ -1241,7 +1307,11 @@ impl Sequencer {
     }
 
     fn is_muted(&self) -> bool {
+        // P11 C4: two independent mute tiers — the bank global mute and the
+        // active pattern's per-pattern mute. Effective mute is global OR
+        // pattern (ADR-039 decision 6).
         self.bank.get(ParamDescriptor::id_for_name("mute")) >= 0.5
+            || self.patterns[self.active_index()].muted
     }
 
     /// TK2.1 C3b (D8): armed by Theotokos on entering `RecMode::Live`
@@ -1617,6 +1687,8 @@ impl Node for Sequencer {
                 // TK1 C1 — lock state
                 format!("/node/{id}/state/lock_dropped"),
                 format!("/node/{id}/state/locks"),
+                // P11 C4 — per-pattern mute tier
+                format!("/node/{id}/state/pattern_muted"),
             ]
         });
         let p = &self.patterns[self.active_index()];
@@ -1675,6 +1747,7 @@ impl Node for Sequencer {
             paths[17].clone(),
             StateBusValue::Int(self.lock_dropped as i64),
         ));
+        buf.push((paths[19].clone(), StateBusValue::Bool(p.muted)));
         if self.locks_dirty.get() {
             self.locks_dirty.set(false);
             let mut s = String::new();
@@ -1756,6 +1829,12 @@ impl Node for Sequencer {
             for step in &pattern.steps {
                 write_step_record(step, &mut buf);
             }
+            // P11 C4: per-pattern mute as a trailing byte inside the record
+            // envelope (after the last step record). The existing v3
+            // skip-tolerance reads up to the declared record length, so a
+            // reader without this field skips it — backward compatible by
+            // construction; the blob version stays 3.
+            buf.push(if pattern.muted { 1u8 } else { 0u8 });
             let record_len = (buf.len() - len_pos - 4) as u32;
             buf[len_pos..len_pos + 4].copy_from_slice(&record_len.to_le_bytes());
         }
@@ -1920,6 +1999,18 @@ impl Sequencer {
                 };
                 steps.push(step);
             }
+            // P11 C4: a trailing byte inside the pattern record is the
+            // per-pattern `muted` flag (new saves); its absence means a v3
+            // blob written before the field existed — default false. The
+            // record may also carry further unknown trailing bytes; they
+            // are skipped as before.
+            let muted = if r.cur < end {
+                let m = r.u8().unwrap_or(0);
+                r.cur = end;
+                m != 0
+            } else {
+                false
+            };
             if r.cur > end {
                 return;
             }
@@ -1959,6 +2050,7 @@ impl Sequencer {
                 length,
                 page_loop,
                 swing,
+                muted,
             });
         }
         if patterns.is_empty() {
@@ -5680,6 +5772,255 @@ mod tests {
             arg0: 0,
             arg1: 0.0,
         }
+    }
+
+    // ── P11 C4: mute tiers (pattern mute, prepared mutes) ───────────────────
+
+    fn set_pattern_mute_cmd(arg0: i64) -> NodeCommand {
+        NodeCommand {
+            target_id: 0,
+            type_id: Sequencer::CMD_SET_PATTERN_MUTE,
+            arg0,
+            arg1: 0.0,
+        }
+    }
+
+    fn prepare_mute_cmd(arg0: i64) -> NodeCommand {
+        NodeCommand {
+            target_id: 0,
+            type_id: Sequencer::CMD_PREPARE_MUTE,
+            arg0,
+            arg1: 0.0,
+        }
+    }
+
+    fn prepare_pattern_mute_cmd(arg0: i64) -> NodeCommand {
+        NodeCommand {
+            target_id: 0,
+            type_id: Sequencer::CMD_PREPARE_PATTERN_MUTE,
+            arg0,
+            arg1: 0.0,
+        }
+    }
+
+    /// Drive `count` full 16-step loops from a started transport (tps=240,
+    /// so one loop = 3840 ticks) and return the events emitted.
+    fn run_loops(seq: &mut Sequencer, count: usize) -> Vec<Event> {
+        let tps = TICKS_PER_BEAT / 4;
+        let mut all = Vec::new();
+        for t in 1..=(count * 16 * tps as usize) {
+            all.extend(run_seq(seq, &[transport_tick(t as u32, true, false, false, false)]));
+        }
+        all
+    }
+
+    #[test]
+    fn pattern_mute_set_toggle_and_off() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+
+        run_seq_with_cmds(&mut seq, &[set_pattern_mute_cmd(1)]);
+        assert!(
+            seq.patterns[0].muted,
+            "arg0=1 must mute the active pattern"
+        );
+        run_seq_with_cmds(&mut seq, &[set_pattern_mute_cmd(2)]);
+        assert!(
+            !seq.patterns[0].muted,
+            "arg0=2 must toggle off a muted pattern"
+        );
+        run_seq_with_cmds(&mut seq, &[set_pattern_mute_cmd(2)]);
+        assert!(seq.patterns[0].muted, "arg0=2 must toggle back on");
+        run_seq_with_cmds(&mut seq, &[set_pattern_mute_cmd(0)]);
+        assert!(!seq.patterns[0].muted, "arg0=0 must unmute");
+    }
+
+    #[test]
+    fn is_muted_global_or_pattern_independent_tiers() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        assert!(!seq.is_muted(), "fresh sequencer is unmuted");
+
+        // Pattern tier alone.
+        run_seq_with_cmds(&mut seq, &[set_pattern_mute_cmd(1)]);
+        assert!(
+            seq.is_muted(),
+            "pattern mute alone must mute (global off)"
+        );
+
+        // Global tier alone (independent of pattern).
+        let mut seq2 = Sequencer::new();
+        seq2.activate(44100.0, 64);
+        seq2
+            .bank
+            .set(ParamDescriptor::id_for_name("mute"), 1.0);
+        assert!(seq2.is_muted(), "global mute alone must mute");
+        assert!(
+            !seq2.patterns[0].muted,
+            "setting the global mute must not touch the pattern tier"
+        );
+
+        // Un-muting the pattern tier does not clear the global tier.
+        run_seq_with_cmds(&mut seq, &[set_pattern_mute_cmd(0)]);
+        seq.bank.set(ParamDescriptor::id_for_name("mute"), 1.0);
+        assert!(
+            seq.is_muted(),
+            "global mute must still mute after pattern tier cleared"
+        );
+    }
+
+    #[test]
+    fn prepared_mute_applies_at_wrap_and_clears() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+
+        // Queue a deferred global mute and a deferred pattern mute mid-loop.
+        run_seq_with_cmds(&mut seq, &[prepare_mute_cmd(1), prepare_pattern_mute_cmd(1)]);
+        assert!(
+            seq.pending_global_mute == Some(true) && seq.pending_pattern_mute == Some(true),
+            "queued mutes must be held, not applied"
+        );
+        assert!(
+            !seq.is_muted(),
+            "a prepared mute must not mute before the wrap"
+        );
+
+        // Drive to the wrap. 16 steps × 240 ticks; start at tick 1.
+        run_loops(&mut seq, 1);
+
+        assert_eq!(seq.pending_global_mute, None, "applied at wrap");
+        assert_eq!(seq.pending_pattern_mute, None, "applied at wrap");
+        assert!(
+            seq.patterns[0].muted,
+            "pattern tier must be set at the wrap"
+        );
+        assert!(
+            seq.bank.get(ParamDescriptor::id_for_name("mute")) >= 0.5,
+            "global tier must be set at the wrap"
+        );
+        assert!(seq.is_muted());
+    }
+
+    #[test]
+    fn prepared_mute_cleared_on_stop() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+
+        run_seq_with_cmds(&mut seq, &[prepare_mute_cmd(1), prepare_pattern_mute_cmd(1)]);
+
+        // Transport stops before any wrap.
+        run_seq(&mut seq, &[transport_tick(1, false, false, true, false)]);
+
+        assert_eq!(
+            seq.pending_global_mute, None,
+            "a prepared mute must not survive a stop"
+        );
+        assert_eq!(
+            seq.pending_pattern_mute, None,
+            "a prepared pattern mute must not survive a stop"
+        );
+        assert!(
+            !seq.patterns[0].muted && seq.bank.get(ParamDescriptor::id_for_name("mute")) < 0.5,
+            "nothing may be applied by a stop"
+        );
+    }
+
+    #[test]
+    fn pattern_mute_roundtrips_v3_trailing_byte() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[set_pattern_mute_cmd(1)]);
+        // A second pattern, muted differently, to prove per-pattern state.
+        run_seq_with_cmds(&mut seq, &[set_pattern_cmd(1)]);
+        // (set_pattern_cmd on a stopped sequencer switches immediately.)
+
+        let data = seq.serialize();
+
+        let mut seq2 = Sequencer::new();
+        seq2.activate(44100.0, 64);
+        seq2.deserialize(&data);
+
+        assert!(
+            seq2.patterns[0].muted,
+            "pattern 0's muted flag must round-trip through the v3 blob"
+        );
+        assert!(
+            !seq2.patterns[1].muted,
+            "pattern 1's un-muted flag must round-trip"
+        );
+    }
+
+    #[test]
+    fn v3_blob_without_muted_byte_loads_unmuted() {
+        // A v3 blob written before the P11 C4 trailing byte existed: pattern
+        // records end exactly at their step records. The loader must default
+        // muted=false and skip nothing else.
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        let mut data = seq.serialize();
+        // Layout (empty chain): version u8 (0), ticks_per_step u32 (1..5),
+        // speed_mult f32 (5..9), active u16 (9..11), chain_len u8 (11),
+        // used u16 (12..14), then pattern records from 14. Each pattern
+        // record is a u32 length followed by its bytes; serialize appends
+        // the muted byte as the record's final byte. Drain it and shrink
+        // the length so the blob reads as pre-P11-C4.
+        let used = u16::from_le_bytes([data[12], data[13]]);
+        let mut pos = 14usize;
+        for _ in 0..used {
+            let len = u32::from_le_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+                as usize;
+            let record_start = pos;
+            let record_end = pos + 4 + len;
+            data.drain(record_end - 1..record_end);
+            let new_len = (len - 1) as u32;
+            data[record_start..record_start + 4].copy_from_slice(&new_len.to_le_bytes());
+            pos = record_start + 4 + (len - 1);
+        }
+
+        let mut seq2 = Sequencer::new();
+        seq2.activate(44100.0, 64);
+        seq2.deserialize(&data);
+        assert!(
+            seq2.patterns.iter().all(|p| !p.muted),
+            "a blob without the trailing byte must load every pattern unmuted"
+        );
+    }
+
+    #[test]
+    fn pattern_mute_publishes_to_state_bus() {
+        let mut seq = Sequencer::new();
+        seq.set_node_id(7);
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[set_pattern_mute_cmd(1)]);
+
+        let mut state = Vec::new();
+        seq.published_state(&mut state);
+        let muted = state
+            .iter()
+            .find(|(k, _)| k == "/node/7/state/pattern_muted")
+            .expect("pattern_muted path must be published");
+        assert!(
+            matches!(muted.1, StateBusValue::Bool(true)),
+            "muted pattern must publish Bool(true): {muted:?}"
+        );
+    }
+
+    #[test]
+    fn temp_save_reload_preserves_pattern_mute() {
+        // The shadow copy (CMD_TEMP_SAVE/RELOAD) must carry the mute tier
+        // like every other piece of pattern state.
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(&mut seq, &[set_pattern_mute_cmd(1), temp_save_cmd()]);
+        run_seq_with_cmds(&mut seq, &[set_pattern_mute_cmd(0)]);
+
+        run_seq_with_cmds(&mut seq, &[temp_reload_cmd()]);
+        assert!(
+            seq.patterns[0].muted,
+            "temp reload must restore the muted flag captured at save"
+        );
     }
 
     #[test]

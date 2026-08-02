@@ -1,0 +1,113 @@
+# P11 C4 live test: mute tiers — immediate pattern mute, prepared
+# (wrap-deferred) pattern mute, and the state-bus publication.
+#
+# A 4-on-the-floor on sequencer 10 (steps 0,4,8,12). Phase 1: an immediate
+# `set_pattern_mute` silences the pattern at once (state path flips true,
+# audio stops) and unmuting brings the kicks back.
+#
+# Phase 2 (the deferred tier) needs a KNOWN wrap phase, which wall-clock
+# dispatch cannot infer: the audio-thread loop period P is ~1.72s in
+# release and ~2.3s in this machine's debug build (measured ~7 steps/s),
+# and varies with load. A `clock_rewind` at 2.0 resets every sequencer's
+# playhead to its window start, so the wraps land at 2.0 + k*P. The
+# timeline below is scheduled so every assertion holds for P in
+# [1.72, 3.5] — the floor is a hard one (the harness audio thread sleeps
+# block_size/sr per block, so the sample clock can never run faster than
+# realtime), and 3.5 is a generous ceiling for a loaded debug build.
+#
+#   rewind 2.0 → wraps at ~2.0+P, 2.0+2P, 2.0+3P  (P ∈ [1.72, 3.5])
+#   prepare ON  @ 3.0 → applies at 2.0+P   ∈ [3.72, 5.5]
+#   prepare OFF @ 6.4 → applies at the first wrap > 6.4
+#                       ∈ [6.6 (P=2.3 debug), 9.0 (P=3.5)]
+#
+# The OFF leg's own defer is NOT asserted separately: it is the same code
+# path as the ON defer (proven at 3.5), and a mid-loop OFF cue's wrap
+# proximity is unknowable from wall clock — the scenario asserts the OFF
+# lands at a wrap and restores audio, which is the plumbing under test.
+#
+# The stop-clear half (a prepared mute must not survive a transport stop)
+# is engine-level and carried by the crate unit tests
+# (`prepared_mute_cleared_on_stop`); the harness has no stop verb.
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 10.6
+output: /tmp/p11_mute_tiers.wav
+play: false
+
+timeline:
+  # Short kick tail so muted-silence windows are clean.
+  - at: 0.01
+    set_param: { target: "analog_engine:kick", param: decay, value: 0.1 }
+  # 4-on-the-floor.
+  - at: 0.05
+    set_step: { target: "10", step: 0, note: 36 }
+  - at: 0.06
+    set_step: { target: "10", step: 4, note: 36 }
+  - at: 0.07
+    set_step: { target: "10", step: 8, note: 36 }
+  - at: 0.08
+    set_step: { target: "10", step: 12, note: 36 }
+  # Phase 1: immediate pattern mute (CMD_SET_PATTERN_MUTE arg0=1) and
+  # unmute. Both take effect at dispatch — no wrap involved.
+  - at: 0.3
+    set_pattern_mute: { target: "10", value: 1 }
+  - at: 1.2
+    set_pattern_mute: { target: "10", value: 0 }
+  # Phase 2: known phase — rewind, then a prepared pattern mute cued
+  # mid-loop (3.0 is ≥0.7s from any wrap for every P in range).
+  - at: 2.0
+    clock_rewind: { target: "internal_clock" }
+  - at: 3.0
+    prepare_pattern_mute: { target: "10", value: 1 }
+  # Prepared OFF, cued after the mute landed (≤5.5) and after the 6.0
+  # state read.
+  - at: 6.4
+    prepare_pattern_mute: { target: "10", value: 0 }
+
+assert:
+  # Phase 1: muted silence. The last pre-mute kick is at most one kick
+  # spacing (0.43s) before the mute at 0.3, its 0.1s tail done by wall
+  # 0.4 (= capture 0.3). The window at 0.8 (capture [0.35, 0.6]) is after
+  # that tail and before the unmute at 1.2.
+  - at: 0.8
+    peak_lt: 0.01
+    window_ms: 250
+  # State path agrees the pattern tier is on, then off again.
+  - at: 0.7
+    path: /node/10/state/pattern_muted
+    eq: 1
+  - at: 1.4
+    path: /node/10/state/pattern_muted
+    eq: 0
+  # Phase 1 unmuted: the first post-unmute kick is at most 0.43s after the
+  # unmute (1.2) — the window at 2.2 (capture [1.15, 1.65] ≈ wall
+  # [1.53, 2.2]) is guaranteed several kicks deep.
+  - at: 2.2
+    peak_gte: 0.01
+    window_ms: 500
+  # Phase 2, THE defer: at 3.5 the prepared mute (cued 3.0) must NOT have
+  # applied — the earliest possible wrap is 2.0+1.72 = 3.72. An
+  # immediate-apply defect fails here deterministically.
+  - at: 3.5
+    path: /node/10/state/pattern_muted
+    eq: 0
+  # Phase 2, after the wrap (2.0+P <= 5.5): the mute landed — and no OFF
+  # is pending yet (cued at 6.4).
+  - at: 6.0
+    path: /node/10/state/pattern_muted
+    eq: 1
+  # And the audio consequence: silence between the ON-wrap (≤5.5, tail
+  # done by 5.6) and the earliest OFF-wrap (≥6.3 for P≥2.15). The window
+  # at 6.15 (capture [4.31, 4.61] ≈ wall [5.75, 6.15]) sits in that gap.
+  - at: 6.15
+    peak_lt: 0.01
+    window_ms: 300
+  # After the OFF-wrap (<= 9.0): unmuted again — path false, kicks sound.
+  - at: 9.5
+    path: /node/10/state/pattern_muted
+    eq: 0
+  # Audio: unmuted since <=9.0, so the window at 10.0 (capture [7.1, 7.5]
+  # ≈ wall [9.47, 10.0]) is several kicks deep.
+  - at: 10.0
+    peak_gte: 0.01
+    window_ms: 400

@@ -44,6 +44,11 @@ const CMD_TRIG_NOW: u32 = Sequencer::CMD_TRIG_NOW;
 // live in node-api, where the app's PerformState reads them too.
 const CMD_TEMP_SAVE: u32 = paraclete_node_api::command::CMD_TEMP_SAVE as u32;
 const CMD_TEMP_RELOAD: u32 = paraclete_node_api::command::CMD_TEMP_RELOAD as u32;
+// P11 C4 mute-tier family (ADR-039 reserved 39–45).
+const CMD_SET_PATTERN_MUTE: u32 = paraclete_node_api::command::CMD_SET_PATTERN_MUTE as u32;
+const CMD_PREPARE_MUTE: u32 = paraclete_node_api::command::CMD_PREPARE_MUTE as u32;
+const CMD_PREPARE_PATTERN_MUTE: u32 = paraclete_node_api::command::CMD_PREPARE_PATTERN_MUTE as u32;
+const CMD_CLOCK_REWIND: u32 = paraclete_nodes::internal_clock::CMD_CLOCK_REWIND;
 
 fn auto_play_command() -> &'static str {
     #[cfg(target_os = "macos")]
@@ -326,6 +331,30 @@ fn dispatch_action(conf: &mut NodeConfigurator, action: &ResolvedActionKind) -> 
             arg0: 0,
             arg1: 0.0,
         },
+        ResolvedActionKind::SetPatternMute { target_id, value } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_SET_PATTERN_MUTE,
+            arg0: *value,
+            arg1: 0.0,
+        },
+        ResolvedActionKind::PrepareMute { target_id, value } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_PREPARE_MUTE,
+            arg0: *value,
+            arg1: 0.0,
+        },
+        ResolvedActionKind::PreparePatternMute { target_id, value } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_PREPARE_PATTERN_MUTE,
+            arg0: *value,
+            arg1: 0.0,
+        },
+        ResolvedActionKind::ClockRewind { target_id } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_CLOCK_REWIND,
+            arg0: 0,
+            arg1: 0.0,
+        },
         // App-level ops are not node commands — `dispatch_any` routes them
         // through PerformState, mirroring the app main loop's drain.
         ResolvedActionKind::KitSave { .. }
@@ -568,6 +597,7 @@ fn run_batch(scenario: TestScenario) -> Result<(), String> {
                         match val {
                             Some(StateBusValue::Float(v)) if (v - eq).abs() < 1e-6 => {}
                             Some(StateBusValue::Int(v)) if (v as f64 - eq).abs() < 1e-6 => {}
+                            Some(StateBusValue::Bool(b)) if (b as u8 as f64 - eq).abs() < 1e-6 => {}
                             _ => failures.push(format!(
                                 "assertion at {}s: {} expected {}, got {:?}",
                                 a.at, path, eq, val
@@ -1312,6 +1342,23 @@ fn resolve_action(
             target_id: resolve_target(resolver, target)?,
         },
         TimelineAction::TempReload { target } => ResolvedActionKind::TempReload {
+            target_id: resolve_target(resolver, target)?,
+        },
+        TimelineAction::SetPatternMute { target, value } => ResolvedActionKind::SetPatternMute {
+            target_id: resolve_target(resolver, target)?,
+            value: *value,
+        },
+        TimelineAction::PrepareMute { target, value } => ResolvedActionKind::PrepareMute {
+            target_id: resolve_target(resolver, target)?,
+            value: *value,
+        },
+        TimelineAction::PreparePatternMute { target, value } => {
+            ResolvedActionKind::PreparePatternMute {
+                target_id: resolve_target(resolver, target)?,
+                value: *value,
+            }
+        }
+        TimelineAction::ClockRewind { target } => ResolvedActionKind::ClockRewind {
             target_id: resolve_target(resolver, target)?,
         },
         TimelineAction::KitSave { name } => ResolvedActionKind::KitSave { name: name.clone() },
