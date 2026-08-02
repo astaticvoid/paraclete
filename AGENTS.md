@@ -31,6 +31,78 @@ preserved verbatim in issue titles. `ADR-###` still resolves in-repo via
 `CLAUDE.md` is a symlink to this file, so Claude Code loads it
 automatically; keep the content here, not there.
 
+## Workflow
+
+### Model routing
+
+**Session orchestrator is DeepSeek V4 Pro.** The orchestrator holds session
+context, makes delegation calls, verifies returned work for correctness, writes
+gated commit messages and spec-conflict reconciliations, and runs design review
+passes. It is never delegated down — a subagent does not become the orchestrator.
+
+**All implementation goes to Flash subagents.** Every code change (bug fix,
+feature, refactor, test addition) is delegated to a Flash subagent with an
+explicit `model` parameter. The orchestrator writes the prompt — naming the
+exact files, the spec sections, the expected change, and the verification
+commands — but does not write the code itself.
+
+Trivial single-line fixes (typos, constant renames, one-character clippy
+suppressions) may be done inline by the orchestrator to avoid cold-start
+overhead. When in doubt, delegate.
+
+### Stage gates
+
+Every atomic change passes through gates before commit. The full checklist is
+the `commit-gate` skill — invoke it before every commit. In summary:
+
+| Gate | Requirement |
+|------|------------|
+| Tests | `cargo test --workspace` exit 0 |
+| Clippy | Zero new warnings on touched crates |
+| Code review | Subagent review (Flash) on the diff, with spec/ADR context |
+| Issue ref | `Fixes #N` / `Refs #N` in commit message |
+| Design review | If ADR/spec/protocol changed: `design-review` pass (Flash) |
+| Working tree | `git status` clean or explicitly accounted for |
+
+**Code review is mandatory, not advisory.** The orchestrator must run a Flash
+subagent review after every implementation commit or logical batch. Do not skip
+it — it is the quality gate between implementation pushes. The review subagent
+must receive: the commit under review, the binding spec/ADR sections, the exact
+files changed, what changed and why, and the verification commands. It must be
+forbidden from tree-mutating git (see §Review subagents below).
+
+**Design review runs on design changes.** Any change to an ADR body, phase spec,
+protocol definition, or architectural decision triggers a `design-review`
+subagent pass. The review checks contradictions, unverified claims, missing edge
+cases, guardrail violations, spec gaps, implementation order, and breaking
+changes. Findings are severity-tagged; blockers must be resolved before the
+design is ratified.
+
+### Task routing by judgment density
+
+Route by the **judgment density** of the task, not its size:
+
+- **Flash subagent** — mechanical, fully specified, verifiable by tests: bug
+  fixes, feature implementation from a spec, test addition, report drafting,
+  doc sweeps, closing issues from a commit diff.
+- **Orchestrator (DeepSeek V4 Pro)** — judgment *within* the spec: multi-file
+  integration design, data-model restructures, crate introduction, post-commit
+  code review passes, design review management, spec-conflict reconciliation,
+  commit message authorship.
+- **Defer to the user** — protocol freezes; any deviation from a spec contract;
+  any new ADR; re-ordering a phase's commits after a paired session; **anything
+  that changes what a gesture the performer has already learned does** — a new
+  page ahead of the existing ones, a remapped key, a changed default. Headless
+  agents cannot judge these; a paired session is cheap next to relearning
+  muscle memory.
+
+### A deferred decision blocks its item, not its commit
+
+When one part of a commit needs the user and the rest does not, **land the
+rest**. Do everything independent of the answer, then say plainly which item
+is outstanding, why, and what the options are — in the commit message *and* in
+the phase spec, since the next agent reads the spec and not your session.
+
 ## Build/test gotchas
 
 ```bash
@@ -656,17 +728,17 @@ fix, feature, doc update). Do NOT leave uncommitted changes accumulating across
 sessions — stacked dirty files from multiple sessions become impossible to
 untangle. Pushing to a remote still requires explicit user approval.
 
-Every commit: `cargo test --workspace` green, `cargo clippy --workspace` clean
-on touched crates. Design/doc changes in separate commits from code. Phase
-reports and ADR bodies are append-only. Close the issue a commit resolves in
-that commit's message (`Fixes #N`).
+**Before every commit, run the `commit-gate` skill.** It enforces:
 
-**After each implementation commit** (or logical batch of commits), the agent
-must pause and offer a **subagent code review** before proceeding to the next
-commit or closing the session. The subagent reads the diff (or the affected
-files), checks conformance to ADRs, layer boundaries, audio-thread rules,
-naming conventions, and test coverage, and returns findings. Do not skip this
-step — it is the quality gate between implementation pushes.
+1. `cargo test --workspace` green
+2. `cargo clippy --workspace` clean on touched crates (diff against baseline)
+3. Subagent code review (Flash) on the diff — **mandatory, not advisory**
+4. Issue referenced in commit message (`Fixes #N`)
+5. Design review (via `design-review` skill) if ADR/spec/protocol changed
+6. Working tree clean or explicitly accounted for
+
+Design/doc changes in separate commits from code. Phase reports and ADR bodies
+are append-only. Close the issue a commit resolves in that commit's message.
 
 #### Review subagents: two rules learned the hard way
 
@@ -762,29 +834,13 @@ The same audit found project instructions were not reaching Claude Code at all,
 because the repo had only `AGENTS.md` and Claude Code loads `CLAUDE.md` (now a
 symlink to this file).
 
-## Task routing by tier
+## Task routing
 
-Route by the **judgment density** of the task, not its size. When in doubt,
-one tier up.
-
-**Session orchestrator is Opus.** The orchestrator holds session context, makes
-delegation calls, verifies returned work for correctness, and writes gated
-commit messages and spec-conflict reconciliations — it is never delegated down.
-Delegate *to* a subagent with an explicit model param when there is a real
-batch to amortize the cold start (a spec'd test-stub list, a multi-file doc
-sweep); do trivial single actions inline.
-
-- **Sonnet-tier** — mechanical, fully specified, verifiable by tests: closing
-  issues from a commit diff, report drafting, doc sweeps, adding spec'd test
-  lists, deferred bugs when their triggers fire.
-- **Opus-tier** — multi-file integration, judgment *within* the spec: crate
-  introduction, data-model restructures, post-commit code review passes.
-- **Defer to the user** (with Opus, not a higher tier): protocol freezes; any
-  deviation from a spec contract; any new ADR; re-ordering a phase's commits
-  after a paired session; **anything that changes what a gesture the performer
-  has already learned now does** — a new page ahead of the existing ones, a
-  remapped key, a changed default. Headless agents cannot judge those, and a
-  paired session is cheap next to relearning muscle memory.
+> **See §Workflow above.** The authoritative routing rules are in the Workflow
+> section at the top of this file. This section is retained for the deferred-decision
+> worked example below; the model names here (Opus/Sonnet) are historical.
+> Current routing: DeepSeek V4 Pro = orchestrator, Flash = all implementation
+> subagents.
 
 ### A deferred decision blocks its item, not its commit
 
@@ -854,8 +910,9 @@ does not read as "skipped".
    during design or review work are **filed as GitHub issues against the
    code** and the design is adjusted — never silently worked around in prose.
 8. **Every commit:** `cargo test --workspace` green (bare `cargo test` only
-   runs the app crate), clippy clean on touched crates, update the phase
-   report as you go — not at the end.
+   runs the app crate), clippy clean on touched crates, code review complete,
+   issue referenced, design review if applicable. See `commit-gate` skill and
+   §Commit workflow. Update the phase report as you go — not at the end.
 
 ## Design documents
 
