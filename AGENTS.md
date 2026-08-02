@@ -148,7 +148,7 @@ cargo run -p test-driver -- <scenario>.yaml --check-baseline    # diff; exit 1 o
 # bit-stable run-to-run. Tolerances live in the .baseline.json (edit to loosen).
 # Baseline mode does NOT evaluate a scenario's artifact assertions (main.rs:1280)
 # — the fingerprint is the check. Nothing runs these automatically; there is no
-# CI. Run all SIX before and after any DSP-touching change:
+# CI. Run all SEVEN before and after any DSP-touching change:
 #   kick_reverb_clean   node 20 through mix+reverb          (analog Kick)
 #   plock_authoring     node 10 -> 20, authored p-locks     (analog Kick)
 #     ^ REAL p-lock coverage since #169/#170 — it was not before. It authored
@@ -162,6 +162,11 @@ cargo run -p test-driver -- <scenario>.yaml --check-baseline    # diff; exit 1 o
 #   fm_machines         node 27 driven through all three    (FM Kick, Bell, Bass)
 #   fx_chain            engine -> filter -> distortion       (uses instrument-fx.yaml)
 #   sampler_chain       node 23 sweeping pitch/start/end/loop (uses instrument-fx.yaml)
+#   lfo_sweep           nodes 20 + 27, lfo_dest tune and drive (analog + FM)
+#     ^ the LFO's ONLY coverage. Every other baseline runs at lfo_dest 0 (off),
+#       so the whole MOD block was unobserved until #175 — that fix changed the
+#       pitch path in both engine families and all six others stayed green.
+#       Touching the LFO host or either engine's pitch path? This is the one.
 # The first four observe all six voice machines. `fx_chain` covers FilterNode
 # and DistortionNode, which appear in no other instrument file — but read its
 # header before trusting it: at 0.2% tolerance it catches filter-coefficient
