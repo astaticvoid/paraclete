@@ -64,6 +64,9 @@ impl std::fmt::Display for ViewDefect {
 /// 4. A param flagged `identity` in any variant is flagged in all of them.
 ///    The flag lives per overlay (ADR-041 §0 A1), so it has to be repeated;
 ///    miss one and p-lock rejection stops working for that machine alone.
+/// 5. `param_labels` ids resolve against the union doc (ADR-041 amendment
+///    2026-08-02). A label array names values of a param, so an id no node
+///    declares would make a surface label a param that does not exist.
 ///
 /// **Not checked here, deliberately:** that a param id shared across machines
 /// agrees on `name`/`unit`/`stepped` (MM-C8 point 4). That is a property of
@@ -247,6 +250,28 @@ pub fn validate_view(doc: &CapabilityDocument) -> Vec<ViewDefect> {
         }
     }
 
+    // ── `param_labels` hygiene (ADR-041 amendment 2026-08-02) ────────────
+    // A label array names values of a param, so its id must be one the node
+    // declares — the same class of defect as BUG-037, which `param_pages`
+    // checks above. The array itself is value-indexed, so its LENGTH is not
+    // validated against the param's range here: a stepped param whose labels
+    // are sparser than its range is legal (gaps are `None`), and a label for
+    // a value past the range is unreachable rather than wrong.
+    for v in rule.variants.iter() {
+        for (pid, _labels) in v.param_labels.iter() {
+            if !declared.contains(pid) {
+                out.push(ViewDefect {
+                    variant: Some(v.name.to_string()),
+                    message: format!(
+                        "`param_labels` names `{}` ({pid}), which the node does not \
+                         declare — a surface would label a param that does not exist",
+                        name_of(*pid)
+                    ),
+                });
+            }
+        }
+    }
+
     out
 }
 
@@ -359,6 +384,7 @@ mod tests {
                     identity,
                 },
             )]),
+            param_labels: Cow::Borrowed(&[]),
         }
     }
 
@@ -479,6 +505,18 @@ mod tests {
                         Cow::Owned(vec![variant("One", 0, true), variant("Two", 1, false)]);
                 }),
                 expect: "not on",
+            },
+            Case {
+                what: "a variant's `param_labels` names an undeclared param",
+                doc: with_rule(|r| {
+                    let mut v = variant("One", 0, true);
+                    v.param_labels = Cow::Owned(vec![(
+                        ABSENT,
+                        Cow::Owned(vec![Some(Cow::Borrowed("off"))]),
+                    )]);
+                    r.variants = Cow::Owned(vec![v]);
+                }),
+                expect: "does not",
             },
         ];
 

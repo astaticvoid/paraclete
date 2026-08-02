@@ -62,7 +62,8 @@ pub use capability::{
 };
 
 pub use rule::{
-    AffordanceHint, EnvelopeGroup, MachineVariant, MacroBinding, MacroCurve, PageRef, ParamOverlay,
+    AffordanceHint, EnvelopeGroup, MachineVariant, MacroBinding, MacroCurve, PageRef, ParamLabelArray,
+    ParamOverlay,
     RoutingSemantics, Rule, ViewPlugin,
 };
 pub use view_validate::{debug_assert_view, validate_view, ViewDefect};

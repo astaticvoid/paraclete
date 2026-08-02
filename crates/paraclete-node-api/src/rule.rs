@@ -82,11 +82,9 @@ pub struct Rule {
 /// slot and stay machine-invariant, so they can still name a param the active
 /// variant does not display. That is live, not hypothetical: both engines
 /// build affordances and envelope groups outside the per-machine `match`
-/// (`analog_engine.rs:280-303`, `fm_engine.rs:296-303`). Widening this type is
-/// deliberately deferred — ADR-041 decision 3 and §0 A1 specify exactly these
-/// five fields — so the guard is an assertion instead (see MM-C8), and it must
-/// check refs against the **active variant's displayed set**, not just the
-/// union doc, or it passes on precisely this case.
+/// (`analog_engine.rs:280-303`, `fm_engine.rs:296-303`). A sixth field —
+/// `param_labels`, per-machine value labels — was added by amendment
+/// 2026-08-02 after #179 made labels machine-dependent; see the ADR.
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serialize", derive(serde::Serialize))]
 pub struct MachineVariant {
@@ -121,7 +119,30 @@ pub struct MachineVariant {
     /// undefined; MM-C8's assertion checks uniqueness rather than the type
     /// enforcing it.
     pub overlays: Cow<'static, [(u32, ParamOverlay)]>,
+
+    /// Per-param **value-indexed label arrays** for stepped params whose
+    /// labels differ by machine — `param_id -> [labels]`, where `labels[v]`
+    /// names value `v` (inner `None` = gap). Amendment 2026-08-02: #179 made
+    /// `lfo_dest`'s labels the active machine's, but the node-level cap-doc
+    /// is collected once at startup, so its labels froze at the
+    /// construction-time machine and a live switch left the encoder naming
+    /// the old machine's destinations. Carrying them here means assembly
+    /// resolves a stepped param's options from the ACTIVE variant when an
+    /// entry exists, falling back to the node-level descriptor otherwise —
+    /// the same mechanism that already moves pages and ranges on switch.
+    ///
+    /// A param absent from this list uses the descriptor's labels (the
+    /// behaviour every non-differing param had before #179). Only params
+    /// whose labels genuinely differ per machine need an entry; both engines
+    /// carry a test that the dest param's entry matches `dest_names`.
+    pub param_labels: Cow<'static, [(u32, ParamLabelArray)]>,
 }
+
+/// Value-indexed label array for one stepped param on one machine — names
+/// `options[v]`, inner `None` a gap (ADR-041 amendment 2026-08-02). Aliased
+/// because the fully-spelled `Cow<'static, [Option<Cow<'static, str>>]>`
+/// trips clippy's `type_complexity` at every use site.
+pub type ParamLabelArray = Cow<'static, [Option<Cow<'static, str>>]>;
 
 /// One machine's range and default for a param it shares with its siblings.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -162,6 +183,7 @@ impl Default for MachineVariant {
             page_groups: Cow::Borrowed(&[]),
             pages: Cow::Borrowed(&[]),
             overlays: Cow::Borrowed(&[]),
+            param_labels: Cow::Borrowed(&[]),
         }
     }
 }

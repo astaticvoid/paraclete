@@ -774,6 +774,9 @@ impl FmEngine {
                 page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP"), Cow::Borrowed("MOD")]),
                 pages: Cow::Owned(Self::machine_page_refs(m)),
                 overlays: Cow::Owned(Self::machine_overlays(m)),
+                // Filled by the BUG-069 follow-up commit; empty here so this
+                // commit compiles standalone (ADR-041 amendment field).
+                param_labels: Cow::Borrowed(&[]),
             })
             .collect()
     }
