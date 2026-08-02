@@ -699,6 +699,15 @@ check specifically, and how to run the tests and clippy itself. Terse "review
 this diff" prompts to fresh-context agents produce shallow reviews; detailed
 ones have caught a real defect in nearly every commit they have gated.
 
+## Incidental findings — the scratch file
+
+`.scratch/SESSION_NOTES.md` is a git-ignored scratchpad. When you discover a
+defect, design issue, or filing-worthy observation that is **not** the current
+task, append one line there before moving on — do not trust yourself to
+remember it. At session start, read it; at session end, file any stranded
+notes as GitHub issues. This is how "[while working on X I noticed Y]"
+survives a session boundary.
+
 **Before closing a session**, the agent must report any untracked files,
 uncommitted changes, or stale trackers. The working tree must be either clean
 or explicitly accounted for — never silent about dirt.
