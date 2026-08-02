@@ -15,6 +15,9 @@ readme      = "README.md"
 midi2.workspace = true
 serde = { workspace = true, features = ["derive"], optional = true }
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [features]
 default = []
 serialize = ["serde"]
