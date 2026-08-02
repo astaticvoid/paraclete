@@ -89,9 +89,13 @@ impl SingleNodePlugin {
 
     /// Restore node state. Maps to the CLAP state extension `load()`.
     ///
-    /// CLAP hosts typically call this between `deactivate()` and `activate()`
-    /// during session restore. Call `activate()` after `state_load()` to
-    /// re-initialise sample-rate-dependent state.
+    /// For ParameterBank nodes, `activate()` resets the bank to defaults
+    /// (see AGENTS.md: deserialize-after-activate convention). Callers MUST
+    /// call `activate()` BEFORE `state_load()` — if `activate()` runs after,
+    /// it discards the just-applied saved values. Since CLAP hosts typically
+    /// call `load()` between `deactivate()` and `activate()`, the CLAP
+    /// extension must defer the deserialize until after its own `activate()`
+    /// (e.g. buffer the state blob and apply it post-activation).
     pub fn state_load(&mut self, data: &[u8]) {
         self.node.deserialize(data);
     }
