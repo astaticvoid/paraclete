@@ -229,6 +229,10 @@ pub struct Sequencer {
     /// arriving between the early fire and the boundary from swallowing a
     /// DIFFERENT step's fire (review finding, C3).
     early_fired: Option<usize>,
+    /// BUG-042: the step that was just recorded by a live trig this cycle.
+    /// `emit_live_trig` already fired the synth — the boundary fire paths
+    /// in `handle_transport` must not fire it again in the same window.
+    live_recorded_step: Option<usize>,
     /// Ticks until the open gate closes, counted from note-on (review
     /// finding, C3): an absolute countdown, so an early-fired note keeps its
     /// own step's gate length instead of being cut at the previous step's
@@ -466,6 +470,7 @@ impl Sequencer {
             step_period: TICKS_PER_BEAT / 4,
             period_frac: 0.0,
             early_fired: None,
+            live_recorded_step: None,
             gate_ticks_left: 0,
             gate_open: false,
             active_note: 60,
@@ -552,6 +557,7 @@ impl Sequencer {
         self.period_frac = 0.0;
         self.step_period = self.exact_period().round().max(1.0) as u32;
         self.early_fired = None;
+        self.live_recorded_step = None;
     }
 
     /// Make `idx` the active pattern and refresh everything keyed to it
@@ -563,6 +569,7 @@ impl Sequencer {
         // A step pulled early belonged to the OLD pattern — it must not
         // suppress the new pattern's entry step at the boundary.
         self.early_fired = None;
+        self.live_recorded_step = None;
         let swing = self.patterns[idx].swing;
         self.bank
             .set(ParamDescriptor::id_for_name("swing"), swing as f64);
@@ -1035,35 +1042,44 @@ impl Sequencer {
         // units (10 ticks each) before its grid boundary. Tick-exact: the
         // micro unit is a whole number of clock ticks. The boundary below
         // then advances position without re-firing (early_fired).
-        if self.early_fired.is_none() && self.step_tick < self.step_period {
+        //
+        // BUG-042: if the next step was just recorded by a live trig,
+        // the synth already heard it — suppress the early fire and mark
+        // it in early_fired so the boundary won't fire it either.
+        if self.step_tick < self.step_period {
             let (next, _) = self.advance_step(self.current_step);
-            let micro = self.patterns[pat].steps[next].timing.micro_offset;
-            let active = self.patterns[pat].steps[next].active;
-            if active && micro < 0 {
-                let early_ticks =
-                    ((-(micro as i32)) as u32 * (TICKS_PER_BEAT / 96)).min(self.step_period - 1);
-                if self.step_tick >= self.step_period - early_ticks {
-                    // The condition rolls at fire time (pre-wrap loop_count
-                    // for a window-wrapping early step — documented choice),
-                    // and rolls exactly once: the boundary skips this step
-                    // whether or not it fired.
-                    let cond = self.patterns[pat].steps[next].condition.clone();
-                    if cond.evaluate(&self.cycle_state, &mut self.rng) {
-                        self.emit_note_on_at(next, sample_offset, output);
-                        for lock in &self.patterns[pat].steps[next].param_locks {
-                            if !self.is_muted() {
-                                output.events_out.push(TimedEvent::new(
-                                    sample_offset,
-                                    Event::ParamLock(ParamLockEvent {
-                                        node_id: lock.node_id,
-                                        param_id: lock.param_id,
-                                        value: lock.value,
-                                    }),
-                                ));
+            let live_rec = self.live_recorded_step == Some(next);
+            if live_rec {
+                self.early_fired = Some(next);
+            } else if self.early_fired.is_none() {
+                let micro = self.patterns[pat].steps[next].timing.micro_offset;
+                let active = self.patterns[pat].steps[next].active;
+                if active && micro < 0 {
+                    let early_ticks = ((-(micro as i32)) as u32 * (TICKS_PER_BEAT / 96))
+                        .min(self.step_period - 1);
+                    if self.step_tick >= self.step_period - early_ticks {
+                        // The condition rolls at fire time (pre-wrap loop_count
+                        // for a window-wrapping early step — documented choice),
+                        // and rolls exactly once: the boundary skips this step
+                        // whether or not it fired.
+                        let cond = self.patterns[pat].steps[next].condition.clone();
+                        if cond.evaluate(&self.cycle_state, &mut self.rng) {
+                            self.emit_note_on_at(next, sample_offset, output);
+                            for lock in &self.patterns[pat].steps[next].param_locks {
+                                if !self.is_muted() {
+                                    output.events_out.push(TimedEvent::new(
+                                        sample_offset,
+                                        Event::ParamLock(ParamLockEvent {
+                                            node_id: lock.node_id,
+                                            param_id: lock.param_id,
+                                            value: lock.value,
+                                        }),
+                                    ));
+                                }
                             }
                         }
+                        self.early_fired = Some(next);
                     }
-                    self.early_fired = Some(next);
                 }
             }
         }
@@ -1109,8 +1125,11 @@ impl Sequencer {
             // window edit landed in between, the boundary may be on a
             // different step, which must still fire normally.
             let fired_early = self.early_fired.take() == Some(self.current_step);
+            // BUG-042: also skip the step that was just live-recorded —
+            // emit_live_trig already fired the synth.
+            let live_recorded = self.live_recorded_step.take() == Some(self.current_step);
             let step_active = self.patterns[pat].steps[self.current_step].active;
-            if step_active && !fired_early {
+            if step_active && !fired_early && !live_recorded {
                 let cond = self.patterns[pat].steps[self.current_step]
                     .condition
                     .clone();
@@ -1174,6 +1193,10 @@ impl Sequencer {
 
         self.set_step(nearest, note, velocity, true);
         self.patterns[pat].steps[nearest].timing.micro_offset = micro;
+        // BUG-042: the live trig just fired the synth via emit_live_trig.
+        // Record which step was written so handle_transport suppresses any
+        // boundary/early fire of this step in the same window.
+        self.live_recorded_step = Some(nearest);
     }
 
     fn emit_note_on_at(&mut self, step_idx: usize, sample_offset: u32, output: &mut ProcessOutput) {
@@ -1460,6 +1483,10 @@ impl Node for Sequencer {
                 self.handle_transport(&k, timed.sample_offset, output);
             }
         }
+        // BUG-042: live_recorded_step is only meaningful within the
+        // window between record_live_trig and the transport loop above.
+        // Clear it so it can't suppress a step in a later process() call.
+        self.live_recorded_step = None;
 
         // Write sample-and-hold CV values to each CV output port every cycle.
         for i in 0..self.cv_outputs {
@@ -4261,6 +4288,155 @@ mod tests {
         let early = second_fire(-12);
         assert_eq!(base - early, 120,
             "wrapped step 0 fires 120 ticks into the previous cycle's last step (base {base}, early {early})");
+    }
+
+    // ── P10 C4: seamless switching + chaining ────────────────────────────────
+
+    /// BUG-042 regression: a step recorded by live_rec must not fire again
+    /// at its own boundary within the same process() window — the live trig's
+    /// emit_live_trig already sounded the synth.
+    ///
+    /// Scenario: step_tick is past the midpoint, so the trig quantizes to
+    /// `next` (the step the boundary will advance to). Without the fix, the
+    /// boundary fires that step a second time a few samples later.
+    #[test]
+    fn live_recorded_step_is_not_re_fired_at_boundary() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        // Position at step 3, near the boundary — nearest rounds to step 4.
+        seq.current_step = 3;
+        seq.step_tick = 230; // 10 ticks shy of step_period (240)
+        seq.bank.set(ParamDescriptor::id_for_name("live_rec"), 1.0);
+
+        // Deliver the trig_now command AND 10 transport ticks in one
+        // process() call so both the live trig and the boundary fire
+        // compete within the same window.
+        let block = 64usize;
+        let mut audio = AudioBuffer::new(2, block);
+        let mut events_out = EventOutputBuffer::new(256);
+        let transport = TransportInfo::default();
+        let slab = ExtendedEventSlab::empty();
+        let cmds = [trig_now_cmd(60, 0.9)];
+        let ticks: Vec<TimedEvent> = (0..10)
+            .map(|_| {
+                TimedEvent::new(
+                    0,
+                    Event::Transport(TransportEvent {
+                        domain_id: 0,
+                        bar: 1,
+                        beat: 0,
+                        tick: 1,
+                        ticks_per_beat: TICKS_PER_BEAT,
+                        bpm: 120.0,
+                        time_sig_num: 4,
+                        time_sig_den: 4,
+                        flags: TransportFlags {
+                            playing: true,
+                            ..TransportFlags::default()
+                        },
+                    }),
+                )
+            })
+            .collect();
+        let audio_ptr: *mut AudioBuffer = &mut audio as *mut AudioBuffer;
+        let audio_ref: &mut AudioBuffer = unsafe { &mut *audio_ptr };
+        let mut outs = [audio_ref];
+        let input = ProcessInput {
+            audio_inputs: &[],
+            signal_inputs: &[],
+            events: &ticks,
+            transport: &transport,
+            sample_rate: 44100.0,
+            block_size: block,
+            extended_events: &slab,
+            commands: &cmds,
+        };
+        let mut output = ProcessOutput::new(&mut outs, &mut [], &mut events_out);
+        seq.process(&input, &mut output);
+
+        let note_on_count = events_out.as_slice().iter().filter(|e| is_note_on(&e.event)).count();
+        assert_eq!(
+            note_on_count, 1,
+            "live trig must fire exactly once — no boundary re-fire (BUG-042)"
+        );
+
+        // The step must be recorded so it fires on the next loop pass.
+        assert!(
+            seq.patterns[0].steps[4].active,
+            "step 4 must be recorded (nearest to tick 230/240)"
+        );
+    }
+
+    #[test]
+    fn live_recorded_step_suppresses_early_fire_too() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+
+        // Set up step 4 with a negative micro_offset so it would fire early
+        // during step 3's window. Then live-record AT step 4 — the early
+        // fire path must also be suppressed.
+        seq.set_step(4, 62, 32768, true);
+        seq.patterns[0].steps[4].timing.micro_offset = -12; // 120 ticks early
+
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        // Position inside step 3's window, past the early-fire threshold
+        // (240 - 120 = 120): at tick 200, early fire would trigger.
+        seq.current_step = 3;
+        seq.step_tick = 200;
+        seq.bank.set(ParamDescriptor::id_for_name("live_rec"), 1.0);
+
+        let block = 64usize;
+        let mut audio = AudioBuffer::new(2, block);
+        let mut events_out = EventOutputBuffer::new(256);
+        let transport = TransportInfo::default();
+        let slab = ExtendedEventSlab::empty();
+        let cmds = [trig_now_cmd(60, 0.9)];
+        let ticks = [TimedEvent::new(
+            0,
+            Event::Transport(TransportEvent {
+                domain_id: 0,
+                bar: 1,
+                beat: 0,
+                tick: 1,
+                ticks_per_beat: TICKS_PER_BEAT,
+                bpm: 120.0,
+                time_sig_num: 4,
+                time_sig_den: 4,
+                flags: TransportFlags {
+                    playing: true,
+                    ..TransportFlags::default()
+                },
+            }),
+        )];
+        let audio_ptr: *mut AudioBuffer = &mut audio as *mut AudioBuffer;
+        let audio_ref: &mut AudioBuffer = unsafe { &mut *audio_ptr };
+        let mut outs = [audio_ref];
+        let input = ProcessInput {
+            audio_inputs: &[],
+            signal_inputs: &[],
+            events: &ticks,
+            transport: &transport,
+            sample_rate: 44100.0,
+            block_size: block,
+            extended_events: &slab,
+            commands: &cmds,
+        };
+        let mut output = ProcessOutput::new(&mut outs, &mut [], &mut events_out);
+        seq.process(&input, &mut output);
+
+        let note_on_count = events_out.as_slice().iter().filter(|e| is_note_on(&e.event)).count();
+        assert_eq!(
+            note_on_count, 1,
+            "live trig must fire exactly once even when the recorded step \
+             would also fire early (BUG-042)"
+        );
+
+        // The step's existing content survives — the micro_offset is
+        // overwritten by record_live_trig, but the note and active flag
+        // from set_step are intact.
+        assert!(seq.patterns[0].steps[4].active);
     }
 
     // ── P10 C4: seamless switching + chaining ────────────────────────────────
