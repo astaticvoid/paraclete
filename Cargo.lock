@@ -1487,7 +1487,6 @@ dependencies = [
  "log",
  "midir",
  "paraclete-node-api",
- "paraclete-runtime",
  "rtrb",
 ]
 

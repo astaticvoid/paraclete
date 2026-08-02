@@ -7,6 +7,7 @@
 //! License: LGPL-3.0 — node implementations may remain closed-source.
 
 pub mod agreement;
+pub mod audio_processor;
 pub mod buffer;
 pub mod capability;
 pub mod command;
@@ -19,6 +20,7 @@ pub mod node;
 pub mod parameter;
 pub mod port;
 pub mod rule;
+pub mod runtime_counters;
 pub mod state_bus;
 pub mod surface;
 pub mod templates;
@@ -28,6 +30,7 @@ pub mod view_validate;
 
 pub use constants::TICKS_PER_BEAT;
 
+pub use audio_processor::AudioProcessor;
 pub use buffer::{
     AsSignal, AsSignalMut, AudioBuffer, CvBuffer, LogicBuffer, ModBuffer, PhaseBuffer, PitchBuffer,
 };
@@ -66,6 +69,7 @@ pub use rule::{
     ParamOverlay,
     RoutingSemantics, Rule, ViewPlugin,
 };
+pub use runtime_counters::RuntimeCounters;
 pub use view_validate::{debug_assert_view, validate_view, ViewDefect};
 
 pub use agreement::{ConnectionAgreement, ConnectionRecord, LockableParam};

@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, SampleFormat, SampleRate, StreamConfig};
 
-use paraclete_runtime::{NodeExecutor, RuntimeCounters};
+use paraclete_node_api::{AudioProcessor, RuntimeCounters};
 
 #[cfg(target_os = "linux")]
 mod lrt {
@@ -80,7 +80,10 @@ impl AudioBackend {
     /// clock advances by a full block — acceptable transient for
     /// non-power-of-two device buffers; the long-run cadence is correct on
     /// the common path).
-    pub fn start(mut executor: NodeExecutor, running: Arc<AtomicBool>) -> Result<Self, AudioError> {
+    pub fn start<E: AudioProcessor + 'static>(
+        mut executor: E,
+        running: Arc<AtomicBool>,
+    ) -> Result<Self, AudioError> {
         let host = cpal::default_host();
 
         let device = host
@@ -218,7 +221,7 @@ impl AudioBackend {
     /// Start audio with shared executor cell and pause/resume atomics.
     /// Used by `AudioEngine` to support dynamic topology (ADR-029).
     pub(crate) fn start_with_callback(
-        executor_cell: Arc<Mutex<Option<NodeExecutor>>>,
+        executor_cell: Arc<Mutex<Option<Box<dyn AudioProcessor>>>>,
         pause_requested: Arc<AtomicBool>,
         is_paused: Arc<AtomicBool>,
         counters: Arc<RuntimeCounters>,
@@ -293,7 +296,7 @@ impl AudioBackend {
                                     data,
                                     &mut work_buf,
                                     &mut ring,
-                                    exec,
+                                    exec.as_mut(),
                                     channels,
                                     block_samples,
                                 );
@@ -335,7 +338,7 @@ impl AudioBackend {
                                     &mut f32_buf,
                                     &mut work_buf,
                                     &mut ring,
-                                    exec,
+                                    exec.as_mut(),
                                     channels,
                                     block_samples,
                                 );
@@ -380,7 +383,7 @@ impl AudioBackend {
                                     &mut f32_buf,
                                     &mut work_buf,
                                     &mut ring,
-                                    exec,
+                                    exec.as_mut(),
                                     channels,
                                     block_samples,
                                 );
@@ -502,7 +505,7 @@ fn audio_callback_f32(
     data: &mut [f32],
     work_buf: &mut [f32],
     ring: &mut OutputRing,
-    executor: &mut NodeExecutor,
+    executor: &mut dyn AudioProcessor,
     channels: usize,
     block_samples: usize,
 ) {
@@ -542,7 +545,7 @@ const RING_BLOCKS: usize = 4;
 /// Wraps the audio backend with a pause/resume protocol that allows
 /// `apply_patch()` to swap the `NodeExecutor` at runtime.
 pub struct AudioEngine {
-    executor_cell: Arc<Mutex<Option<NodeExecutor>>>,
+    executor_cell: Arc<Mutex<Option<Box<dyn AudioProcessor>>>>,
     pause_requested: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
     counters: Arc<RuntimeCounters>,
@@ -563,11 +566,11 @@ impl AudioEngine {
     }
 
     /// Start audio with the given executor.
-    pub fn start(mut executor: NodeExecutor) -> Result<Self, AudioError> {
+    pub fn start<E: AudioProcessor + 'static>(mut executor: E) -> Result<Self, AudioError> {
         let counters = Arc::new(RuntimeCounters::default());
         executor.set_counters(counters.clone());
 
-        let executor_cell = Arc::new(Mutex::new(Some(executor)));
+        let executor_cell = Arc::new(Mutex::new(Some(Box::new(executor) as Box<dyn AudioProcessor>)));
         let pause_requested = Arc::new(AtomicBool::new(false));
         let is_paused = Arc::new(AtomicBool::new(false));
 
@@ -607,14 +610,15 @@ impl AudioEngine {
 
     /// Take the current executor out of the engine (for `apply_patch` internal use).
     /// Returns `None` if no executor was present (e.g. `new_paused()` engine).
-    pub fn take_executor(&self) -> Option<NodeExecutor> {
+    pub fn take_executor(&self) -> Option<Box<dyn AudioProcessor>> {
         self.executor_cell.lock().unwrap().take()
     }
 
     /// Replace the executor and resume audio processing.
     ///
     /// Must only be called after `wait_paused()` has returned.
-    pub fn resume_with_executor(&self, mut executor: NodeExecutor) {
+    pub fn resume_with_executor(&self, executor: Box<dyn AudioProcessor>) {
+        let mut executor = executor;
         executor.set_counters(self.counters.clone());
         *self.executor_cell.lock().unwrap() = Some(executor);
         self.is_paused.store(false, Ordering::Release);

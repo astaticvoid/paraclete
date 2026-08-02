@@ -3,9 +3,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use paraclete_node_api::{
-    AudioBuffer, DebugEvent, Event, EventOutputBuffer, ExtendedEventSlab, NodeCommand,
-    ProcessInput, ProcessOutput, SignalInputSlot, SignalOutputSlot, SignalPortKind, StateBusValue,
-    SurfaceOutput, TimedEvent, TransportEvent, TransportInfo,
+    AudioBuffer, AudioProcessor, DebugEvent, Event, EventOutputBuffer, ExtendedEventSlab,
+    NodeCommand, ProcessInput, ProcessOutput, SignalInputSlot, SignalOutputSlot, SignalPortKind,
+    StateBusValue, SurfaceOutput, TimedEvent, TransportEvent, TransportInfo,
 };
 
 use crate::configurator::{LoopBackEdge, NodeOrDevice};
@@ -790,6 +790,36 @@ impl NodeExecutor {
     /// Used by tests to verify no reallocation occurs after the first cycle.
     pub fn state_buf_capacity(&self, idx: usize) -> usize {
         self.state_bufs[idx].capacity()
+    }
+}
+
+/// L2 AudioProcessor trait implementation.
+///
+/// This is the bridge that lets `paraclete-hal` (L0) call the executor
+/// through the L2 trait without depending on L1 directly.
+impl AudioProcessor for NodeExecutor {
+    fn process(&mut self, out_interleaved: &mut [f32], channels: usize) {
+        self.process(out_interleaved, channels);
+    }
+
+    fn block_size(&self) -> usize {
+        self.block_size()
+    }
+
+    fn set_counters(&mut self, counters: Arc<paraclete_node_api::RuntimeCounters>) {
+        self.counters = counters;
+    }
+
+    fn counters(&self) -> &Arc<paraclete_node_api::RuntimeCounters> {
+        &self.counters
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn into_any(self: Box<Self>) -> Box<dyn std::any::Any> {
+        self
     }
 }
 

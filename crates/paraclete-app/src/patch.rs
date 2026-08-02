@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use paraclete_hal::AudioEngine;
-use paraclete_runtime::{ConnectError, NodeConfigurator};
+use paraclete_runtime::{ConnectError, NodeConfigurator, NodeExecutor};
 
 use crate::registry::NodeRegistry;
 
@@ -88,7 +88,13 @@ pub fn apply_patch(
     engine.wait_paused();
 
     // Return nodes from the old executor to the configurator.
+    //
+    // Safety: AudioEngine always contains a NodeExecutor (the only AudioProcessor
+    // implementation in the tree). This downcast is sound by construction; a
+    // different processor type would make `drain_nodes()` meaningless anyway.
     if let Some(old_executor) = engine.take_executor() {
+        let old_executor: Box<NodeExecutor> = old_executor.into_any().downcast()
+            .expect("AudioEngine executor must be a NodeExecutor");
         let nodes = old_executor.drain_nodes();
         conf.restore_nodes(nodes);
     }
@@ -147,7 +153,7 @@ pub fn apply_patch(
     }
 
     let new_executor = conf.rebuild_executor();
-    engine.resume_with_executor(new_executor);
+    engine.resume_with_executor(Box::new(new_executor));
 
     match error {
         Some(e) => Err(e),

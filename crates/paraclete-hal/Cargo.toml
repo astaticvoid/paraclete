@@ -9,7 +9,6 @@ license     = "GPL-3.0-or-later"
 
 [dependencies]
 paraclete-node-api = { workspace = true }
-paraclete-runtime  = { workspace = true }
 cpal        = { workspace = true }
 log         = { workspace = true }
 crossterm   = "0.27"
