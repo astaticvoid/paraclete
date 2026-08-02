@@ -582,24 +582,20 @@ fn main() {
         // before Theotokos tick — so a Theoria-triggered kit load
         // executes before Theotokos renders the result.
         if let Some(h) = antiphon.as_ref() {
-            for op in h.take_pending_app_ops() {
-                paraclete_app::app_ops::execute_app_op(
-                    op,
-                    &mut perform_state,
-                    &mut conf,
-                    &bus_handle,
-                );
-            }
+            paraclete_app::app_ops::drain_app_ops(
+                h.take_pending_app_ops(),
+                &mut perform_state,
+                &mut conf,
+                &bus_handle,
+            );
         }
         if let Some((ref mut tk, _)) = theotokos_opt {
-            for op in tk.take_pending_app_ops() {
-                paraclete_app::app_ops::execute_app_op(
-                    op,
-                    &mut perform_state,
-                    &mut conf,
-                    &bus_handle,
-                );
-            }
+            paraclete_app::app_ops::drain_app_ops(
+                tk.take_pending_app_ops(),
+                &mut perform_state,
+                &mut conf,
+                &bus_handle,
+            );
         }
 
         let mut led_output = scripting.take_pending_output();

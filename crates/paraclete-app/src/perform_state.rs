@@ -186,7 +186,7 @@ impl PerformState {
         bus: &Rc<RefCell<StateBusHandle>>,
     ) {
         // Char-safe truncation: `name[..16]` would panic on a multi-byte char.
-        let name: String = name.chars().take(16).collect();
+        let name = truncate_kit_name(&name);
         let entries = capture_kit_entries(conf, bus);
         // Find first empty slot.
         if let Some(slot) = self.kit_store.kits.iter().position(|k| k.is_none()) {
@@ -246,6 +246,12 @@ impl PerformState {
     }
 }
 
+/// Truncate a kit name to the 16-char limit at a char boundary (P11 C2 —
+/// a byte slice would panic mid-UTF-8).
+pub fn truncate_kit_name(name: &str) -> String {
+    name.chars().take(16).collect()
+}
+
 /// Capture current param values for all in_kit params across all nodes.
 fn capture_kit_entries(
     conf: &NodeConfigurator,
@@ -278,4 +284,172 @@ fn capture_kit_entries(
     }
     entries.sort_by(|a, b| a.node_id.cmp(&b.node_id).then(a.param_id.cmp(&b.param_id)));
     entries
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use paraclete_node_api::NodeCommand;
+    use paraclete_runtime::NodeConfigurator;
+
+    #[test]
+    fn truncate_kit_name_caps_at_16_chars() {
+        assert_eq!(truncate_kit_name("short"), "short");
+        assert_eq!(truncate_kit_name(&"x".repeat(20)), "x".repeat(16));
+    }
+
+    #[test]
+    fn truncate_kit_name_never_panics_mid_utf8() {
+        // 17 chars; the 16-char boundary lands right after a multi-byte
+        // char. A byte slice (`name[..16]`) would split ド and panic; the
+        // char-wise truncation must stop cleanly on it.
+        let name = format!("{}xドy", "a".repeat(14)); // 14 + 1 + 1 + 1 = 17 chars; ド is the 16th
+        let t = truncate_kit_name(&name);
+        assert_eq!(t.chars().count(), 16);
+        assert_eq!(t.chars().last(), Some('ド'));
+        assert!(t.is_char_boundary(t.len()));
+    }
+
+    #[test]
+    fn kit_load_rejects_ids_out_of_range() {
+        let mut conf = NodeConfigurator::new(44100.0, 512);
+        let bus = conf.state_bus_handle();
+        let mut perform = PerformState::new();
+        perform.kit_store.set(
+            KitId(0),
+            Kit {
+                name: "k".into(),
+                entries: vec![KitEntry {
+                    node_id: 20,
+                    param_id: 1,
+                    value: 0.7,
+                }],
+            },
+        );
+
+        // KitId ≥ 64 is outside the store — must be a no-op, not a panic
+        // or an out-of-bounds index.
+        perform.execute(AppOp::KitLoad(KitId(64)), &mut conf, &bus);
+        assert!(perform.apply_pending.is_empty());
+    }
+
+    #[test]
+    fn chunked_apply_retries_until_ring_drains() {
+        let mut conf = NodeConfigurator::new(44100.0, 512);
+        let bus = conf.state_bus_handle();
+        let mut perform = PerformState::new();
+
+        // 40 entries > APPLY_CHUNK (16): the apply needs several ticks.
+        let entries: Vec<KitEntry> = (0..40)
+            .map(|i| KitEntry {
+                node_id: 1,
+                param_id: i as u32,
+                value: 0.5,
+            })
+            .collect();
+        perform.kit_store.set(
+            KitId(0),
+            Kit {
+                name: "big".into(),
+                entries: entries.clone(),
+            },
+        );
+
+        // Fill the command ring so the first chunk cannot be sent.
+        let mut filled = 0;
+        while conf
+            .send_command(NodeCommand {
+                target_id: 0,
+                type_id: 0,
+                arg0: 0,
+                arg1: 0.0,
+            })
+            .is_ok()
+        {
+            filled += 1;
+        }
+        assert!(filled > 0, "test premise: ring must actually fill");
+
+        perform.execute(AppOp::KitLoad(KitId(0)), &mut conf, &bus);
+        assert_eq!(perform.apply_pending.len(), 40);
+
+        // Tick with the ring still full: nothing may be lost, the whole
+        // chunk is re-queued in order (Amd 4 — retry, never drop).
+        perform.tick(&mut conf, &bus);
+        assert_eq!(perform.apply_pending.len(), 40, "ring-full must re-queue");
+
+        // Drain the ring the way the executor would, then tick until the
+        // apply completes (16/tick).
+        let mut executor = conf.build_executor();
+        let mut block = vec![0.0f32; 512 * 2];
+        for _ in 0..16 {
+            executor.process(&mut block, 2);
+            perform.tick(&mut conf, &bus);
+        }
+        assert!(
+            perform.apply_pending.is_empty(),
+            "apply must resume and finish once the ring drains"
+        );
+    }
+
+    #[test]
+    fn pattern_switch_apply_fires_outside_perform_mode_only() {
+        let mut conf = NodeConfigurator::new(44100.0, 512);
+        let bus = conf.state_bus_handle();
+        let mut perform = PerformState::new();
+        perform.kit_store.set(
+            KitId(0),
+            Kit {
+                name: "k".into(),
+                entries: vec![KitEntry {
+                    node_id: 20,
+                    param_id: 1,
+                    value: 0.7,
+                }],
+            },
+        );
+        perform.execute(
+            AppOp::BindKit {
+                slot: 0,
+                kit: Some(KitId(0)),
+            },
+            &mut conf,
+            &bus,
+        );
+
+        let write_pattern = |conf: &mut NodeConfigurator, p: i64| {
+            conf.state_bus_write(
+                "/node/10/state/active_pattern",
+                StateBusValue::Int(p),
+            );
+        };
+
+        // First observation seeds the cache — no apply on startup.
+        write_pattern(&mut conf, 0);
+        perform.tick(&mut conf, &bus);
+        assert!(perform.apply_pending.is_empty());
+
+        // Pattern 1 is unbound — no apply.
+        write_pattern(&mut conf, 1);
+        perform.tick(&mut conf, &bus);
+        assert!(perform.apply_pending.is_empty());
+
+        // Back to pattern 0 — the bound kit must apply.
+        write_pattern(&mut conf, 0);
+        perform.tick(&mut conf, &bus);
+        assert_eq!(perform.apply_pending.len(), 1);
+        perform.tick(&mut conf, &bus);
+        assert!(perform.apply_pending.is_empty());
+
+        // Perform mode ON: the same switch must NOT apply.
+        perform.execute(AppOp::SetPerformMode(true), &mut conf, &bus);
+        write_pattern(&mut conf, 1);
+        perform.tick(&mut conf, &bus);
+        write_pattern(&mut conf, 0);
+        perform.tick(&mut conf, &bus);
+        assert!(
+            perform.apply_pending.is_empty(),
+            "perform mode must suppress kit-apply on pattern switch"
+        );
+    }
 }
