@@ -48,6 +48,11 @@ surgical. Pro delegates to Flash when the work is mechanical,
 well-specified, or would bloat Pro's context — at Pro's judgment, not by
 rule.
 
+**Git safety.** Pro may `git add` and `git commit`. Pro must never run
+tree-mutating git: no `stash`, `reset`, `checkout`, `clean`, or `restore`.
+These wipe uncommitted work and have caused data loss in this repo
+(2026-07-30 review subagent incident).
+
 **When to delegate vs when to edit directly:**
 
 | Delegate to Flash | Edit directly (Pro) |
@@ -57,6 +62,11 @@ rule.
 | Mechanical: add the same pattern to N files | Config files, docs, AGENTS.md |
 | Work that would pollute Pro's context | When cold-start overhead > editing cost |
 | Test addition, doc sweeps | Typo, clippy suppression, constant rename |
+
+**The pattern for big features:** design/judgment → Pro. Write a spec.
+Well-specified implementation (including cross-crate refactors) → Flash
+from the spec. Review and integration → Pro. For everything else, Pro uses
+judgment: delegate when it saves work, edit directly when context is hot.
 
 **The delegation path.** Use the `implement` skill (`/implement` or
 `run_skill('implement')`) as a convenience — it provides the project-rules
@@ -106,16 +116,20 @@ design is ratified.
 
 ### Task routing by judgment density
 
-Route by the **judgment density** of the task, not its size:
+Route by the **judgment density** of the task, not its size. These are
+Pro's *default* delegation targets, not assignments — see §Implementation
+delegation above for when Pro edits directly.
 
-- **Flash subagent** — mechanical, fully specified, verifiable by tests: bug
-  fixes, feature implementation from a spec, test addition, report drafting,
-  doc sweeps, closing issues from a commit diff.
+- **Flash subagent** (Pro's default target for these) — mechanical, fully
+  specified, verifiable by tests: bug fixes, feature implementation from a
+  spec, test addition, report drafting, doc sweeps, closing issues from a
+  commit diff. Pro may handle these directly when the change is surgical
+  and context is hot.
 - **Orchestrator (DeepSeek V4 Pro)** — judgment *within* the spec: multi-file
   integration design, data-model restructures, crate introduction,
   code-review delegation & adjudication (delegates to Flash, evaluates
   findings), design-review orchestration, spec-conflict reconciliation,
-  commit message authorship.
+  commit message authorship, and direct editing of surgical changes.
 - **Defer to the user** — protocol freezes; any deviation from a spec contract;
   any new ADR; re-ordering a phase's commits after a paired session; **anything
   that changes what a gesture the performer has already learned does** — a new
@@ -866,8 +880,8 @@ symlink to this file).
 > **See §Workflow above.** The authoritative routing rules are in the Workflow
 > section at the top of this file. This section is retained for the deferred-decision
 > worked example below; the model names here (Opus/Sonnet) are historical.
-> Current routing: DeepSeek V4 Pro = orchestrator, Flash = all implementation
-> subagents.
+> Current routing: DeepSeek V4 Pro = orchestrator + direct implementation;
+> Flash = delegated implementation + mandatory code review.
 
 ### A deferred decision blocks its item, not its commit
 
