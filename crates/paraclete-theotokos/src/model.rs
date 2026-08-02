@@ -1390,6 +1390,12 @@ impl JogTracker {
     }
 }
 
+impl Default for JogTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
