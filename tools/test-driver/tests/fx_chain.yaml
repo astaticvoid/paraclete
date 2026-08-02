@@ -57,7 +57,7 @@ play: false
 timeline:
   # ── Closed, low-resonance: the filter is doing most of the work ─────────
   - at: 0.10
-    set_param: { target: "40", param: cutoff_hz, value: 400.0 }
+    set_param: { target: "40", param: cutoff, value: 400.0 }
   - at: 0.10
     set_param: { target: "40", param: resonance, value: 0.7 }
   - at: 0.10
@@ -68,7 +68,7 @@ timeline:
     trigger: { target: "analog_engine:kick", velocity: 1.0 }
 
   - at: 1.00
-    set_param: { target: "40", param: cutoff_hz, value: 1200.0 }
+    set_param: { target: "40", param: cutoff, value: 1200.0 }
   - at: 1.10
     trigger: { target: "analog_engine:kick", velocity: 0.7 }
 
@@ -76,18 +76,18 @@ timeline:
   - at: 1.80
     set_param: { target: "40", param: resonance, value: 3.5 }
   - at: 1.80
-    set_param: { target: "40", param: cutoff_hz, value: 800.0 }
+    set_param: { target: "40", param: cutoff, value: 800.0 }
   - at: 2.00
     trigger: { target: "analog_engine:kick", velocity: 1.0 }
 
   - at: 2.60
-    set_param: { target: "40", param: cutoff_hz, value: 300.0 }
+    set_param: { target: "40", param: cutoff, value: 300.0 }
   - at: 2.70
     trigger: { target: "analog_engine:kick", velocity: 1.0 }
 
   # ── Open filter, distortion driven: exercises the second node ───────────
   - at: 3.40
-    set_param: { target: "40", param: cutoff_hz, value: 8000.0 }
+    set_param: { target: "40", param: cutoff, value: 8000.0 }
   - at: 3.40
     set_param: { target: "40", param: resonance, value: 0.7 }
   - at: 3.40

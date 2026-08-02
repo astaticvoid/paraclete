@@ -315,8 +315,8 @@ mod tests {
             }],
             params: vec![
                 ParamDescriptor {
-                    id: ParamDescriptor::id_for_name("cutoff_hz"),
-                    name: "cutoff_hz".into(),
+                    id: ParamDescriptor::id_for_name("cutoff"),
+                    name: "cutoff".into(),
                     min: 20.0,
                     max: 20000.0,
                     default: 1000.0,
@@ -341,7 +341,7 @@ mod tests {
     }
 
     fn cutoff_id() -> u32 {
-        crate::capability::ParamDescriptor::id_for_name("cutoff_hz")
+        crate::capability::ParamDescriptor::id_for_name("cutoff")
     }
     fn res_id() -> u32 {
         crate::capability::ParamDescriptor::id_for_name("resonance")
@@ -700,7 +700,7 @@ mod tests {
 
     #[test]
     fn publish_bank_state_multi_param() {
-        // make_doc() has 2 params (cutoff_hz + resonance) → 2 entries in buf
+        // make_doc() has 2 params (cutoff + resonance) → 2 entries in buf
         let bank = ParameterBank::from_capability_document(&make_doc());
         let mut buf: Vec<(String, StateBusValue)> = Vec::new();
         publish_bank_state(7, &bank, &mut buf);

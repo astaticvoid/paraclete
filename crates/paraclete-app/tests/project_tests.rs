@@ -95,13 +95,13 @@ fn project_save_then_load_restores_engine_and_effect_params() {
     let pid = |name: &str| ParamDescriptor::id_for_name(name);
 
     // (node id, param name, value to store) — one per previously-lossy node.
-    // `cutoff_hz`, not the canonical `cutoff`: FilterNode declares it that way
+    // `cutoff`, not the canonical `cutoff`: FilterNode declares it that way
     // (`filter.rs:109`), which is its own deviation from AGENTS.md's canonical
     // name list and is not this test's to change.
     let edits: [(u32, &str, f64); 5] = [
         (20, "decay", 0.42),
         (27, "tune", 7.0),
-        (40, "cutoff_hz", 3210.0),
+        (40, "cutoff", 3210.0),
         (30, "drive", 0.77),
         (200, "wet", 0.31),
     ];
@@ -127,7 +127,7 @@ fn project_save_then_load_restores_engine_and_effect_params() {
         e27.set_initial_params(&pick("tune"));
         conf.add_node(27, Box::new(e27));
         let mut e40 = FilterNode::new();
-        e40.set_initial_params(&pick("cutoff_hz"));
+        e40.set_initial_params(&pick("cutoff"));
         conf.add_node(40, Box::new(e40));
         let mut e30 = DistortionNode::new();
         e30.set_initial_params(&pick("drive"));

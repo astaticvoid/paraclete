@@ -2,7 +2,7 @@
 //! FilterNode — Chamberlin state-variable filter (SVF).
 //!
 //! Parameters:
-//!   cutoff_hz   (id=0) — 20–20000 Hz, default 1000
+//!   cutoff   (id=0) — 20–20000 Hz, default 1000
 //!   resonance   (id=1) — 0.1–4.0, default 0.7
 //!   filter_type (id=2) — 0=LP, 1=HP, 2=BP, 3=Notch, default 0
 
@@ -26,7 +26,7 @@ use paraclete_node_api::{
 fn fid(name: &str) -> u32 { ParamDescriptor::id_for_name(name) }
 
 /// MM-C10 dest names, in `FilterNode::DESTS` order. **APPEND ONLY.**
-static FILTER_DEST_NAMES: &[&str] = &["cutoff_hz", "resonance"];
+static FILTER_DEST_NAMES: &[&str] = &["cutoff", "resonance"];
 static FILTER_DEST_LABELS: LfoDestLabels = LfoDestLabels(FILTER_DEST_NAMES);
 
 const PARAM_CUTOFF:      u32 = 0;
@@ -106,7 +106,7 @@ impl FilterNode {
                 PortDescriptor { id: 1, name: "audio_out".into(), direction: PortDirection::Output, port_type: PortType::Audio },
             ],
             params: vec![
-                ParamDescriptor { id: PARAM_CUTOFF,      name: "cutoff_hz".into(),   min: 20.0,  max: 20000.0, default: 1000.0, stepped: false, unit: ParamUnit::Hz,      display: None },
+                ParamDescriptor { id: PARAM_CUTOFF,      name: "cutoff".into(),   min: 20.0,  max: 20000.0, default: 1000.0, stepped: false, unit: ParamUnit::Hz,      display: None },
                 ParamDescriptor { id: PARAM_RESONANCE,   name: "resonance".into(),   min: 0.1,   max: 4.0,     default: 0.7,    stepped: false, unit: ParamUnit::Generic, display: None },
                 ParamDescriptor { id: PARAM_FILTER_TYPE, name: "filter_type".into(), min: 0.0,   max: 3.0,     default: 0.0,    stepped: true,  unit: ParamUnit::Generic, display: None },
             ]
@@ -371,7 +371,7 @@ mod tests {
             &[PARAM_CUTOFF, PARAM_RESONANCE],
             "`lfo_dest` stores a one-based index into this"
         );
-        assert_eq!(FILTER_DEST_NAMES, &["cutoff_hz", "resonance"]);
+        assert_eq!(FILTER_DEST_NAMES, &["cutoff", "resonance"]);
         assert_eq!(
             FILTER_DEST_NAMES.len(),
             FilterNode::DESTS.len(),
@@ -493,7 +493,7 @@ mod tests {
         f.activate(44100.0, 512);
         f.bank.handle_commands(&[
             NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: PARAM_CUTOFF as i64, arg1: 1000.0 },
-            // dest 1 = cutoff_hz, full depth, fast enough to move per block.
+            // dest 1 = cutoff, full depth, fast enough to move per block.
             NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: fid("lfo_dest") as i64, arg1: 1.0 },
             NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: fid("lfo_depth") as i64, arg1: 1.0 },
             NodeCommand { target_id: 0, type_id: CMD_SET_PARAM, arg0: fid("lfo_speed") as i64, arg1: 8.0 },

@@ -12,7 +12,7 @@ fn on_load() {
         if event.event_type == "FaderMoved" && event.id == 1 {
             // Mod wheel: scale 0–65535 → 200–4200 Hz cutoff
             let cutoff = 200.0 + (event.value / 65535.0) * 4000.0;
-            send_cmd(TRACK_FILT_IDS[7], 0, 0, cutoff); // CMD_SET_PARAM, cutoff_hz
+            send_cmd(TRACK_FILT_IDS[7], 0, 0, cutoff); // CMD_SET_PARAM, cutoff
         }
     });
 }
