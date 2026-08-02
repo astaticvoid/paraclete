@@ -1433,6 +1433,132 @@ mod tests {
         assert!(tone_moved, "the destination really was being modulated");
     }
 
+    /// Session #5 audit: the dest table is **machine-invariant** (one
+    /// `LFO_DESTS` for the node) while `machine_params` is per-machine, so on
+    /// any given machine some dest indices point at a param that machine
+    /// never reads. Selecting one is silently inert — verified in the session
+    /// by rendering: on a Kick, dests 6/7/8 produced output bit-identical to
+    /// a depth-0 control on every metric.
+    ///
+    /// This pins the current matrix so a change to either list is deliberate
+    /// and visible. It asserts what *is*, not what *ought to be* — the
+    /// usability problem it documents is filed, not fixed here.
+    #[test]
+    fn some_dest_indices_are_inert_on_each_machine() {
+        let inert_for = |machine: AnalogMachine| -> Vec<&'static str> {
+            let read: Vec<u32> = AnalogEngine::machine_params(machine)
+                .iter()
+                .map(|p| p.id)
+                .collect();
+            ANALOG_DEST_NAMES
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| !read.contains(&AnalogEngine::LFO_DESTS[*i]))
+                .map(|(_, n)| *n)
+                .collect()
+        };
+
+        assert_eq!(
+            inert_for(AnalogMachine::Kick),
+            vec!["snap", "noise", "open"],
+            "Kick reads tune/punch/decay/drive/tone"
+        );
+        assert_eq!(
+            inert_for(AnalogMachine::Snare),
+            vec!["punch", "drive", "open"],
+            "Snare reads tune/snap/noise/decay/tone"
+        );
+        assert_eq!(
+            inert_for(AnalogMachine::HiHat),
+            vec!["tune", "punch", "drive", "snap", "noise"],
+            "HiHat reads only tone/decay/open — 5 of 8 dests do nothing"
+        );
+    }
+
+    /// Session #5 audit: walk **every** one-based `lfo_dest` index and record
+    /// which of the node's params actually move. Exactly one must, and it
+    /// must be the one `ANALOG_DEST_NAMES` claims sits at that index.
+    ///
+    /// `only_the_destination_param_is_modulated` above proves the isolation
+    /// property, but only for dest 2 against two bystanders — an index that
+    /// selected the wrong param, or a table whose names had drifted from
+    /// `LFO_DESTS`, would pass it. This is the exhaustive form: 8 indices x
+    /// every observable param, so "the LFO is wired to something other than
+    /// what the panel says" cannot hide.
+    ///
+    /// Prints the full matrix on failure so the actual wiring is visible
+    /// rather than just the first mismatch.
+    #[test]
+    fn every_dest_index_modulates_exactly_the_param_it_names() {
+        // Every param a caller can observe on this node: the eight dests, the
+        // seven LFO controls, and `machine`. If the LFO reaches any of the
+        // latter the node can modulate its own controls.
+        let observed: Vec<&str> = ANALOG_DEST_NAMES
+            .iter()
+            .copied()
+            .chain([
+                "lfo_dest", "lfo_depth", "lfo_shape", "lfo_speed", "lfo_mode",
+                "lfo_start_phase", "lfo_fade", "machine",
+            ])
+            .collect();
+
+        let mut failures: Vec<String> = Vec::new();
+
+        for (i, expected_name) in ANALOG_DEST_NAMES.iter().enumerate() {
+            let idx = (i + 1) as f64;
+            let mut eng = AnalogEngine::kick();
+            eng.activate(44100.0, 512);
+            set_lfo(
+                &mut eng,
+                &[
+                    ("lfo_dest", idx),
+                    ("lfo_depth", 1.0),
+                    ("lfo_speed", 4.0),
+                    ("lfo_shape", 0.0), // Tri: sweeps the full -1..+1
+                    ("lfo_mode", 1.0),  // Trig: deterministic phase from the note
+                ],
+            );
+            eng.retrigger(60, 1.0);
+
+            // Unmodulated baselines, read through `raw_param` so the LFO is
+            // excluded by construction rather than by timing.
+            let base: Vec<f32> = observed.iter().map(|n| eng.raw_param(ap(n))).collect();
+            let mut moved = vec![false; observed.len()];
+
+            // ~1.2 cycles at 4 Hz, so a Tri covers its whole excursion.
+            for _ in 0..200 {
+                eng.update_lfo(LFO_SUB_BLOCK);
+                for (k, n) in observed.iter().enumerate() {
+                    if (eng.get_param(ap(n)) - base[k]).abs() > 1e-6 {
+                        moved[k] = true;
+                    }
+                }
+            }
+
+            let actually_moved: Vec<&str> = observed
+                .iter()
+                .zip(&moved)
+                .filter(|(_, m)| **m)
+                .map(|(n, _)| *n)
+                .collect();
+
+            if actually_moved != vec![*expected_name] {
+                failures.push(format!(
+                    "  lfo_dest={} expected [{}] but moved {:?}",
+                    i + 1,
+                    expected_name,
+                    actually_moved
+                ));
+            }
+        }
+
+        assert!(
+            failures.is_empty(),
+            "dest index -> modulated param mismatch:\n{}",
+            failures.join("\n")
+        );
+    }
+
     /// ADR-042 amendment 1: the base is the `get_param()` result, so a
     /// p-locked step and the LFO **compose** — the lock is not defeated by the
     /// LFO, and the LFO does not start from the bank while a lock is in force.
