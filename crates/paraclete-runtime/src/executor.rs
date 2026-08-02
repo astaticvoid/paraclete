@@ -248,6 +248,10 @@ impl NodeExecutor {
 
         // BUG-047: sinks = nodes no other node reads audio from. Pre-computed
         // once; the per-cycle final output sums only these.
+        // Note: non-audio nodes (sequencers, surfaces, clocks) also land here
+        // since their audio_out is never consumed. Their buffers are always
+        // zero-cleared, so the contribution is zero — the extra loop
+        // iterations are negligible (~10 nodes × 512 frames per cycle).
         let mut audio_consumed = vec![false; n];
         for routes in &audio_routes {
             for &src in routes {

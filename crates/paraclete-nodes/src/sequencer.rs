@@ -233,6 +233,11 @@ pub struct Sequencer {
     /// `emit_live_trig` already fired the synth — the boundary fire paths
     /// in `handle_transport` must not fire it again in the same window.
     live_recorded_step: Option<usize>,
+    /// BUG-042 nit: true when `live_recorded_step` was set this cycle.
+    /// Gives the flag one extra cycle to catch a transport boundary that
+    /// straddles a process() call — prevents a live trig recorded late in
+    /// one cycle from being re-fired by the boundary in the next.
+    live_recorded_pending: bool,
     /// Ticks until the open gate closes, counted from note-on (review
     /// finding, C3): an absolute countdown, so an early-fired note keeps its
     /// own step's gate length instead of being cut at the previous step's
@@ -471,6 +476,7 @@ impl Sequencer {
             period_frac: 0.0,
             early_fired: None,
             live_recorded_step: None,
+            live_recorded_pending: false,
             gate_ticks_left: 0,
             gate_open: false,
             active_note: 60,
@@ -558,6 +564,7 @@ impl Sequencer {
         self.step_period = self.exact_period().round().max(1.0) as u32;
         self.early_fired = None;
         self.live_recorded_step = None;
+        self.live_recorded_pending = false;
     }
 
     /// Make `idx` the active pattern and refresh everything keyed to it
@@ -570,6 +577,7 @@ impl Sequencer {
         // suppress the new pattern's entry step at the boundary.
         self.early_fired = None;
         self.live_recorded_step = None;
+        self.live_recorded_pending = false;
         let swing = self.patterns[idx].swing;
         self.bank
             .set(ParamDescriptor::id_for_name("swing"), swing as f64);
@@ -1197,6 +1205,7 @@ impl Sequencer {
         // Record which step was written so handle_transport suppresses any
         // boundary/early fire of this step in the same window.
         self.live_recorded_step = Some(nearest);
+        self.live_recorded_pending = true;
     }
 
     fn emit_note_on_at(&mut self, step_idx: usize, sample_offset: u32, output: &mut ProcessOutput) {
@@ -1483,10 +1492,15 @@ impl Node for Sequencer {
                 self.handle_transport(&k, timed.sample_offset, output);
             }
         }
-        // BUG-042: live_recorded_step is only meaningful within the
-        // window between record_live_trig and the transport loop above.
-        // Clear it so it can't suppress a step in a later process() call.
-        self.live_recorded_step = None;
+        // BUG-042: live_recorded_step is consumed by the transport loop
+        // above via take() at the boundary (line ~1130). If the live trig
+        // arrived late in this cycle and the transport boundary fires in
+        // the NEXT cycle, the pending flag grants one extra cycle.
+        if self.live_recorded_pending {
+            self.live_recorded_pending = false;
+        } else {
+            self.live_recorded_step = None;
+        }
 
         // Write sample-and-hold CV values to each CV output port every cycle.
         for i in 0..self.cv_outputs {

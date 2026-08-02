@@ -148,6 +148,8 @@ impl Node for AudioOutputNode {
         }
         for audio_in in input.audio_inputs {
             // Mono inputs upmix to both channels, matching MixNode.
+            // This changes audible output vs. the pre-BUG-047 behaviour
+            // (mono chains rendered left-only; now they render center).
             if audio_in.channels() == 1 && out.channels() >= 2 {
                 let src = audio_in.channel(0);
                 for ch in 0..out.channels() {
