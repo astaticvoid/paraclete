@@ -273,6 +273,42 @@ impl AnalogEngine {
         self.lfo.apply(param_id, self.raw_param(param_id))
     }
 
+    /// The LFO's current contribution to `tune`, in semitones (#175).
+    ///
+    /// `tune` is the one destination that is not read per render span:
+    /// `retrigger()` latches it into `current_hz`, and that is deliberate —
+    /// a p-lock on `tune` must set the note's pitch outright, not wobble it,
+    /// and pitch has to survive for the note the way velocity does. The cost
+    /// was that `lfo_dest = tune` sampled the LFO once at the trigger instant
+    /// and held it: a per-note sample-and-hold, not a sweep. In `Free` that
+    /// read as a wandering per-hit pitch; in `Trig`, because `retrigger()`
+    /// read `tune` *before* resetting the LFO phase, every hit after the
+    /// first sampled the same drift and the pattern came out identical.
+    ///
+    /// So the LFO is applied here as a **delta on top of the latched base**
+    /// rather than by making `tune` a per-span read: `retrigger()` latches
+    /// the LFO-free value (`raw_param`) and the render multiplies by this.
+    /// Both properties hold at once — the lock owns the note's pitch, the
+    /// LFO sweeps within it — and this is how `punch` already bends pitch.
+    ///
+    /// Taken as a difference rather than read raw so `apply`'s clamp to the
+    /// dest range still governs: the swept pitch cannot leave the range
+    /// `tune` itself declares.
+    fn lfo_tune_semitones(&self) -> f32 {
+        let base = self.raw_param(ap("tune"));
+        self.lfo.apply(ap("tune"), base) - base
+    }
+
+    /// `current_hz` with the LFO's `tune` sweep applied (#175). 1.0 semitone
+    /// of delta is one semitone of pitch, matching `tune`'s own unit.
+    fn swept_hz(&self) -> f32 {
+        let semis = self.lfo_tune_semitones();
+        if semis == 0.0 {
+            return self.current_hz;
+        }
+        self.current_hz * 2.0f32.powf(semis / 12.0)
+    }
+
     /// The `lfo_*` params as the block wants them, read raw.
     fn lfo_settings(&self) -> LfoSettings {
         LfoSettings {
@@ -540,7 +576,11 @@ impl AnalogEngine {
     fn retrigger(&mut self, note: u8, velocity: f32) {
         // Before any param read: this note's lock set is now final.
         self.consume_pending_locks();
-        let tune = self.get_param(ap("tune"));
+        // #175: `raw_param`, not `get_param` — the LFO is applied per render
+        // span by `swept_hz`, so reading it here too would double-count it and
+        // re-freeze the sweep into the note. The p-lock still lands: a lock on
+        // `tune` sets this note's pitch, and the sweep rides on top.
+        let tune = self.raw_param(ap("tune"));
         self.current_hz = note_to_hz(note, tune);
         self.last_note = note;
         self.velocity_level = velocity.clamp(0.0, 1.0);
@@ -614,10 +654,13 @@ impl AnalogEngine {
         let amp_attack_inc    = 1.0 / (0.001 * sr);
         let amp_decay_coeff   = 0.001f32.powf(1.0 / (decay_s * sr).max(1.0));
         let f_svf = (std::f32::consts::PI * tone_hz / sr).sin().clamp(0.0, 0.99);
+        // #175: hoisted with the other per-chunk param reads, so the sweep
+        // advances once per LFO sub-block exactly like every other dest.
+        let swept_hz = self.swept_hz();
 
         for i in start..end {
             let pitch_val = self.pitch_env.tick(pitch_attack_inc, pitch_decay_coeff);
-            let freq = self.current_hz * 2.0f32.powf(pitch_val * punch * 24.0 / 12.0);
+            let freq = swept_hz * 2.0f32.powf(pitch_val * punch * 24.0 / 12.0);
             let phase_inc = (freq / sr).clamp(0.0, 0.5);
             self.osc_phase = (self.osc_phase + phase_inc).fract();
             let osc = (self.osc_phase * std::f32::consts::TAU).sin();
@@ -642,10 +685,11 @@ impl AnalogEngine {
         let noise_attack_inc  = 1.0 / (0.001 * sr);
         let noise_decay_coeff = 0.001f32.powf(1.0 / (decay_s * sr).max(1.0));
         let f_svf = (std::f32::consts::PI * tone_hz / sr).sin().clamp(0.0, 0.99);
+        let swept_hz = self.swept_hz(); // #175
 
         for i in start..end {
             let body_amp = self.body_env.tick(body_attack_inc, body_decay_coeff);
-            self.osc_phase = (self.osc_phase + self.current_hz / sr).fract();
+            self.osc_phase = (self.osc_phase + swept_hz / sr).fract();
             let body = (self.osc_phase * std::f32::consts::TAU).sin() * body_amp;
 
             let noise_raw = xorshift(&mut self.noise_state);
@@ -1282,6 +1326,115 @@ mod tests {
     fn set_lfo(eng: &mut AnalogEngine, pairs: &[(&str, f64)]) {
         for (name, v) in pairs {
             eng.bank.set(ap(name), *v);
+        }
+    }
+
+    // ── #175 (BUG-066): `tune` sweeps within a note, not per note ─────────
+
+    /// The reported symptom: `lfo_dest = tune` gave *"high high, low low"* in
+    /// `Free` and *"four on four identical kicks"* in `Trig`. Both were the
+    /// same mechanism — `tune` had exactly one runtime read, in `retrigger()`,
+    /// so the LFO was sampled at the trigger instant and held for the note.
+    ///
+    /// The discriminating property is **within-note** movement: a
+    /// sample-and-hold and a sweep both differ from a depth-0 control, and an
+    /// earlier attempt to tell them apart by rendering at two `lfo_speed`
+    /// values was not valid evidence (both differ under either hypothesis).
+    #[test]
+    fn the_lfo_sweeps_pitch_within_one_note() {
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        set_lfo(
+            &mut eng,
+            &[
+                ("lfo_dest", 1.0),  // tune
+                ("lfo_depth", 1.0),
+                ("lfo_speed", 4.0),
+                ("lfo_shape", 0.0), // Tri: sweeps the full -1..+1
+                ("lfo_mode", 1.0),  // Trig: phase reset from the note
+            ],
+        );
+        eng.retrigger(60, 1.0);
+
+        // Sample the swept pitch across the note, driving the LFO the way the
+        // render does. `render_span` ticks it once per sub-block.
+        let mut seen: Vec<f32> = Vec::new();
+        for _ in 0..8 {
+            seen.push(eng.swept_hz());
+            eng.render_span(0, 512);
+        }
+
+        let lo = seen.iter().cloned().fold(f32::INFINITY, f32::min);
+        let hi = seen.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            hi > lo * 1.05,
+            "pitch must move within the note, not be frozen at retrigger: \
+             saw {seen:?}"
+        );
+    }
+
+    /// The half of the old behaviour that was correct and must stay: a p-lock
+    /// on `tune` sets *this note's* pitch. The sweep rides on top of it rather
+    /// than replacing it, so the locked note is transposed and still sweeps.
+    #[test]
+    fn a_tune_lock_still_sets_the_notes_pitch_under_a_sweep() {
+        let pitch = |lock: Option<f64>, dest: f64| -> f32 {
+            let mut eng = AnalogEngine::kick();
+            eng.activate(44100.0, 512);
+            eng.set_node_id(20);
+            set_lfo(
+                &mut eng,
+                &[
+                    ("lfo_dest", dest),
+                    ("lfo_depth", 1.0),
+                    ("lfo_speed", 4.0),
+                    ("lfo_shape", 0.0),
+                    ("lfo_mode", 1.0),
+                ],
+            );
+            let mut events = Vec::new();
+            if let Some(v) = lock {
+                events.push(TimedEvent::new(0, Event::ParamLock(ParamLockEvent {
+                    node_id: 20, param_id: ap("tune"), value: v,
+                })));
+            }
+            events.push(make_note_on(60));
+            run_engine(&mut eng, &events);
+            eng.current_hz
+        };
+
+        // With the LFO off, a +12 lock is an octave up.
+        let plain = pitch(None, 0.0);
+        let locked = pitch(Some(12.0), 0.0);
+        assert!((locked / plain - 2.0).abs() < 0.01,
+            "a `tune` lock of +12 must be an octave: {plain} -> {locked}");
+
+        // With the LFO on `tune`, the latched base is still the locked value —
+        // `retrigger` reads `raw_param`, so the sweep cannot be baked in.
+        let locked_swept = pitch(Some(12.0), 1.0);
+        assert_eq!(locked_swept, locked,
+            "the latched pitch must be the lock alone; the sweep is applied \
+             per render span on top of it");
+    }
+
+    /// A `tune` sweep must not disturb a note whose LFO points elsewhere, and
+    /// must be exactly inert when the LFO is off — `swept_hz` short-circuits
+    /// on a zero delta, and that has to be the same value, not merely close.
+    #[test]
+    fn swept_hz_is_exactly_current_hz_when_tune_is_not_the_dest() {
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        for dest in [0.0, 2.0, 3.0, 5.0] {
+            set_lfo(
+                &mut eng,
+                &[("lfo_dest", dest), ("lfo_depth", 1.0), ("lfo_speed", 4.0)],
+            );
+            eng.retrigger(60, 1.0);
+            for _ in 0..4 {
+                assert_eq!(eng.swept_hz(), eng.current_hz,
+                    "dest {dest} must leave pitch alone");
+                eng.render_span(0, 512);
+            }
         }
     }
 

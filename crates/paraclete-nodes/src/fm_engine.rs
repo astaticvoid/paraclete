@@ -183,6 +183,22 @@ impl FmEngine {
         ParamDescriptor::id_for_name("attack"),
     ];
 
+    /// The LFO's contribution to `tune`, in semitones, and `current_hz` with
+    /// it applied — see `AnalogEngine::lfo_tune_semitones` / `swept_hz` for
+    /// why `tune` is swept here rather than re-read per span (#175).
+    fn lfo_tune_semitones(&self) -> f32 {
+        let base = self.raw_param(fp("tune"));
+        self.lfo.apply(fp("tune"), base) - base
+    }
+
+    fn swept_hz(&self) -> f32 {
+        let semis = self.lfo_tune_semitones();
+        if semis == 0.0 {
+            return self.current_hz;
+        }
+        self.current_hz * 2.0f32.powf(semis / 12.0)
+    }
+
     /// See `AnalogEngine::push_lock` (#169).
     fn push_lock(&mut self, param_id: u32, value: f64) {
         if !self.locks_pending {
@@ -451,7 +467,8 @@ impl FmEngine {
     fn retrigger(&mut self, note: u8, velocity: f32) {
         // Before any param read: this note's lock set is now final.
         self.consume_pending_locks();
-        let tune = self.get_param(fp("tune"));
+        // #175: `raw_param`, not `get_param` — see `AnalogEngine::retrigger`.
+        let tune = self.raw_param(fp("tune"));
         self.current_hz      = note_to_hz(note, tune);
         self.last_note        = note;
         self.velocity_level   = velocity.clamp(0.0, 1.0);
@@ -512,10 +529,13 @@ impl FmEngine {
         let mod_decay_coeff   = 0.001f32.powf(1.0 / ((0.02 + punch * 0.05) * sr));
         let amp_attack_inc    = 1.0 / (0.001 * sr);
         let amp_decay_coeff   = 0.001f32.powf(1.0 / (decay_s * sr).max(1.0));
+        // #175: hoisted with the other per-chunk reads, so the `tune` sweep
+        // advances once per LFO sub-block like every other destination.
+        let swept_hz = self.swept_hz();
 
         for i in start..end {
             let pitch_val  = self.pitch_env.tick(pitch_attack_inc, pitch_decay_coeff);
-            let carrier_hz = self.current_hz * 2.0f32.powf(pitch_val * punch * 24.0 / 12.0);
+            let carrier_hz = swept_hz * 2.0f32.powf(pitch_val * punch * 24.0 / 12.0);
 
             let mod_env_val = self.mod_env.tick(mod_attack_inc, mod_decay_coeff);
             let mod_hz = carrier_hz;
@@ -546,18 +566,19 @@ impl FmEngine {
 
         let decay_coeff = 0.001f32.powf(1.0 / (decay_s * sr).max(1.0));
         let attack_inc  = 1.0 / (0.001 * sr);
+        let swept_hz = self.swept_hz(); // #175
 
         for i in start..end {
             let mod_env_val = self.mod_env.tick(attack_inc, decay_coeff);
             let amp_val     = self.amp_env.tick(attack_inc, decay_coeff);
 
-            let mod_hz = self.current_hz * ratio;
+            let mod_hz = swept_hz * ratio;
             self.modulator_phase = (self.modulator_phase + mod_hz / sr).fract();
             let fb_term = feedback * self.prev_mod_out;
             let mod_out = (self.modulator_phase * tau + fb_term * tau).sin();
             self.prev_mod_out = mod_out;
 
-            self.carrier_phase = (self.carrier_phase + self.current_hz / sr
+            self.carrier_phase = (self.carrier_phase + swept_hz / sr
                 + index * mod_out * mod_env_val / tau).fract();
             let out = (self.carrier_phase * tau).sin() * amp_val;
             self.render_l[i] = out;
@@ -578,16 +599,17 @@ impl FmEngine {
         let attack_inc      = 1.0 / (attack_s * sr).max(1.0);
         let decay_coeff     = 0.001f32.powf(1.0 / (decay_s * sr).max(1.0));
         let mod_decay_coeff = 0.001f32.powf(1.0 / ((decay_s * 0.3) * sr).max(1.0));
+        let swept_hz = self.swept_hz(); // #175
 
         for i in start..end {
             let mod_env_val = self.mod_env.tick(attack_inc, mod_decay_coeff);
             let amp_val     = self.amp_env.tick(attack_inc, decay_coeff);
 
-            let mod_hz = self.current_hz * ratio;
+            let mod_hz = swept_hz * ratio;
             self.modulator_phase = (self.modulator_phase + mod_hz / sr).fract();
             let mod_out = (self.modulator_phase * tau).sin() * mod_env_val;
 
-            self.carrier_phase = (self.carrier_phase + self.current_hz / sr
+            self.carrier_phase = (self.carrier_phase + swept_hz / sr
                 + index * mod_out / tau).fract();
             let out = soft_clip((self.carrier_phase * tau).sin() * amp_val * (1.0 + drive * 9.0));
             self.render_l[i] = out;
@@ -1770,6 +1792,39 @@ mod tests {
             assert!((eng.raw_param(fp("decay")) - 0.01).abs() < 1e-6,
                 "block {block}: the lock must outlive the cycle it arrived in");
         }
+    }
+
+    /// #175 (BUG-066), FM half. `tune` was read only in `retrigger()`, so
+    /// `lfo_dest = tune` was a per-note sample-and-hold rather than a sweep.
+    /// See `AnalogEngine::lfo_tune_semitones` for why it is a delta on the
+    /// latched base and not a per-span re-read. All three machines drive
+    /// pitch through `swept_hz`, so one is enough to pin the mechanism.
+    #[test]
+    fn the_lfo_sweeps_pitch_within_one_note() {
+        let mut eng = FmEngine::bass();
+        eng.activate(44100.0, 512);
+        for (name, v) in [
+            ("lfo_dest", 1.0),  // tune
+            ("lfo_depth", 1.0),
+            ("lfo_speed", 4.0),
+            ("lfo_shape", 0.0), // Tri
+            ("lfo_mode", 1.0),  // Trig
+        ] {
+            eng.bank.set(fp(name), v);
+        }
+        eng.retrigger(60, 1.0);
+
+        let mut seen: Vec<f32> = Vec::new();
+        for _ in 0..8 {
+            seen.push(eng.swept_hz());
+            eng.render_span(0, 512);
+        }
+        let lo = seen.iter().cloned().fold(f32::INFINITY, f32::min);
+        let hi = seen.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        assert!(
+            hi > lo * 1.05,
+            "pitch must move within the note, not freeze at retrigger: {seen:?}"
+        );
     }
 
     /// A re-activate kills the voice, so it must kill the voice's locks.

@@ -1,0 +1,82 @@
+# The LFO's only regression coverage (#175).
+#
+# Every other baseline runs with `lfo_dest` at 0 — the LFO off — so the entire
+# MOD block was unobserved: fixing #175 (pitch was latched at retrigger, so
+# `lfo_dest = tune` was a per-note sample-and-hold rather than a sweep) changed
+# the pitch path in both engine families and all six existing baselines stayed
+# green. A change nothing can see is a change nothing can catch, and that is
+# the shape of failure that let #169 live under `plock_authoring` for a phase.
+#
+# Two destinations on two engine families, chosen because they take different
+# routes through the code:
+#
+#   node 20 (analog Kick), dest 1 `tune`  — the delta-on-the-latched-base path
+#                                           (`swept_hz`), the one #175 added
+#   node 27 (FM Bass),     dest 1 `tune`  — the same path in the other family
+#   node 20,               dest 5 `drive` — an ordinary per-render-span read,
+#                                           so a regression that breaks only
+#                                           the pitch path is distinguishable
+#                                           from one that breaks the LFO host
+#
+# `lfo_mode` 1 is Trig: the phase resets from the note, so the fingerprint is
+# deterministic rather than depending on where a free-running LFO happened to
+# be. `lfo_shape` 0 is Tri, which sweeps the full -1..+1 rather than dwelling
+# near an extreme.
+#
+# Checked in both directions before being trusted, per AGENTS.md — one
+# perturbation only proves the scenario does *something*:
+#   * setting `lfo_depth` to 0 moves the fingerprint (it observes the LFO);
+#   * reinstating #175's defect (latching `tune` through `get_param` at
+#     retrigger and rendering from the frozen value) also moves it, so this
+#     covers the bug and not merely the code path.
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 6
+output: /tmp/lfo_sweep.wav
+play: false
+
+timeline:
+  - at: 0.1
+    clear: { target: "10" }
+  - at: 0.1
+    clear: { target: "13" }
+
+  # ── Round 1: analog Kick, LFO on `tune` — the swept-pitch path.
+  - at: 0.2
+    set_param: { target: "analog_engine:kick", param: decay, value: 0.6 }
+  - at: 0.2
+    set_param: { target: "analog_engine:kick", param: lfo_shape, value: 0 }
+  - at: 0.2
+    set_param: { target: "analog_engine:kick", param: lfo_mode, value: 1 }
+  - at: 0.2
+    set_param: { target: "analog_engine:kick", param: lfo_speed, value: 6 }
+  - at: 0.2
+    set_param: { target: "analog_engine:kick", param: lfo_depth, value: 1.0 }
+  - at: 0.2
+    set_param: { target: "analog_engine:kick", param: lfo_dest, value: 1 }
+  - at: 0.3
+    set_step: { target: "10", step: 0, note: 36 }
+  - at: 0.3
+    set_step: { target: "10", step: 8, note: 36 }
+
+  # ── Round 2: same node, dest `drive` — an ordinary per-span read.
+  - at: 2.4
+    set_param: { target: "analog_engine:kick", param: lfo_dest, value: 5 }
+
+  # ── Round 3: FM Bass on `tune`, the other family's pitch path.
+  - at: 4.0
+    clear: { target: "10" }
+  - at: 4.1
+    set_param: { target: "fm_engine:bass", param: lfo_shape, value: 0 }
+  - at: 4.1
+    set_param: { target: "fm_engine:bass", param: lfo_mode, value: 1 }
+  - at: 4.1
+    set_param: { target: "fm_engine:bass", param: lfo_speed, value: 6 }
+  - at: 4.1
+    set_param: { target: "fm_engine:bass", param: lfo_depth, value: 1.0 }
+  - at: 4.1
+    set_param: { target: "fm_engine:bass", param: lfo_dest, value: 1 }
+  - at: 4.2
+    set_step: { target: "13", step: 0, note: 36 }
+  - at: 4.2
+    set_step: { target: "13", step: 8, note: 36 }
