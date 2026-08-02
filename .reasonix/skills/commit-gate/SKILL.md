@@ -18,9 +18,9 @@ Exit 0 required. If a test failure is pre-existing and unrelated, document it in
 ### Gate 2: Clippy clean on touched crates
 ```bash
 # Capture baseline, touch changed files, capture again, diff
-cargo clippy --workspace 2>&1 > /tmp/clippy-before.txt
+cargo clippy --workspace --all-targets > /tmp/clippy-before.txt 2>&1
 touch <changed files>
-cargo clippy --workspace 2>&1 > /tmp/clippy-after.txt
+cargo clippy --workspace --all-targets > /tmp/clippy-after.txt 2>&1
 diff /tmp/clippy-before.txt /tmp/clippy-after.txt
 ```
 Zero new warnings on the crates you touched. Pre-existing warnings in untouched crates are not yours.

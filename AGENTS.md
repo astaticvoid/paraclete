@@ -86,8 +86,9 @@ Route by the **judgment density** of the task, not its size:
   fixes, feature implementation from a spec, test addition, report drafting,
   doc sweeps, closing issues from a commit diff.
 - **Orchestrator (DeepSeek V4 Pro)** — judgment *within* the spec: multi-file
-  integration design, data-model restructures, crate introduction, post-commit
-  code review passes, design review management, spec-conflict reconciliation,
+  integration design, data-model restructures, crate introduction,
+  code-review delegation & adjudication (delegates to Flash, evaluates
+  findings), design-review orchestration, spec-conflict reconciliation,
   commit message authorship.
 - **Defer to the user** — protocol freezes; any deviation from a spec contract;
   any new ADR; re-ordering a phase's commits after a paired session; **anything
