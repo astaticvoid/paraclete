@@ -75,6 +75,18 @@ impl NameResolver {
 
     pub fn resolve_required(&self, target: &str) -> Result<u32, String> {
         if let Ok(id) = target.parse::<u32>() {
+            // INFRA-014: if we have declared nodes, the id must exist among
+            // them — a typo'd id silently no-ops when resolved against an
+            // engine that ignores it.  empty() skips validation so unit tests
+            // that test JSON parsing (not resolution) still work.
+            if !self.nodes.is_empty() && !self.nodes.iter().any(|n| n.id == id) {
+                let known: Vec<String> = self.nodes.iter().map(|n| n.id.to_string()).collect();
+                return Err(format!(
+                    "target '{}' is not a known node id — declared ids: [{}]",
+                    target,
+                    known.join(", ")
+                ));
+            }
             return Ok(id);
         }
         match self.names.get(&target.to_lowercase()).map(Vec::as_slice) {
@@ -169,12 +181,11 @@ mod tests {
     fn numeric_target_bypasses_names() {
         let r = NameResolver::from_instrument(&default_shaped());
         assert_eq!(r.resolve_required("10").unwrap(), 10);
-        // An undeclared id resolves too, and the command is then dropped by a
-        // node that does not exist — the same silent-no-op INFRA-012 was filed
-        // about, reached through the numeric door instead of the name one.
-        // Recorded here as current behaviour, NOT endorsed: see the follow-up
-        // issue. Do not treat this assertion as the contract.
-        assert_eq!(r.resolve_required("999").unwrap(), 999);
+        // INFRA-014: an undeclared id is now rejected — a typo'd id no longer
+        // silently resolves and no-ops. The error says what ids exist.
+        let err = r.resolve_required("999").unwrap_err();
+        assert!(err.contains("not a known node id"), "{}", err);
+        assert!(err.contains("1, 10, 11, 20, 21"), "{}", err);
     }
 
     #[test]
@@ -240,5 +251,14 @@ mod tests {
         let def = instrument(vec![node(30, "analog_engine:clap", Some("Clap"))]);
         let r = NameResolver::from_instrument(&def);
         assert_eq!(r.resolve_required("clap").unwrap(), 30);
+    }
+
+    /// INFRA-014: empty() still permits arbitrary numeric targets — the
+    /// JSON-parsing tests in main.rs rely on this escape.
+    #[test]
+    fn empty_resolver_permits_any_numeric_target() {
+        let r = NameResolver::empty();
+        assert_eq!(r.resolve_required("999").unwrap(), 999);
+        assert_eq!(r.resolve_required("42").unwrap(), 42);
     }
 }
