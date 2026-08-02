@@ -154,6 +154,54 @@ pub enum TimelineAction {
         #[serde(default)]
         velocity: f64,
     },
+    /// P11 C3: engine-level temp save — clone the target sequencer's
+    /// active pattern into its shadow (`CMD_TEMP_SAVE`).
+    TempSave {
+        target: String,
+    },
+    /// P11 C3: engine-level temp reload — restore the shadow pattern
+    /// into the active pattern (`CMD_TEMP_RELOAD`).
+    TempReload {
+        target: String,
+    },
+    /// P11 C2: app-level — capture current in_kit param state into a
+    /// named kit (first free slot), via `PerformState::execute`.
+    KitSave {
+        name: String,
+    },
+    /// P11 C2: app-level — load (apply) a saved kit by slot id.
+    KitLoad {
+        id: u8,
+    },
+    /// P11 C2: app-level — bind a kit id to a pattern slot.
+    BindKit {
+        slot: usize,
+        kit_id: u8,
+    },
+    /// P11 C2: app-level — toggle perform mode (kit-apply on pattern
+    /// switch).
+    SetPerformMode {
+        on: bool,
+    },
+    /// P11 C3: app-level — TempSave op: snapshot params AND broadcast
+    /// CMD_TEMP_SAVE to every sequencer. The op covers the whole graph, so
+    /// `all: true` is the only meaningful payload.
+    ///
+    /// Struct-variant shape is a serde_yml workaround: externally-tagged
+    /// unit variants fail to deserialize in the noyalib compat shim, and
+    /// the flatten machinery drops an empty-map payload — the variant needs
+    /// at least one explicit field to parse.
+    AppTempSave {
+        #[serde(default)]
+        all: Option<bool>,
+    },
+    /// P11 C3: app-level — TempReload op: replay param snapshot AND
+    /// broadcast CMD_TEMP_RELOAD to every sequencer. Same shape rationale
+    /// as `AppTempSave`.
+    AppTempReload {
+        #[serde(default)]
+        all: Option<bool>,
+    },
 }
 
 #[derive(Debug)]
@@ -250,6 +298,29 @@ pub enum ResolvedActionKind {
         note: i64,
         velocity: f64,
     },
+    TempSave {
+        target_id: u32,
+    },
+    TempReload {
+        target_id: u32,
+    },
+    KitSave {
+        name: String,
+    },
+    KitLoad {
+        id: u8,
+    },
+    BindKit {
+        slot: usize,
+        kit_id: u8,
+    },
+    SetPerformMode {
+        on: bool,
+    },
+    /// Internal form of the app-level temp ops. `all` is a serde_yml
+    /// workaround on `TimelineAction` only; nothing here reads it.
+    AppTempSave,
+    AppTempReload,
 }
 
 fn default_velocity() -> f64 {

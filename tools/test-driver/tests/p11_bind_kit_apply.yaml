@@ -1,0 +1,73 @@
+# P11 C2 live test: pattern-switch kit-apply and perform-mode skip.
+#
+# BindKit ties a kit to a pattern slot; each main-loop tick, PerformState
+# diffs each sequencer's published `/node/{id}/state/active_pattern` and
+# applies the bound kit when a pattern switch is seen — but only outside
+# perform mode (in perform mode the performer has manual control).
+#
+# Sequence: bind kit 0 (decay 0.7) to pattern slot 0 → switch to pattern 1
+# (unbound), set decay 0.2 → switch back to 0 → the bound kit must auto-apply
+# and decay returns to 0.7. Then enable perform mode and repeat the same
+# switch; this time the kit must NOT apply and decay stays 0.2.
+#
+# Timing: while playing, CMD_SET_PATTERN only cues; the switch lands at the
+# next pattern wrap (sequencer.rs handle_transport). Both patterns are
+# shortened to 2 steps (~0.214s wraps at 140 bpm), so a cue lands within
+# ~0.22s; assertions sit ≥0.58s after each cue. Default pattern length is
+# 64 steps (~6.86s), which is why both patterns must be shortened explicitly
+# (set_length acts on the active pattern only).
+# No steps are authored, so there is nothing to hear; assertions are
+# state-bus reads.
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 5.0
+output: /tmp/p11_bind_kit_apply.wav
+play: false
+
+timeline:
+  # Pattern 0 becomes a fast 2-step loop so cued switches land quickly.
+  - at: 0.02
+    set_length: { target: "10", steps: 2 }
+  # Kit 0 = { decay: 0.7 } (sound param only; structural params not in kits).
+  - at: 0.05
+    set_param: { target: "analog_engine:kick", param: decay, value: 0.7 }
+  - at: 0.3
+    kit_save: { name: "KitA" }
+  - at: 0.35
+    bind_kit: { slot: 0, kit_id: 0 }
+  # → pattern 1 (unbound); lands at the first pattern-0 wrap ≤0.71s.
+  - at: 0.5
+    set_pattern: { target: "10", pattern: 1 }
+  # Pattern 1 is now active — shorten it too (64-step default would wrap
+  # only every ~6.9s). 0.8 is safely after the worst-case switch time.
+  - at: 0.8
+    set_length: { target: "10", steps: 2 }
+  - at: 1.2
+    set_param: { target: "analog_engine:kick", param: decay, value: 0.2 }
+  # → back to pattern 0, cued at 1.5, lands at the next pattern-1 wrap
+  # ≤1.72s. The bound kit auto-applies there (perform mode off).
+  - at: 1.5
+    set_pattern: { target: "10", pattern: 0 }
+  # Perform mode ON: pattern switches must no longer apply kits.
+  - at: 2.6
+    set_perform_mode: { on: true }
+  # → pattern 1, cued at 2.9, lands ≤3.12s.
+  - at: 2.9
+    set_pattern: { target: "10", pattern: 1 }
+  - at: 3.6
+    set_param: { target: "analog_engine:kick", param: decay, value: 0.2 }
+  # → pattern 0, cued at 3.9, lands ≤4.12s. Perform mode is ON — the bound
+  # kit must NOT apply.
+  - at: 3.9
+    set_pattern: { target: "10", pattern: 0 }
+
+assert:
+  # Auto-applied on the pattern-1 → pattern-0 switch (perform mode off).
+  - at: 2.3
+    path: /node/20/param/decay
+    eq: 0.7
+  # NOT auto-applied on the same switch with perform mode on — the
+  # performer's manual decay 0.2 must survive.
+  - at: 4.7
+    path: /node/20/param/decay
+    eq: 0.2

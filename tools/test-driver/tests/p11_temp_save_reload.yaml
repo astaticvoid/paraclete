@@ -1,0 +1,66 @@
+# P11 C3 live test: app-level temp save/reload (AppOp::TempSave /
+# AppOp::TempReload — the FUNC+YES / FUNC+NO surface gestures).
+#
+# AppTempSave snapshots two halves in the same tick: the in_kit param state
+# (app-side temp_param_snapshot) and every sequencer's active pattern
+# (engine-side shadow, CMD_TEMP_SAVE broadcast). AppTempReload replays both:
+# the param snapshot through the chunked apply, and the pattern shadows
+# (CMD_TEMP_RELOAD). This scenario mutates BOTH halves after the save and
+# proves both come back:
+#   - params: decay 0.1 saved → 0.9 after save → 0.1 again after reload
+#     (state-bus assertion, exact value).
+#   - pattern: a 4-on-the-floor (steps 0,4,8,12 on sequencer 10) is cleared
+#     after the save → audible silence → restored by reload → the pattern
+#     sounds again unprompted (audio assertions, wide windows for wall-clock
+#     dispatch jitter — AGENTS.md).
+#
+# Default instrument: bpm 140, 16th-note steps ~0.1071s, loop ~1.714s, kick
+# decay shortened to 0.1 so the silence window is unambiguous.
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 3.0
+output: /tmp/p11_temp_save_reload.wav
+play: false
+
+timeline:
+  # Short kick tail so the post-clear silence window is clean.
+  - at: 0.01
+    set_param: { target: "analog_engine:kick", param: decay, value: 0.1 }
+  # 4-on-the-floor.
+  - at: 0.05
+    set_step: { target: "10", step: 0, note: 36 }
+  - at: 0.06
+    set_step: { target: "10", step: 4, note: 36 }
+  - at: 0.07
+    set_step: { target: "10", step: 8, note: 36 }
+  - at: 0.08
+    set_step: { target: "10", step: 12, note: 36 }
+  # Snapshot both halves: params (decay 0.1) + pattern (4-on-the-floor).
+  - at: 0.3
+    app_temp_save: { all: true }
+  # Mutate BOTH halves after the save: wipe the pattern, move the param.
+  - at: 0.35
+    clear: { target: "10" }
+  - at: 0.36
+    set_param: { target: "analog_engine:kick", param: decay, value: 0.9 }
+  # Restore.
+  - at: 1.4
+    app_temp_reload: { all: true }
+
+assert:
+  # Silence between clear and reload: the pattern is gone and the last
+  # pre-clear kick's tail has settled. If the pattern were still playing
+  # this window catches it.
+  - at: 1.2
+    peak_lt: 0.01
+    window_ms: 300
+  # Param half restored exactly (chunked apply completed long before this).
+  - at: 1.6
+    path: /node/20/param/decay
+    eq: 0.1
+  # Pattern half restored: the 4-on-the-floor sounds again on its own —
+  # kicks at ~1.714s and ~2.143s fall inside this window. Nothing in the
+  # timeline after app_temp_reload re-authoring any steps.
+  - at: 2.4
+    peak_gte: 0.01
+    window_ms: 1000

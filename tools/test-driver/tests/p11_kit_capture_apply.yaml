@@ -1,0 +1,53 @@
+# P11 C0 + C2 live test: kit capture is opt-in via the `in_kit` flag, and
+# KitLoad replays exactly the captured entries.
+#
+# What this proves:
+#   - C0 (in_kit flag): a structural param (`pattern_length`, in_kit: false)
+#     is NOT captured, so loading the kit leaves it untouched; a sound param
+#     (`decay`, in_kit: true) IS captured and restored. Both directions on
+#     the same save — if capture grabbed everything or nothing, one of the
+#     two assertions fails.
+#   - C2 (capture/apply): KitSaveAs reads current state via cap-doc + state
+#     bus, KitLoad replays it through the chunked apply path.
+#
+# Runs through the same PerformState the app main loop drains into
+# (test-driver dispatch_any), so this is the shipped code path, not a stub.
+#
+# No audio assertions: the assertions are state-bus reads of the params a
+# kit does and does not contain.
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 2.0
+output: /tmp/p11_kit_capture_apply.wav
+play: false
+
+timeline:
+  # Distinctive value on a sound param (in_kit: true).
+  - at: 0.02
+    set_param: { target: "analog_engine:kick", param: decay, value: 0.7 }
+  # Distinctive value on a structural param (in_kit: false) — must NOT be
+  # captured into the kit.
+  - at: 0.03
+    set_param: { target: "10", param: pattern_length, value: 8.0 }
+  # Capture current state as kit slot 0.
+  - at: 0.5
+    kit_save: { name: "LiveKit" }
+  # Mutate both halves of the saved state.
+  - at: 0.55
+    set_param: { target: "analog_engine:kick", param: decay, value: 0.2 }
+  - at: 0.6
+    set_param: { target: "10", param: pattern_length, value: 16.0 }
+  # Apply the kit.
+  - at: 1.0
+    kit_load: { id: 0 }
+
+assert:
+  # Sound param restored from the kit (C2 capture+apply).
+  - at: 1.6
+    path: /node/20/param/decay
+    eq: 0.7
+  # Structural param left untouched — proves in_kit: false kept it out of
+  # the kit (C0). A capture that grabbed every param fails this assertion.
+  - at: 1.6
+    path: /node/10/param/pattern_length
+    eq: 16.0

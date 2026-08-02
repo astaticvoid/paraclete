@@ -7,6 +7,7 @@ mod wav;
 use std::cell::UnsafeCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -39,6 +40,10 @@ const CMD_SET_LOCK_TARGET: u32 = Sequencer::CMD_SET_LOCK_TARGET;
 const CMD_SET_STEP_LOCK: u32 = Sequencer::CMD_SET_STEP_LOCK;
 const CMD_CLEAR_STEP_LOCK: u32 = Sequencer::CMD_CLEAR_STEP_LOCK;
 const CMD_TRIG_NOW: u32 = Sequencer::CMD_TRIG_NOW;
+// P11 C3: the sequencer's own constants are `pub(crate)`; the wire numbers
+// live in node-api, where the app's PerformState reads them too.
+const CMD_TEMP_SAVE: u32 = paraclete_node_api::command::CMD_TEMP_SAVE as u32;
+const CMD_TEMP_RELOAD: u32 = paraclete_node_api::command::CMD_TEMP_RELOAD as u32;
 
 fn auto_play_command() -> &'static str {
     #[cfg(target_os = "macos")]
@@ -309,9 +314,82 @@ fn dispatch_action(conf: &mut NodeConfigurator, action: &ResolvedActionKind) -> 
             arg0: *note,
             arg1: *velocity,
         },
+        ResolvedActionKind::TempSave { target_id } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_TEMP_SAVE,
+            arg0: 0,
+            arg1: 0.0,
+        },
+        ResolvedActionKind::TempReload { target_id } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_TEMP_RELOAD,
+            arg0: 0,
+            arg1: 0.0,
+        },
+        // App-level ops are not node commands — `dispatch_any` routes them
+        // through PerformState, mirroring the app main loop's drain.
+        ResolvedActionKind::KitSave { .. }
+        | ResolvedActionKind::KitLoad { .. }
+        | ResolvedActionKind::BindKit { .. }
+        | ResolvedActionKind::SetPerformMode { .. }
+        | ResolvedActionKind::AppTempSave
+        | ResolvedActionKind::AppTempReload => {
+            return Err("app-level action must go through dispatch_any".into());
+        }
     };
     conf.send_command(cmd)
         .map_err(|_| "command ring buffer full".into())
+}
+
+/// Dispatch an app-level action (kit ops, app temp save/reload) through
+/// the app's `PerformState`. These are not node commands — they are
+/// `AppOp`s the main loop would drain from surfaces. The test-driver
+/// exercises them directly so kit capture/apply and app-level temp
+/// save/reload are live-testable headlessly.
+fn dispatch_app_action(
+    perform: &mut paraclete_app::perform_state::PerformState,
+    conf: &mut NodeConfigurator,
+    bus: &Rc<std::cell::RefCell<StateBusHandle>>,
+    action: &ResolvedActionKind,
+) -> Result<(), String> {
+    use paraclete_node_api::app_op::{AppOp, KitId};
+    let op = match action {
+        ResolvedActionKind::KitSave { name } => AppOp::KitSaveAs(name.clone()),
+        ResolvedActionKind::KitLoad { id } => AppOp::KitLoad(KitId(*id)),
+        ResolvedActionKind::BindKit { slot, kit_id } => {
+            AppOp::BindKit { slot: *slot, kit: Some(KitId(*kit_id)) }
+        }
+        ResolvedActionKind::SetPerformMode { on } => AppOp::SetPerformMode(*on),
+        ResolvedActionKind::AppTempSave => AppOp::TempSave,
+        ResolvedActionKind::AppTempReload => AppOp::TempReload,
+        other => {
+            return Err(format!(
+                "dispatch_app_action: not an app action: {other:?}"
+            ))
+        }
+    };
+    perform.execute(op, conf, bus);
+    Ok(())
+}
+
+/// Route one resolved timeline action: node-command actions go straight to
+/// the configurator; app-level actions (kit ops, app temp save/reload) go
+/// through `PerformState` exactly as the app main loop would.
+fn dispatch_any(
+    perform: &mut paraclete_app::perform_state::PerformState,
+    conf: &mut NodeConfigurator,
+    bus: &Rc<std::cell::RefCell<StateBusHandle>>,
+    action: &ResolvedActionKind,
+) -> Result<(), String> {
+    match action {
+        ResolvedActionKind::KitSave { .. }
+        | ResolvedActionKind::KitLoad { .. }
+        | ResolvedActionKind::BindKit { .. }
+        | ResolvedActionKind::SetPerformMode { .. }
+        | ResolvedActionKind::AppTempSave
+        | ResolvedActionKind::AppTempReload => dispatch_app_action(perform, conf, bus, action),
+        _ => dispatch_action(conf, action),
+    }
 }
 
 fn param_id_for_name(name: &str) -> u32 {
@@ -428,6 +506,12 @@ fn run_batch(scenario: TestScenario) -> Result<(), String> {
 
     let mut ctx = build_context(&def, sample_rate, block_size)?;
 
+    // P11 C2/C3: the app-level kit/temp ops live in `PerformState`, the same
+    // object the app main loop owns. Ticked every loop iteration (mirroring
+    // main.rs) so chunked kit applies progress and pattern-switch kit-apply
+    // fires.
+    let mut perform = paraclete_app::perform_state::PerformState::new();
+
     let mut timeline: Vec<(f64, ResolvedActionKind)> = scenario
         .timeline
         .iter()
@@ -451,12 +535,13 @@ fn run_batch(scenario: TestScenario) -> Result<(), String> {
     while start.elapsed() < duration {
         std::thread::sleep(Duration::from_millis(1));
         ctx.conf.process_main_thread();
+        perform.tick(&mut ctx.conf, &ctx.bus_handle);
 
         let elapsed = start.elapsed().as_secs_f64();
 
         while next_action < timeline.len() && timeline[next_action].0 <= elapsed {
             let action = &timeline[next_action];
-            dispatch_action(&mut ctx.conf, &action.1)?;
+            dispatch_any(&mut perform, &mut ctx.conf, &ctx.bus_handle, &action.1)?;
             next_action += 1;
         }
 
@@ -652,6 +737,7 @@ fn run_interactive(cfg: &InteractiveConfig) -> Result<(), String> {
     let def = load_instrument_definition(&PathBuf::from(&cfg.instrument))
         .map_err(|e| format!("failed to load instrument: {}", e))?;
     let mut ctx = build_context(&def, cfg.sample_rate, cfg.block_size)?;
+    let mut perform = paraclete_app::perform_state::PerformState::new();
 
     // Reader thread: blocks on stdin, forwards each line to the main loop. It
     // never touches the engine, so a blocked read cannot stall audio or state.
@@ -682,6 +768,7 @@ fn run_interactive(cfg: &InteractiveConfig) -> Result<(), String> {
     loop {
         std::thread::sleep(Duration::from_millis(1));
         ctx.conf.process_main_thread();
+        perform.tick(&mut ctx.conf, &ctx.bus_handle);
         ctx.capture.drain(&mut all_samples, &mut last_capture_read);
 
         match rx.try_recv() {
@@ -690,7 +777,7 @@ fn run_interactive(cfg: &InteractiveConfig) -> Result<(), String> {
                 if trimmed.is_empty() {
                     continue;
                 }
-                let (resp, quit) = handle_json_command(&mut ctx, trimmed, &all_samples);
+                let (resp, quit) = handle_json_command(&mut ctx, &mut perform, trimmed, &all_samples);
                 let mut out = stdout.lock();
                 let _ = writeln!(out, "{}", resp);
                 let _ = out.flush();
@@ -850,6 +937,33 @@ fn json_to_action(
             note: v.get("note").and_then(|x| x.as_i64()).unwrap_or(0),
             velocity: v.get("velocity").and_then(|x| x.as_f64()).unwrap_or(0.0),
         },
+        // P11 C3: engine-level temp save/reload (one sequencer's shadow).
+        "temp_save" => A::TempSave {
+            target_id: resolve_json_target(resolver, v)?,
+        },
+        "temp_reload" => A::TempReload {
+            target_id: resolve_json_target(resolver, v)?,
+        },
+        // P11 C2/C3: app-level ops, routed through PerformState by
+        // dispatch_any (the same object the app main loop drains into).
+        "kit_save" => A::KitSave {
+            name: jstr(v, "name").ok_or("kit_save needs 'name'")?.to_string(),
+        },
+        "kit_load" => A::KitLoad {
+            id: need_i64(v, "id", "kit_load")? as u8,
+        },
+        "bind_kit" => A::BindKit {
+            slot: need_i64(v, "slot", "bind_kit")? as usize,
+            kit_id: need_i64(v, "kit_id", "bind_kit")? as u8,
+        },
+        "set_perform_mode" => A::SetPerformMode {
+            on: v
+                .get("on")
+                .and_then(|x| x.as_bool())
+                .ok_or("set_perform_mode needs bool 'on'")?,
+        },
+        "app_temp_save" => A::AppTempSave,
+        "app_temp_reload" => A::AppTempReload,
         _ => return Ok(None),
     };
     Ok(Some(action))
@@ -858,7 +972,12 @@ fn json_to_action(
 /// Dispatch one parsed interactive command. Returns the JSON response line and
 /// whether the session should quit. Engine mutations reuse the batch
 /// `dispatch_action` path; `read`/`dump`/`peak`/`render` are interactive-only.
-fn handle_json_command(ctx: &mut TestContext, line: &str, all_samples: &[f32]) -> (String, bool) {
+fn handle_json_command(
+    ctx: &mut TestContext,
+    perform: &mut paraclete_app::perform_state::PerformState,
+    line: &str,
+    all_samples: &[f32],
+) -> (String, bool) {
     let v: serde_json::Value = match serde_json::from_str(line) {
         Ok(v) => v,
         Err(e) => return (err_json(&format!("invalid JSON: {}", e)), false),
@@ -945,7 +1064,7 @@ fn handle_json_command(ctx: &mut TestContext, line: &str, all_samples: &[f32]) -
         other => match json_to_action(&ctx.resolver, other, &v) {
             Ok(Some(action)) => {
                 ctx.mutation_seq += 1;
-                match dispatch_action(&mut ctx.conf, &action) {
+                match dispatch_any(perform, &mut ctx.conf, &ctx.bus_handle, &action) {
                     Ok(()) => (ok_json(), false),
                     Err(e) => (err_json(&e), false),
                 }
@@ -1189,6 +1308,37 @@ fn resolve_action(
             note: *note,
             velocity: *velocity,
         },
+        TimelineAction::TempSave { target } => ResolvedActionKind::TempSave {
+            target_id: resolve_target(resolver, target)?,
+        },
+        TimelineAction::TempReload { target } => ResolvedActionKind::TempReload {
+            target_id: resolve_target(resolver, target)?,
+        },
+        TimelineAction::KitSave { name } => ResolvedActionKind::KitSave { name: name.clone() },
+        TimelineAction::KitLoad { id } => ResolvedActionKind::KitLoad { id: *id },
+        TimelineAction::BindKit { slot, kit_id } => ResolvedActionKind::BindKit {
+            slot: *slot,
+            kit_id: *kit_id,
+        },
+        TimelineAction::SetPerformMode { on } => ResolvedActionKind::SetPerformMode { on: *on },
+        TimelineAction::AppTempSave { all } => {
+            if *all == Some(false) {
+                return Err(
+                    "app_temp_save: `all: false` is not meaningful — the op covers the whole graph"
+                        .into(),
+                );
+            }
+            ResolvedActionKind::AppTempSave
+        }
+        TimelineAction::AppTempReload { all } => {
+            if *all == Some(false) {
+                return Err(
+                    "app_temp_reload: `all: false` is not meaningful — the op covers the whole graph"
+                        .into(),
+                );
+            }
+            ResolvedActionKind::AppTempReload
+        }
     })
 }
 
@@ -1253,6 +1403,11 @@ fn render_deterministic(scenario: &TestScenario) -> Result<Vec<f32>, String> {
     let mut executor = conf.build_executor();
     executor.set_debug_log_enabled(true);
 
+    // P11 C2/C3: same PerformState the app main loop owns, ticked per block
+    // so chunked kit applies and pattern-switch kit-apply stay deterministic.
+    let bus_handle = conf.state_bus_handle();
+    let mut perform = paraclete_app::perform_state::PerformState::new();
+
     // ADR-046 T3: see the matching comment in `build_context` — this is the
     // separate deterministic-render path baseline mode uses.
     conf.send_command(NodeCommand {
@@ -1286,13 +1441,14 @@ fn render_deterministic(scenario: &TestScenario) -> Result<Vec<f32>, String> {
         // Commands sent before process() are drained and applied by the executor
         // in that same call, so an action fires in the block its offset lands in.
         while next < timeline.len() && timeline[next].0 < block_end {
-            dispatch_action(&mut conf, &timeline[next].1)?;
+            dispatch_any(&mut perform, &mut conf, &bus_handle, &timeline[next].1)?;
             next += 1;
         }
         block.iter_mut().for_each(|s| *s = 0.0);
         executor.process(&mut block, channels);
         all.extend(block.chunks(channels).map(|ch| ch[0]));
         conf.process_main_thread();
+        perform.tick(&mut conf, &bus_handle);
     }
     Ok(all)
 }
