@@ -49,6 +49,25 @@ pub struct EncoderCell {
     /// 0..1 last-resort fallback (no cap-doc entry found) — the cell
     /// renders dimmed so the condition is visible.
     pub resolved: bool,
+    /// #176 (BUG-067): value-indexed names for a stepped selector, so
+    /// `lfo_dest` reads `tune` and `machine` reads `AnalogHiHat` instead of
+    /// `1.00` / `2.00`. `None` for a continuous or unlabelled param.
+    pub options: Option<Vec<Option<String>>>,
+}
+
+impl EncoderCell {
+    /// What the cell's value should read as (#176).
+    ///
+    /// A stepped selector whose value has a name reads the name; everything
+    /// else keeps the two-decimal numeric formatting. Selecting a destination
+    /// or a machine by counting positions is not performable — and a control
+    /// that cannot say what it is set to cannot say when it refuses to change.
+    pub fn value_text(&self) -> String {
+        match crate::model::option_label(self.options.as_deref(), self.value) {
+            Some(label) => label.to_string(),
+            None => format!("{:.2}", self.value),
+        }
+    }
 }
 
 pub struct RenderData {
@@ -753,7 +772,11 @@ fn render_track_context(frame: &mut Frame, area: Rect, data: &RenderData) {
             let ratio = ((cell.value - cell.min) / (cell.max - cell.min).max(0.001)).clamp(0.0, 1.0);
             let filled = (ratio * 4.0).round() as usize;
             let bar = "▓".repeat(filled) + &"░".repeat(4 - filled);
-            spans.push(Span::raw(format!("  {} {:.2} {bar}", cell.name, cell.value)));
+            spans.push(Span::raw(format!(
+                "  {} {} {bar}",
+                cell.name,
+                cell.value_text()
+            )));
         }
         frame.render_widget(Paragraph::new(Line::from(spans)), chunks[1]);
     }
@@ -815,7 +838,7 @@ fn render_encoder_cell(frame: &mut Frame, area: Rect, data: &RenderData, idx: us
                 Color::White
             };
             Line::styled(
-                format!("{} {} {:.2}", c.name, bar, c.value),
+                format!("{} {} {}", c.name, bar, c.value_text()),
                 Style::default().fg(color),
             )
         }
@@ -2184,6 +2207,7 @@ mod tests {
                 min: 0.0,
                 max: 1.0,
                 resolved: true,
+                options: None,
             }),
             Some(EncoderCell {
                 name: "tune".into(),
@@ -2191,6 +2215,7 @@ mod tests {
                 min: 0.0,
                 max: 1.0,
                 resolved: true,
+                options: None,
             }),
             None,
             None,
@@ -2213,6 +2238,57 @@ mod tests {
         );
     }
 
+    /// #176 (BUG-067): a stepped selector draws its name, not its index.
+    ///
+    /// The reported symptom was `lfo_dest █░░░ 1.00` — a performer choosing a
+    /// modulation destination by counting table positions. Asserted at the
+    /// drawn buffer, since that is the thing the session actually observed.
+    #[test]
+    fn a_stepped_selector_draws_its_name_not_its_index() {
+        let backend = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Param(0), 1);
+        data.encoder_cells = vec![
+            Some(EncoderCell {
+                name: "lfo_dest".into(),
+                value: 1.0,
+                min: 0.0,
+                max: 8.0,
+                resolved: true,
+                options: Some(vec![Some("off".into()), Some("tune".into())]),
+            }),
+            Some(EncoderCell {
+                name: "decay".into(),
+                value: 0.25,
+                min: 0.0,
+                max: 1.0,
+                resolved: true,
+                options: None,
+            }),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ];
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("lfo_dest") && text.contains("tune"),
+            "the dest encoder must name its destination; got: {text}"
+        );
+        assert!(
+            !text.contains("lfo_dest █░░░ 1.00") && !text.contains("lfo_dest ▓░░░ 1.00"),
+            "and must not still show the bare index; got: {text}"
+        );
+        assert!(
+            text.contains("0.25"),
+            "a continuous param keeps its numeric readout; got: {text}"
+        );
+    }
+
     /// TK2.1 C4 (D10, closes BUG-040 §1): an unresolved cell (a composite
     /// param with no matching cap-doc entry — `min`/`max` are the 0..1
     /// last-resort fallback) renders dimmed so the condition is visible.
@@ -2228,6 +2304,7 @@ mod tests {
                 min: 0.0,
                 max: 1.0,
                 resolved: false,
+                options: None,
             }),
             None,
             None,

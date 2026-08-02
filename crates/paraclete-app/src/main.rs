@@ -845,24 +845,13 @@ fn collect_node_summaries(conf: &NodeConfigurator, ids: &InstrumentIds) -> Vec<N
 
 /// Value-indexed labels for a stepped param that declares a `ParamDisplay`.
 ///
-/// `None` for anything continuous, anything without a display, or a range too
-/// wide to index densely — the same 256 ceiling `machine_options` uses, and
-/// for the same reason: a descriptor is free to declare a huge range and this
-/// must not allocate over it.
+/// #176 (BUG-067): the body moved to `ParamDescriptor::value_labels` when
+/// Theotokos became a second consumer. Two copies of this would drift
+/// silently — a stepped param labelled on the wire and numeric on the panel,
+/// with nothing failing (AGENTS.md design-learning 5). Kept as a named
+/// wrapper because the call site below explains *why* the wire carries them.
 fn stepped_labels(p: &paraclete_node_api::ParamDescriptor) -> Option<Vec<Option<String>>> {
-    const MAX_DENSE: f64 = 256.0;
-    let display = p.display.as_ref()?;
-    if !p.stepped || !p.min.is_finite() || !p.max.is_finite() || p.min != 0.0 {
-        return None;
-    }
-    if p.max < 0.0 || p.max >= MAX_DENSE {
-        return None;
-    }
-    Some(
-        (0..=p.max as usize)
-            .map(|i| Some(display.format(i as f64)))
-            .collect(),
-    )
+    p.value_labels()
 }
 
 fn build_view_registry(conf: &NodeConfigurator, summaries: &[NodeSummary]) -> ViewRegistry {

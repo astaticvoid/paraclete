@@ -110,6 +110,40 @@ pub struct ParamDescriptor {
 }
 
 impl ParamDescriptor {
+    /// Ceiling on how many label slots [`value_labels`] will allocate.
+    ///
+    /// [`value_labels`]: ParamDescriptor::value_labels
+    pub const MAX_DENSE_LABELS: f64 = 256.0;
+
+    /// Value-indexed names for a stepped selector: `labels[v]` names value
+    /// `v`, and an inner `None` is a value the display declines to name.
+    ///
+    /// This is the one place a `ParamDisplay` is turned into an indexable
+    /// table. Both the view registry (`paraclete-app`) and the terminal panel
+    /// (`paraclete-theotokos`) need it, and a private copy in each is the
+    /// drift AGENTS.md design-learning 5 is about — a stepped param would
+    /// label correctly on the wire and numerically on the panel, or vice
+    /// versa, with nothing failing.
+    ///
+    /// `None` unless the param is stepped, declares a display, and has a
+    /// finite range starting at 0 narrower than [`Self::MAX_DENSE_LABELS`] —
+    /// a descriptor is free to declare a huge range, and this must not
+    /// allocate over it.
+    pub fn value_labels(&self) -> Option<Vec<Option<String>>> {
+        let display = self.display.as_ref()?;
+        if !self.stepped || !self.min.is_finite() || !self.max.is_finite() || self.min != 0.0 {
+            return None;
+        }
+        if self.max < 0.0 || self.max >= Self::MAX_DENSE_LABELS {
+            return None;
+        }
+        Some(
+            (0..=self.max as usize)
+                .map(|i| Some(display.format(i as f64)))
+                .collect(),
+        )
+    }
+
     /// Compute the stable parameter ID from a name string.
     ///
     /// Uses FNV-1a 32-bit hash. The result is deterministic and stable across

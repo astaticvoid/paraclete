@@ -325,6 +325,7 @@ impl TheotokosApp {
                             min: p.min,
                             max: p.max,
                             resolved: p.resolved,
+                            options: p.options.clone(),
                         }
                     })
             })
@@ -1111,6 +1112,7 @@ impl TheotokosApp {
                             max,
                             stepped,
                             resolved: _,
+                            options: _,
                         }) => {
                             // TK2.2 C4 (E5): record what this jog is about
                             // to write, independent of which branch below
@@ -4363,6 +4365,158 @@ mod tests {
                 c.type_id == paraclete_node_api::CMD_SET_PARAM && (c.arg1 - 0.8).abs() < 0.01
             }),
             "must emit CMD_SET_PARAM decay=0.8"
+        );
+    }
+
+    // ── #176 (BUG-067): a stepped selector reads its name, not its index ──
+
+    #[test]
+    fn option_label_indexes_by_value_and_declines_what_it_cannot_name() {
+        let opts = vec![
+            Some("off".to_string()),
+            Some("tune".to_string()),
+            None, // a value the display declines to name
+            Some("decay".to_string()),
+        ];
+        let l = |v: f64| model::option_label(Some(&opts), v);
+
+        assert_eq!(l(0.0), Some("off"));
+        assert_eq!(l(1.0), Some("tune"));
+        assert_eq!(l(3.0), Some("decay"));
+        // A stepped value is an index: an encoder accumulated to 0.999 is on 1.
+        assert_eq!(l(0.999), Some("tune"));
+        assert_eq!(l(1.4), Some("tune"));
+        // A gap must fall back to the number, never synthesize a name.
+        assert_eq!(l(2.0), None);
+        // Off the end, negative, and non-finite all fall back too.
+        assert_eq!(l(4.0), None);
+        assert_eq!(l(-1.0), None);
+        assert_eq!(l(f64::NAN), None);
+        assert_eq!(l(f64::INFINITY), None);
+        // No table at all: every value is numeric.
+        assert_eq!(model::option_label(None, 1.0), None);
+    }
+
+    /// The readout itself: a labelled value reads as its name, everything
+    /// else keeps the two-decimal formatting.
+    #[test]
+    fn encoder_cell_value_text_prefers_the_label() {
+        let cell = |value: f64, options: Option<Vec<Option<String>>>| render::EncoderCell {
+            name: "lfo_dest".into(),
+            value,
+            min: 0.0,
+            max: 8.0,
+            resolved: true,
+            options,
+        };
+        let dests = Some(vec![Some("off".to_string()), Some("tune".to_string())]);
+        assert_eq!(cell(1.0, dests.clone()).value_text(), "tune");
+        assert_eq!(cell(0.0, dests.clone()).value_text(), "off");
+        // Past the table — the number, not a panic or a wrong name.
+        assert_eq!(cell(5.0, dests).value_text(), "5.00");
+        // Continuous params are untouched.
+        assert_eq!(cell(0.25, None).value_text(), "0.25");
+    }
+
+    /// The consumer gap #176 is actually about: assembly has carried these
+    /// labels since MM-C11 (view-assembly's
+    /// `a_stepped_param_carries_labels_from_its_descriptor` and the machine
+    /// selector's `options`), and Theotokos dropped them on the floor —
+    /// AGENTS.md design-learning 9, a declared contract with no consumer.
+    /// The producer-side tests all passed the whole time.
+    #[test]
+    fn composite_param_labels_reach_the_encoder_bank() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        let param_id = ParamDescriptor::id_for_name("lfo_dest");
+        app.model
+            .caps
+            .get_mut(&100)
+            .unwrap()
+            .params
+            .push(ParamDescriptor {
+                id: param_id,
+                name: "lfo_dest".into(),
+                min: 0.0,
+                max: 8.0,
+                default: 0.0,
+                stepped: true,
+                unit: ParamUnit::Generic,
+                display: None,
+            });
+        let mut cv = composite_view_with_param(100, param_id);
+        cv.pages[0].params[0].name = "lfo_dest".into();
+        cv.pages[0].params[0].stepped = true;
+        cv.pages[0].params[0].options = Some(vec![
+            Some("off".into()),
+            Some("tune".into()),
+            Some("tone".into()),
+        ]);
+        app.model.composite = vec![Some(cv)];
+
+        let bank = app.model.resolve_encoder_params();
+        let cell = bank[0].as_ref().expect("slot 0 is populated");
+        assert_eq!(
+            cell.options.as_deref().unwrap(),
+            [
+                Some("off".to_string()),
+                Some("tune".to_string()),
+                Some("tone".to_string())
+            ],
+            "the encoder bank must carry assembly's labels through"
+        );
+    }
+
+    /// The other source: the non-composite fallback path reads the labels off
+    /// the descriptor itself, via `ParamDescriptor::value_labels`.
+    #[test]
+    fn descriptor_labels_reach_the_encoder_bank_without_a_composite_view() {
+        use paraclete_node_api::{ParamDisplay, ParamDisplayAdapter};
+
+        struct Dests;
+        impl ParamDisplay for Dests {
+            fn format(&self, value: f64) -> String {
+                ["off", "tune", "tone"]
+                    .get(value as usize)
+                    .unwrap_or(&"?")
+                    .to_string()
+            }
+            fn parse(&self, _s: &str) -> Option<f64> {
+                None
+            }
+        }
+        static DESTS: Dests = Dests;
+
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        let caps = app.model.caps.get_mut(&100).unwrap();
+        caps.params.clear();
+        caps.params.push(ParamDescriptor {
+            id: ParamDescriptor::id_for_name("lfo_dest"),
+            name: "lfo_dest".into(),
+            min: 0.0,
+            max: 2.0,
+            default: 0.0,
+            stepped: true,
+            unit: ParamUnit::Generic,
+            display: Some(ParamDisplayAdapter::Static(&DESTS)),
+        });
+        // `test_caps`'s Rule declares no `page_groups`, so this lands in the
+        // "no Rule pagination" branch — positional, cap-doc order. Leaving
+        // `view: None` instead would return an empty bank before reaching it.
+        assert!(caps.view.as_ref().unwrap().page_groups.is_empty());
+        app.model.composite = vec![None];
+
+        let bank = app.model.resolve_encoder_params();
+        let cell = bank[0].as_ref().expect("slot 0 is populated");
+        assert_eq!(
+            cell.options.as_deref().unwrap(),
+            [
+                Some("off".to_string()),
+                Some("tune".to_string()),
+                Some("tone".to_string())
+            ]
         );
     }
 

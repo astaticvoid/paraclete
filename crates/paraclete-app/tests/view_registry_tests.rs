@@ -110,3 +110,108 @@ fn the_watched_path_is_the_identity_params() {
         HashMap::from([("/node/20/param/machine".to_string(), 20u32)])
     );
 }
+
+/// #176 (BUG-067): the labels a stepped selector needs must reach an assembled
+/// view when the node is a **real** engine, not a fixture.
+///
+/// The issue reported two symptoms — `lfo_dest 1.00` and `machine 2.00` — and
+/// diagnosed both as "Theotokos never reads `ParamDescriptor.display`". That is
+/// right about `lfo_dest` and wrong about `machine`: the identity param's names
+/// come from the Rule's `variants` (`machine_options`), not from a display
+/// adapter, so `machine` needs no adapter and must not grow one. `variants` is
+/// the authoritative list, and a second derivation of the same names is the
+/// drift the assembler's own docs warn about.
+///
+/// Both routes are exercised here, on both engine families, because they are
+/// different code paths that happen to produce the same shape.
+#[test]
+fn a_real_engines_stepped_selectors_carry_their_names() {
+    for (label, node) in [
+        ("analog", Box::new(AnalogEngine::hihat()) as Box<dyn Node>),
+        ("fm", Box::new(FmEngine::bell()) as Box<dyn Node>),
+    ] {
+        let doc = node.capability_document();
+        let rule = doc.view.clone().expect("engines declare a view Rule");
+        let nodes = HashMap::from([(
+            20u32,
+            NodeInfo {
+                display_name: None,
+                params: doc
+                    .params
+                    .iter()
+                    .map(|p| ParamInfo {
+                        id: p.id,
+                        name: p.name.to_string(),
+                        stepped: p.stepped,
+                        // Exactly what `build_view_registry` does.
+                        options: p.value_labels(),
+                        default: p.default,
+                    })
+                    .collect(),
+            },
+        )]);
+        let cv = paraclete_view_assembly::assemble(
+            &HashMap::from([(20u32, rule)]),
+            &[TrackChain {
+                engine_node_id: 20,
+                chain_ids: vec![],
+            }],
+            0,
+            &nodes,
+        )
+        .expect("a one-engine chain assembles");
+
+        let find = |name: &str| {
+            cv.pages
+                .iter()
+                .flat_map(|p| p.params.iter())
+                .find(|p| p.name == name)
+                .unwrap_or_else(|| panic!("{label}: {name} must be paged"))
+        };
+
+        // Route 1 — the descriptor's `ParamDisplay`, via `value_labels`.
+        let dest = find("lfo_dest");
+        let dest_names: Vec<&str> = dest
+            .options
+            .as_deref()
+            .unwrap_or_else(|| panic!("{label}: lfo_dest must carry dest names"))
+            .iter()
+            .filter_map(|o| o.as_deref())
+            .collect();
+        assert!(
+            dest_names.contains(&"tune"),
+            "{label}: dest names must be the real table; got {dest_names:?}"
+        );
+
+        // Route 2 — the Rule's `variants`, via `machine_options`. No display
+        // adapter is involved, and none should be added.
+        let machine = find("machine");
+        assert!(machine.stepped, "{label}: a machine selector is stepped");
+        let machine_names: Vec<&str> = machine
+            .options
+            .as_deref()
+            .unwrap_or_else(|| panic!("{label}: machine must carry variant names"))
+            .iter()
+            .filter_map(|o| o.as_deref())
+            .collect();
+        assert_eq!(
+            machine_names.len(),
+            3,
+            "{label}: three machines per family; got {machine_names:?}"
+        );
+        assert!(
+            machine_names.iter().all(|n| !n.is_empty()),
+            "{label}: every machine names itself; got {machine_names:?}"
+        );
+        assert!(
+            doc.params
+                .iter()
+                .find(|p| p.name.to_string() == "machine")
+                .expect("machine is declared")
+                .display
+                .is_none(),
+            "{label}: `machine` must NOT declare a display adapter — its names \
+             come from `variants`, and two sources of the same names drift"
+        );
+    }
+}

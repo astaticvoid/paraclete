@@ -71,6 +71,27 @@ pub struct EncoderParam {
     /// False only for the composite branch's "no cap-doc entry found" case
     /// (TK2.1 C4). `min`/`max` are placeholder 0..1 when it is.
     pub resolved: bool,
+    /// #176 (BUG-067): value-indexed names for a stepped selector —
+    /// `options[v]` labels value `v`, an inner `None` a value with no name.
+    /// Carried so the encoder can read `lfo_dest tune` rather than
+    /// `lfo_dest 1.00`. `None` for anything continuous or unlabelled.
+    pub options: Option<Vec<Option<String>>>,
+}
+
+/// The label a stepped selector's current value should read as (#176).
+///
+/// `None` — and so the numeric formatting — for a continuous param, a param
+/// with no label set, a non-finite value, or an index outside the table or
+/// naming a gap in it. A stepped value is an index, so it is rounded rather
+/// than truncated: an encoder that has accumulated to 1.999 is on 2.
+pub fn option_label(options: Option<&[Option<String>]>, value: f64) -> Option<&str> {
+    let options = options?;
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    options
+        .get(value.round() as usize)
+        .and_then(|o| o.as_deref())
 }
 
 /// The 8-encoder bank, indexed by column. `None` is an empty column — which a
@@ -687,6 +708,12 @@ impl Model {
                             max,
                             stepped,
                             resolved,
+                            // #176: assembly already resolved these — the
+                            // machine names for an identity param, and any
+                            // stepped param's `ParamDisplay` labels for the
+                            // rest (`main.rs::stepped_labels`). Nothing here
+                            // needs to know what an LFO or a machine is.
+                            options: p.options.clone(),
                         });
                     }
                     return bank;
@@ -721,6 +748,7 @@ impl Model {
                         max: p.max,
                         stepped: p.stepped,
                         resolved: true,
+                        options: p.value_labels(),
                     });
                 }
                 return bank;
@@ -748,6 +776,7 @@ impl Model {
                     max: pd.max,
                     stepped: pd.stepped,
                     resolved: true,
+                    options: pd.value_labels(),
                 });
             }
         }
