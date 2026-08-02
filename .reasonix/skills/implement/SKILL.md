@@ -18,7 +18,7 @@ and explicit `write_paths`. Paste the project-rules block into the prompt:
 
 ```text
 task(
-  model='flash',
+  model='deepseek-flash',
   write_paths=['crates/foo/src/bar.rs', ...],
   prompt='''
 <your task description — be specific about files, spec sections, expected change>

@@ -74,7 +74,7 @@ block and build/test commands to paste into the `task()` prompt. Delegate
 with `write_paths` so subagents are path-bound:
 
 ```text
-task(model='flash', write_paths=['crates/foo/src/bar.rs', ...], prompt='''
+task(model='deepseek-flash', write_paths=['crates/foo/src/bar.rs', ...], prompt='''
 <specific task, files, expected change>
 <paste the project-rules + build/test block from /implement>
 ''')
