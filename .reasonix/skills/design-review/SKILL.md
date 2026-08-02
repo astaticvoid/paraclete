@@ -2,7 +2,6 @@
 name: design-review
 description: 'Adversarial design review: check ADRs, phase specs, and protocol designs for contradictions, unverified claims, missing edge cases, guardrail violations, and spec gaps. Returns severity-tagged findings.'
 runAs: subagent
-model: flash
 allowed-tools: [read_file, grep, glob, bash, web_fetch, lsp_definition, lsp_references, lsp_hover, lsp_diagnostics, read_only_task, explore]
 ---
 
