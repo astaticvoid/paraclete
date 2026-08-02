@@ -98,9 +98,13 @@ pub struct FmEngine {
     /// Linear output-level multiplier derived from trigger velocity (0.0..=1.0).
     /// 1.0 = unity gain (full velocity, matches pre-W1 output level).
     velocity_level: f32,
-    /// Per-cycle ParamLock overrides, cleared each process() (ADR-019 —
-    /// locks must never mutate the bank, or they bleed into unlocked steps).
+    /// ParamLock overrides for the note in flight (ADR-019 — locks must never
+    /// mutate the bank). Retired at the next trigger, not each `process()`;
+    /// see `AnalogEngine::consume_pending_locks` for why (#169).
     node_locks: Vec<(u32, f64)>,
+    /// #169 (BUG-063): set when a `ParamLock` arrives, consumed by the
+    /// `retrigger()` it belongs to.
+    locks_pending: bool,
 
     /// In-flight gain ramp for a machine switch (MM §0 D1).
     switch_fade: Option<SwitchFade>,
@@ -151,6 +155,7 @@ impl FmEngine {
             last_note:  36, // C2 — matches current_hz's initial value
             velocity_level: 1.0,
             node_locks: Vec::new(),
+            locks_pending: false,
             switch_fade: None,
             lfo:            LfoHost::new(),
             render_l:   Vec::new(),
@@ -177,6 +182,24 @@ impl FmEngine {
         ParamDescriptor::id_for_name("punch"),
         ParamDescriptor::id_for_name("attack"),
     ];
+
+    /// See `AnalogEngine::push_lock` (#169).
+    fn push_lock(&mut self, param_id: u32, value: f64) {
+        if !self.locks_pending {
+            self.node_locks.clear();
+            self.locks_pending = true;
+        }
+        self.node_locks.push((param_id, value));
+    }
+
+    /// See `AnalogEngine::consume_pending_locks` (#169).
+    fn consume_pending_locks(&mut self) {
+        if self.locks_pending {
+            self.locks_pending = false;
+        } else {
+            self.node_locks.clear();
+        }
+    }
 
     /// Bank/lock value, **before** the LFO — see `AnalogEngine::raw_param`.
     fn raw_param(&self, param_id: u32) -> f32 {
@@ -426,6 +449,8 @@ impl FmEngine {
     }
 
     fn retrigger(&mut self, note: u8, velocity: f32) {
+        // Before any param read: this note's lock set is now final.
+        self.consume_pending_locks();
         let tune = self.get_param(fp("tune"));
         self.current_hz      = note_to_hz(note, tune);
         self.last_note        = note;
@@ -765,6 +790,9 @@ impl Node for FmEngine {
         self.last_note  = 36;
         self.velocity_level = 1.0;
         self.switch_fade = None;
+        // #169: locks outlive a block now, so a re-activate must retire them.
+        self.node_locks.clear();
+        self.locks_pending = false;
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
@@ -776,9 +804,9 @@ impl Node for FmEngine {
         for s in &mut self.render_l { *s = 0.0; }
         for s in &mut self.render_r { *s = 0.0; }
 
-        // Per-cycle param overrides from ParamLock events — cleared each
-        // cycle so locks from one step do not bleed into unlocked steps.
-        self.node_locks.clear();
+        // #169: `node_locks` deliberately survives the block boundary — see
+        // `AnalogEngine::process`. Only the pending flag is per-cycle.
+        self.locks_pending = false;
 
         // Handle NodeCommands: CMD_TRIGGER live-triggers a voice (same retrigger
         // path as NoteOn). arg0 = note (< 0 → last-triggered note); arg1 = velocity
@@ -808,9 +836,9 @@ impl Node for FmEngine {
         for timed in input.events {
             match timed.event {
                 Event::ParamLock(ref pl) if pl.node_id == self.node_id => {
-                    // Per-cycle override, never a bank write (BUG-015 /
+                    // Per-note override, never a bank write (BUG-015 /
                     // ADR-019): a locked step must not bleed into the next.
-                    self.node_locks.push((pl.param_id, pl.value));
+                    self.push_lock(pl.param_id, pl.value);
                 }
                 Event::Midi2(ref ump) => {
                     if let UmpMessage::ChannelVoice2(cv2) = ump {
@@ -1683,8 +1711,82 @@ mod tests {
         assert_eq!(eng.bank.get(fp("decay")), default_decay,
             "lock must not mutate the bank");
         run_fm(&mut eng, &[make_note_on(36)]);
-        assert!(eng.node_locks.is_empty(), "locks cleared each cycle");
+        assert!(eng.node_locks.is_empty(),
+            "an unlocked trigger retires the previous step's set (#169)");
         assert_eq!(eng.bank.get(fp("decay")), default_decay);
     }
 
+    /// #169 (BUG-063), FM half. `drive` is re-read per render chunk
+    /// (`process_kick`), so under the pre-#169 per-cycle clear the lock
+    /// reverted to the bank ~11 ms in and only the trigger block was driven.
+    /// See `AnalogEngine::consume_pending_locks` for the mechanism.
+    ///
+    /// `drive` and not `decay`: a `decay` lock short enough to be obvious
+    /// ends the note *inside* the trigger block, leaving both tails silent
+    /// and the assertion vacuously true — a mutant confirmed exactly that.
+    #[test]
+    fn a_p_lock_shapes_the_whole_note_not_just_its_first_block() {
+        let rms = |v: &[f32]| (v.iter().map(|&x| x * x).sum::<f32>() / v.len() as f32).sqrt();
+
+        let tail = |lock: bool| -> f32 {
+            let mut eng = FmEngine::kick();
+            eng.set_node_id(9);
+            eng.activate(44100.0, 512);
+            let mut events = Vec::new();
+            if lock {
+                events.push(TimedEvent::new(0, Event::ParamLock(ParamLockEvent {
+                    node_id: 9, param_id: fp("drive"), value: 1.0,
+                })));
+            }
+            events.push(make_note_on(36));
+            run_fm(&mut eng, &events);
+            // Blocks 2..=6, well past the ~11 ms the old behaviour survived.
+            let mut tail = Vec::new();
+            for _ in 0..5 { tail.extend(run_fm(&mut eng, &[])); }
+            rms(&tail)
+        };
+
+        let driven = tail(true);
+        let clean = tail(false);
+        assert!(driven > clean * 2.0,
+            "a drive=1.0 lock must still be driving the note after the \
+             trigger block: locked tail rms={driven:.5}, unlocked={clean:.5}");
+    }
+
+    /// State-level twin: the locked value persists with no fresh `ParamLock`.
+    #[test]
+    fn a_lock_survives_blocks_that_carry_no_events() {
+        let mut eng = FmEngine::kick();
+        eng.set_node_id(9);
+        eng.activate(44100.0, 512);
+
+        let lock = TimedEvent::new(0, Event::ParamLock(ParamLockEvent {
+            node_id: 9, param_id: fp("decay"), value: 0.01,
+        }));
+        run_fm(&mut eng, &[lock, make_note_on(36)]);
+
+        for block in 2..=8 {
+            run_fm(&mut eng, &[]);
+            assert!((eng.raw_param(fp("decay")) - 0.01).abs() < 1e-6,
+                "block {block}: the lock must outlive the cycle it arrived in");
+        }
+    }
+
+    /// A re-activate kills the voice, so it must kill the voice's locks.
+    #[test]
+    fn activate_retires_a_lock_in_flight() {
+        let mut eng = FmEngine::kick();
+        eng.set_node_id(9);
+        eng.activate(44100.0, 512);
+
+        let lock = TimedEvent::new(0, Event::ParamLock(ParamLockEvent {
+            node_id: 9, param_id: fp("decay"), value: 0.01,
+        }));
+        run_fm(&mut eng, &[lock, make_note_on(36)]);
+        assert!(!eng.node_locks.is_empty());
+
+        eng.activate(44100.0, 512);
+        assert!(eng.node_locks.is_empty(), "a rebuild must not carry a lock over");
+        assert!(!eng.locks_pending);
+    }
 }

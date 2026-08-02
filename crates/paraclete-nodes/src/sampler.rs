@@ -230,8 +230,12 @@ pub struct Sampler {
     base_loop:  bool,
     base_slice: usize,
 
-    // Node-level active locks (applied before voice trigger each cycle)
+    // Node-level active locks, snapshotted into a voice at trigger time.
+    // Retired at the next trigger, not each cycle (#169).
     node_locks: HashMap<u32, ActiveParamLock>,
+    /// #169 (BUG-063): set when a `ParamLock` arrives, consumed by the
+    /// `trigger_voice` it belongs to.
+    locks_pending: bool,
 
     // Voice pool
     voices: [Voice; 4],
@@ -280,6 +284,7 @@ impl Sampler {
             base_loop: false,
             base_slice: 0,
             node_locks: HashMap::new(),
+            locks_pending: false,
             voices: [Voice::new(), Voice::new(), Voice::new(), Voice::new()],
             cycle_counter: 0,
             samp_trig_count: 0,
@@ -309,6 +314,30 @@ impl Sampler {
             P_LOOP  => if self.base_loop { 1.0 } else { 0.0 },
             P_SLICE => self.base_slice as f64,
             _ => 0.0,
+        }
+    }
+
+    /// See `AnalogEngine::push_lock` (#169).
+    fn push_lock(&mut self, param_id: u32, value: f64) {
+        if !self.locks_pending {
+            self.node_locks.clear();
+            self.locks_pending = true;
+        }
+        self.node_locks.insert(param_id, ActiveParamLock { locked_value: value });
+    }
+
+    /// See `AnalogEngine::consume_pending_locks` (#169).
+    ///
+    /// Polyphony caveat: only `pitch` is read through the per-voice snapshot
+    /// (`Voice::effective`); every other param reads `effective_node`, so an
+    /// overlapping unlocked note ends a still-sounding voice's locks early.
+    /// One-voice-per-step sequencer use — the case #169 was found in — is
+    /// unaffected. Tracked separately from this fix.
+    fn consume_pending_locks(&mut self) {
+        if self.locks_pending {
+            self.locks_pending = false;
+        } else {
+            self.node_locks.clear();
         }
     }
 
@@ -368,6 +397,8 @@ impl Sampler {
     }
 
     fn trigger_voice(&mut self, note: u8, velocity: u16, _sample_offset: u32) {
+        // Before the snapshot below: this note's lock set is now final.
+        self.consume_pending_locks();
         self.samp_trig_count = self.samp_trig_count.wrapping_add(1);
         self.last_triggered_note = note;
         let velocity_level = (velocity as f32 / 65535.0).clamp(0.0, 1.0);
@@ -607,6 +638,9 @@ impl Node for Sampler {
         self.output_sample_rate = sample_rate;
         self.render_l = vec![0.0; block_size];
         self.render_r = vec![0.0; block_size];
+        // #169: locks outlive a block now, so a re-activate must retire them.
+        self.node_locks.clear();
+        self.locks_pending = false;
 
         // Apply initial params (from instrument definition file) to the bank.
         let doc = sampler_capability_document();
@@ -652,10 +686,12 @@ impl Node for Sampler {
         self.cycle_counter += 1;
         let block_size = input.block_size;
 
-        // Clear per-cycle node-level locks so locks from a previous step do not
-        // bleed into steps that have no param lock. Locks are re-populated from
-        // the incoming events below before any voice trigger fires.
-        self.node_locks.clear();
+        // #169: `node_locks` deliberately survives the block boundary — a lock
+        // belongs to its note, and a note outlives the ~11 ms cycle it starts
+        // in. Only the "a lock arrived for the next trigger" flag is per-cycle;
+        // the set itself is retired by `consume_pending_locks` at the next
+        // trigger, which is the event that actually bounds a step.
+        self.locks_pending = false;
 
         // 0. Handle NodeCommands (CMD_TRIGGER from scripting layer).
         // arg0 = note number (< 0 → default: root_note); arg1 = velocity 0.0..=1.0
@@ -714,9 +750,7 @@ impl Node for Sampler {
 
             match timed.event {
                 Event::ParamLock(ref lock) => {
-                    self.node_locks.insert(lock.param_id, ActiveParamLock {
-                        locked_value: lock.value,
-                    });
+                    self.push_lock(lock.param_id, lock.value);
                 }
                 Event::Midi2(UmpMessage::ChannelVoice2(ref cv2)) => match cv2 {
                     ChannelVoice2::NoteOn(n) => {
@@ -1113,6 +1147,71 @@ mod tests {
         });
         assert_eq!(s.connection_records.len(), 1);
         assert_eq!(s.connection_records[0].partner_id, 5);
+    }
+
+    /// #169 (BUG-063), Sampler half. `volume` is read through `effective_node`
+    /// per render chunk, so under the pre-#169 per-cycle clear a `volume`=0.0
+    /// lock silenced only the block the trigger arrived in and the sample came
+    /// back at full level ~11 ms later. The existing
+    /// `sampler_param_lock_volume_zero_silences` looked only at that first
+    /// block, which is the one the broken behaviour got right.
+    #[test]
+    fn a_p_lock_shapes_the_whole_note_not_just_its_first_block() {
+        let mut s = Sampler::new();
+        s.set_node_id(1);
+        load_test_sample(&mut s, 65536);
+
+        let events = [
+            make_param_lock(1, param_hash("volume"), 0.0),
+            make_note_on(60),
+        ];
+        run_sampler(&mut s, &events);
+
+        for block in 2..=8 {
+            let buf = run_sampler(&mut s, &[]);
+            let peak = buf.channel(0).iter().fold(0.0f32, |a, &x| a.max(x.abs()));
+            assert_eq!(peak, 0.0,
+                "block {block}: a volume=0 lock must hold for the whole note, \
+                 not one audio cycle; got peak={peak}");
+        }
+    }
+
+    /// The other half: an unlocked trigger bounds the previous step's lock.
+    #[test]
+    fn an_unlocked_trigger_ends_the_previous_step_s_lock() {
+        let mut s = Sampler::new();
+        s.set_node_id(1);
+        load_test_sample(&mut s, 65536);
+
+        run_sampler(&mut s, &[
+            make_param_lock(1, param_hash("volume"), 0.0),
+            make_note_on(60),
+        ]);
+        assert!(!s.node_locks.is_empty(), "locked step holds its lock");
+
+        let buf = run_sampler(&mut s, &[make_note_on(60)]);
+        assert!(s.node_locks.is_empty(),
+            "an unlocked trigger must retire the previous step's set");
+        let peak = buf.channel(0).iter().fold(0.0f32, |a, &x| a.max(x.abs()));
+        assert!(peak > 0.0, "and the unlocked step must sound; got peak={peak}");
+    }
+
+    /// A re-activate kills every voice, so it must kill their locks.
+    #[test]
+    fn activate_retires_a_lock_in_flight() {
+        let mut s = Sampler::new();
+        s.set_node_id(1);
+        load_test_sample(&mut s, 8192);
+
+        run_sampler(&mut s, &[
+            make_param_lock(1, param_hash("volume"), 0.0),
+            make_note_on(60),
+        ]);
+        assert!(!s.node_locks.is_empty());
+
+        s.activate(44100.0, 512);
+        assert!(s.node_locks.is_empty(), "a rebuild must not carry a lock over");
+        assert!(!s.locks_pending);
     }
 
     #[test]

@@ -318,6 +318,30 @@ fn param_id_for_name(name: &str) -> u32 {
     ParamDescriptor::id_for_name(name)
 }
 
+/// Resolve a lock lane from either spelling (INFRA-022 / #170).
+///
+/// `Ok(None)` means neither was given — the caller decides whether that is an
+/// error (`set_lock_target`) or "all lanes" (`clear_step_lock`). Supplying
+/// both is rejected rather than silently preferring one, since the whole point
+/// of accepting a name is that the number is unreadable: a disagreeing pair is
+/// a scenario the author cannot have checked.
+fn resolve_lock_param(
+    name: Option<&str>,
+    id: Option<u32>,
+    action: &str,
+) -> Result<Option<u32>, String> {
+    match (name, id) {
+        (Some(n), None) => Ok(Some(param_id_for_name(n))),
+        (None, Some(i)) => Ok(Some(i)),
+        (None, None) => Ok(None),
+        (Some(n), Some(i)) => Err(format!(
+            "{action}: give `param: {n}` or `param_id: {i}`, not both \
+             (`{n}` is id {})",
+            param_id_for_name(n)
+        )),
+    }
+}
+
 /// Shared engine stack for both batch and interactive modes: the built graph and
 /// its executor behind a `Mutex`, a spawned null-backend audio thread writing
 /// into the lock-free capture ring, and the name resolver. The audio thread runs
@@ -1125,11 +1149,15 @@ fn resolve_action(
         TimelineAction::SetLockTarget {
             target,
             node_id,
+            param,
             param_id,
         } => ResolvedActionKind::SetLockTarget {
             target_id: resolve_target(resolver, target)?,
             node_id: *node_id,
-            param_id: *param_id,
+            param_id: resolve_lock_param(param.as_deref(), *param_id, "set_lock_target")?
+                .ok_or_else(|| {
+                    "set_lock_target needs `param: <name>` or `param_id: <n>`".to_string()
+                })?,
         },
         TimelineAction::SetStepLock {
             target,
@@ -1143,11 +1171,14 @@ fn resolve_action(
         TimelineAction::ClearStepLock {
             target,
             step,
+            param,
             param_id,
         } => ResolvedActionKind::ClearStepLock {
             target_id: resolve_target(resolver, target)?,
             step: *step,
-            param_id: param_id.map_or(-1, |p| p as i64),
+            // Neither given → −1, "every lane on this step".
+            param_id: resolve_lock_param(param.as_deref(), *param_id, "clear_step_lock")?
+                .map_or(-1, |p| p as i64),
         },
         TimelineAction::TrigNow {
             target,

@@ -1,8 +1,36 @@
-# TK1 C1: prove that authored p-locks move audio.
-# 4-on-the-floor kick (steps 0,4,8,12). Lock a very short decay on step 2,
-# then assert the RMS around step 2 is lower than around step 0.
+# Prove that authored p-locks move audio.
 #
-# Baseline fingerprint this (ADR-035 Part A).
+# 4-on-the-floor kick (steps 0, 4, 8, 12) at decay 0.4. Step 4 carries a
+# `decay` p-lock of 0.02, which turns that one hit into a click.
+#
+# Baseline fingerprint this (ADR-035 Part A). There are no assertions —
+# baseline mode does not evaluate them (main.rs) and the fingerprint is the
+# check.
+#
+# INFRA-022 (#170) — READ BEFORE EDITING. As shipped through the MM phase this
+# scenario proved nothing, two ways over, either alone sufficient:
+#
+#   1. it locked `param_id: 1`, and engine param ids are FNV-1a hashes of the
+#      name (`decay` is 3541427549), so no param ever matched;
+#   2. it locked step **2**, which carries no trig, so nothing read the lock
+#      even had the id been right.
+#
+# The committed baseline was therefore fingerprinting a plain 4-on-the-floor
+# and passing indefinitely — which is why BUG-063 (#169, a p-lock surviving
+# only one ~11 ms audio block) lived through the whole phase unnoticed.
+#
+# Two things keep that from recurring. `set_lock_target` now accepts a param
+# **name** and resolves it the way `set_param` already did, so the lane is
+# checkable by eye. And the fingerprint was checked against defects rather
+# than assumed sound — a baseline you have never seen fail is not evidence:
+#
+#   * removing the lock pair below moves it (windows 42-47), so it observes
+#     the p-lock and not just the drum pattern;
+#   * reinstating BUG-063 itself — the per-cycle `node_locks.clear()` in
+#     `AnalogEngine::process` — also moves it, so this is now real coverage
+#     for the exact bug it used to hide.
+#
+# If you change this scenario, redo both checks.
 format_version: 1
 instrument: instrument.yaml
 duration_secs: 4
@@ -27,10 +55,8 @@ timeline:
   - at: 0.4
     set_step: { target: "10", step: 12, note: 36 }
 
-  # Author a p-lock: step 2 gets an extremely short decay.
+  # Author a p-lock: step 4 — which carries a trig — gets a very short decay.
   - at: 0.5
-    set_lock_target: { target: "10", node_id: 20, param_id: 1 }
+    set_lock_target: { target: "10", node_id: 20, param: decay }
   - at: 0.5
-    set_step_lock: { target: "10", step: 2, value: 0.02 }
-
-# No assertions — the audio difference is proved by the baseline fingerprint.
+    set_step_lock: { target: "10", step: 4, value: 0.02 }

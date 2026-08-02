@@ -114,6 +114,9 @@ pub struct AnalogEngine {
     active:      bool,
     node_id:     u32,
     node_locks:  Vec<(u32, f64)>,
+    /// #169 (BUG-063): set when a `ParamLock` arrives, consumed by the
+    /// `retrigger()` it belongs to. See `consume_pending_locks`.
+    locks_pending: bool,
     /// Note of the last retrigger — used as the CMD_TRIGGER default note (arg0 < 0).
     last_note:   u8,
     /// Linear output-level multiplier derived from trigger velocity (0.0..=1.0).
@@ -171,6 +174,7 @@ impl AnalogEngine {
             active:      false,
             node_id:     0,
             node_locks:  Vec::new(),
+            locks_pending: false,
             last_note:   36, // C2 — matches current_hz's initial value
             velocity_level: 1.0,
             switch_fade: None,
@@ -210,6 +214,42 @@ impl AnalogEngine {
         ParamDescriptor::id_for_name("noise"),
         ParamDescriptor::id_for_name("open"),
     ];
+
+    /// Record a `ParamLock` for the trigger it precedes (#169).
+    ///
+    /// The first lock after a trigger *replaces* the set rather than adding to
+    /// it, so a step's locks are exactly the locks that arrived for that step.
+    /// Locks for one step always arrive as a contiguous run — the executor
+    /// sorts `ParamLock` ahead of `Midi2` at equal offsets — so "have I seen a
+    /// lock since the last retrigger?" is enough to tell a new run from a
+    /// continuation, with no per-step bookkeeping on the audio thread.
+    fn push_lock(&mut self, param_id: u32, value: f64) {
+        if !self.locks_pending {
+            self.node_locks.clear();
+            self.locks_pending = true;
+        }
+        self.node_locks.push((param_id, value));
+    }
+
+    /// Hand the pending lock set to the note now starting, or end the previous
+    /// note's set if this step carried none (#169).
+    ///
+    /// A p-lock owns its **note**, not the audio cycle it arrived in. Clearing
+    /// per cycle (the pre-#169 behaviour) meant a lock survived ~11 ms at
+    /// 44.1 kHz/512, so params latched at trigger time (`tune`, velocity) held
+    /// it while params re-read per render span (`open`, `decay`, `tone`, the
+    /// whole `lfo_*` block) reverted to the bank one cycle in — inaudible.
+    ///
+    /// The per-cycle clear's stated concern, "locks from one step must not
+    /// bleed into steps that carry no lock", is still met, and by the exact
+    /// event that defines the boundary: the next trigger.
+    fn consume_pending_locks(&mut self) {
+        if self.locks_pending {
+            self.locks_pending = false;
+        } else {
+            self.node_locks.clear();
+        }
+    }
 
     /// Bank/lock value, **before** the LFO. Used for the `lfo_*` params
     /// themselves, so an LFO can never modulate its own controls even if a
@@ -498,6 +538,8 @@ impl AnalogEngine {
     }
 
     fn retrigger(&mut self, note: u8, velocity: f32) {
+        // Before any param read: this note's lock set is now final.
+        self.consume_pending_locks();
         let tune = self.get_param(ap("tune"));
         self.current_hz = note_to_hz(note, tune);
         self.last_note = note;
@@ -848,6 +890,10 @@ impl Node for AnalogEngine {
         self.last_note   = 36;
         self.velocity_level = 1.0;
         self.switch_fade = None;
+        // #169: locks outlive a block now, so a re-activate must retire them —
+        // otherwise a lock survives the topology rebuild that killed its note.
+        self.node_locks.clear();
+        self.locks_pending = false;
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
@@ -859,9 +905,11 @@ impl Node for AnalogEngine {
         for s in &mut self.render_l { *s = 0.0; }
         for s in &mut self.render_r { *s = 0.0; }
 
-        // Per-cycle param overrides from ParamLock events — cleared each cycle so
-        // locks from one step do not bleed into steps that carry no lock.
-        self.node_locks.clear();
+        // #169: `node_locks` deliberately survives the block boundary — a lock
+        // belongs to its note, and a note outlives the cycle it starts in. Only
+        // the "a lock arrived for the next trigger" flag is per-cycle; the set
+        // itself is retired by `consume_pending_locks` at the next retrigger.
+        self.locks_pending = false;
 
         // Handle NodeCommands: CMD_TRIGGER live-triggers a voice (same retrigger
         // path as NoteOn). arg0 = note (< 0 → last-triggered note); arg1 = velocity
@@ -894,7 +942,7 @@ impl Node for AnalogEngine {
         for timed in input.events {
             match timed.event {
                 Event::ParamLock(ref pl) if pl.node_id == self.node_id => {
-                    self.node_locks.push((pl.param_id, pl.value));
+                    self.push_lock(pl.param_id, pl.value);
                 }
                 Event::Midi2(ref ump) => {
                     if let UmpMessage::ChannelVoice2(cv2) = ump {
@@ -1750,6 +1798,200 @@ mod tests {
         assert!((rms(&out_base) - rms(&out_locked)).abs() > 1e-4,
             "cycle 2 (no lock) should differ from locked drive=1.0; base={:.4} locked={:.4}",
             rms(&out_base), rms(&out_locked));
+    }
+
+    // ── #169 (BUG-063): a p-lock owns its note, not one audio cycle ────────
+    //
+    // Every test below fails against the pre-#169 `node_locks.clear()` at the
+    // top of `process()`. The two that assert on audio are the ones that
+    // matter — `analog_param_lock_changes_output` above already passed on the
+    // broken code, because it only ever looked at the block the trigger
+    // arrived in, which is exactly the one block the old behaviour got right.
+
+    /// The reported symptom: an `open` lock on a HiHat step "sounds identical".
+    ///
+    /// `open` is re-read per render span (it feeds `effective_decay`), so
+    /// under the per-cycle clear it reverted to the bank ~11 ms in and the
+    /// locked hit was the closed hat's decay shape at a slightly higher peak.
+    /// Blocks 2.. are therefore where the bug lives; block 1 never showed it.
+    #[test]
+    fn a_p_lock_shapes_the_whole_note_not_just_its_first_block() {
+        let node_id = 22u32;
+        let rms = |v: &[f32]| (v.iter().map(|&x| x * x).sum::<f32>() / v.len() as f32).sqrt();
+
+        // Tail energy after the trigger block, with and without an `open` lock.
+        let tail = |lock: bool| -> f32 {
+            let mut eng = AnalogEngine::hihat();
+            eng.activate(44100.0, 512);
+            eng.set_node_id(node_id);
+            let mut events = Vec::new();
+            if lock {
+                events.push(TimedEvent::new(0, Event::ParamLock(ParamLockEvent {
+                    node_id, param_id: ap("open"), value: 1.0,
+                })));
+            }
+            events.push(make_note_on(42));
+            run_engine(&mut eng, &events);
+            // Blocks 2..=6 — roughly 12..70 ms past the onset.
+            let mut tail = Vec::new();
+            for _ in 0..5 {
+                tail.extend(run_engine(&mut eng, &[]));
+            }
+            rms(&tail)
+        };
+
+        let open = tail(true);
+        let closed = tail(false);
+        assert!(
+            open > closed * 3.0,
+            "an `open`=1.0 lock must still be holding the envelope open after \
+             the trigger block: locked tail rms={open:.5}, unlocked={closed:.5}"
+        );
+    }
+
+    /// The locked value must persist without a fresh `ParamLock` each cycle.
+    /// State-level twin of the audio test above — it names the mechanism, so a
+    /// future refactor that reintroduces per-cycle clearing fails here first.
+    #[test]
+    fn a_lock_survives_blocks_that_carry_no_events() {
+        let node_id = 22u32;
+        let mut eng = AnalogEngine::hihat();
+        eng.activate(44100.0, 512);
+        eng.set_node_id(node_id);
+
+        let lock = TimedEvent::new(0, Event::ParamLock(ParamLockEvent {
+            node_id, param_id: ap("open"), value: 1.0,
+        }));
+        run_engine(&mut eng, &[lock, make_note_on(42)]);
+
+        for block in 2..=8 {
+            run_engine(&mut eng, &[]);
+            assert!(
+                (eng.raw_param(ap("open")) - 1.0).abs() < 1e-6,
+                "block {block}: the lock must outlive the cycle it arrived in, \
+                 got open={:.4}",
+                eng.raw_param(ap("open"))
+            );
+        }
+        assert_eq!(eng.bank.get(ap("open")), 0.0, "and never touch the bank");
+    }
+
+    /// The other half of the contract, and the one the per-cycle clear was
+    /// written to protect: the *next* trigger bounds a lock. A step carrying
+    /// no lock must sound exactly like the never-locked engine.
+    #[test]
+    fn an_unlocked_trigger_ends_the_previous_step_s_lock() {
+        let node_id = 22u32;
+        let mut eng = AnalogEngine::hihat();
+        eng.activate(44100.0, 512);
+        eng.set_node_id(node_id);
+
+        let lock = TimedEvent::new(0, Event::ParamLock(ParamLockEvent {
+            node_id, param_id: ap("open"), value: 1.0,
+        }));
+        run_engine(&mut eng, &[lock, make_note_on(42)]);
+        assert!(!eng.node_locks.is_empty(), "locked step holds its lock");
+
+        // Next step, no lock.
+        let rms = |v: &[f32]| (v.iter().map(|&x| x * x).sum::<f32>() / v.len() as f32).sqrt();
+        let mut after = run_engine(&mut eng, &[make_note_on(42)]);
+        assert!(eng.node_locks.is_empty(),
+            "an unlocked trigger must retire the previous step's set");
+        assert_eq!(eng.raw_param(ap("open")), eng.bank.get(ap("open")) as f32,
+            "and `open` must read the bank again");
+        for _ in 0..5 { after.extend(run_engine(&mut eng, &[])); }
+
+        // A never-locked engine driven the same way.
+        let mut clean = AnalogEngine::hihat();
+        clean.activate(44100.0, 512);
+        clean.set_node_id(node_id);
+        run_engine(&mut clean, &[make_note_on(42)]);
+        let mut clean_after = run_engine(&mut clean, &[make_note_on(42)]);
+        for _ in 0..5 { clean_after.extend(run_engine(&mut clean, &[])); }
+
+        // Not sample-exact: the SVF carries state across the retrigger, so the
+        // first few samples still remember the louder open hit. The envelope —
+        // the thing the lock was shaping — must be back to closed.
+        let (got, want) = (rms(&after), rms(&clean_after));
+        assert!((got - want).abs() < want * 0.02,
+            "the unlocked step must decay like the never-locked engine: \
+             got rms={got:.5}, want={want:.5}");
+    }
+
+    /// A second lock run replaces the first rather than appending to it —
+    /// otherwise `node_locks` grows without bound across a pattern and
+    /// `raw_param`'s first-match scan keeps returning the oldest value.
+    #[test]
+    fn a_new_lock_run_replaces_the_previous_set() {
+        let node_id = 22u32;
+        let mut eng = AnalogEngine::hihat();
+        eng.activate(44100.0, 512);
+        eng.set_node_id(node_id);
+
+        for value in [0.25_f64, 0.75, 0.5] {
+            let lock = TimedEvent::new(0, Event::ParamLock(ParamLockEvent {
+                node_id, param_id: ap("open"), value,
+            }));
+            run_engine(&mut eng, &[lock, make_note_on(42)]);
+            assert_eq!(eng.node_locks.len(), 1,
+                "one lock per step, not an accumulating list");
+            assert!((eng.raw_param(ap("open")) as f64 - value).abs() < 1e-6,
+                "the newest lock wins; got {}", eng.raw_param(ap("open")));
+        }
+    }
+
+    /// Two triggers in one block, the second locked: the lock must attach to
+    /// the trigger it followed, not to both. This is the case the
+    /// "have I seen a lock since the last retrigger?" flag exists to get right.
+    #[test]
+    fn a_mid_block_lock_attaches_only_to_the_trigger_it_precedes() {
+        let node_id = 22u32;
+        let mut eng = AnalogEngine::hihat();
+        eng.activate(44100.0, 512);
+        eng.set_node_id(node_id);
+
+        // A locked step first, so there is a set in flight to be retired.
+        let pre = TimedEvent::new(0, Event::ParamLock(ParamLockEvent {
+            node_id, param_id: ap("open"), value: 1.0,
+        }));
+        run_engine(&mut eng, &[pre, make_note_on(42)]);
+
+        // Then a block holding an unlocked trigger followed by a locked one.
+        let mut unlocked = make_note_on(42);
+        unlocked.sample_offset = 0;
+        let mut lock = TimedEvent::new(256, Event::ParamLock(ParamLockEvent {
+            node_id, param_id: ap("tone"), value: 0.9,
+        }));
+        lock.sample_offset = 256;
+        let mut locked = make_note_on(42);
+        locked.sample_offset = 256;
+        run_engine(&mut eng, &[unlocked, lock, locked]);
+
+        assert_eq!(eng.node_locks.len(), 1,
+            "the first trigger retired `open`; the second owns only `tone`");
+        assert!((eng.raw_param(ap("tone")) - 0.9).abs() < 1e-6);
+        assert_eq!(eng.raw_param(ap("open")), eng.bank.get(ap("open")) as f32,
+            "`open` must be back to the bank — its step is over");
+    }
+
+    /// A re-activate (dynamic topology rebuild) kills the voice, so it must
+    /// kill the voice's locks too — they no longer outlive anything.
+    #[test]
+    fn activate_retires_a_lock_in_flight() {
+        let node_id = 22u32;
+        let mut eng = AnalogEngine::hihat();
+        eng.activate(44100.0, 512);
+        eng.set_node_id(node_id);
+
+        let lock = TimedEvent::new(0, Event::ParamLock(ParamLockEvent {
+            node_id, param_id: ap("open"), value: 1.0,
+        }));
+        run_engine(&mut eng, &[lock, make_note_on(42)]);
+        assert!(!eng.node_locks.is_empty());
+
+        eng.activate(44100.0, 512);
+        assert!(eng.node_locks.is_empty(), "a rebuild must not carry a lock over");
+        assert!(!eng.locks_pending);
     }
 
     // ── MM-C3: union bank + machine identity ──────────────────────────────

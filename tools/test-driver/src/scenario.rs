@@ -118,19 +118,33 @@ pub enum TimelineAction {
     ChainClear {
         target: String,
     },
+    /// INFRA-022 (#170): prefer `param: <name>`. `param_id` takes a raw
+    /// FNV-1a hash — `decay` is 3541427549 — which no reader can check by
+    /// eye, and a wrong one is silently stored, emitted and never matched.
+    /// That is exactly how this scenario file authored a lock on a param
+    /// that does not exist and still fingerprinted green for a whole phase.
+    /// Exactly one of `param` / `param_id` must be given.
     SetLockTarget {
         target: String,
         node_id: u32,
-        param_id: u32,
+        #[serde(default)]
+        param: Option<String>,
+        #[serde(default)]
+        param_id: Option<u32>,
     },
     SetStepLock {
         target: String,
         step: i64,
         value: f64,
     },
+    /// `param` / `param_id` as in `SetLockTarget`; omitting both clears
+    /// every lane on the step.
     ClearStepLock {
         target: String,
         step: i64,
+        #[serde(default)]
+        param: Option<String>,
+        #[serde(default)]
         param_id: Option<u32>,
     },
     TrigNow {
