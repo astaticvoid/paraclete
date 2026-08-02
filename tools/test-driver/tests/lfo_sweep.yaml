@@ -13,16 +13,21 @@
 #   node 20 (analog Kick), dest 1 `tune`  — the delta-on-the-latched-base path
 #                                           (`swept_hz`), the one #175 added
 #   node 27 (FM Bass),     dest 1 `tune`  — the same path in the other family
-#   node 20,               dest 4 `drive` — an ordinary per-render-span read,
+#   node 20,               dest 5 `tone` — an ordinary per-render-span read,
 #                                           so a regression that breaks only
 #                                           the pitch path is distinguishable
 #                                           from one that breaks the LFO host
 #
+# `tone` doubles as the BUG-069 coverage: its Kick range is 200..8000 while
+# the bank's union (across machines) is 200..18000 (the HiHat's ceiling). A
+# depth-1 LFO calibrated to the union pins the cutoff at a clamp for ~78% of
+# every cycle; calibrated to the machine it sweeps the whole 7800. The other
+# two destinations (`tune`, `drive`) have machine-invariant ranges, so a
+# scenario that only drove them could not see the fix — this one can, and
+# reinstating the union-range bug moves the fingerprint (verified when #178
+# landed).
 # Dest indices are into the ACTIVE MACHINE's table since #179, not a shared
-# union: on an analog Kick 1..5 are tune/punch/decay/drive/tone. This was
-# `dest 5` when written, which meant `drive` under the old machine-invariant
-# table and means `tone` now — the drift that made the change visible here and
-# nowhere else.
+# union: on an analog Kick 1..5 are tune/punch/decay/drive/tone.
 #
 # `lfo_mode` 1 is Trig: the phase resets from the note, so the fingerprint is
 # deterministic rather than depending on where a free-running LFO happened to
@@ -35,6 +40,8 @@
 #   * reinstating #175's defect (latching `tune` through `get_param` at
 #     retrigger and rendering from the frozen value) also moves it, so this
 #     covers the bug and not merely the code path.
+#   * reinstating BUG-069 (scaling by the bank's union range) also moves it,
+#     so the `tone` round covers the calibration fix.
 format_version: 1
 instrument: instrument.yaml
 duration_secs: 6
@@ -65,9 +72,11 @@ timeline:
   - at: 0.3
     set_step: { target: "10", step: 8, note: 36 }
 
-  # ── Round 2: same node, dest `drive` — an ordinary per-span read.
+  # ── Round 2: same node, dest `tone` — an ordinary per-span read, and the
+  #    only destination whose Kick range (200..8000) differs from the union
+  #    (200..18000) — BUG-069's coverage.
   - at: 2.4
-    set_param: { target: "analog_engine:kick", param: lfo_dest, value: 4 }
+    set_param: { target: "analog_engine:kick", param: lfo_dest, value: 5 }
 
   # ── Round 3: FM Bass on `tune`, the other family's pitch path.
   - at: 4.0

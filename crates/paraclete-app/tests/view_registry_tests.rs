@@ -190,6 +190,26 @@ fn a_real_engines_stepped_selectors_carry_their_names() {
             dest_names.iter().all(|n| !n.is_empty()),
             "{label}: a named entry must not be blank; got {dest_names:?}"
         );
+        // m2: pin a NAME the machine genuinely offers, so a regression back
+        // to machine-invariant (or otherwise wrong) labels is caught at the
+        // app layer too, not only engine-side. Each machine under test has a
+        // different canonical name: HiHat offers `tone` but not `tune`; Bell
+        // offers `ratio` but not `attack` (that is Bass's).
+        let (has, lacks) = match label {
+            "analog" => ("tone", "tune"),
+            "fm" => ("ratio", "attack"),
+            _ => unreachable!("only the two engine families are under test"),
+        };
+        assert!(
+            dest_names.contains(&has),
+            "{label}: `{has}` is a destination this machine reads and must be \
+             offered; got {dest_names:?}"
+        );
+        assert!(
+            !dest_names.contains(&lacks),
+            "{label}: `{lacks}` belongs to a different machine's table and \
+             must not be offered here; got {dest_names:?}"
+        );
 
         // Route 2 — the Rule's `variants`, via `machine_options`. No display
         // adapter is involved, and none should be added.
