@@ -49,6 +49,11 @@ delegates via `task` with `model` and `write_paths` — writing the prompt
 naming the exact files, spec sections, expected change, and verification
 commands, but never writing the code itself.
 
+**The preferred delegation mechanism is the `implement` skill**
+(`run_skill('implement', '<task>')` or `/implement <task>` in slash-command
+harnesses). It bakes in the Flash model, the essential project rules, and
+the build/test commands, so the orchestrator writes the WHAT, not the HOW.
+
 **The ONLY exceptions where the orchestrator may edit files directly:**
 
 | Allowed | Examples |
