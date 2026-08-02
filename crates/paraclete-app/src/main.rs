@@ -217,7 +217,21 @@ fn main() {
     let mut antiphon: Option<AntiphonHandle> = None;
     // Built early so both Antiphon and Theotokos can use them.
     let summaries = collect_node_summaries(&conf, &ids);
-    let view_registry = build_view_registry(&conf, &summaries);
+    // Compute gen_ids before view_registry so chains are built in
+    // instrument-file declaration order (BUG-059).
+    let edges: Vec<(u32, u32)> = conf.all_edges().map(|e| (e.src_node, e.dst_node)).collect();
+    let gen_ids: Vec<u32> = ids
+        .sequencers
+        .iter()
+        .map(|&seq_id| {
+            edges
+                .iter()
+                .find(|(s, _)| *s == seq_id)
+                .map(|(_, t)| *t)
+                .unwrap_or(0)
+        })
+        .collect();
+    let view_registry = build_view_registry(&conf, &summaries, &gen_ids);
     if !no_antiphon {
         let static_source = theoria_static_source(theoria_dir_override.clone());
         let config = AntiphonConfig {
@@ -377,20 +391,6 @@ fn main() {
             })
             .collect();
 
-        // Edge-derived seq→gen pairs: follow event edges from each sequencer
-        // to the first downstream node with an audio output.
-        let edges: Vec<(u32, u32)> = conf.all_edges().map(|e| (e.src_node, e.dst_node)).collect();
-        let gen_ids: Vec<u32> = ids
-            .sequencers
-            .iter()
-            .map(|&seq_id| {
-                edges
-                    .iter()
-                    .find(|(s, _)| *s == seq_id)
-                    .map(|(_, t)| *t)
-                    .unwrap_or(0)
-            })
-            .collect();
         let seq_ids = ids.sequencers.clone();
         let gen_names: Vec<String> = gen_ids
             .iter()
@@ -854,7 +854,11 @@ fn stepped_labels(p: &paraclete_node_api::ParamDescriptor) -> Option<Vec<Option<
     p.value_labels()
 }
 
-fn build_view_registry(conf: &NodeConfigurator, summaries: &[NodeSummary]) -> ViewRegistry {
+fn build_view_registry(
+    conf: &NodeConfigurator,
+    summaries: &[NodeSummary],
+    gen_order: &[u32],
+) -> ViewRegistry {
     use paraclete_node_api::{CapabilityDocument, PortType};
 
     let mut rules: HashMap<u32, paraclete_node_api::Rule> = HashMap::new();
@@ -963,7 +967,10 @@ fn build_view_registry(conf: &NodeConfigurator, summaries: &[NodeSummary]) -> Vi
             engine_set.insert(*nid);
         }
     }
-    let engine_ids: Vec<u32> = engine_set.into_iter().collect();
+    // BUG-059: build chains in declaration order (gen_order) rather than
+    // sorted by engine node id, so track indexing is consistent between
+    // chains and tracks/display_names/seq_ids.
+    let engine_ids: Vec<u32> = engine_set.iter().copied().collect();
 
     // Audio-edge traversal: follow audio out → audio in edges from each engine,
     // stopping before mix/audio_output.  This is a BFS over the small graph.
@@ -974,7 +981,12 @@ fn build_view_registry(conf: &NodeConfigurator, summaries: &[NodeSummary]) -> Vi
         .collect();
 
     let mut chains: Vec<TrackChain> = Vec::new();
-    for &engine_id in &engine_ids {
+
+    // First pass: tracks in declaration order (sequencer → engine).
+    for &engine_id in gen_order {
+        if engine_id == 0 || !engine_set.contains(&engine_id) {
+            continue;
+        }
         let mut chain_ids = Vec::new();
         let mut visited = std::collections::HashSet::new();
         visited.insert(engine_id);
@@ -989,7 +1001,41 @@ fn build_view_registry(conf: &NodeConfigurator, summaries: &[NodeSummary]) -> Vi
                 {
                     {
                         visited.insert(tgt);
-                        // Only include chain nodes that have a view Rule.
+                        if rules.contains_key(&tgt) {
+                            chain_ids.push(tgt);
+                        }
+                        frontier.push(tgt);
+                    }
+                }
+            }
+        }
+        chains.push(TrackChain {
+            engine_node_id: engine_id,
+            chain_ids,
+        });
+    }
+
+    // Second pass: any engines not in declaration order (no corresponding
+    // sequencer — e.g. standalone CLAP plugins). Append at the end so they
+    // don't shift the track indices of declared tracks.
+    for &engine_id in &engine_ids {
+        if gen_order.contains(&engine_id) {
+            continue;
+        }
+        let mut chain_ids = Vec::new();
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(engine_id);
+        let mut frontier: Vec<u32> = vec![engine_id];
+        while let Some(current) = frontier.pop() {
+            for &(src, tgt) in &edges {
+                if src == current
+                    && !visited.contains(&tgt)
+                    && !mix_ids.contains(&tgt)
+                    && is_audio_out(&caps, src)
+                    && is_audio_in(&caps, tgt)
+                {
+                    {
+                        visited.insert(tgt);
                         if rules.contains_key(&tgt) {
                             chain_ids.push(tgt);
                         }
