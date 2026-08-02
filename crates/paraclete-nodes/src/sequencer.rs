@@ -4931,6 +4931,60 @@ mod tests {
         assert!(lock_entry2.is_none(), "locks must not publish when clean");
     }
 
+    /// The **writer** half of the lock round trip. `locks_publish_only_when
+    /// _dirty` above covers only the empty string, so until this existed
+    /// nothing in the workspace pinned the shape actually emitted for a real
+    /// lock — a review mutation changing the separator from `=` to `|` left
+    /// all 994 tests green while, at runtime, jog accumulation and the trig
+    /// strip's lock dots both silently stopped working.
+    ///
+    /// The reader is `Model::parse_lock_value` / `read_step_locks` in
+    /// `paraclete-theotokos`, which cannot be reached from here:
+    /// `paraclete-theotokos` does not depend on `paraclete-nodes` and must not
+    /// start. So the round trip is pinned by two halves that have to move
+    /// together — the other is
+    /// `a_second_jog_accumulates_from_the_stored_lock_value`.
+    #[test]
+    fn the_published_lock_string_has_the_shape_readers_parse() {
+        let mut seq = Sequencer::new();
+        seq.set_node_id(200);
+        seq.activate(44100.0, 64);
+        run_seq_with_cmds(
+            &mut seq,
+            &[
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_LOCK_TARGET,
+                    arg0: 20,
+                    arg1: 7.0,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LOCK,
+                    arg0: 3,
+                    arg1: 0.25,
+                },
+            ],
+        );
+
+        let mut state = Vec::new();
+        seq.published_state(&mut state);
+        let (_, v) = state
+            .iter()
+            .find(|(k, _)| k.ends_with("/state/locks"))
+            .expect("a stored lock must publish");
+        let StateBusValue::Text(s) = v else {
+            panic!("locks must publish as Text, got {v:?}");
+        };
+
+        // `s{step}:{node_id}:{param_id}={value:.6}`, entries joined by ';'.
+        assert_eq!(
+            s, "s3:20:7=0.250000",
+            "the emitted lock string is a cross-crate contract — \
+             `Model::parse_lock_value` splits on [':', '='] after an 's' prefix"
+        );
+    }
+
     // ── TK1 C4: mute tests ────────────────────────────────────────────────
 
     #[test]

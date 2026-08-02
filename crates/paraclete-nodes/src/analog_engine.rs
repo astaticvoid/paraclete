@@ -1471,7 +1471,10 @@ mod tests {
         assert_eq!(
             inert_for(AnalogMachine::HiHat),
             vec!["tune", "punch", "drive", "snap", "noise"],
-            "HiHat reads only tone/decay/open — 5 of 8 dests do nothing"
+            "HiHat declares only tone/decay/open — 5 of 8 dests do nothing \
+             audible. Note `retrigger` reads `tune` for EVERY machine into \
+             `current_hz` (:501); `process_hihat` simply never uses it, so \
+             the outcome is inert while the read still happens"
         );
     }
 
@@ -1486,21 +1489,41 @@ mod tests {
     /// every observable param, so "the LFO is wired to something other than
     /// what the panel says" cannot hide.
     ///
+    /// **This is the parameter-*read* layer**, not the audible one. It proves
+    /// `lfo_dest = n` offsets the param the table names when read through
+    /// `get_param`. It says nothing about whether the active machine ever
+    /// reads that param — on a Kick this test reports dest 6 moving `snap`,
+    /// while `some_dest_indices_are_inert_on_each_machine` above records that
+    /// `snap` is inert on a Kick. Both are true: the union bank holds `snap`,
+    /// and `process_kick` never reads it. Read the two together.
+    ///
     /// Prints the full matrix on failure so the actual wiring is visible
     /// rather than just the first mismatch.
     #[test]
     fn every_dest_index_modulates_exactly_the_param_it_names() {
-        // Every param a caller can observe on this node: the eight dests, the
-        // seven LFO controls, and `machine`. If the LFO reaches any of the
-        // latter the node can modulate its own controls.
-        let observed: Vec<&str> = ANALOG_DEST_NAMES
+        // Every param a caller can observe on this node, derived from the bank
+        // itself rather than listed by hand — a hand-written list silently
+        // stops being exhaustive the moment a param is added, which is exactly
+        // the failure this test exists to prevent. Includes `machine` and the
+        // seven `lfo_*` controls, so an LFO that reached its own controls
+        // would be caught.
+        let observed: Vec<u32> = AnalogEngine::union_params(AnalogMachine::Kick)
             .iter()
-            .copied()
-            .chain([
-                "lfo_dest", "lfo_depth", "lfo_shape", "lfo_speed", "lfo_mode",
-                "lfo_start_phase", "lfo_fade", "machine",
-            ])
+            .map(|p| p.id)
             .collect();
+        let name_of = |id: u32| -> String {
+            AnalogEngine::union_params(AnalogMachine::Kick)
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| p.name.to_string())
+                .unwrap_or_else(|| format!("id:{id}"))
+        };
+        assert!(
+            ANALOG_DEST_NAMES
+                .iter()
+                .all(|n| observed.contains(&ap(n))),
+            "sanity: every dest must be observable in the union bank"
+        );
 
         let mut failures: Vec<String> = Vec::new();
 
@@ -1522,27 +1545,28 @@ mod tests {
 
             // Unmodulated baselines, read through `raw_param` so the LFO is
             // excluded by construction rather than by timing.
-            let base: Vec<f32> = observed.iter().map(|n| eng.raw_param(ap(n))).collect();
+            let base: Vec<f32> = observed.iter().map(|id| eng.raw_param(*id)).collect();
             let mut moved = vec![false; observed.len()];
 
-            // ~1.2 cycles at 4 Hz, so a Tri covers its whole excursion.
+            // 200 x 64 samples / 44100 = 0.29 s; at 4 Hz that is 1.16 cycles,
+            // so a Tri covers its whole -1..+1 excursion with margin.
             for _ in 0..200 {
                 eng.update_lfo(LFO_SUB_BLOCK);
-                for (k, n) in observed.iter().enumerate() {
-                    if (eng.get_param(ap(n)) - base[k]).abs() > 1e-6 {
+                for (k, id) in observed.iter().enumerate() {
+                    if (eng.get_param(*id) - base[k]).abs() > 1e-6 {
                         moved[k] = true;
                     }
                 }
             }
 
-            let actually_moved: Vec<&str> = observed
+            let actually_moved: Vec<String> = observed
                 .iter()
                 .zip(&moved)
                 .filter(|(_, m)| **m)
-                .map(|(n, _)| *n)
+                .map(|(id, _)| name_of(*id))
                 .collect();
 
-            if actually_moved != vec![*expected_name] {
+            if actually_moved != vec![expected_name.to_string()] {
                 failures.push(format!(
                     "  lfo_dest={} expected [{}] but moved {:?}",
                     i + 1,

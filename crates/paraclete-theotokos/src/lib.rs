@@ -3502,11 +3502,19 @@ mod tests {
     /// never be moved further than one increment from the live value.
     ///
     /// The accumulation is not local: it round-trips through the sequencer's
-    /// published `/node/{seq}/state/locks`, so this feeds that string back in
-    /// the exact format `Sequencer::published_state` writes it
-    /// (`"s{step}:{nid}:{pid}={:.6}"`, `sequencer.rs:1564`). A format drift on
-    /// either side silently reverts jogging to "always one increment", which
-    /// is why the stored value here is far enough from zero to be unmistakable.
+    /// published `/node/{seq}/state/locks`. This feeds that string back in the
+    /// format `Sequencer::published_state` writes today
+    /// (`"s{step}:{nid}:{pid}={:.6}"`, `sequencer.rs:1564`).
+    ///
+    /// **This catches reader-side drift only.** The literal is hardcoded here,
+    /// so a change to the *writer's* format leaves this test green while
+    /// jogging silently reverts to "always one increment from the live value"
+    /// — and takes the trig strip's lock dots (`Model::read_step_locks`) with
+    /// it. `the_published_lock_string_has_the_shape_readers_parse`
+    /// (`sequencer.rs`) is the writer-side half; the two must be changed
+    /// together. They cannot be one test: `paraclete-theotokos` does not
+    /// depend on `paraclete-nodes` and must not start (L3 is not a dependency
+    /// of a surface crate).
     ///
     /// `encoder_jog_routes_to_lock_when_step_focused` above covers the command
     /// *pair*; it asserts nothing about `arg1`, which is what this adds.
@@ -3531,10 +3539,21 @@ mod tests {
         app.handle_keys(&bus, &[func_trig('q')]);
         let v2 = app.pending[1].arg1;
 
+        // The exact value, not just a floor: `> 0.25` alone would also pass if
+        // the jog read the lock and then applied its delta twice, or re-clamped
+        // against the wrong range.
         assert!(
-            v2 > 0.25,
-            "second jog must accumulate from the stored lock 0.25 — \
-             v1={v1}, v2={v2}, node={node_id}, param={param_id}"
+            (v2 - (0.25 + v1)).abs() < 1e-9,
+            "second jog must be the stored lock 0.25 plus one increment — \
+             v1={v1}, v2={v2}, expected {}, node={node_id}, param={param_id}",
+            0.25 + v1
+        );
+        // And pin the no-lock fallback the first jog took, so a change to the
+        // jog step shows up here rather than only in the sum above.
+        assert!(
+            (v1 - 1.0 / 128.0).abs() < 1e-9,
+            "first jog, with nothing on the bus, must be one base step from the \
+             live value (range 1.0 / base_divisor 128) — got {v1}"
         );
     }
 
@@ -4223,7 +4242,11 @@ mod tests {
 
     #[test]
     fn parse_lock_value_finds_exact_match() {
-        let locks = "s2:100:500:0.300;s3:100:500:0.700;s0:200:600:0.100";
+        // `=` before the value, matching what `Sequencer::published_state`
+        // actually emits (`sequencer.rs:1564`). These fixtures used a colon
+        // there and passed anyway, because `splitn(4, [':', '='])` accepts
+        // both — a shape no writer produces (AGENTS.md design-learning 4).
+        let locks = "s2:100:500=0.300;s3:100:500=0.700;s0:200:600=0.100";
         assert_eq!(Model::parse_lock_value(locks, 2, 100, 500), Some(0.3));
         assert_eq!(Model::parse_lock_value(locks, 3, 100, 500), Some(0.7));
         assert_eq!(Model::parse_lock_value(locks, 0, 200, 600), Some(0.1));
@@ -4231,7 +4254,7 @@ mod tests {
 
     #[test]
     fn parse_lock_value_returns_none_for_mismatch() {
-        let locks = "s2:100:500:0.300";
+        let locks = "s2:100:500=0.300";
         assert_eq!(Model::parse_lock_value(locks, 2, 100, 999), None);
         assert_eq!(Model::parse_lock_value(locks, 9, 100, 500), None);
         assert_eq!(Model::parse_lock_value("", 2, 100, 500), None);
