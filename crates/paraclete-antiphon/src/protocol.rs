@@ -112,6 +112,10 @@ pub enum ServerMsg {
         track_id: u32,
         nonce: Option<String>,
         engine_node_id: u32,
+        /// The engine's Rule name — the machine it was **built with**, frozen
+        /// (BUG-058 decision, 2026-08-02). Does NOT follow a machine switch.
+        /// The active machine's name is `variants[i].name` where
+        /// `variants[i].value == variants[i].active`.
         engine_name: String,
         display_name: String,
         /// The layout for the machine each host was **constructed** with, not

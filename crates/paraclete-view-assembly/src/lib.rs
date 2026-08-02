@@ -92,6 +92,10 @@ pub struct TrackChain {
 #[derive(Clone, Debug)]
 pub struct CompositeView {
     pub engine_node_id: u32,
+    /// The engine's Rule name — the machine it was **built with**, frozen
+    /// here. It does NOT follow a machine switch (BUG-058 decision,
+    /// 2026-08-02). Clients that need the *active* machine's name read
+    /// `variants[i].name` where `variants[i].value == variants[i].active`.
     pub engine_name: String,
     pub display_name: String,
     /// The merged pages for the *currently selected* machine of every
