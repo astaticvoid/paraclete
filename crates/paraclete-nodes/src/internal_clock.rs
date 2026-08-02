@@ -268,6 +268,7 @@ impl Node for InternalClock {
                     max: 300.0,
                     default: 120.0,
                     stepped: false,
+                    in_kit: false,
                     unit: ParamUnit::Generic,
                     display: None,
                 },

@@ -318,6 +318,7 @@ mod tests {
             max: 1.0,
             default: 0.0,
             stepped: false,
+            in_kit: true,
             unit: ParamUnit::Generic,
             display: None,
         }

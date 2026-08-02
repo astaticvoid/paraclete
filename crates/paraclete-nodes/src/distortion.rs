@@ -67,9 +67,9 @@ impl DistortionNode {
                 PortDescriptor { id: 1, name: "audio_out".into(), direction: PortDirection::Output, port_type: PortType::Audio },
             ],
             params: vec![
-                ParamDescriptor { id: PARAM_DRIVE,        name: "drive".into(),        min: 0.0, max: 1.0, default: 0.0,  stepped: false, unit: ParamUnit::Generic, display: None },
-                ParamDescriptor { id: PARAM_OUTPUT_LEVEL, name: "output_level".into(), min: -24.0, max: 6.0, default: 0.0, stepped: false, unit: ParamUnit::Decibels, display: None },
-                ParamDescriptor { id: PARAM_BLEND,        name: "blend".into(),        min: 0.0, max: 1.0, default: 1.0,  stepped: false, unit: ParamUnit::Generic, display: None },
+                ParamDescriptor { id: PARAM_DRIVE,        name: "drive".into(),        min: 0.0, max: 1.0, default: 0.0,  stepped: false, in_kit: true, unit: ParamUnit::Generic, display: None },
+                ParamDescriptor { id: PARAM_OUTPUT_LEVEL, name: "output_level".into(), min: -24.0, max: 6.0, default: 0.0, stepped: false, in_kit: true, unit: ParamUnit::Decibels, display: None },
+                ParamDescriptor { id: PARAM_BLEND,        name: "blend".into(),        min: 0.0, max: 1.0, default: 1.0,  stepped: false, in_kit: true, unit: ParamUnit::Generic, display: None },
             ],
             extensions: vec!["paraclete.effect".into()],
     view: None,

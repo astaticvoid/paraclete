@@ -46,8 +46,8 @@ impl SplitNode {
                 PortDescriptor { id: 2, name: "audio_out_1".into(), direction: PortDirection::Output, port_type: PortType::Audio },
             ],
             params: vec![
-                ParamDescriptor { id: PARAM_GAIN_0, name: "gain_0".into(), min: 0.0, max: 2.0, default: 1.0, stepped: false, unit: ParamUnit::Generic, display: None },
-                ParamDescriptor { id: PARAM_GAIN_1, name: "gain_1".into(), min: 0.0, max: 2.0, default: 1.0, stepped: false, unit: ParamUnit::Generic, display: None },
+                ParamDescriptor { id: PARAM_GAIN_0, name: "gain_0".into(), min: 0.0, max: 2.0, default: 1.0, stepped: false, in_kit: true, unit: ParamUnit::Generic, display: None },
+                ParamDescriptor { id: PARAM_GAIN_1, name: "gain_1".into(), min: 0.0, max: 2.0, default: 1.0, stepped: false, in_kit: true, unit: ParamUnit::Generic, display: None },
             ],
             extensions: vec!["paraclete.split".into()],
     view: None,

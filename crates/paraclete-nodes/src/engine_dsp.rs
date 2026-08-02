@@ -370,6 +370,7 @@ pub(crate) fn lfo_params(
             max,
             default,
             stepped,
+            in_kit: false,
             unit: ParamUnit::Generic,
             display: None,
         }
@@ -423,6 +424,7 @@ pub(crate) fn lfo_dest_param(
         max: dest_table_len as f64,
         default: 0.0,
         stepped: true,
+        in_kit: false,
         unit: ParamUnit::Generic,
         display: labels.map(ParamDisplayAdapter::Static),
     }

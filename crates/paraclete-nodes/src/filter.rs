@@ -106,9 +106,9 @@ impl FilterNode {
                 PortDescriptor { id: 1, name: "audio_out".into(), direction: PortDirection::Output, port_type: PortType::Audio },
             ],
             params: vec![
-                ParamDescriptor { id: PARAM_CUTOFF,      name: "cutoff".into(),   min: 20.0,  max: 20000.0, default: 1000.0, stepped: false, unit: ParamUnit::Hz,      display: None },
-                ParamDescriptor { id: PARAM_RESONANCE,   name: "resonance".into(),   min: 0.1,   max: 4.0,     default: 0.7,    stepped: false, unit: ParamUnit::Generic, display: None },
-                ParamDescriptor { id: PARAM_FILTER_TYPE, name: "filter_type".into(), min: 0.0,   max: 3.0,     default: 0.0,    stepped: true,  unit: ParamUnit::Generic, display: None },
+                ParamDescriptor { id: PARAM_CUTOFF,      name: "cutoff".into(),   min: 20.0,  max: 20000.0, default: 1000.0, stepped: false, in_kit: true,  unit: ParamUnit::Hz,      display: None },
+                ParamDescriptor { id: PARAM_RESONANCE,   name: "resonance".into(),   min: 0.1,   max: 4.0,     default: 0.7,    stepped: false, in_kit: true, unit: ParamUnit::Generic, display: None },
+                ParamDescriptor { id: PARAM_FILTER_TYPE, name: "filter_type".into(), min: 0.0,   max: 3.0,     default: 0.0,    stepped: true,  in_kit: false, unit: ParamUnit::Generic, display: None },
             ]
             .into_iter()
             .chain(lfo_params(Self::DESTS.len(), Some(&FILTER_DEST_LABELS)))

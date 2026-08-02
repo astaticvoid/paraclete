@@ -520,23 +520,23 @@ impl AnalogEngine {
     fn machine_params(machine: AnalogMachine) -> Vec<ParamDescriptor> {
         match machine {
             AnalogMachine::Kick => vec![
-                ParamDescriptor { id: ap("tune"),  name: "tune".into(),  min: -24.0, max: 24.0,   default: 0.0,   stepped: false, unit: ParamUnit::Semitones, display: None },
-                ParamDescriptor { id: ap("punch"), name: "punch".into(), min: 0.0,   max: 1.0,    default: 0.7,   stepped: false, unit: ParamUnit::Generic,   display: None },
-                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.01,  max: 2.0,    default: 0.5,   stepped: false, unit: ParamUnit::Seconds,   display: None },
-                ParamDescriptor { id: ap("drive"), name: "drive".into(), min: 0.0,   max: 1.0,    default: 0.0,   stepped: false, unit: ParamUnit::Generic,   display: None },
-                ParamDescriptor { id: ap("tone"),  name: "tone".into(),  min: 200.0, max: 8000.0, default: 4000.0, stepped: false, unit: ParamUnit::Hz,        display: None },
+                ParamDescriptor { id: ap("tune"),  name: "tune".into(),  min: -24.0, max: 24.0,   default: 0.0,   stepped: false, in_kit: true,  unit: ParamUnit::Semitones, display: None },
+                ParamDescriptor { id: ap("punch"), name: "punch".into(), min: 0.0,   max: 1.0,    default: 0.7,   stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
+                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.01,  max: 2.0,    default: 0.5,   stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
+                ParamDescriptor { id: ap("drive"), name: "drive".into(), min: 0.0,   max: 1.0,    default: 0.0,   stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
+                ParamDescriptor { id: ap("tone"),  name: "tone".into(),  min: 200.0, max: 8000.0, default: 4000.0, stepped: false, in_kit: true,  unit: ParamUnit::Hz,        display: None },
             ],
             AnalogMachine::Snare => vec![
-                ParamDescriptor { id: ap("tune"),  name: "tune".into(),  min: -24.0, max: 24.0,    default: 0.0,  stepped: false, unit: ParamUnit::Semitones, display: None },
-                ParamDescriptor { id: ap("snap"),  name: "snap".into(),  min: 0.005, max: 0.3,     default: 0.05, stepped: false, unit: ParamUnit::Seconds,   display: None },
-                ParamDescriptor { id: ap("noise"), name: "noise".into(), min: 0.0,   max: 1.0,     default: 0.5,  stepped: false, unit: ParamUnit::Generic,   display: None },
-                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.01,  max: 2.0,     default: 0.3,  stepped: false, unit: ParamUnit::Seconds,   display: None },
-                ParamDescriptor { id: ap("tone"),  name: "tone".into(),  min: 200.0, max: 8000.0,  default: 2000.0, stepped: false, unit: ParamUnit::Hz,      display: None },
+                ParamDescriptor { id: ap("tune"),  name: "tune".into(),  min: -24.0, max: 24.0,    default: 0.0,  stepped: false, in_kit: true,  unit: ParamUnit::Semitones, display: None },
+                ParamDescriptor { id: ap("snap"),  name: "snap".into(),  min: 0.005, max: 0.3,     default: 0.05, stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
+                ParamDescriptor { id: ap("noise"), name: "noise".into(), min: 0.0,   max: 1.0,     default: 0.5,  stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
+                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.01,  max: 2.0,     default: 0.3,  stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
+                ParamDescriptor { id: ap("tone"),  name: "tone".into(),  min: 200.0, max: 8000.0,  default: 2000.0, stepped: false, in_kit: true,  unit: ParamUnit::Hz,      display: None },
             ],
             AnalogMachine::HiHat => vec![
-                ParamDescriptor { id: ap("tone"),  name: "tone".into(),  min: 1000.0, max: 18000.0, default: 8000.0, stepped: false, unit: ParamUnit::Hz,      display: None },
-                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.01,   max: 1.0,     default: 0.08,   stepped: false, unit: ParamUnit::Seconds, display: None },
-                ParamDescriptor { id: ap("open"),  name: "open".into(),  min: 0.0,    max: 1.0,     default: 0.0,    stepped: false, unit: ParamUnit::Generic, display: None },
+                ParamDescriptor { id: ap("tone"),  name: "tone".into(),  min: 1000.0, max: 18000.0, default: 8000.0, stepped: false, in_kit: true,  unit: ParamUnit::Hz,      display: None },
+                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.01,   max: 1.0,     default: 0.08,   stepped: false, in_kit: true,  unit: ParamUnit::Seconds, display: None },
+                ParamDescriptor { id: ap("open"),  name: "open".into(),  min: 0.0,    max: 1.0,     default: 0.0,    stepped: false, in_kit: true,  unit: ParamUnit::Generic, display: None },
             ],
         }
     }
@@ -562,6 +562,7 @@ impl AnalogEngine {
             max: (AnalogMachine::ALL.len() - 1) as f64,
             default: active.value() as f64,
             stepped: true,
+            in_kit: false,
             unit: ParamUnit::Generic,
             display: None,
         }];

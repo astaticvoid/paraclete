@@ -118,6 +118,7 @@ impl Node for Level2GainNode {
                 max: 2.0,
                 default: 1.0,
                 stepped: false,
+                in_kit: true,
                 unit: ParamUnit::Generic,
                 display: None,
             }],

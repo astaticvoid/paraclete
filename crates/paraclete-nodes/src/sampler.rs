@@ -170,21 +170,21 @@ fn sampler_capability_document() -> CapabilityDocument {
         version: (0, 5, 0),
         ports: sampler_ports().to_vec(),
         params: vec![
-            ParamDescriptor { id: param_hash("pitch"),     name: "pitch".into(),     min: -24.0, max: 24.0,  default: 0.0,   stepped: false, unit: ParamUnit::Semitones, display: None },
-            ParamDescriptor { id: param_hash("volume"),    name: "volume".into(),    min: 0.0,   max: 1.0,   default: 1.0,   stepped: false, unit: ParamUnit::Generic,   display: None },
-            ParamDescriptor { id: param_hash("pan"),       name: "pan".into(),       min: -1.0,  max: 1.0,   default: 0.0,   stepped: false, unit: ParamUnit::Generic,   display: None },
-            ParamDescriptor { id: param_hash("start"),     name: "start".into(),     min: 0.0,   max: 1.0,   default: 0.0,   stepped: false, unit: ParamUnit::Percent,   display: None },
-            ParamDescriptor { id: param_hash("end"),       name: "end".into(),       min: 0.0,   max: 1.0,   default: 1.0,   stepped: false, unit: ParamUnit::Percent,   display: None },
-            ParamDescriptor { id: param_hash("attack"),    name: "attack".into(),    min: 0.001, max: 1.0,   default: 0.005, stepped: false, unit: ParamUnit::Seconds,   display: None },
-            ParamDescriptor { id: param_hash("release"),   name: "release".into(),   min: 0.0,   max: 4.0,   default: 0.1,   stepped: false, unit: ParamUnit::Seconds,   display: None },
-            ParamDescriptor { id: param_hash("root_note"), name: "root_note".into(), min: 0.0,   max: 127.0, default: 60.0,  stepped: true,  unit: ParamUnit::Generic,   display: None },
+            ParamDescriptor { id: param_hash("pitch"),     name: "pitch".into(),     min: -24.0, max: 24.0,  default: 0.0,   stepped: false, in_kit: true,  unit: ParamUnit::Semitones, display: None },
+            ParamDescriptor { id: param_hash("volume"),    name: "volume".into(),    min: 0.0,   max: 1.0,   default: 1.0,   stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
+            ParamDescriptor { id: param_hash("pan"),       name: "pan".into(),       min: -1.0,  max: 1.0,   default: 0.0,   stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
+            ParamDescriptor { id: param_hash("start"),     name: "start".into(),     min: 0.0,   max: 1.0,   default: 0.0,   stepped: false, in_kit: true,  unit: ParamUnit::Percent,   display: None },
+            ParamDescriptor { id: param_hash("end"),       name: "end".into(),       min: 0.0,   max: 1.0,   default: 1.0,   stepped: false, in_kit: true,  unit: ParamUnit::Percent,   display: None },
+            ParamDescriptor { id: param_hash("attack"),    name: "attack".into(),    min: 0.001, max: 1.0,   default: 0.005, stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
+            ParamDescriptor { id: param_hash("release"),   name: "release".into(),   min: 0.0,   max: 4.0,   default: 0.1,   stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
+            ParamDescriptor { id: param_hash("root_note"), name: "root_note".into(), min: 0.0,   max: 127.0, default: 60.0,  stepped: true,  in_kit: true,  unit: ParamUnit::Generic,   display: None },
             // #156 (BUG-055): both of these drive the DSP (`effective_node`)
             // and are accepted as p-lock targets, but neither was declared.
             // `loop` was *paged* while undeclared, so it drew a working,
             // lockable control under a `param_{id}` label — BUG-037's shape on
             // a node that is not a machine host. `slice` was neither declared
             // nor paged, so it was unreachable despite being live.
-            ParamDescriptor { id: param_hash("loop"),      name: "loop".into(),      min: 0.0,   max: 1.0,   default: 0.0,   stepped: true,  unit: ParamUnit::Generic,   display: None },
+            ParamDescriptor { id: param_hash("loop"),      name: "loop".into(),      min: 0.0,   max: 1.0,   default: 0.0,   stepped: true,  in_kit: true,  unit: ParamUnit::Generic,   display: None },
             // Upper bound, not the live count: `slices` is rebuilt from
             // whatever sample is loaded, and a descriptor is static. 127
             // matches how `base_slice` is persisted (one byte) with room to
@@ -192,7 +192,7 @@ fn sampler_capability_document() -> CapabilityDocument {
             // falls back rather than panicking. A range that tracked the
             // loaded sample would need `ParamDisplayAdapter::Dynamic`, which
             // panics on clone along the cap-doc path (ADR-042 amendment 5).
-            ParamDescriptor { id: param_hash("slice"),     name: "slice".into(),     min: 0.0,   max: 127.0, default: 0.0,   stepped: true,  unit: ParamUnit::Generic,   display: None },
+            ParamDescriptor { id: param_hash("slice"),     name: "slice".into(),     min: 0.0,   max: 127.0, default: 0.0,   stepped: true,  in_kit: true,  unit: ParamUnit::Generic,   display: None },
         ]
         .into_iter()
         // MM-C10: `Sampler` hosts an LFO (ADR-042 decision 6's rollout order).

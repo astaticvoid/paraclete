@@ -1998,6 +1998,7 @@ mod tests {
             max,
             default: min,
             stepped,
+            in_kit: name != "machine",
             unit: paraclete_node_api::ParamUnit::Generic,
             display: None,
         };
@@ -2080,6 +2081,7 @@ mod tests {
                         max: 1.0,
                         default: 0.5,
                         stepped: false,
+                        in_kit: true,
                         unit: ParamUnit::Generic,
                         display: None,
                     },
@@ -2090,6 +2092,7 @@ mod tests {
                         max: 1.0,
                         default: 0.0,
                         stepped: false,
+                        in_kit: true,
                         unit: ParamUnit::Generic,
                         display: None,
                     },
@@ -2102,6 +2105,7 @@ mod tests {
                         max: 1.0,
                         default: 0.5,
                         stepped: false,
+                        in_kit: true,
                         unit: ParamUnit::Generic,
                         display: None,
                     },
@@ -3042,6 +3046,7 @@ mod tests {
                 max: 20000.0,
                 default: 1000.0,
                 stepped: false,
+                in_kit: true,
                 unit: ParamUnit::Generic,
                 display: None,
             });
@@ -3430,6 +3435,7 @@ mod tests {
                         max: 1.0,
                         default: 0.5,
                         stepped: false,
+                        in_kit: true,
                         unit: ParamUnit::Generic,
                         display: None,
                     },
@@ -3440,6 +3446,7 @@ mod tests {
                         max: 1.0,
                         default: 0.0,
                         stepped: false,
+                        in_kit: true,
                         unit: ParamUnit::Generic,
                         display: None,
                     },
@@ -3915,6 +3922,7 @@ mod tests {
             max: 20000.0,
             default: 1000.0,
             stepped: false,
+            in_kit: true,
             unit: ParamUnit::Generic,
             display: None,
         });
@@ -3948,6 +3956,7 @@ mod tests {
             max: 4.0,
             default: 0.0,
             stepped: true,
+            in_kit: true,
             unit: ParamUnit::Generic,
             display: None,
         });
@@ -3981,6 +3990,7 @@ mod tests {
             max: 20000.0,
             default: 1000.0,
             stepped: false,
+            in_kit: true,
             unit: ParamUnit::Generic,
             display: None,
         });
@@ -4039,6 +4049,7 @@ mod tests {
                 max: 1.0,
                 default: 0.0,
                 stepped: false,
+                in_kit: true,
                 unit: ParamUnit::Generic,
                 display: None,
             });
@@ -4605,6 +4616,7 @@ mod tests {
                 max: 8.0,
                 default: 0.0,
                 stepped: true,
+                in_kit: false,
                 unit: ParamUnit::Generic,
                 display: None,
             });
@@ -4661,6 +4673,7 @@ mod tests {
             max: 2.0,
             default: 0.0,
             stepped: true,
+            in_kit: false,
             unit: ParamUnit::Generic,
             display: Some(ParamDisplayAdapter::Static(&DESTS)),
         });
@@ -4699,6 +4712,7 @@ mod tests {
             max,
             default: min,
             stepped: false,
+            in_kit: !name.starts_with("lfo_"),
             unit: ParamUnit::Generic,
             display: None,
         };

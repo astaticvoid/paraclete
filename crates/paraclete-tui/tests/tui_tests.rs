@@ -46,6 +46,7 @@ fn make_cap_doc_with_cutoff() -> CapabilityDocument {
             max: 20000.0,
             default: 1000.0,
             stepped: false,
+            in_kit: true,
             unit: ParamUnit::Hz,
             display: None,
         }],

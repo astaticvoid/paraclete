@@ -326,4 +326,84 @@ mod view_validation {
             "an undeclared page ref must be reported: {defects:?}"
         );
     }
+
+    /// P11 C0 guard: every node declares `in_kit` for every param, and the
+    /// assignments match the spec.  Structural params must be `false` so they
+    /// don't leak into kit capture; sound params must be `true`.
+    /// Adding a new `ParamDescriptor` constructor without `in_kit` is a
+    /// compile error (there is no `Default` impl) — this test catches
+    /// wrong *values*.
+    #[test]
+    fn every_param_has_explicit_in_kit_assignment() {
+        use crate::*;
+        use paraclete_node_api::Node;
+
+        let nodes: Vec<(&str, Box<dyn Node>)> = vec![
+            ("Sequencer", Box::new(sequencer::Sequencer::new())),
+            ("InternalClock", Box::new(internal_clock::InternalClock::new())),
+            ("LfoNode", Box::new(lfo::LfoNode::new())),
+            ("OscillatorNode", Box::new(oscillator::OscillatorNode::new())),
+            ("EnvelopeNode", Box::new(envelope::EnvelopeNode::new())),
+            ("DelayNode", Box::new(delay::DelayNode::new())),
+            ("LadderFilterNode", Box::new(ladder::LadderFilterNode::new())),
+            ("SplitNode", Box::new(split::SplitNode::new())),
+        ];
+        let mut docs: Vec<(String, CapabilityDocument)> = nodes
+            .into_iter()
+            .map(|(name, n)| (name.to_string(), n.capability_document()))
+            .collect();
+        for doc in every_viewed_node() {
+            docs.push((doc.name.to_string(), doc));
+        }
+
+        // Known-structural params that MUST be `in_kit: false`.
+        let structural: &[&str] = &[
+            "bpm",
+            "pattern_length",
+            "ticks_per_step",
+            "swing",
+            "mute",
+            "live_rec",
+            "machine",
+            "filter_type",
+        ];
+        // Params whose name starts with this prefix are structural (lfo_*).
+        let structural_prefixes: &[&str] = &["lfo_"];
+
+        let mut all: Vec<(String, String, bool)> = Vec::new();
+        for (node_name, doc) in &docs {
+            for p in &doc.params {
+                let name = p.name.as_str().to_string();
+                all.push((node_name.clone(), name, p.in_kit));
+            }
+        }
+
+        let mut errors: Vec<String> = Vec::new();
+        for (node, name, in_kit) in &all {
+            let is_structural_name = structural.contains(&name.as_str());
+            let has_structural_prefix =
+                structural_prefixes.iter().any(|pfx| name.starts_with(pfx));
+
+            if is_structural_name && *in_kit {
+                errors.push(format!(
+                    "{node}/{name}: structural param must have in_kit: false, got true"
+                ));
+            }
+            if has_structural_prefix && *in_kit {
+                errors.push(format!(
+                    "{node}/{name}: lfo_* param must have in_kit: false, got true"
+                ));
+            }
+        }
+
+        assert!(
+            errors.is_empty(),
+            "wrong in_kit assignments:\n  {}",
+            errors.join("\n  ")
+        );
+
+        // Sanity: we covered every node.
+        assert!(!all.is_empty(), "no params found — test is not wired");
+        assert!(docs.len() >= 18, "expected ≥ 18 nodes, got {}", docs.len());
+    }
 }

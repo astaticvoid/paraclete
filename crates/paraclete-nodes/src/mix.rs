@@ -77,6 +77,7 @@ impl Node for MixNode {
             max: 2.0,
             default: 1.0,
             stepped: false,
+            in_kit: true,
             unit: ParamUnit::Generic,
             display: None,
         }).collect();
@@ -87,6 +88,7 @@ impl Node for MixNode {
             max: 2.0,
             default: 1.0,
             stepped: false,
+            in_kit: true,
             unit: ParamUnit::Generic,
             display: None,
         });

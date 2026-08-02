@@ -415,26 +415,26 @@ impl FmEngine {
     fn machine_params(machine: FmMachine) -> Vec<ParamDescriptor> {
         match machine {
             FmMachine::Kick => vec![
-                ParamDescriptor { id: fp("tune"),     name: "tune".into(),     min: -24.0, max: 24.0, default: 0.0, stepped: false, unit: ParamUnit::Semitones, display: None },
-                ParamDescriptor { id: fp("punch"),    name: "punch".into(),    min: 0.0,   max: 1.0,  default: 0.7, stepped: false, unit: ParamUnit::Generic,   display: None },
-                ParamDescriptor { id: fp("decay"),    name: "decay".into(),    min: 0.01,  max: 2.0,  default: 0.5, stepped: false, unit: ParamUnit::Seconds,   display: None },
-                ParamDescriptor { id: fp("feedback"), name: "feedback".into(), min: 0.0,   max: 1.0,  default: 0.2, stepped: false, unit: ParamUnit::Generic,   display: None },
-                ParamDescriptor { id: fp("drive"),    name: "drive".into(),    min: 0.0,   max: 1.0,  default: 0.0, stepped: false, unit: ParamUnit::Generic,   display: None },
+                ParamDescriptor { id: fp("tune"),     name: "tune".into(),     min: -24.0, max: 24.0, default: 0.0, stepped: false, in_kit: true,  unit: ParamUnit::Semitones, display: None },
+                ParamDescriptor { id: fp("punch"),    name: "punch".into(),    min: 0.0,   max: 1.0,  default: 0.7, stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
+                ParamDescriptor { id: fp("decay"),    name: "decay".into(),    min: 0.01,  max: 2.0,  default: 0.5, stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
+                ParamDescriptor { id: fp("feedback"), name: "feedback".into(), min: 0.0,   max: 1.0,  default: 0.2, stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
+                ParamDescriptor { id: fp("drive"),    name: "drive".into(),    min: 0.0,   max: 1.0,  default: 0.0, stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
             ],
             FmMachine::Bell => vec![
-                ParamDescriptor { id: fp("tune"),     name: "tune".into(),     min: -24.0, max: 24.0, default: 0.0,  stepped: false, unit: ParamUnit::Semitones, display: None },
-                ParamDescriptor { id: fp("ratio"),    name: "ratio".into(),    min: 0.5,   max: 8.0,  default: 3.5,  stepped: false, unit: ParamUnit::Generic,   display: None },
-                ParamDescriptor { id: fp("index"),    name: "index".into(),    min: 0.0,   max: 8.0,  default: 2.0,  stepped: false, unit: ParamUnit::Generic,   display: None },
-                ParamDescriptor { id: fp("decay"),    name: "decay".into(),    min: 0.05,  max: 8.0,  default: 2.0,  stepped: false, unit: ParamUnit::Seconds,   display: None },
-                ParamDescriptor { id: fp("feedback"), name: "feedback".into(), min: 0.0,   max: 0.5,  default: 0.1,  stepped: false, unit: ParamUnit::Generic,   display: None },
+                ParamDescriptor { id: fp("tune"),     name: "tune".into(),     min: -24.0, max: 24.0, default: 0.0,  stepped: false, in_kit: true,  unit: ParamUnit::Semitones, display: None },
+                ParamDescriptor { id: fp("ratio"),    name: "ratio".into(),    min: 0.5,   max: 8.0,  default: 3.5,  stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
+                ParamDescriptor { id: fp("index"),    name: "index".into(),    min: 0.0,   max: 8.0,  default: 2.0,  stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
+                ParamDescriptor { id: fp("decay"),    name: "decay".into(),    min: 0.05,  max: 8.0,  default: 2.0,  stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
+                ParamDescriptor { id: fp("feedback"), name: "feedback".into(), min: 0.0,   max: 0.5,  default: 0.1,  stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
             ],
             FmMachine::Bass => vec![
-                ParamDescriptor { id: fp("tune"),  name: "tune".into(),  min: -24.0, max: 24.0, default: 0.0,  stepped: false, unit: ParamUnit::Semitones, display: None },
-                ParamDescriptor { id: fp("ratio"), name: "ratio".into(), min: 0.5,   max: 4.0,  default: 1.0,  stepped: false, unit: ParamUnit::Generic,   display: None },
-                ParamDescriptor { id: fp("index"), name: "index".into(), min: 0.0,   max: 8.0,  default: 2.0,  stepped: false, unit: ParamUnit::Generic,   display: None },
-                ParamDescriptor { id: fp("attack"),name: "attack".into(),min: 0.001, max: 0.5,  default: 0.01, stepped: false, unit: ParamUnit::Seconds,   display: None },
-                ParamDescriptor { id: fp("decay"), name: "decay".into(), min: 0.05,  max: 4.0,  default: 0.5,  stepped: false, unit: ParamUnit::Seconds,   display: None },
-                ParamDescriptor { id: fp("drive"), name: "drive".into(), min: 0.0,   max: 1.0,  default: 0.0,  stepped: false, unit: ParamUnit::Generic,   display: None },
+                ParamDescriptor { id: fp("tune"),  name: "tune".into(),  min: -24.0, max: 24.0, default: 0.0,  stepped: false, in_kit: true,  unit: ParamUnit::Semitones, display: None },
+                ParamDescriptor { id: fp("ratio"), name: "ratio".into(), min: 0.5,   max: 4.0,  default: 1.0,  stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
+                ParamDescriptor { id: fp("index"), name: "index".into(), min: 0.0,   max: 8.0,  default: 2.0,  stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
+                ParamDescriptor { id: fp("attack"),name: "attack".into(),min: 0.001, max: 0.5,  default: 0.01, stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
+                ParamDescriptor { id: fp("decay"), name: "decay".into(), min: 0.05,  max: 4.0,  default: 0.5,  stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
+                ParamDescriptor { id: fp("drive"), name: "drive".into(), min: 0.0,   max: 1.0,  default: 0.0,  stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
             ],
         }
     }
@@ -461,6 +461,7 @@ impl FmEngine {
             max: (FmMachine::ALL.len() - 1) as f64,
             default: active.value() as f64,
             stepped: true,
+            in_kit: false,
             unit: ParamUnit::Generic,
             display: None,
         }];

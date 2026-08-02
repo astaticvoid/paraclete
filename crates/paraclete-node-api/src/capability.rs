@@ -103,6 +103,12 @@ pub struct ParamDescriptor {
     /// True for integer-stepped parameters (algorithm selectors, etc.)
     pub stepped: bool,
 
+    /// When true, this parameter is included in kit capture/apply.
+    /// Sound params (tune, decay, drive, wet, etc.) are included;
+    /// structural params (mute, bpm, pattern_length, machine identity, lfo_*)
+    /// are excluded.
+    pub in_kit: bool,
+
     pub unit: ParamUnit,
 
     /// Override display formatting. `None` = use `ParamUnit` formatting.

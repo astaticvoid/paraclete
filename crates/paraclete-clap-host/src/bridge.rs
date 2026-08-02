@@ -141,6 +141,7 @@ impl HostParamBridge {
                 max: e.max,
                 default: e.default,
                 stepped: false,
+                in_kit: true,
                 unit: ParamUnit::Generic,
                 display: None,
             })
