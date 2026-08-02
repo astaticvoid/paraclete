@@ -480,7 +480,12 @@ impl AnalogEngine {
     /// audio thread.
     fn lfo_dest_id(&self) -> Option<u32> {
         let v = self.raw_param(ap("lfo_dest"));
-        if !v.is_finite() || v < 1.0 {
+        // Non-integral values must read as off, not truncate: a malformed
+        // p-lock of 1.9 would otherwise silently modulate dest 1 (`tune`),
+        // the same "must not quietly modulate something" contract as the
+        // out-of-range guard below. The bank clamps writes, but p-locks
+        // bypass it — this is the path that can carry such a value.
+        if !v.is_finite() || v < 1.0 || v.fract() != 0.0 {
             return None;
         }
         Self::dest_ids(self.machine)
@@ -1807,6 +1812,13 @@ mod tests {
         eng.node_locks.clear();
         eng.node_locks.push((ap("lfo_dest"), f64::NAN));
         assert_eq!(eng.lfo_dest_id(), None, "and so is a non-finite one");
+        // A non-integral value must not TRUNCATE to a dest: 1.9 is not a
+        // destination, and silently treating it as 1 (`tune`) is the same
+        // quiet-mislabel the other guards exist to prevent. Truncation
+        // instead of rejection is the mutant this assertion kills.
+        eng.node_locks.clear();
+        eng.node_locks.push((ap("lfo_dest"), 1.9));
+        assert_eq!(eng.lfo_dest_id(), None, "a fractional index is off, not truncated");
     }
 
     /// Depth 0 must be *exactly* the unmodulated read — this is what makes

@@ -614,7 +614,13 @@ fn merge_page(
                 c.param_labels
                     .iter()
                     .find(|(id, _)| *id == *param_id)
-                    .map(|(_, labels)| {
+                    // An EMPTY array is a variant declining to name its
+                    // values — fall through to the node-level labels rather
+                    // than drawing a selector with zero choices (the shape a
+                    // future machine could emit; both engines build
+                    // non-empty arrays today).
+                    .and_then(|(_, labels)| (!labels.is_empty()).then_some(labels))
+                    .map(|labels| {
                         labels
                             .iter()
                             .map(|o| o.as_ref().map(|s| s.to_string()))
@@ -1939,6 +1945,85 @@ mod tests {
         assert!(
             !opts.iter().any(|n| n == "machine0_a"),
             "the previous machine's labels must not leak; got {opts:?}"
+        );
+    }
+
+    /// Review follow-up: an EMPTY `param_labels` array is a variant declining
+    /// to name a param's values — it must fall through to the node-level
+    /// labels, not draw a selector with zero choices. Unreachable with the
+    /// shipped engines (both build non-empty arrays), but the exact shape a
+    /// future machine could emit; the `.and_then((!is_empty).then_some)`
+    /// guard is what makes it fall through, and a mutant removing that guard
+    /// is killed by this test.
+    #[test]
+    fn an_empty_param_labels_array_falls_back_to_node_level_labels() {
+        let mut rules = HashMap::new();
+        rules.insert(
+            20,
+            make_machine_rule(
+                "Eng",
+                0,
+                &[
+                    (0, "Kick", &[(1, "SRC", 0), (2, "SRC", 1)]),
+                    (1, "Bell", &[(1, "SRC", 0), (2, "SRC", 1)]),
+                ],
+            ),
+        );
+        // Node-level options exist (the frozen construction-time labels) —
+        // they are what the empty variant array must fall back to.
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            20,
+            NodeInfo {
+                display_name: Some("Eng".to_string()),
+                params: vec![
+                    ParamInfo {
+                        id: MACHINE_PID,
+                        name: "machine".to_string(),
+                        stepped: true,
+                        options: Some(vec![Some("off".into()), Some("machine0".into())]),
+                        default: 0.0,
+                    },
+                    ParamInfo {
+                        id: 1,
+                        name: "dest".to_string(),
+                        stepped: true,
+                        options: Some(vec![Some("off".into()), Some("nodelevel_a".into())]),
+                        default: 0.0,
+                    },
+                ],
+            },
+        );
+        // Give machine 1 an EMPTY label array for `dest` — it declines to
+        // name its values.
+        {
+            let rule = rules.get_mut(&20).unwrap();
+            rule.variants.to_mut()[1].param_labels = Cow::Owned(vec![(
+                1,
+                Cow::Borrowed::<[Option<Cow<'static, str>>]>(&[]),
+            )]);
+        }
+
+        let chains = vec![TrackChain {
+            engine_node_id: 20,
+            chain_ids: vec![],
+        }];
+        let active = HashMap::from([(20u32, 1u32)]);
+        let cv = assemble_for(&rules, &chains, 0, &nodes, &active).unwrap();
+        let dest = cv
+            .pages
+            .iter()
+            .flat_map(|p| p.params.iter())
+            .find(|p| p.param_id == 1)
+            .expect("dest is paged");
+        assert!(
+            dest
+                .options
+                .as_deref()
+                .is_some_and(|o| o.iter().any(|x| x.as_deref() == Some("nodelevel_a"))),
+            "an empty variant array must fall back to the node-level labels, \
+             not draw zero choices; got {options:?}",
+            options = dest.options
         );
     }
 

@@ -34,6 +34,13 @@
 # be. `lfo_shape` 0 is Tri, which sweeps the full -1..+1 rather than dwelling
 # near an extreme.
 #
+# Timing note: `set_step`/`clear` fire on the sequencer's pulse grid, so the
+# audible bursts do not land at the wall-clock `at:` values — the first Kick
+# burst is around 0.85 s, not 0.3 s (plock_authoring's 0.4 s set_step lands at
+# pulse 4). The rounds are ~2 s apart, which is what the artifact windows care
+# about; read round alignment off the energy in the baseline, not the yaml's
+# clocks.
+#
 # Checked in both directions before being trusted, per AGENTS.md — one
 # perturbation only proves the scenario does *something*:
 #   * setting `lfo_depth` to 0 moves the fingerprint (it observes the LFO);

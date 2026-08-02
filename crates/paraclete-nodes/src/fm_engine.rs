@@ -379,7 +379,10 @@ impl FmEngine {
     /// the audio thread.
     fn lfo_dest_id(&self) -> Option<u32> {
         let v = self.raw_param(fp("lfo_dest"));
-        if !v.is_finite() || v < 1.0 {
+        // Non-integral values read as off, not truncate — see
+        // `AnalogEngine::lfo_dest_id` for the reasoning (p-locks bypass the
+        // bank's clamp, so this path can carry a malformed value).
+        if !v.is_finite() || v < 1.0 || v.fract() != 0.0 {
             return None;
         }
         Self::dest_ids(self.machine)
@@ -1881,6 +1884,25 @@ mod tests {
             eng.update_lfo(LFO_SUB_BLOCK);
             assert_eq!(eng.get_param(fp("ratio")), base);
         }
+    }
+
+    /// A non-integral `lfo_dest` reads as off rather than truncating to a
+    /// destination — the FM half of the guard `AnalogEngine`'s
+    /// `dest_zero_and_out_of_range_are_both_off` pins. P-locks bypass the
+    /// bank's clamp, so this is the path that can carry such a value.
+    #[test]
+    fn a_fractional_lfo_dest_is_off_not_truncated() {
+        let mut eng = FmEngine::bass();
+        eng.activate(44100.0, 512);
+        eng.node_locks.push((fp("lfo_dest"), 1.9));
+        assert_eq!(eng.lfo_dest_id(), None, "1.9 is not a destination");
+        eng.node_locks.clear();
+        eng.node_locks.push((fp("lfo_dest"), 2.0));
+        assert_eq!(
+            eng.lfo_dest_id(),
+            Some(fp("ratio")),
+            "an integral index still resolves"
+        );
     }
 
     /// The MOD page is `LFO_PAGE_ORDER` at slots 0..6 on every machine. Both
