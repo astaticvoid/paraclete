@@ -51,6 +51,17 @@ RON round-trip, ring-full chunking, pattern-switch diff, app-op drain).
 All are mutation-checked. Harness verbs for P11 (kit/temp ops through
 `PerformState`) landed in test-driver first, as the gate requires.
 
+**Live session (2026-08-02, autonomous):** the pattern-switch kit-apply was
+additionally verified against the real running app — Theotokos in kitty,
+project v3 `--load` (kit 0 "LiveKick" = decay 0.9 on node 20, binding slot 0
+→ kit 0), real PTN chords switched the kick sequencer P0→P1→P0; the app's
+log recorded `[kit] pattern switch seq=10 pattern=0 → kit 0` + `[kit] loading
+kit 0: LiveKick`, and the ENC bank read `decay ... 0.90` afterwards. The
+P0→P1 leg (unbound pattern) produced no kit lines — the negative control.
+This is the first application of the trifecta leg 3 (autonomous real-app live
+session). Temp-save/reload chords, the KIT screen and the perform-mode toggle
+have no surface yet (C6) — #184 tracks surface-side AppOp production.
+
 **Design decisions this spec makes where ADR-039 is silent:**
 
 | Decision | Choice | Rationale |
