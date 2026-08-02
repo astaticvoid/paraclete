@@ -40,49 +40,41 @@ context, makes delegation calls, verifies returned work for correctness, writes
 gated commit messages and spec-conflict reconciliations, and runs design review
 passes. It is never delegated down — a subagent does not become the orchestrator.
 
-### Implementation delegation (MUST — Reasonix sessions only)
+### Implementation delegation
 
-**The orchestrator MUST delegate all code changes to Flash subagents.**
-It MUST NOT use `edit_file`, `write_file`, `multi_edit`, or `delete_symbol`
-directly on source files (`crates/**`, `tools/**`, `web/**`). Instead, it
-delegates via `task` with `model` and `write_paths` — writing the prompt
-naming the exact files, spec sections, expected change, and verification
-commands, but never writing the code itself.
+**Pro owns implementation; Flash is a tool, not a subordinate.** Pro may
+edit source files directly when it already has the context and the change is
+surgical. Pro delegates to Flash when the work is mechanical,
+well-specified, or would bloat Pro's context — at Pro's judgment, not by
+rule.
 
-**The preferred delegation mechanism is the `implement` skill**
-(`/implement` or `run_skill('implement')`). It's an inline skill — the
-orchestrator reads it, then uses `task(model='flash', write_paths=[...])`
-to delegate. The skill body provides the project-specific rules block to
-paste into the subagent prompt; the subagent itself runs with Reasonix's
-stock default prompt (no replacement, no drift).
+**When to delegate vs when to edit directly:**
 
-**The ONLY exceptions where the orchestrator may edit files directly:**
+| Delegate to Flash | Edit directly (Pro) |
+|---|---|
+| Multi-file refactors, renames across crates | Targeted fix with fresh context |
+| Feature implementation from a complete spec | Single-line logic fix you've already traced |
+| Mechanical: add the same pattern to N files | Config files, docs, AGENTS.md |
+| Work that would pollute Pro's context | When cold-start overhead > editing cost |
+| Test addition, doc sweeps | Typo, clippy suppression, constant rename |
 
-| Allowed | Examples |
-|---------|---------|
-| Config files | `reasonix.toml`, `.mcp.json`, `opencode.json`, `Cargo.toml` (dev-dep additions only) |
-| Doc/skill files | `AGENTS.md`, `design/**`, `.reasonix/skills/**` |
-| Single-line fixes | Typo in a string literal, one-character clippy suppression, constant rename |
-| Git operations | `git add`, `git commit` (but never `git stash`/`reset`/`checkout`) |
+**The delegation path.** Use the `implement` skill (`/implement` or
+`run_skill('implement')`) as a convenience — it provides the project-rules
+block and build/test commands to paste into the `task()` prompt. Delegate
+with `write_paths` so subagents are path-bound:
 
-**When in doubt, delegate.** A one-line fix that touches logic (not a typo
-or rename) is implementation — delegate it. Cold-start overhead on Flash is
-negligible; incorrectly doing inline implementation is not.
-
-**How the user verifies delegation.** During a session, watch for `task`
-tool calls targeting source paths vs direct `edit_file`/`write_file` calls.
-After a session, check subagent model routing:
-
-```bash
-grep '"model"' ~/.reasonix/projects/-home-dv6n-code-paraclete/sessions/subagents/*.meta.json
+```text
+task(model='flash', write_paths=['crates/foo/src/bar.rs', ...], prompt='''
+<specific task, files, expected change>
+<paste the project-rules + build/test block from /implement>
+''')
 ```
 
-A session with no subagent meta files did no delegation.
-
-**Session-start self-check.** At the start of each implementation session,
-the orchestrator reports which model it is running as and confirms the
-delegation rule is active. Format: `[workflow] orchestrator=<model>,
-subagent_model=<model>, delegation=MUST`.
+**The structural gate is code review, not delegation.** Every commit
+(whether Pro wrote it or Flash did) passes through a Flash subagent review
+before landing. That's the quality check — see §Stage gates below. A
+delegation audit (`grep '"model"'` on subagent meta files) is available
+post-session but is not a gate.
 
 ### Stage gates
 

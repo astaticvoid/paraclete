@@ -1,17 +1,20 @@
 ---
 name: implement
-description: Delegate implementation to a Flash subagent via task(). Inline skill — read this, then use task(model='flash', ...). Never edit source files directly.
+description: Convenience skill — provides the project-rules block and delegation recipe when you choose to delegate to Flash. Not a gate; Pro may also edit directly.
 runAs: inline
 ---
 
 # Skill: implement
 
-**Never edit source files directly.** When you need to implement a code
-change, delegate it to a Flash subagent via `task()` with `model='flash'`
-and explicit `write_paths`. The subagent gets Reasonix's full default
-prompt — you only need to provide the project-specific context.
+**This is a convenience, not a gate.** Pro may edit source files directly
+when it already has the context and the change is surgical. Use this skill
+when you *choose* to delegate — it provides the project-rules block and
+build/test commands so you don't retype them.
 
-## How to delegate
+## Delegation recipe
+
+When you decide to delegate, construct a `task()` call with `model='flash'`
+and explicit `write_paths`. Paste the project-rules block into the prompt:
 
 ```text
 task(
@@ -26,14 +29,16 @@ task(
 2. Layer boundaries (L0→L5): no layer may reach across another.
    L0 hal → L2 node-api only (not L1 runtime).
 3. No tokio. Blocking tungstenite + rtrb only.
-4. Logging: use log::info!/warn!/error! — no bare eprintln!/println! in library code.
+4. Logging: use log::info!/warn!/error! — no bare eprintln!/println! in
+   library code.
 5. serde_yml not serde_yaml.
 
 ## Build/test
 - cargo check --workspace (after every edit)
 - cargo test --workspace (before reporting done)
 - cargo test -p <crate> <test_name> (single test)
-- cargo run -p test-driver -- tools/test-driver/tests/<scenario>.yaml --check-baseline
+- cargo run -p test-driver -- tools/test-driver/tests/<scenario>.yaml
+  --check-baseline
 
 ## Workflow
 1. Read the relevant files
@@ -45,9 +50,11 @@ task(
 )
 ```
 
-## Exceptions (orchestrator may edit directly)
+## When to delegate vs edit directly
 
-- Config files (.reasonix.toml, .mcp.json, opencode.json, Cargo.toml dev-deps)
-- Doc/skill files (AGENTS.md, design/**, .reasonix/skills/**)
-- Single-line fixes: typo in a string, one-character clippy suppression, constant rename
-- Git operations (add, commit — never stash/reset/checkout)
+| Delegate to Flash | Edit directly (Pro) |
+|---|---|
+| Multi-file refactors, renames | Targeted fix, hot context |
+| Feature from a complete spec | Single-line logic fix |
+| Mechanical: same pattern across N files | Config, docs, AGENTS.md |
+| Work that would bloat Pro's context | When cold-start > editing cost |
