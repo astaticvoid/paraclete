@@ -171,7 +171,7 @@ cargo run -p test-driver -- <scenario>.yaml --check-baseline    # diff; exit 1 o
 #   fm_machines         node 27 driven through all three    (FM Kick, Bell, Bass)
 #   fx_chain            engine -> filter -> distortion       (uses instrument-fx.yaml)
 #   sampler_chain       node 23 sweeping pitch/start/end/loop (uses instrument-fx.yaml)
-#   lfo_sweep           nodes 20 + 27, lfo_dest tune and drive (analog + FM)
+#   lfo_sweep           nodes 20 + 27, lfo_dest tune and tone (analog + FM)
 #     ^ the LFO's ONLY coverage. Every other baseline runs at lfo_dest 0 (off),
 #       so the whole MOD block was unobserved until #175 — that fix changed the
 #       pitch path in both engine families and all six others stayed green.
