@@ -102,6 +102,15 @@ trusting a baseline as coverage for a behaviour, check the scenario actually
 exercises it: perturb the thing under test and confirm the fingerprint moves.
 A baseline you have never seen fail is not evidence.
 
+**Two perturbations, not one** — that is what repairing `plock_authoring`
+taught. Removing the p-lock moved the fingerprint, which only proves the
+scenario does *something* the baseline notices. Reinstating the **defect**
+(#169's per-cycle `node_locks.clear()`) and confirming it also moves is what
+proves the baseline covers the bug. The first check passes on a scenario that
+merely exercises a code path; the second is the one that would have caught
+#169. Do both, and write down that you did — in the scenario header, where the
+next agent reads it.
+
 ## Logging
 
 `env_logger` is initialized at the top of `main()`.  All terminal output must go
@@ -139,25 +148,28 @@ cargo run -p test-driver -- <scenario>.yaml --check-baseline    # diff; exit 1 o
 # bit-stable run-to-run. Tolerances live in the .baseline.json (edit to loosen).
 # Baseline mode does NOT evaluate a scenario's artifact assertions (main.rs:1280)
 # — the fingerprint is the check. Nothing runs these automatically; there is no
-# CI. Run all four before and after any DSP-touching change:
+# CI. Run all SIX before and after any DSP-touching change:
 #   kick_reverb_clean   node 20 through mix+reverb          (analog Kick)
 #   plock_authoring     node 10 -> 20, authored p-locks     (analog Kick)
-#     ^ DOES NOT cover p-locks (#170): its param_id is 1, but ids are FNV-1a
-#       hashes (decay = 3541427549) and set_lock_target passes the number
-#       through unresolved; and it locks step 2, which carries no trig. The
-#       fingerprint has been recording a plain 4-on-the-floor. Do not treat a
-#       green plock_authoring as p-lock coverage, and do not regenerate its
-#       baseline before #169 is fixed — that would freeze the bug in.
+#     ^ REAL p-lock coverage since #169/#170 — it was not before. It authored
+#       `param_id: 1` (ids are FNV-1a hashes; decay = 3541427549) on step 2,
+#       which carries no trig, so the fingerprint recorded a plain
+#       4-on-the-floor and passed for a whole phase while #169 sat under it.
+#       Now locks `decay` on step 4 by NAME, and was checked in both
+#       directions before being trusted: removing the lock moves the
+#       fingerprint, and so does reinstating #169's per-cycle clear.
 #   analog_machines     nodes 21, 22, and both at once      (analog Snare, HiHat)
 #   fm_machines         node 27 driven through all three    (FM Kick, Bell, Bass)
 #   fx_chain            engine -> filter -> distortion       (uses instrument-fx.yaml)
+#   sampler_chain       node 23 sweeping pitch/start/end/loop (uses instrument-fx.yaml)
 # The first four observe all six voice machines. `fx_chain` covers FilterNode
 # and DistortionNode, which appear in no other instrument file — but read its
 # header before trusting it: at 0.2% tolerance it catches filter-coefficient
 # changes and MISSES filter-state re-sequencing, which is the hazard a
-# sub-block restructure actually poses. `Sampler` still has no coverage at all
-# (`Sampler::new()` takes no sample path and the instrument schema has no field
-# for one, so a sampler in a fixture renders silence) — #155.
+# sub-block restructure actually poses. `sampler_chain` is the Sampler's only
+# coverage (it became possible at #159, which gave the instrument schema a
+# sample path — before that a sampler in a fixture rendered silence and would
+# have fingerprinted as zeros). #155 stays open for what is still uncovered.
 
 # Interactive mode: JSON-lines REPL for live engine interrogation
 cargo run -p test-driver -- --interactive --instrument instrument.yaml
@@ -181,6 +193,15 @@ In the default `instrument.yaml` this makes `kick`/`snare`/`hihat`/`bass` and
 the bare tag `sequencer` all ambiguous. Numeric ids are **not** validated
 against the instrument — a typo'd id resolves and then silently no-ops
 (INFRA-014).
+
+**Naming a lock lane.** `set_lock_target` and `clear_step_lock` take either
+`param: <name>` (resolved through `ParamDescriptor::id_for_name`, the way
+`set_param` always has) or a raw `param_id`, and reject both together.
+**Prefer the name.** A raw id is an FNV-1a hash — `decay` is 3541427549 — that
+no reader can check by eye, and a wrong one is stored, emitted and silently
+never matched; that is how `plock_authoring` authored a lock on a param that
+does not exist and still passed for a phase (#170). Omitting both on
+`clear_step_lock` still means "every lane on this step".
 
 Assertions: state-bus `eq`/`between`, live `peak_gte`/`peak_lt`, and
 post-capture artifact scans `discontinuity_lt`/`dc_offset_lt`/`dropout_lt_ms`
@@ -463,9 +484,22 @@ Tools (`tools/`, not shipped): `gen-samples` (pre-flight sample generation),
   a table (`machine` → `AnalogMachine::ALL`, `lfo_dest` → `DESTS`) persist the
   index, so those tables are append-only too, each with a guard test.
 - **ParamLock must NOT go through `bank.handle_commands()`.** Route to a
-  per-cycle `node_locks: Vec<(u32, f64)>` cleared at the top of each `process()`;
-  check your param getter against it before falling back to the bank. Otherwise
-  the locked value bleeds into subsequent steps.
+  `node_locks: Vec<(u32, f64)>` and check your param getter against it before
+  falling back to the bank. Otherwise the locked value bleeds into subsequent
+  steps.
+  **A lock lives for the note, not the audio cycle** (#169). Clearing
+  `node_locks` at the top of `process()` — which this entry used to prescribe —
+  is wrong: a cycle is ~512 samples (~11 ms), a note is not. Params latched at
+  trigger time (`tune`, velocity) kept the lock while params re-read per render
+  span (`decay`, `open`, `tone`, the whole `lfo_*` block) reverted one cycle in,
+  which is inaudible and looked like p-locks not working at all. Retire the set
+  at the **next trigger** instead: set a `locks_pending` flag when a lock
+  arrives, consume it in `retrigger()`, and clear when a trigger arrives with
+  nothing pending. `activate()` must also clear, since a rebuild kills the voice
+  that owned the lock. See `AnalogEngine::consume_pending_locks`.
+  That divide — trigger-latched vs. re-read-per-span — is a standing hazard,
+  not a one-off: it is also why an LFO on `tune` is a sample-and-hold rather
+  than a sweep (#175). When adding a param, know which side it is on.
 - **`serde_yml` not `serde_yaml`.** `serde_yaml` was removed in P9; do not add it back.
 - **`SurfaceOutputHandle` pattern:** implement `take_output_handle()` returning
   `Some(Box<dyn SurfaceOutputHandle>)`. The handle is ticked on the main thread,
