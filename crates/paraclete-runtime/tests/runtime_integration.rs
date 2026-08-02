@@ -238,6 +238,116 @@ fn executor_output_sums_multiple_nodes() {
     assert!(out.iter().all(|&s| (s - 0.5).abs() < 1e-6));
 }
 
+/// Copies its single audio input to its own audio_out — a chain stage.
+struct PassThroughNode {
+    ports: [PortDescriptor; 2],
+}
+
+impl PassThroughNode {
+    fn new() -> Self {
+        Self {
+            ports: [
+                PortDescriptor {
+                    id: 0,
+                    name: "audio_in".into(),
+                    direction: PortDirection::Input,
+                    port_type: PortType::Audio,
+                },
+                PortDescriptor {
+                    id: 1,
+                    name: "audio_out".into(),
+                    direction: PortDirection::Output,
+                    port_type: PortType::Audio,
+                },
+            ],
+        }
+    }
+}
+
+impl Node for PassThroughNode {
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
+    fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
+        let (Some(src), Some(dst)) = (input.audio_inputs.first(), output.audio_outputs.first_mut())
+        else {
+            return;
+        };
+        let frames = input.block_size.min(dst.frames()).min(src.frames());
+        for ch in 0..src.channels().min(dst.channels()) {
+            dst.channel_mut(ch)[..frames].copy_from_slice(&src.channel(ch)[..frames]);
+        }
+    }
+}
+
+/// A sink that copies (sums) its audio inputs into its own audio_out —
+/// mirrors AudioOutputNode's BUG-047 contract.
+struct CopyThroughSinkNode {
+    ports: [PortDescriptor; 1],
+}
+
+impl CopyThroughSinkNode {
+    fn new() -> Self {
+        Self {
+            ports: [PortDescriptor {
+                id: 0,
+                name: "audio_in".into(),
+                direction: PortDirection::Input,
+                port_type: PortType::Audio,
+            }],
+        }
+    }
+}
+
+impl Node for CopyThroughSinkNode {
+    fn ports(&self) -> &[PortDescriptor] {
+        &self.ports
+    }
+    fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
+        let Some(out) = output.audio_outputs.first_mut() else {
+            return;
+        };
+        let frames = input.block_size.min(out.frames());
+        for ch in 0..out.channels() {
+            out.channel_mut(ch)[..frames].fill(0.0);
+        }
+        for audio_in in input.audio_inputs {
+            for ch in 0..audio_in.channels().min(out.channels()) {
+                let src = audio_in.channel(ch);
+                let dst = out.channel_mut(ch);
+                for f in 0..frames.min(src.len()) {
+                    dst[f] += src[f];
+                }
+            }
+        }
+    }
+}
+
+/// BUG-047 regression: in a serial chain (source → stage → sink), the final
+/// output must be the sink's copy of the signal ONCE — not source + stage +
+/// sink, which is how the pre-fix sum-all-nodes counted every stage.
+#[test]
+fn executor_output_is_sink_only_in_a_serial_chain() {
+    let mut conf = NodeConfigurator::new(44100.0, 64);
+    conf.add_node(1, Box::new(ConstantOutputNode::new(0.5)));
+    conf.add_node(2, Box::new(PassThroughNode::new()));
+    conf.add_node(3, Box::new(CopyThroughSinkNode::new()));
+    conf.connect(1, 0, 2, 0).unwrap();
+    conf.connect(2, 1, 3, 0).unwrap();
+    let mut exec = conf.build_executor();
+
+    let mut out = vec![0.0f32; 64 * 2];
+    exec.process(&mut out, 2);
+
+    // Source (0.5) and stage (0.5) are consumed — only the sink contributes.
+    // Pre-fix this was 0.5 + 0.5 = 1.0.
+    assert!(
+        out.iter().all(|&s| (s - 0.5).abs() < 1e-6),
+        "a serial chain must be heard once, not once per stage; got {:?}",
+        &out[..4]
+    );
+}
+
 // ── Ring buffer message delivery ──────────────────────────────────────────────
 
 #[test]

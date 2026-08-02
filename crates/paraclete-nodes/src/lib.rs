@@ -147,12 +147,23 @@ impl Node for AudioOutputNode {
             out.channel_mut(ch)[..frames].fill(0.0);
         }
         for audio_in in input.audio_inputs {
-            let chs = audio_in.channels().min(out.channels());
-            for ch in 0..chs {
-                let src = audio_in.channel(ch);
-                let dst = out.channel_mut(ch);
-                for f in 0..frames.min(src.len()) {
-                    dst[f] += src[f];
+            // Mono inputs upmix to both channels, matching MixNode.
+            if audio_in.channels() == 1 && out.channels() >= 2 {
+                let src = audio_in.channel(0);
+                for ch in 0..out.channels() {
+                    let dst = out.channel_mut(ch);
+                    for f in 0..frames.min(src.len()) {
+                        dst[f] += src[f];
+                    }
+                }
+            } else {
+                let chs = audio_in.channels().min(out.channels());
+                for ch in 0..chs {
+                    let src = audio_in.channel(ch);
+                    let dst = out.channel_mut(ch);
+                    for f in 0..frames.min(src.len()) {
+                        dst[f] += src[f];
+                    }
                 }
             }
         }

@@ -95,9 +95,8 @@ fn project_save_then_load_restores_engine_and_effect_params() {
     let pid = |name: &str| ParamDescriptor::id_for_name(name);
 
     // (node id, param name, value to store) — one per previously-lossy node.
-    // `cutoff`, not the canonical `cutoff`: FilterNode declares it that way
-    // (`filter.rs:109`), which is its own deviation from AGENTS.md's canonical
-    // name list and is not this test's to change.
+    // Uses FilterNode's canonical `cutoff` (renamed from cutoff_hz in
+    // BUG-061, e8ba0ce — FilterNode now declares the canonical name).
     let edits: [(u32, &str, f64); 5] = [
         (20, "decay", 0.42),
         (27, "tune", 7.0),
