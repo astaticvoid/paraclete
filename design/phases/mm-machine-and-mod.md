@@ -1144,3 +1144,56 @@ being a persistence key. Nothing in MM assumed that — the bank was a runtime
 store when MM-C3 was written — so kits (P11, §5) inherit it: a kit that
 stores `machine` stores an index into `AnalogMachine::ALL`, which is now
 append-only with a guard test (`the_machine_table_is_append_only`).
+
+---
+
+## §8. Session #5 — the §6.7 gate, opened 2026-08-01 (paused, not closed)
+
+Appended after the first sitting of §6.7. The body above is unchanged.
+Full notes: `design/sessions/theotokos-5.md`.
+
+**§6.1 passed on the user's ear.** A live sweep of node 20 through all three
+analog machines with a pattern running drew "sounded great" — no artefact on
+the switch, no transport disruption, and the panel header tracked the active
+machine (#161's panel half, confirmed in play rather than in a fixture).
+
+**§6.3 was never reached.** The round after the machine sweep found #169 and
+the session stopped there. **LFO depth is untested**, and so is §6.2's
+"params survive machine round-trips losslessly". The milestone stays open.
+
+**The gate justified itself in a way the exit criteria did not anticipate.**
+§6.7 exists because machine switch and LFO depth are performance gestures.
+What it actually produced was #169 — *a p-lock only survives one audio
+block*, so every lock on `decay`/`open`/`tone`/`lfo_*` has been inaudible on
+`AnalogEngine`, `FmEngine` and `Sampler` since those locks existed. That is
+not an MM defect; MM inherited it. But MM is where it surfaced, because MM is
+what gave a performer a reason to p-lock a timbre param and listen.
+
+It survived this long because `plock_authoring` — the only p-lock coverage in
+the ADR-035 baselines — authors a lock with a param id belonging to no param,
+on a step carrying no trig (#170). §6.4 says "both ADR-035 baselines clean at
+MM-C7 and again at MM-C9". They were. That criterion was satisfiable without
+any p-lock working, and nothing in the phase would have revealed it.
+
+**Consequence for §6.4 and for whoever fixes #169.** Do not regenerate
+`plock_authoring.baseline.json` before #169 lands — regenerating first
+freezes the broken behaviour into the fingerprint and makes the eventual fix
+look like a regression. Fix #169, repair the scenario (#170), then rebaseline
+once.
+
+**Two design questions came out of ten minutes of play,** neither in the
+spec's field of view: how open and closed hats coexist (#172 — they do, but
+only because one node is one voice, and no cross-track choke exists), and
+where toms and claps live (#173 — machine breadth is in the vision and now
+buildable, and no phase owns it). §4's open questions gain both.
+
+**Also filed:** #171 (machine-select refuses silently three ways — the status
+line advertises a lock destination that ADR-041 forbids), #174 (HiHat leaves
+SRC slot 0 empty, raising whether slots are meant to be positionally
+comparable across machines — worth settling before machine breadth lands).
+
+**Outstanding for the next sitting:** §6.2, §6.3, and the user's verdict on
+the page-index shift that ADR-041's implementation note flagged for this
+session — TRIG now sits at page index 0 ahead of SRC, so page keys 1-6 select
+different pages than a performer has learned. It was measured and presented;
+no verdict was given.

@@ -93,6 +93,15 @@ A mutant killed by **no unit test but caught by an ADR-035 baseline** is a
 finding worth writing down, not a gap to paper over — see the `analog_machines`
 case in `design/phases/mm-machine-and-mod.md` (MM-C7).
 
+**The converse is the trap: a baseline proves *stability*, not *behaviour*.**
+It fingerprints whatever the scenario does, so a scenario that does nothing
+fingerprints cleanly and passes forever. `plock_authoring` claimed in its own
+header to "prove that authored p-locks move audio" and authored a lock that
+could not fire (#170) — which is why #169 survived the whole MM phase. Before
+trusting a baseline as coverage for a behaviour, check the scenario actually
+exercises it: perturb the thing under test and confirm the fingerprint moves.
+A baseline you have never seen fail is not evidence.
+
 ## Logging
 
 `env_logger` is initialized at the top of `main()`.  All terminal output must go
@@ -133,6 +142,12 @@ cargo run -p test-driver -- <scenario>.yaml --check-baseline    # diff; exit 1 o
 # CI. Run all four before and after any DSP-touching change:
 #   kick_reverb_clean   node 20 through mix+reverb          (analog Kick)
 #   plock_authoring     node 10 -> 20, authored p-locks     (analog Kick)
+#     ^ DOES NOT cover p-locks (#170): its param_id is 1, but ids are FNV-1a
+#       hashes (decay = 3541427549) and set_lock_target passes the number
+#       through unresolved; and it locks step 2, which carries no trig. The
+#       fingerprint has been recording a plain 4-on-the-floor. Do not treat a
+#       green plock_authoring as p-lock coverage, and do not regenerate its
+#       baseline before #169 is fixed — that would freeze the bug in.
 #   analog_machines     nodes 21, 22, and both at once      (analog Snare, HiHat)
 #   fm_machines         node 27 driven through all three    (FM Kick, Bell, Bass)
 #   fx_chain            engine -> filter -> distortion       (uses instrument-fx.yaml)
@@ -267,6 +282,30 @@ kitty @ --to unix:@tk4 send-key tab      # press+release -> clears the arm
 **Hazard:** using `send-text` for a tap latches the key as a held prefix, and
 a latched REC makes every trig `Action::Noop` by design (`input.rs:749`).
 That reads exactly like "step entry is broken". Use `send-key` for taps.
+
+**Releasing a latch needs a third verb — `send-key` is a *re-press*.** The
+`send-key tab` above only works because re-pressing TRK is harmless. It is
+not harmless in general: `m` (Lock) latched with `send-text`, then "released"
+with `send-key m`, reads as a deliberate second press, and re-pressing Lock
+**clears the target you just set** (intercepted in `lib.rs::handle_keys`
+before arming). The gesture then looks broken when it is the driving that is
+wrong. Send the kitty keyboard-protocol release instead — `CSI <code>;1:3u`,
+event type 3:
+
+```bash
+kitty @ --to unix:@tk5 send-text 'm'                 # press, no release -> Lock armed
+kitty @ --to unix:@tk5 send-key g                    # trig -> sets the lock target
+kitty @ --to unix:@tk5 send-text $'\x1b[109;1:3u'    # 109 = 'm', TRUE release -> target survives
+```
+
+Verified in session #5: with `send-key m` the target vanished; with the
+release escape `L:s12` stayed latched as designed.
+
+**The user is on the same keyboard.** In a paired session their keypresses and
+yours are indistinguishable from `get-text`. Session #5 spent three probes
+bisecting a transport stop that was the user pausing playback between rounds.
+Unexplained state change during a paired session: **ask, don't bisect** — and
+never file it as a defect on the strength of an agent-side observation alone.
 
 **Not agent-testable:** the sticky-fallback path (D11's re-tap disarm and
 400 ms guard) never runs in kitty, which delivers releases — judging it needs
