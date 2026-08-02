@@ -1197,3 +1197,67 @@ the page-index shift that ADR-041's implementation note flagged for this
 session — TRIG now sits at page index 0 ahead of SRC, so page keys 1-6 select
 different pages than a performer has learned. It was measured and presented;
 no verdict was given.
+
+## §9. Session #5 round 2 — §6.7 concluded, 2026-08-01
+
+Appended after the session resumed and finished. §8 and the body above are
+unchanged. Full notes: `design/sessions/theotokos-5.md`.
+
+**§6.7 is satisfied — the session was held, both halves.** §8 recorded it as
+paused before LFO depth; that round ran and is written up.
+
+**§6.3's LFO is correct and not performable, and those are separate claims.**
+The DSP was audited exhaustively (`3f729a0`): every one of the eight
+one-based `lfo_dest` indices modulates exactly the param the table names and
+nothing else — not a sibling dest, not an LFO control, not `machine`. An
+off-by-one in `lfo_dest_id` is killed by five tests. Nothing in ADR-042's
+implementation is wired wrongly.
+
+What made it unusable is entirely in what the surface offers:
+
+- **#179** — `LFO_DESTS` is machine-invariant while `machine_params` is not,
+  so 3 of 8 dests are inert on Kick and Snare and **5 of 8 on HiHat**.
+  Selecting one does nothing, silently. Worse across a machine switch, which
+  is this phase's premise: the index survives, its meaning flips.
+- **#176** — the dest encoder shows a bare index. ADR-042's implementation
+  note built `ANALOG_DEST_LABELS` as a `Static` adapter precisely so a client
+  could label it; Theotokos never reads `ParamDescriptor.display` (zero hits
+  in the crate). `machine` declares no adapter at all.
+- **#178** — depth is scaled by `bank.range(dest)`, which MM-C3 makes the
+  **union** across machines. On a Kick, `tone` is scaled by 17800 instead of
+  7800; the clamp is the union too, so an LFO can drive a param past the
+  active machine's declared ceiling. An ADR-041/ADR-042 interaction: MM-C3
+  keeps overlays out of the engine deliberately, so the engine structurally
+  cannot know the active machine's range.
+- **#175** — `tune` is read only in `retrigger()`, so it is a per-note
+  sample-and-hold rather than a sweep. Musically useful in `Free` mode; it
+  simply cannot do intra-note pitch movement, and nothing distinguishes
+  per-note dests from continuous ones in the list.
+
+**ADR-042 decision 5 (no tempo to the LFO) was exercised and held up as
+staged, not as adequate.** Asked for "a slow modulation over 16 steps", the
+only route was a hand-computed 0.583 Hz for one cycle per bar at 140 BPM. The
+param surface is frozen so tempo-sync (OQ-M2) lands without a surface change —
+that part of the decision is vindicated. The session is evidence that
+bar-relative rate is the first thing a performer reaches for, which is an
+argument about OQ-M2's *priority*, not its design.
+
+**§6.7's page-shift question is answered.** User: *"it's fine, elektron puts
+some stuff there. Maybe we find something more for trg in future."* TRIG stays
+at index 0. #180 records that the sequencer already has four per-step params
+(`CMD_SET_STEP_TIMING`/`_CONDITION`/`_VELOCITY`/`_LENGTH`) with no encoder
+home, which is the obvious occupant for the page's seven empty slots — and
+that they need a step-addressed slot kind, not another `(node_id, param_id)`
+binding.
+
+**§6.2 was not tested** — a track's params surviving machine round-trips
+losslessly. It is guarded by unit tests (MM-C3's corruption-path test, shipped
+with #154) but was never exercised by hand. The one exit criterion this
+session did not reach.
+
+**Recommendation on the milestone.** §6.1–§6.6 are met and §6.7 is held. The
+LFO findings are follow-on issues against shipped behaviour rather than
+incomplete MM work — none of them is a defect in what MM built. Closing MM
+and carrying #175/#176/#178/#179 forward is defensible; so is holding it until
+the MOD page is performable, since §6.3's criterion says the merged page
+works, and it does, while the page a performer meets does not. A user call.

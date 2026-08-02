@@ -7,11 +7,16 @@ ADR-041 + ADR-042
 140 BPM, Kick/Snare/HiHat/Bass), `./target/release/paraclete`, run **in kitty**
 with the agent observing and driving keys over `kitty @ --listen-on unix:@tk5`
 
-> **Session status: paused, not closed.** Machine select was exercised and
-> passed. The p-lock round that followed found #169 and the session stopped
-> there. **LFO depth — the other half of §6.7 — was never tested**, and the
-> user has not given a verdict on the page-index shift. MM's milestone stays
-> open. Continue by appending to this file.
+> **Session status: held and concluded 2026-08-01.** Both halves of §6.7 were
+> exercised: machine select (round 1) and LFO depth (round 2, appended below).
+> **Round 2 supersedes the `NOT TESTED` / `NO VERDICT` rows for M6 and M7 in
+> the round-1 hypothesis table** — M6 failed on presentation, M7 was accepted
+> by the user. **M4 (§6.2, params surviving machine round-trips) was never
+> tested** and is the one exit criterion this session did not reach.
+>
+> This banner is the only part of the file revised after the fact, the same
+> exception AGENTS.md makes for an ADR's `Status:` line; everything below is
+> as written at the time.
 
 ## Verdict so far: machine select is good. The round after it found the biggest defect of the phase — a p-lock only survives one audio block, so every lock on decay/open/tone has been inaudible on all three engines, and the one baseline that covers p-locks proves nothing.
 
@@ -132,3 +137,115 @@ the *live* param with a lock-exists flag — it never displays the locked
 value, so "is the lock 0, or is the display lying?" is unanswerable from the
 panel. `test-driver` renders settled it. #163 is the structural version of
 this complaint.
+
+---
+
+## Round 2 — the LFO (§6.3) and the page verdict, same sitting
+
+Appended after the session resumed. The section above is unchanged.
+
+## Verdict: the LFO is correctly wired and almost unusable. Nothing is broken in the DSP; everything that made it unusable is in what the surface offers and how it is labelled. The page shift is accepted.
+
+Four rounds went into trying to hear the LFO do something, and each failure
+had a different cause. That pattern *is* the finding — the LFO works, and a
+performer still cannot get a musical result from it without knowing the
+source.
+
+## Hypotheses (continued)
+
+| # | Hypothesis | Verdict |
+|---|---|---|
+| M6 | LFO depth is performable as a gesture (§6.3, ADR-042) | **FAIL, on presentation not on function.** The DSP is correct and exhaustively verified. Getting an audible, intended result required knowing which dests the active machine reads (#179), that the labels are missing (#176), that depth is scaled by the union range (#178), and that `tune` is per-note only (#175). None of that is discoverable from the panel |
+| M7 | The page-index shift is acceptable | **PASS.** User: *"it's fine, elektron puts some stuff there. Maybe we find something more for trg in future."* Follow-up filed as #180 |
+| M8 | `lfo_fade`'s 4-second maximum suits a percussive voice | **DEFERRED, deliberately.** With #178 and #179 open, a fade judgement would confound three variables. Revisit after those land |
+
+## The four failures, in order
+
+Each was diagnosed and each had a distinct cause. Recorded in order because
+the sequence is the argument for building the audit earlier.
+
+1. **`tune`, `Free`, 1 Hz** — "high high, low low". Correct behaviour: a
+   free-running LFO sampled once per note against a fixed trig grid, phase
+   advancing 3/7 of a cycle per hit, so the pattern repeats every 7 hits.
+2. **`tune`, `Trig`** — "four on four identical kicks". Also correct: `Trig`
+   resets phase per note, so every hit samples the same value. Led to #175 —
+   `tune` is read only in `retrigger()` (`analog_engine.rs:501`) and the
+   render uses the frozen `current_hz`, so it can never sweep *within* a note.
+3. **`tone`, depth 1.0 then 0.08** — "nope, all same... softer/more muted".
+   `tone` is a lowpass cutoff at 4 kHz over a ~65 Hz sine: inaudible at
+   moderate depth, and at full depth the union-range scaling (#178) clamps it
+   to 200 Hz, which reads as "the kick got muted".
+4. **`drive`, full depth, `Trig`** — "sounds different, but each hit is the
+   same". Correct again: `Trig` by definition.
+
+Then, on the user's request for a slow modulation across 16 steps: `tune`,
+`Free`, 0.583 Hz (one cycle per bar, hand-computed because the LFO receives
+no tempo), 16 trigs — *"a low thrum from a helicopter"*. Sixteen kicks a bar
+is a drone whatever the LFO does; a fourth badly-chosen demo.
+
+**The user's call at that point was the right one:** *"That should be
+carefully audited through a one by one ab test performed autonomously before
+you waste anymore user time."*
+
+## The audit (`3f729a0`)
+
+Two tests, both mutation-checked, replacing four rounds of guessing:
+
+- `every_dest_index_modulates_exactly_the_param_it_names` — walks all eight
+  one-based dest indices against every observable param (the eight dests, the
+  seven LFO controls, `machine`). Exactly one must move, and it must be the
+  one the table names. **Passes** — the wiring is correct. An off-by-one in
+  `lfo_dest_id` is killed by five tests.
+- `some_dest_indices_are_inert_on_each_machine` — pins the finding that
+  explains the session.
+
+A throwaway render-and-analyse harness (`lfo_audit.py`, scratchpad) measured
+across-note vs within-note movement per destination and corroborated it: on a
+Kick, dests 6/7/8 are bit-identical to a depth-0 control. Two artifacts in
+that harness are **not** findings and are recorded so nobody re-reads them as
+such: `drive` at full depth saturates enough to merge onset detection into a
+single hit, and the within-note pitch column is confounded by the kick's own
+pitch envelope spanning more Hz at a higher base pitch.
+
+## What the audit found
+
+`LFO_DESTS` is machine-invariant; `machine_params` is not. So per machine:
+
+| machine | inert dests |
+|---|---|
+| Kick | 6 `snap`, 7 `noise`, 8 `open` |
+| Snare | 4 `punch`, 5 `drive`, 8 `open` |
+| HiHat | 1 `tune`, 4 `punch`, 5 `drive`, 6 `snap`, 7 `noise` — **5 of 8** |
+
+Worse across a machine switch, which is MM's entire premise: the dest index
+survives the switch while its meaning flips from live to inert, silently.
+**#179.**
+
+## Filed in round 2
+
+| Issue | |
+|---|---|
+| #175 | BUG-066 — LFO on `tune` is a per-note sample-and-hold (severity corrected in a comment after measurement) |
+| #176 | BUG-067 — stepped selectors show raw numbers; Theotokos never reads `ParamDescriptor.display`, and `machine` declares none |
+| #177 | BUG-068 — `:set` clamps every param to 0..1 regardless of declared range |
+| #178 | BUG-069 — LFO depth scales by the bank's union range, miscalibrated on every machine but the widest |
+| #179 | BUG-070 — 3–5 of 8 dest indices are silently inert per machine |
+| #180 | TRIG page has 7 empty slots; the sequencer already has 4 per-step params with no encoder home |
+
+## Method notes (round 2)
+
+**Build the oracle before spending the ears.** Four user-facing rounds
+produced one usable fact between them; two unit tests produced the answer in
+minutes and left permanent guards. The tell that it was time to stop was
+present early — the second "no" on a destination I had chosen by table order
+rather than by measurement.
+
+**A wrong theory stated confidently is worse than no theory.** #175 was filed
+with a table asserting the other seven destinations sweep correctly, derived
+from a code read alone. The user's "nope, all same" refuted it. Corrected in
+a comment rather than by a silent edit, so the record shows the error.
+
+**`:set` was found by trying to use the instrument, not by testing it.** The
+0..1 clamp (#177) surfaced only because the encoder ramp overshot and the
+command line was the obvious alternative. Its three existing tests all use
+`"set dec 0.8"` — the one param range that cannot expose the bug.
