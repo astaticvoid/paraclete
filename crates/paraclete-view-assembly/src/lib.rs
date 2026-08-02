@@ -18,7 +18,7 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 
-use paraclete_node_api::{AffordanceHint, MachineVariant, PageRef, Rule};
+use paraclete_node_api::{AffordanceHint, MachineVariant, PageRef, ParamLabelArray, Rule};
 
 pub const CANONICAL_PAGE_ORDER: [&str; 6] = ["TRIG", "SRC", "FLTR", "AMP", "FX", "MOD"];
 
@@ -414,6 +414,11 @@ struct Contributor<'a> {
     param_pages: &'a [(u32, PageRef)],
     /// Value-indexed machine names, for the identity param only.
     options: Option<Vec<Option<String>>>,
+    /// The active variant's per-param label arrays (ADR-041 amendment
+    /// 2026-08-02): a stepped param with an entry here takes ITS labels —
+    /// the active machine's — instead of the node-level descriptor's, which
+    /// freeze at the construction-time machine.
+    param_labels: &'a [(u32, ParamLabelArray)],
     identity_param: Option<u32>,
 }
 
@@ -431,6 +436,7 @@ fn build_pages(
                 page_groups: &v.page_groups,
                 param_pages: &v.pages,
                 options: machine_options(rule),
+                param_labels: &v.param_labels,
                 identity_param: identity_param(rule),
             },
             None => Contributor {
@@ -439,6 +445,7 @@ fn build_pages(
                 page_groups: &rule.page_groups,
                 param_pages: &rule.param_pages,
                 options: None,
+                param_labels: &[],
                 identity_param: None,
             },
         })
@@ -589,9 +596,26 @@ fn merge_page(
             let is_identity = c.identity_param == Some(*param_id);
             let stepped = is_identity || info.is_some_and(|p| p.stepped);
             // The identity param's names come from the variant list; every
-            // other stepped param's come from its descriptor's display.
+            // other stepped param's come from its descriptor's display — but
+            // the descriptor's labels freeze at the construction-time machine
+            // (ADR-041 amendment 2026-08-02). A param the ACTIVE variant
+            // carries a label array for takes that machine's labels instead,
+            // so `lfo_dest` on a switched machine names the machine that is
+            // actually selected. Absent an entry, the descriptor's labels
+            // are the behaviour every non-differing param always had.
             let options = if is_identity {
                 c.options.clone()
+            } else if let Some((_, labels)) = c
+                .param_labels
+                .iter()
+                .find(|(id, _)| *id == *param_id)
+            {
+                Some(
+                    labels
+                        .iter()
+                        .map(|o| o.as_ref().map(|s| s.to_string()))
+                        .collect(),
+                )
             } else {
                 info.and_then(|p| p.options.clone())
             };
@@ -824,6 +848,7 @@ mod tests {
                             .collect::<Vec<_>>(),
                     ),
                     overlays: Cow::Owned(overlays),
+                    param_labels: Cow::Borrowed(&[]),
                 }
             })
             .collect();
@@ -1819,6 +1844,97 @@ mod tests {
             assert!(ident.identity, "every machine flags the selector");
         }
         assert_eq!(set.select_param_name.as_deref(), Some("machine"));
+    }
+
+    /// ADR-041 amendment 2026-08-02 (M1): a stepped param's labels follow
+    /// the ACTIVE machine, not the startup cap-doc. The node-level
+    /// `ParamInfo.options` freeze at the construction-time machine, so a
+    /// variant that carries `param_labels` for that param must win; and
+    /// switching `active` must switch which labels the merged pages carry —
+    /// the same mechanism that already moves pages and ranges.
+    #[test]
+    fn stepped_param_labels_follow_the_active_machine() {
+        let mut rules = HashMap::new();
+        rules.insert(
+            20,
+            make_machine_rule(
+                "Eng",
+                0,
+                &[
+                    (0, "Kick", &[(1, "SRC", 0), (2, "SRC", 1)]),
+                    (1, "Bell", &[(1, "SRC", 0), (2, "SRC", 1)]),
+                ],
+            ),
+        );
+        // The node-level options freeze at the construction-time machine —
+        // `Kick`'s names — and MUST be overridden by the active variant's.
+        let mut nodes = HashMap::new();
+        nodes.insert(
+            20,
+            node_info_full(
+                "Eng",
+                &[("machine", MACHINE_PID, true, 0.0), ("dest", 1, true, 0.0)],
+            ),
+        );
+        // Give each variant a `param_labels` entry for `dest` (1) naming its
+        // own destinations. `make_machine_rule` builds empty labels, so patch
+        // them in — mirroring what the engines do with `dest_param_labels`.
+        {
+            let rule = rules.get_mut(&20).unwrap();
+            for (i, v) in rule.variants.to_mut().iter_mut().enumerate() {
+                let own = format!("machine{i}_a");
+                let v2 = format!("machine{i}_b");
+                v.param_labels = Cow::Owned(vec![(
+                    1,
+                    Cow::Owned(vec![
+                        Some(Cow::Borrowed("off")),
+                        Some(Cow::Owned(own)),
+                        Some(Cow::Owned(v2)),
+                    ]),
+                )]);
+            }
+        }
+
+        let chains = vec![TrackChain {
+            engine_node_id: 20,
+            chain_ids: vec![],
+        }];
+
+        let dest_options = |cv: &CompositeView| -> Vec<String> {
+            cv.pages
+                .iter()
+                .flat_map(|p| p.params.iter())
+                .find(|p| p.param_id == 1)
+                .map(|p| {
+                    p.options
+                        .as_deref()
+                        .unwrap()
+                        .iter()
+                        .filter_map(|o| o.clone())
+                        .collect()
+                })
+                .unwrap()
+        };
+
+        // `assemble` (empty selection) falls back to the node-level labels.
+        let cv0 = assemble(&rules, &chains, 0, &nodes).unwrap();
+        assert!(
+            dest_options(&cv0).iter().any(|n| n == "machine0_a"),
+            "default selection shows the first machine's labels"
+        );
+
+        // `assemble_for` with machine 1 active shows ITS labels.
+        let active = HashMap::from([(20u32, 1u32)]);
+        let cv1 = assemble_for(&rules, &chains, 0, &nodes, &active).unwrap();
+        let opts = dest_options(&cv1);
+        assert!(
+            opts.iter().any(|n| n == "machine1_a"),
+            "the selected machine's labels must win; got {opts:?}"
+        );
+        assert!(
+            !opts.iter().any(|n| n == "machine0_a"),
+            "the previous machine's labels must not leak; got {opts:?}"
+        );
     }
 
     /// A machine that contributes to a page group its siblings do not must

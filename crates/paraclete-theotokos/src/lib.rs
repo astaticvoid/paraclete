@@ -1869,12 +1869,19 @@ mod tests {
     /// TRIG but not who declares it), so this fixture stands in for whichever
     /// way that lands.
     fn machine_host_view(node_id: u32) -> CompositeView {
-        let page = |params: &[(u32, &str, u8)]| CompositePage {
+        // ADR-041 amendment 2026-08-02: the per-machine pages carry that
+        // machine's `options` for a stepped param whose labels differ by
+        // machine (`lfo_dest`-shaped) — the `param_labels` the engines now
+        // declare land here via assembly, and the machine switch swaps whole
+        // pages, so the labels must follow. `tone` carries machine-specific
+        // options so a test can tell which machine's labels are showing.
+        #[allow(clippy::type_complexity)] // a test fixture tuple, not a wire type
+        let page = |params: &[(u32, &str, u8, Option<Vec<Option<String>>>)]| CompositePage {
             id: "SRC".into(),
             label: "Source".into(),
             params: params
                 .iter()
-                .map(|&(param_id, name, slot)| CompositeParam {
+                .map(|&(param_id, name, slot, ref options)| CompositeParam {
                     node_id,
                     param_id,
                     name: name.into(),
@@ -1884,7 +1891,7 @@ mod tests {
                     slot,
                     routing: None,
                     stepped: param_id == MACHINE_PID,
-                    options: None,
+                    options: options.clone(),
                 })
                 .collect(),
             envelopes: vec![],
@@ -1899,11 +1906,14 @@ mod tests {
             identity,
         };
         let m0 = page(&[
-            (MACHINE_PID, "machine", 0),
-            (TONE_PID, "tone", 1),
-            (PUNCH_PID, "punch", 2),
+            (MACHINE_PID, "machine", 0, None),
+            (TONE_PID, "tone", 1, Some(vec![Some("kick".into()), Some("room".into())])),
+            (PUNCH_PID, "punch", 2, None),
         ]);
-        let m1 = page(&[(MACHINE_PID, "machine", 0), (TONE_PID, "tone", 1)]);
+        let m1 = page(&[
+            (MACHINE_PID, "machine", 0, None),
+            (TONE_PID, "tone", 1, Some(vec![Some("bell".into()), Some("sparkle".into())])),
+        ]);
         CompositeView {
             engine_node_id: node_id,
             engine_name: "Host".into(),
@@ -2350,6 +2360,44 @@ mod tests {
         set_machine(&bus, 100, 1.0);
         app.model.sync_machine_selection(&bus.borrow());
         assert_eq!(tone(&app), (1000.0, 18000.0), "machine 1's range");
+    }
+
+    /// ADR-041 amendment 2026-08-02 (M1): a stepped param's LABELS follow
+    /// the machine too, not just its range. The node-level cap-doc freezes
+    /// labels at the construction-time machine; the per-machine pages carry
+    /// each machine's `options`, and `sync_machine_selection` swaps whole
+    /// pages — so after a switch the encoder must show the new machine's
+    /// names, not the old one's. This is the defect the review found: the
+    /// range narrowed while the displayed names stayed the old machine's,
+    /// so value 1 read "tune" but modulated `tone`.
+    #[test]
+    fn stepped_param_labels_follow_a_machine_switch() {
+        let bus = test_bus();
+        let mut app = machine_host_app(100, 200);
+
+        let tone_options = |app: &TheotokosApp| -> Vec<String> {
+            app.model
+                .resolve_encoder_params()
+                .iter()
+                .flatten()
+                .find(|e| e.param_id == TONE_PID)
+                .and_then(|e| e.options.as_ref())
+                .map(|o| o.iter().filter_map(|x| x.clone()).collect())
+                .unwrap_or_default()
+        };
+        // Machine 0's labels, from its prebuilt page.
+        assert_eq!(tone_options(&app), ["kick", "room"]);
+
+        set_machine(&bus, 100, 1.0);
+        assert!(
+            app.model.sync_machine_selection(&bus.borrow()),
+            "a machine change must report dirty so the panel repaints"
+        );
+        assert_eq!(
+            tone_options(&app),
+            ["bell", "sparkle"],
+            "the encoder must name machine 1's destinations after the switch"
+        );
     }
 
     /// A node with no variants keeps taking its range from the descriptor —

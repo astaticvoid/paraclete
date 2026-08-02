@@ -283,6 +283,7 @@ mod tests {
                     },
                 ),
             ]),
+            param_labels: Cow::Borrowed(&[]),
         };
         let variants = vec![variant(0, "Kick", 24.0), variant(1, "Bell", 12.0)];
         Rule {
