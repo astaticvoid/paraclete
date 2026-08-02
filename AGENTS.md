@@ -40,15 +40,42 @@ context, makes delegation calls, verifies returned work for correctness, writes
 gated commit messages and spec-conflict reconciliations, and runs design review
 passes. It is never delegated down — a subagent does not become the orchestrator.
 
-**All implementation goes to Flash subagents.** Every code change (bug fix,
-feature, refactor, test addition) is delegated to a Flash subagent with an
-explicit `model` parameter. The orchestrator writes the prompt — naming the
-exact files, the spec sections, the expected change, and the verification
-commands — but does not write the code itself.
+### Implementation delegation (MUST — Reasonix sessions only)
 
-Trivial single-line fixes (typos, constant renames, one-character clippy
-suppressions) may be done inline by the orchestrator to avoid cold-start
-overhead. When in doubt, delegate.
+**The orchestrator MUST delegate all code changes to Flash subagents.**
+It MUST NOT use `edit_file`, `write_file`, `multi_edit`, or `delete_symbol`
+directly on source files (`crates/**`, `tools/**`, `web/**`). Instead, it
+delegates via `task` with `model` and `write_paths` — writing the prompt
+naming the exact files, spec sections, expected change, and verification
+commands, but never writing the code itself.
+
+**The ONLY exceptions where the orchestrator may edit files directly:**
+
+| Allowed | Examples |
+|---------|---------|
+| Config files | `reasonix.toml`, `.mcp.json`, `opencode.json`, `Cargo.toml` (dev-dep additions only) |
+| Doc/skill files | `AGENTS.md`, `design/**`, `.reasonix/skills/**` |
+| Single-line fixes | Typo in a string literal, one-character clippy suppression, constant rename |
+| Git operations | `git add`, `git commit` (but never `git stash`/`reset`/`checkout`) |
+
+**When in doubt, delegate.** A one-line fix that touches logic (not a typo
+or rename) is implementation — delegate it. Cold-start overhead on Flash is
+negligible; incorrectly doing inline implementation is not.
+
+**How the user verifies delegation.** During a session, watch for `task`
+tool calls targeting source paths vs direct `edit_file`/`write_file` calls.
+After a session, check subagent model routing:
+
+```bash
+grep '"model"' ~/.reasonix/projects/-home-dv6n-code-paraclete/sessions/subagents/*.meta.json
+```
+
+A session with no subagent meta files did no delegation.
+
+**Session-start self-check.** At the start of each implementation session,
+the orchestrator reports which model it is running as and confirms the
+delegation rule is active. Format: `[workflow] orchestrator=<model>,
+subagent_model=<model>, delegation=MUST`.
 
 ### Stage gates
 
