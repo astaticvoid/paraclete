@@ -50,9 +50,11 @@ naming the exact files, spec sections, expected change, and verification
 commands, but never writing the code itself.
 
 **The preferred delegation mechanism is the `implement` skill**
-(`run_skill('implement', '<task>')` or `/implement <task>` in slash-command
-harnesses). It bakes in the Flash model, the essential project rules, and
-the build/test commands, so the orchestrator writes the WHAT, not the HOW.
+(`/implement` or `run_skill('implement')`). It's an inline skill — the
+orchestrator reads it, then uses `task(model='flash', write_paths=[...])`
+to delegate. The skill body provides the project-specific rules block to
+paste into the subagent prompt; the subagent itself runs with Reasonix's
+stock default prompt (no replacement, no drift).
 
 **The ONLY exceptions where the orchestrator may edit files directly:**
 
