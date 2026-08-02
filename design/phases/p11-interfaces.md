@@ -41,6 +41,16 @@ note-on consumption on `events_in` did NOT ship — that is the one
 live-record piece this phase must add. (Survey confirmed: `process()`
 only matches `Event::Transport` at `sequencer.rs:1489` — no Midi2 arm.)
 
+**Implementation note (2026-08-02):** C0–C3's §4 test plan is now
+realized as debug-harness live tests, per the standing live-test gate:
+`p11_kit_capture_apply.yaml` (C0 in_kit opt-in + C2 capture/apply),
+`p11_temp_save_reload.yaml` (C3 app-level both halves), and
+`p11_bind_kit_apply.yaml` (C2 pattern-switch apply + perform-mode skip)
+under `tools/test-driver/tests/`, plus the C1/C2 unit tests (KitStore
+RON round-trip, ring-full chunking, pattern-switch diff, app-op drain).
+All are mutation-checked. Harness verbs for P11 (kit/temp ops through
+`PerformState`) landed in test-driver first, as the gate requires.
+
 **Design decisions this spec makes where ADR-039 is silent:**
 
 | Decision | Choice | Rationale |
