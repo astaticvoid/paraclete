@@ -128,6 +128,36 @@ Findings 1 B / 10 M / 4 m across ADR-041/042/043; this ADR's amendments:
 5. Validation debt (review m15 → BUG-037): a debug-build assertion that
    every page/variant param ref resolves in the union doc.
 
+## Amendment — 2026-08-02 (BUG-069 review follow-up, user-approved)
+
+**Decision 3 amended — `MachineVariant` gains a sixth field:
+`param_labels`.** Decision 3 ships per-variant *pages* and *overlays*,
+but a stepped param's **value labels** (`lfo_dest`'s destination names)
+still came from the node-level cap-doc, which is collected once at
+startup from the construction-time machine. On a live machine switch the
+encoder range narrowed correctly (overlay) while the displayed names
+stayed the old machine's — value 1 read "tune" but modulated `tone`.
+The union label adapter was removed with #179, so there is no
+machine-invariant fallback that could be right.
+
+Amended model: **`MachineVariant` carries `param_labels: [(u32,
+label_array)]`** — per-param value-indexed label arrays for params whose
+labels differ by machine. Assembly resolves a stepped param's `options`
+from the **active variant's** `param_labels` when an entry exists,
+falling back to the node-level descriptor labels otherwise (the
+behavior before #179 for every non-differing param). Because
+`sync_machine_selection` swaps in the variant's prebuilt pages, labels
+follow the machine through the same mechanism that already moves pages
+and ranges. The field is additive on the wire; existing `MachineVariant`
+literals default it empty (`Cow::Borrowed(&[])`), meaning "no
+per-machine labels — use the descriptor's".
+
+Widening the previously-pinned five-field shape is deliberate here, not
+the deferral the `rule.rs` doc used to record: #179 made labels
+machine-dependent, which the five-field shape could not express, and a
+surface showing the old machine's destination names on the new machine
+is exactly the "silently wrong" failure the ADR exists to prevent.
+
 ## Implementation note
 
 ```text
