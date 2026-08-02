@@ -315,4 +315,19 @@ mod tests {
         assert_eq!(MixNode::new(4).master_id, 1181736839,
             "master_gain's id must not depend on the input count");
     }
+
+    /// INFRA-015: the ViewPlugin impl must be reachable — to_rule() is useless
+    /// if capability_document never assigns it.
+    #[test]
+    fn mix_node_capability_document_has_view_rule() {
+        let mix = MixNode::new(4);
+        let doc = mix.capability_document();
+        assert!(doc.view.is_some(), "view must be Some — INFRA-015");
+        let rule = doc.view.unwrap();
+        assert_eq!(rule.name, "Mix");
+        assert_eq!(rule.page_groups.len(), 1);
+        assert_eq!(rule.page_groups[0], "FX");
+        // 4 input gains + master = 5 slots on the FX page
+        assert_eq!(rule.param_pages.len(), 5);
+    }
 }
