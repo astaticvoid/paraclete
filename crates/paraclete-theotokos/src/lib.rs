@@ -51,6 +51,9 @@ pub struct TheotokosConfig {
 pub struct TheotokosApp {
     model: Model,
     pending: Vec<NodeCommand>,
+    /// P11 C1: app-level ops from Theotokos chords/KIT screen,
+    /// drained by the main loop each tick.
+    pending_app_ops: Vec<paraclete_node_api::app_op::AppOp>,
     quit: bool,
     dirty: bool,
     last_render: Instant,
@@ -115,6 +118,7 @@ impl TheotokosApp {
         // clock's old `playing: true` construction and is retired here,
         // not left as a second mechanism for the same invariant.
         let pending = Vec::with_capacity(64);
+        let pending_app_ops = Vec::with_capacity(16);
 
         // TK2 C8 (D11): global→local YAML load at startup. TK2.1 C6
         // (D14): a stale entry (e.g. a retired button name) no longer
@@ -132,6 +136,7 @@ impl TheotokosApp {
         Ok(Self {
             model,
             pending,
+            pending_app_ops,
             quit: false,
             dirty: true,
             last_render: Instant::now(),
@@ -1755,6 +1760,15 @@ impl TheotokosApp {
         std::mem::take(&mut self.pending)
     }
 
+    /// P11 C1: drain app-level ops (kit load/save, temp save/reload,
+    /// perform mode, etc.) produced by Theotokos key chords and the
+    /// KIT screen.  Called by the main loop each tick.
+    pub fn take_pending_app_ops(
+        &mut self,
+    ) -> Vec<paraclete_node_api::app_op::AppOp> {
+        std::mem::take(&mut self.pending_app_ops)
+    }
+
     pub fn should_quit(&self) -> bool {
         self.quit
     }
@@ -2146,6 +2160,7 @@ mod tests {
                 vec![], // no composite views in unit tests
             ),
             pending: Vec::new(),
+            pending_app_ops: Vec::new(),
             quit: false,
             dirty: true,
             last_render: Instant::now(),
@@ -3476,6 +3491,7 @@ mod tests {
         let mut app = TheotokosApp {
             model: Model::new(1, &[200], &[100], &["T1".into()], &["T1".into()], rule_ordered_caps(), vec![]),
             pending: Vec::new(),
+            pending_app_ops: Vec::new(),
             quit: false,
             dirty: true,
             last_render: Instant::now(),
@@ -4111,6 +4127,7 @@ mod tests {
         let mut app = TheotokosApp {
             model: Model::new(1, &[200], &[100], &["T1".into()], &["T1".into()], many_params_caps(10), vec![]),
             pending: Vec::new(),
+            pending_app_ops: Vec::new(),
             quit: false,
             dirty: true,
             last_render: Instant::now(),

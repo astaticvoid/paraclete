@@ -7,6 +7,7 @@
 //! License: LGPL-3.0 — node implementations may remain closed-source.
 
 pub mod agreement;
+pub mod app_op;
 pub mod audio_processor;
 pub mod buffer;
 pub mod capability;

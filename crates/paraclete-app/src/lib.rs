@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+pub mod app_ops;
 pub mod builder;
 pub mod instrument;
 pub mod patch;

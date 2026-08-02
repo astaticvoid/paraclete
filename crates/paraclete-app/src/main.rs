@@ -560,6 +560,21 @@ fn main() {
             }
         }
 
+        // P11 C1: drain app-level ops from surfaces (kit load/save,
+        // temp save/reload, perform mode, etc.).  After Antiphon drain,
+        // before Theotokos tick — so a Theoria-triggered kit load
+        // executes before Theotokos renders the result.
+        if let Some(h) = antiphon.as_ref() {
+            for op in h.take_pending_app_ops() {
+                paraclete_app::app_ops::execute_app_op(op, &mut conf, &bus_handle);
+            }
+        }
+        if let Some((ref mut tk, _)) = theotokos_opt {
+            for op in tk.take_pending_app_ops() {
+                paraclete_app::app_ops::execute_app_op(op, &mut conf, &bus_handle);
+            }
+        }
+
         let mut led_output = scripting.take_pending_output();
         // Mirror LED output addressed to the Launchpad/emulator onto the
         // Theoria surface so both show the same state (w0-interfaces §wiring).

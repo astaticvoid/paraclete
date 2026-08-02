@@ -115,6 +115,13 @@ impl AntiphonHandle {
         self.cmd_rx.try_iter()
     }
 
+    /// P11 C1: drain app-level ops (kit load/save, temp save/reload, etc.)
+    /// produced by WebSocket verb dispatch.  Stub in C1 — returns empty
+    /// until C7 wires the protocol verbs.
+    pub fn take_pending_app_ops(&self) -> Vec<paraclete_node_api::app_op::AppOp> {
+        Vec::new()
+    }
+
     /// Diff the state bus against the shadow, coalesce changes, and flush a
     /// `state` batch (and, if any `/context/*` path changed, a full `context`
     /// snapshot) at the `STATE_MIRROR_FLUSH_MS` cadence. Main-thread only;
