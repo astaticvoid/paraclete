@@ -966,7 +966,11 @@ impl Sequencer {
                     p.muted = match cmd.arg0 {
                         0 => false,
                         1 => true,
-                        _ => !p.muted,
+                        2 => !p.muted,
+                        // Any other arg0 leaves the tier untouched (the
+                        // documented 0/1/2 contract; a stray value must
+                        // not toggle).
+                        _ => p.muted,
                     };
                 }
                 Self::CMD_PREPARE_MUTE => {
@@ -976,7 +980,12 @@ impl Sequencer {
                 }
                 Self::CMD_PREPARE_PATTERN_MUTE => {
                     // P11 C4: deferred per-pattern mute for the active
-                    // pattern. arg0: 0 = off, 1 = on.
+                    // pattern. arg0: 0 = off, 1 = on. While playing, the
+                    // pattern active at the wrap is the one that was active
+                    // at the command (switches only happen at wraps, after
+                    // the apply); a stopped-mode CMD_SET_PATTERN between
+                    // prepare and start retargets the pending mute to the
+                    // newly selected pattern — documented, accepted edge.
                     self.pending_pattern_mute = Some(cmd.arg0 != 0);
                 }
                 _ => {}
@@ -6011,6 +6020,39 @@ mod tests {
             matches!(muted.1, StateBusValue::Bool(true)),
             "muted pattern must publish Bool(true): {muted:?}"
         );
+    }
+
+    #[test]
+    fn prepared_mute_last_write_wins() {
+        // Two prepares before a wrap: the later one overrides (last-write-
+        // wins), it must not queue twice or apply both.
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+
+        run_seq_with_cmds(&mut seq, &[prepare_pattern_mute_cmd(1), prepare_pattern_mute_cmd(0)]);
+        run_loops(&mut seq, 1);
+
+        assert!(
+            !seq.patterns[0].muted,
+            "the second (off) prepare must win at the wrap"
+        );
+    }
+
+    #[test]
+    fn deserialize_v3_clears_pending_mutes() {
+        // A blob load replaces the pattern bank; a prepared mute held for
+        // the old bank must not land on some future wrap of the new one.
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        run_seq_with_cmds(&mut seq, &[prepare_mute_cmd(1), prepare_pattern_mute_cmd(1)]);
+
+        let data = seq.serialize();
+        seq.deserialize(&data);
+
+        assert_eq!(seq.pending_global_mute, None, "cleared by the load");
+        assert_eq!(seq.pending_pattern_mute, None, "cleared by the load");
     }
 
     #[test]

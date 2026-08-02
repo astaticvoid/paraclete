@@ -97,8 +97,10 @@ assert:
     path: /node/10/state/pattern_muted
     eq: 1
   # And the audio consequence: silence between the ON-wrap (≤5.5, tail
-  # done by 5.6) and the earliest OFF-wrap (≥6.3 for P≥2.15). The window
-  # at 6.15 (capture [4.31, 4.61] ≈ wall [5.75, 6.15]) sits in that gap.
+  # done by 5.6) and the earliest OFF-wrap (the 2.0+2P wrap, which for
+  # P∈[1.72,3.5] lands in [5.44, 9.0]; the tightest gap is P=2.3 →
+  # 6.6). The window at 6.15 reads capture [4.35, 4.65] ≈ wall
+  # [5.8, 6.15] — inside the gap for every P in range.
   - at: 6.15
     peak_lt: 0.01
     window_ms: 300
