@@ -1114,12 +1114,6 @@ impl TheotokosApp {
                             resolved: _,
                             options: _,
                         }) => {
-                            // TK2.2 C4 (E5): record what this jog is about
-                            // to write, independent of which branch below
-                            // it lands in — the destination (locked step
-                            // vs. live) is read from current state at
-                            // render time, not stored here.
-                            self.last_jog_param = Some(name.clone());
                             let track = self.model.active_track;
                             let tracker = &mut self.encoder_trackers[col];
                             let held = match tracker.repeat(now, tick_ms) {
@@ -1167,6 +1161,11 @@ impl TheotokosApp {
                                 dirty = true;
                                 continue;
                             }
+                            // TK2.2 C4 (E5): record what this jog is about
+                            // to write — set after the identity-param check,
+                            // so the status line never advertises a lock
+                            // destination that was refused (#171).
+                            self.last_jog_param = Some(name.clone());
                             if let Some(step) = self.model.lock_step_for_active_track() {
                                 let seq_id = self.model.tracks[track].sequencer_id;
                                 let current = self
@@ -3660,6 +3659,38 @@ mod tests {
         assert_eq!(
             app.last_jog_param, recorded,
             "clearing the lock target must not clear the recorded jog"
+        );
+    }
+
+    /// BUG-064 item 1: jogging an identity param (`machine`) with a lock
+    /// target armed must NOT set `last_jog_param`, so the status line does
+    /// not advertise a lock destination that will be refused (#171).
+    #[test]
+    fn jog_on_identity_param_does_not_record_last_jog_param() {
+        let bus = test_bus();
+        let mut app = machine_host_app(100, 200);
+        app.model.rec = RecMode::Grid;
+        // machine_host_app puts `machine` at encoder column 0
+        app.model.lock_target = Some((0, 4));
+
+        assert!(
+            app.model.is_identity_param(100, MACHINE_PID),
+            "sanity: machine must be flagged identity"
+        );
+        assert!(
+            app.model.lock_step_for_active_track().is_some(),
+            "sanity: lock target must be armed"
+        );
+
+        app.handle_keys(&bus, &[func_trig('q')]); // encoder 0 → machine
+
+        assert!(
+            app.last_jog_param.is_none(),
+            "identity-param jog must not record last_jog_param"
+        );
+        assert!(
+            app.model.cmdline_error.is_some(),
+            "identity-param refusal must set a cmdline error"
         );
     }
 
