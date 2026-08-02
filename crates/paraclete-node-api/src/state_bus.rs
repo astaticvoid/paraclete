@@ -154,7 +154,7 @@ mod tests {
 
     #[test]
     fn state_bus_value_is_clone() {
-        let v = StateBusValue::Float(3.14);
+        let v = StateBusValue::Float(std::f64::consts::PI);
         let w = v.clone();
         assert_eq!(v, w);
     }

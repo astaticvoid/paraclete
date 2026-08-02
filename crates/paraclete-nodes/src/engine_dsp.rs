@@ -358,7 +358,6 @@ impl LfoBlock {
 ///
 /// `dest_table_len` is the host's own dest-table length — see
 /// [`lfo_dest_param`] for why the range is the table's and not the doc's.
-#[allow(dead_code)]
 pub(crate) fn lfo_params(
     dest_table_len: usize,
     dest_labels: Option<&'static (dyn ParamDisplay + 'static)>,
@@ -409,10 +408,10 @@ pub(crate) fn lfo_params(
 /// it cannot describe a param whose values are hashes. A dense `0..=N` maps
 /// onto it exactly.
 ///
-/// The stability this depends on is the table being append-only; both engines
-/// carry a test pinning their table's head so a reorder fails loudly (MM §0
-/// D3).
-#[allow(dead_code)]
+/// The stability this depends on is the table being append-only; every host
+/// carries a test pinning its table's head so a reorder fails loudly (MM §0
+/// D3) — two union tables and six per-machine tables across the two engine
+/// families, plus the Sampler's and Filter's.
 pub(crate) fn lfo_dest_param(
     dest_table_len: usize,
     labels: Option<&'static (dyn ParamDisplay + 'static)>,
@@ -432,7 +431,6 @@ pub(crate) fn lfo_dest_param(
 /// MOD page order for the seven `lfo_*` params — slot `i` gets
 /// `LFO_PAGE_ORDER[i]`. Shared so both engines lay the page out identically
 /// and a performer's muscle memory carries across tracks.
-#[allow(dead_code)]
 pub(crate) const LFO_PAGE_ORDER: [u32; 7] = [
     ParamDescriptor::id_for_name("lfo_dest"),
     ParamDescriptor::id_for_name("lfo_depth"),
@@ -454,7 +452,6 @@ pub(crate) const LFO_PAGE_ORDER: [u32; 7] = [
 /// the cap-doc's param names", with the engine doing the joining once).
 ///
 /// Index 0 is `off`; `1..=N` are the dest table's entries in order.
-#[allow(dead_code)]
 pub(crate) struct LfoDestLabels(pub &'static [&'static str]);
 
 impl ParamDisplay for LfoDestLabels {
@@ -495,7 +492,6 @@ impl ParamDisplay for LfoDestLabels {
 ///
 /// Shared by both machine engines, and by `Sampler`/`FilterNode` at MM-C10, so
 /// the application rule lives in exactly one place.
-#[allow(dead_code)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct LfoHost {
     block: LfoBlock,
@@ -513,7 +509,6 @@ pub(crate) struct LfoHost {
     dest_range: (f32, f32),
 }
 
-#[allow(dead_code)]
 impl LfoHost {
     pub fn new() -> Self {
         LfoHost {
