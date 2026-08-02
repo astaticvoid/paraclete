@@ -94,6 +94,16 @@ impl Node for OscillatorNode {
         self.bank = ParameterBank::from_capability_document(&Self::default_doc());
     }
 
+    /// Bank only (#154) — this node is stateless between blocks.
+    fn serialize(&self) -> Vec<u8> {
+        self.bank.serialize()
+    }
+
+    fn deserialize(&mut self, data: &[u8]) {
+        self.bank.deserialize(data);
+    }
+
+
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
         self.bank.handle_commands(input.commands);
 
@@ -289,6 +299,38 @@ mod oscillator_node_tests {
         let mut osc = OscillatorNode::new();
         osc.activate(44100.0, 512);
         assert!(!osc.ports().is_empty());
+    }
+
+    /// Every bank param, not a spot check (BUG-060: OscillatorNode inherited
+    /// the no-op trait defaults, so waveform/pitch/tune/level all reset to
+    /// defaults on reload).
+    #[test]
+    fn oscillator_params_survive_a_save_and_load() {
+        let mut saved = OscillatorNode::new();
+        saved.activate(44100.0, 512);
+        saved.bank.set(osc_param("waveform"), 2.0);
+        saved.bank.set(osc_param("pitch"), -5.0);
+        saved.bank.set(osc_param("tune"), 25.0);
+        saved.bank.set(osc_param("level"), 0.4);
+
+        let mut loaded = OscillatorNode::new();
+        loaded.activate(44100.0, 512);
+        loaded.deserialize(&saved.serialize());
+
+        assert_eq!(loaded.bank.get(osc_param("waveform")), 2.0);
+        assert_eq!(loaded.bank.get(osc_param("pitch")), -5.0);
+        assert_eq!(loaded.bank.get(osc_param("tune")), 25.0);
+        assert_eq!(loaded.bank.get(osc_param("level")), 0.4);
+    }
+
+    /// Ids are name-derived and now written into project files — pin the
+    /// literals so a rename (a silent data migration) fails loudly.
+    #[test]
+    fn the_oscillator_param_ids_are_stable() {
+        assert_eq!(osc_param("waveform"), 447346130);
+        assert_eq!(osc_param("pitch"), 3174189745);
+        assert_eq!(osc_param("tune"), 1749091475);
+        assert_eq!(osc_param("level"), 2610554845);
     }
 }
 

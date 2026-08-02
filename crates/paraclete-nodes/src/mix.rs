@@ -4,22 +4,36 @@
 use std::borrow::Cow;
 use paraclete_node_api::{
     CapabilityDocument, Node, ParameterBank, ParamDescriptor, ParamUnit, PortDescriptor,
-    PortDirection, PortType, ProcessInput, ProcessOutput,
+    PortDirection, PortName, PortType, ProcessInput, ProcessOutput, StateBusValue,
     Rule, ViewPlugin, PageRef,
 };
+
+/// Name-derived id for input `i`'s gain param. The ids are stable across a
+/// change in `num_inputs` (BUG-060): `master_gain` keeps its id under any
+/// input count, and a shrunken count drops only the inputs that no longer
+/// exist. The pre-fix scheme (`id: i as u32`, master at `num_inputs`) made
+/// master's id collide with an input's the moment the count changed — a
+/// project saved with 8 inputs and reloaded with 4 silently landed input 4's
+/// gain on the master fader.
+fn input_param_id(i: usize) -> u32 {
+    ParamDescriptor::id_for_name(&format!("input_gain_{i}"))
+}
 
 pub struct MixNode {
     ports: Vec<PortDescriptor>,
     node_id: u32,
     num_inputs: usize,
+    input_ids: Vec<u32>,
+    master_id: u32,
     bank: ParameterBank,
     render_l: Vec<f32>,
     render_r: Vec<f32>,
 }
 
 impl MixNode {
-    /// `n` stereo inputs. Each input gets param_id = input_index (gain 0.0–2.0).
-    /// Master gain param_id = n (0.0–2.0, default 1.0).
+    /// `n` stereo inputs. Input gains are `input_gain_0..n-1` (0.0–2.0),
+    /// master gain is `master_gain` (0.0–2.0, default 1.0) — all ids
+    /// name-derived, so persistence survives an input-count change.
     pub fn new(num_inputs: usize) -> Self {
         let mut ports = Vec::new();
         for i in 0..num_inputs {
@@ -40,6 +54,8 @@ impl MixNode {
             ports,
             node_id: 0,
             num_inputs,
+            input_ids: (0..num_inputs).map(input_param_id).collect(),
+            master_id: ParamDescriptor::id_for_name("master_gain"),
             bank: ParameterBank::empty(),
             render_l: Vec::new(),
             render_r: Vec::new(),
@@ -54,9 +70,9 @@ impl Node for MixNode {
     fn set_node_id(&mut self, id: u32) { self.node_id = id; }
 
     fn capability_document(&self) -> CapabilityDocument {
-        let mut params: Vec<ParamDescriptor> = (0..self.num_inputs).map(|i| ParamDescriptor {
-            id: i as u32,
-            name: "input_gain".into(),
+        let mut params: Vec<ParamDescriptor> = self.input_ids.iter().enumerate().map(|(i, id)| ParamDescriptor {
+            id: *id,
+            name: PortName::Dynamic(format!("input_gain_{i}")),
             min: 0.0,
             max: 2.0,
             default: 1.0,
@@ -65,7 +81,7 @@ impl Node for MixNode {
             display: None,
         }).collect();
         params.push(ParamDescriptor {
-            id: self.num_inputs as u32,
+            id: self.master_id,
             name: "master_gain".into(),
             min: 0.0,
             max: 2.0,
@@ -91,6 +107,19 @@ impl Node for MixNode {
         self.render_r = vec![0.0; block];
     }
 
+    /// Bank only (#154) — this node is stateless between blocks.
+    fn serialize(&self) -> Vec<u8> {
+        self.bank.serialize()
+    }
+
+    fn deserialize(&mut self, data: &[u8]) {
+        self.bank.deserialize(data);
+    }
+
+    fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
+        paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
+    }
+
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
         self.bank.handle_commands(input.commands);
 
@@ -98,10 +127,15 @@ impl Node for MixNode {
         self.render_l[..frames].fill(0.0);
         self.render_r[..frames].fill(0.0);
 
-        let master = self.bank.get(self.num_inputs as u32) as f32;
+        let master = self.bank.get(self.master_id) as f32;
 
-        for (i, audio_in) in input.audio_inputs.iter().enumerate() {
-            let gain = self.bank.get(i as u32) as f32 * master;
+        for (i, audio_in) in input
+            .audio_inputs
+            .iter()
+            .take(self.input_ids.len())
+            .enumerate()
+        {
+            let gain = self.bank.get(self.input_ids[i]) as f32 * master;
             if audio_in.channels() >= 1 {
                 let ch = audio_in.channel(0);
                 for f in 0..frames.min(ch.len()) {
@@ -137,10 +171,9 @@ impl ViewPlugin for MixNode {
     fn to_rule(&self, _node_id: u64, _sub_nodes: &[(u64, &dyn ViewPlugin)]) -> Rule {
         let mut pages = Vec::with_capacity(self.num_inputs as usize + 1);
         for i in 0..self.num_inputs {
-            pages.push((i as u32, PageRef { page: Cow::Borrowed("FX"), slot: i as u8 }));
+            pages.push((self.input_ids[i], PageRef { page: Cow::Borrowed("FX"), slot: i as u8 }));
         }
-        let master_id = self.num_inputs as u32;
-        pages.push((master_id, PageRef { page: Cow::Borrowed("FX"), slot: master_id as u8 }));
+        pages.push((self.master_id, PageRef { page: Cow::Borrowed("FX"), slot: self.num_inputs as u8 }));
         Rule {
             name: Cow::Borrowed("Mix"),
             page_groups: Cow::Owned(vec![Cow::Borrowed("FX")]),
@@ -205,5 +238,81 @@ mod tests {
 
         let out = run_mix(&mut mix, &[a, b]);
         assert!((out.channel(0)[0] - 1.0).abs() < 1e-5);
+    }
+
+    /// Every declared param, not just a spot check — a hand-written
+    /// serializer that forgot a slot would pass one of these.
+    #[test]
+    fn mix_params_survive_a_save_and_load() {
+        let mut saved = MixNode::new(8);
+        saved.activate(44100.0, 64);
+        for (i, id) in saved.input_ids.iter().enumerate() {
+            saved.bank.set(*id, 0.5 + i as f64 * 0.1);
+        }
+        saved.bank.set(saved.master_id, 0.8);
+
+        let mut loaded = MixNode::new(8);
+        loaded.activate(44100.0, 64);
+        loaded.deserialize(&saved.serialize());
+
+        for (i, id) in loaded.input_ids.iter().enumerate() {
+            assert_eq!(loaded.bank.get(*id), 0.5 + i as f64 * 0.1, "input {i}");
+        }
+        assert_eq!(loaded.bank.get(loaded.master_id), 0.8, "master_gain");
+    }
+
+    /// The exact failure BUG-060 exists for: with positional ids, reloading
+    /// a project saved with 8 inputs under a 4-input graph dropped
+    /// `master_gain` (id 8) and silently landed input 4's gain on the master
+    /// fader. Name-derived ids keep master on master and drop only the
+    /// inputs that no longer exist.
+    #[test]
+    fn a_saved_mix_reloaded_with_fewer_inputs_keeps_master_and_drops_extras() {
+        let mut saved = MixNode::new(8);
+        saved.activate(44100.0, 64);
+        for (i, id) in saved.input_ids.iter().enumerate() {
+            saved.bank.set(*id, 0.1 + i as f64 * 0.2);
+        }
+        saved.bank.set(saved.master_id, 0.7);
+
+        let mut loaded = MixNode::new(4);
+        loaded.activate(44100.0, 64);
+        loaded.deserialize(&saved.serialize());
+
+        for (i, id) in loaded.input_ids.iter().enumerate() {
+            assert_eq!(loaded.bank.get(*id), 0.1 + i as f64 * 0.2, "input {i}");
+        }
+        assert_eq!(
+            loaded.bank.get(loaded.master_id),
+            0.7,
+            "master_gain must not be replaced by a shrunken input count"
+        );
+        // The dropped inputs no longer exist — their saved gains must not
+        // land on anything (input_gain_4's id is unknown to a 4-input mix).
+        assert_eq!(loaded.bank.get(1701754572), 0.0, "input_gain_4 must be dropped");
+    }
+
+    /// The ids are name-derived and now written into project files, so a
+    /// rename of `input_gain_{i}` / `master_gain` would silently orphan every
+    /// saved value for it (AGENTS.md: a param id is a persistence key,
+    /// append-only). Pin the literals; extend, never reorder or rename.
+    #[test]
+    fn the_persisted_mix_param_ids_are_stable() {
+        assert_eq!(
+            MixNode::new(8).input_ids,
+            vec![
+                1634644096, // input_gain_0
+                1651421715, // input_gain_1
+                1668199334, // input_gain_2
+                1684976953, // input_gain_3
+                1701754572, // input_gain_4
+                1718532191, // input_gain_5
+                1735309810, // input_gain_6
+                1752087429, // input_gain_7
+            ]
+        );
+        assert_eq!(MixNode::new(8).master_id, 1181736839); // master_gain
+        assert_eq!(MixNode::new(4).master_id, 1181736839,
+            "master_gain's id must not depend on the input count");
     }
 }

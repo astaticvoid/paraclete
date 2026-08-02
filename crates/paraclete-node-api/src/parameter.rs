@@ -201,11 +201,13 @@ impl ParameterBank {
     /// What is **not** safe is an id *derived from how many params the node
     /// happens to declare*. That reintroduces the failure keying on id was
     /// meant to prevent: change the count and every saved value lands on the
-    /// wrong slot. `MixNode` does exactly that (`mix.rs`, `id: i as u32` over
-    /// a `num_inputs` set from the instrument file, with `master_gain` at
-    /// `num_inputs`), which is why it is **not** wired to this helper — a
-    /// project saved with 8 inputs and reloaded with 4 would land input 4's
-    /// gain on the master fader. See the issue tracker before wiring it.
+    /// wrong slot. `MixNode` used to do exactly that (`mix.rs`, `id: i as u32`
+    /// over a `num_inputs` set from the instrument file, with `master_gain` at
+    /// `num_inputs`) — a project saved with 8 inputs and reloaded with 4
+    /// landed input 4's gain on the master fader. BUG-060 fixed it by deriving
+    /// ids from per-input names (`input_gain_{i}`, `master_gain`), which stay
+    /// stable across a count change; keep it that way. Never reintroduce a
+    /// count-derived id.
     ///
     /// # Extending it
     ///
