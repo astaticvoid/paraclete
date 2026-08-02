@@ -249,3 +249,52 @@ a comment rather than by a silent edit, so the record shows the error.
 0..1 clamp (#177) surfaced only because the encoder ramp overshot and the
 command line was the obvious alternative. Its three existing tests all use
 `"set dec 0.8"` — the one param range that cannot expose the bug.
+
+---
+
+## Artifacts and where they went
+
+Appended at close, so nothing above dangles.
+
+**Durable:**
+
+| | |
+|---|---|
+| `d75a149` | `a_second_jog_accumulates_from_the_stored_lock_value` — reader half of the lock round trip |
+| `3f729a0` | `every_dest_index_modulates_exactly_the_param_it_names`, `some_dest_indices_are_inert_on_each_machine` |
+| `057cfef` | review fixes + `the_published_lock_string_has_the_shape_readers_parse` — writer half of the round trip |
+
+**Not preserved:** `lfo_audit.py`, the render-and-analyse harness referenced in
+round 2, lived in the session scratchpad and is gone. Deliberate — the two
+unit tests in `3f729a0` supersede it for the question it was built to answer,
+and a one-off analysis script is not a tool this repo should carry without an
+ADR (guardrail 1). The method is described in round 2 in enough detail to
+rebuild, and milestone 15's description repeats it for whoever fixes
+#178/#179 and wants audio-level before/after. Both of its measurement
+artifacts are recorded there too, so they are not rediscovered as findings.
+
+**Issue triage at close.** Thirteen issues came out of this session, #169–#181.
+Eight are on milestone 15 (#169, #170, #175, #176, #177, #178, #179, #181).
+The other five are deliberately outside it with reasons recorded on the
+milestone: #171 waits on #147, #174 turns on an unsettled slot-comparability
+question, #180 needs a design pass for step-addressed slots, and #172/#173 are
+user decisions rather than work.
+
+## Post-session code review
+
+`057cfef` records a subagent review of the two test commits. It found one
+claim of the agent's that was simply wrong — the round-trip test's doc said it
+caught format drift "on either side" when it hardcodes the literal and catches
+only the reader. The reviewer proved it by mutating the writer's format
+string and observing all 994 tests stay green, while at runtime jog
+accumulation and the trig strip's lock dots would both have broken silently.
+
+Worth recording as a process data point: that is the second time this session
+a confident claim derived from a code read alone was refuted by measurement
+(the first being #175's dest table, refuted by the user's ear). Both times the
+correction came from someone else running the experiment. The reviewer also
+found the test's observed-param list was half-derived and half-hardcoded, and
+an assertion message that was literally false.
+
+The review paid for itself on a two-commit, test-only change, which is an
+argument against skipping it when a change looks too small to warrant one.
