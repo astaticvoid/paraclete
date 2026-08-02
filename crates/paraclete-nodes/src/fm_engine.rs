@@ -148,6 +148,61 @@ static FM_KICK_DEST_NAMES: &[&str] = &["tune", "punch", "decay", "feedback", "dr
 static FM_BELL_DEST_NAMES: &[&str] = &["tune", "ratio", "index", "decay", "feedback"];
 static FM_BASS_DEST_NAMES: &[&str] = &["tune", "ratio", "index", "attack", "decay", "drive"];
 
+// Per-machine **id** tables, mirroring the name tables above — see
+// `AnalogEngine::KICK_DEST_IDS` for the contract. `lfo_dest_id` reads these
+// on the audio thread instead of hashing a name per sub-block.
+// APPEND ONLY, same contract as the names they mirror.
+const FM_KICK_DEST_IDS: &[u32] = &[
+    ParamDescriptor::id_for_name("tune"),
+    ParamDescriptor::id_for_name("punch"),
+    ParamDescriptor::id_for_name("decay"),
+    ParamDescriptor::id_for_name("feedback"),
+    ParamDescriptor::id_for_name("drive"),
+];
+const FM_BELL_DEST_IDS: &[u32] = &[
+    ParamDescriptor::id_for_name("tune"),
+    ParamDescriptor::id_for_name("ratio"),
+    ParamDescriptor::id_for_name("index"),
+    ParamDescriptor::id_for_name("decay"),
+    ParamDescriptor::id_for_name("feedback"),
+];
+const FM_BASS_DEST_IDS: &[u32] = &[
+    ParamDescriptor::id_for_name("tune"),
+    ParamDescriptor::id_for_name("ratio"),
+    ParamDescriptor::id_for_name("index"),
+    ParamDescriptor::id_for_name("attack"),
+    ParamDescriptor::id_for_name("decay"),
+    ParamDescriptor::id_for_name("drive"),
+];
+
+// Per-machine (id, min, max) range tables, for the LFO's scale and clamp
+// (BUG-069) — see `AnalogEngine::KICK_DEST_RANGES` for the full contract.
+// APPEND ONLY, same contract as the id tables;
+// `the_lfo_range_tables_match_machine_params` pins every entry against
+// `machine_params` so the two copies cannot drift.
+const FM_KICK_DEST_RANGES: &[(u32, f32, f32)] = &[
+    (ParamDescriptor::id_for_name("tune"),     -24.0, 24.0),
+    (ParamDescriptor::id_for_name("punch"),      0.0, 1.0),
+    (ParamDescriptor::id_for_name("decay"),      0.01, 2.0),
+    (ParamDescriptor::id_for_name("feedback"),   0.0, 1.0),
+    (ParamDescriptor::id_for_name("drive"),      0.0, 1.0),
+];
+const FM_BELL_DEST_RANGES: &[(u32, f32, f32)] = &[
+    (ParamDescriptor::id_for_name("tune"),     -24.0, 24.0),
+    (ParamDescriptor::id_for_name("ratio"),      0.5, 8.0),
+    (ParamDescriptor::id_for_name("index"),      0.0, 8.0),
+    (ParamDescriptor::id_for_name("decay"),      0.05, 8.0),
+    (ParamDescriptor::id_for_name("feedback"),   0.0, 0.5),
+];
+const FM_BASS_DEST_RANGES: &[(u32, f32, f32)] = &[
+    (ParamDescriptor::id_for_name("tune"),     -24.0, 24.0),
+    (ParamDescriptor::id_for_name("ratio"),      0.5, 4.0),
+    (ParamDescriptor::id_for_name("index"),      0.0, 8.0),
+    (ParamDescriptor::id_for_name("attack"),     0.001, 0.5),
+    (ParamDescriptor::id_for_name("decay"),      0.05, 4.0),
+    (ParamDescriptor::id_for_name("drive"),      0.0, 1.0),
+];
+
 static FM_KICK_DEST_LABELS: LfoDestLabels = LfoDestLabels(FM_KICK_DEST_NAMES);
 static FM_BELL_DEST_LABELS: LfoDestLabels = LfoDestLabels(FM_BELL_DEST_NAMES);
 static FM_BASS_DEST_LABELS: LfoDestLabels = LfoDestLabels(FM_BASS_DEST_NAMES);
@@ -271,6 +326,42 @@ impl FmEngine {
         }
     }
 
+    /// The value-indexed `lfo_dest` labels for `machine`, for
+    /// `MachineVariant::param_labels` — see
+    /// `AnalogEngine::dest_param_labels` for the contract.
+    fn dest_param_labels(machine: FmMachine) -> Vec<Option<Cow<'static, str>>> {
+        let names = Self::dest_names(machine);
+        let mut out: Vec<Option<Cow<'static, str>>> = Vec::with_capacity(Self::LFO_DESTS.len() + 1);
+        out.push(Some(Cow::Borrowed("off")));
+        out.extend(names.iter().map(|n| Some(Cow::Borrowed(*n))));
+        while out.len() <= Self::LFO_DESTS.len() {
+            out.push(None);
+        }
+        out
+    }
+
+    /// The same tables as [`Self::dest_names`], as compile-time ids. The
+    /// audio thread reads these; `dest_names` feeds labels and the append-only
+    /// pins.
+    fn dest_ids(machine: FmMachine) -> &'static [u32] {
+        match machine {
+            FmMachine::Kick => FM_KICK_DEST_IDS,
+            FmMachine::Bell => FM_BELL_DEST_IDS,
+            FmMachine::Bass => FM_BASS_DEST_IDS,
+        }
+    }
+
+    /// The active machine's declared (id, min, max) for each destination
+    /// (BUG-069). The LFO scales and clamps against these instead of the
+    /// bank's union range — see `AnalogEngine::KICK_DEST_RANGES` for why.
+    fn dest_ranges(machine: FmMachine) -> &'static [(u32, f32, f32)] {
+        match machine {
+            FmMachine::Kick => FM_KICK_DEST_RANGES,
+            FmMachine::Bell => FM_BELL_DEST_RANGES,
+            FmMachine::Bass => FM_BASS_DEST_RANGES,
+        }
+    }
+
     fn dest_labels(machine: FmMachine) -> &'static LfoDestLabels {
         match machine {
             FmMachine::Kick => &FM_KICK_DEST_LABELS,
@@ -283,23 +374,32 @@ impl FmEngine {
     /// One-based; an index past the machine's list reads as off, which is
     /// also what a dest belonging to a longer-listed machine does after a
     /// switch — see `AnalogEngine::apply_machine_switch`.
+    ///
+    /// Zero-cost slice read through `FM_KICK_DEST_IDS` &c — no name hash on
+    /// the audio thread.
     fn lfo_dest_id(&self) -> Option<u32> {
         let v = self.raw_param(fp("lfo_dest"));
         if !v.is_finite() || v < 1.0 {
             return None;
         }
-        Self::dest_names(self.machine)
+        Self::dest_ids(self.machine)
             .get(v as usize - 1)
-            .map(|n| fp(n))
+            .copied()
     }
 
     fn update_lfo(&mut self, samples: usize) {
         let dest = self.lfo_dest_id();
-        // Only meaningful when there IS a destination; `update` ignores the
-        // range when `dest` is `None`.
+        // BUG-069: the range is the ACTIVE machine's declared (min, max), not
+        // the bank's union — see `AnalogEngine::update_lfo` for why. Only
+        // meaningful when there IS a destination; `update` ignores the range
+        // when `dest` is `None`.
         let range = dest
-            .and_then(|d| self.bank.range(d))
-            .map(|(lo, hi)| (lo as f32, hi as f32))
+            .and_then(|d| {
+                Self::dest_ranges(self.machine)
+                    .iter()
+                    .find(|(id, _, _)| *id == d)
+                    .map(|&(_, lo, hi)| (lo, hi))
+            })
             .unwrap_or((0.0, 1.0));
         let depth = self.raw_param(fp("lfo_depth"));
         let settings = self.lfo_settings();
@@ -774,9 +874,12 @@ impl FmEngine {
                 page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP"), Cow::Borrowed("MOD")]),
                 pages: Cow::Owned(Self::machine_page_refs(m)),
                 overlays: Cow::Owned(Self::machine_overlays(m)),
-                // Filled by the BUG-069 follow-up commit; empty here so this
-                // commit compiles standalone (ADR-041 amendment field).
-                param_labels: Cow::Borrowed(&[]),
+                // ADR-041 amendment 2026-08-02: the dest labels are this
+                // machine's — see `AnalogEngine::machine_variants`.
+                param_labels: Cow::Owned(vec![(
+                    fp("lfo_dest"),
+                    Self::dest_param_labels(m).into(),
+                )]),
             })
             .collect()
     }
@@ -924,19 +1027,15 @@ impl Node for FmEngine {
                     // ADR-019): a locked step must not bleed into the next.
                     self.push_lock(pl.param_id, pl.value);
                 }
-                Event::Midi2(ref ump) => {
-                    if let UmpMessage::ChannelVoice2(cv2) = ump {
-                        if let ChannelVoice2::NoteOn(n) = cv2 {
-                            let off = timed.sample_offset as usize;
-                            if off > cursor {
-                                self.render_span(cursor, off);
-                                cursor = off;
-                            }
-                            let velocity = n.velocity() as f32 / 65535.0;
-                            self.retrigger(u8::from(n.note_number()), velocity);
-                            output.emit_debug(off as u32, DebugEventKind::VoiceTrigger, u8::from(n.note_number()) as i64, velocity as f64);
-                        }
+                Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(n))) => {
+                    let off = timed.sample_offset as usize;
+                    if off > cursor {
+                        self.render_span(cursor, off);
+                        cursor = off;
                     }
+                    let velocity = n.velocity() as f32 / 65535.0;
+                    self.retrigger(u8::from(n.note_number()), velocity);
+                    output.emit_debug(off as u32, DebugEventKind::VoiceTrigger, u8::from(n.note_number()) as i64, velocity as f64);
                 }
                 _ => {}
             }
@@ -1505,6 +1604,19 @@ mod tests {
         for (name, id) in FM_DEST_NAMES.iter().zip(FmEngine::LFO_DESTS) {
             assert_eq!(fp(name), *id, "`{name}` does not hash to its table entry");
         }
+        // M2: each per-machine NAME table has a mirror ID table, pinned
+        // entry-for-entry, so the audio-thread zero-cost lookup can never
+        // point at a different param than the names advertise.
+        for (names, ids) in [
+            (FM_KICK_DEST_NAMES, FM_KICK_DEST_IDS),
+            (FM_BELL_DEST_NAMES, FM_BELL_DEST_IDS),
+            (FM_BASS_DEST_NAMES, FM_BASS_DEST_IDS),
+        ] {
+            assert_eq!(names.len(), ids.len(), "name and id tables must mirror");
+            for (name, id) in names.iter().zip(ids) {
+                assert_eq!(fp(name), *id, "`{name}` does not hash to its id table entry");
+            }
+        }
     }
 
     /// MM §0 D4: the cap-doc carries the `lfo_dest` labels, so a surface can
@@ -1566,6 +1678,16 @@ mod tests {
                 .collect();
             read.sort();
             offered.sort();
+            // m1: the sorted comparison alone has a blind spot — a duplicate
+            // mirrored in BOTH lists compares equal. Distinct-count each side.
+            assert!(
+                read.windows(2).all(|w| w[0] != w[1]),
+                "{machine:?}: machine_params declares a duplicate param: {read:?}"
+            );
+            assert!(
+                offered.windows(2).all(|w| w[0] != w[1]),
+                "{machine:?}: dest table offers a duplicate: {offered:?}"
+            );
             assert_eq!(
                 offered, read,
                 "{machine:?}: every destination offered must be a param this \
@@ -1581,6 +1703,28 @@ mod tests {
         assert_eq!(FM_KICK_DEST_NAMES, &["tune", "punch", "decay", "feedback", "drive"]);
         assert_eq!(FM_BELL_DEST_NAMES, &["tune", "ratio", "index", "decay", "feedback"]);
         assert_eq!(FM_BASS_DEST_NAMES, &["tune", "ratio", "index", "attack", "decay", "drive"]);
+    }
+
+    /// BUG-069, FM half — see `AnalogEngine::the_lfo_range_tables_match_machine_params`.
+    #[test]
+    fn the_lfo_range_tables_match_machine_params() {
+        for machine in FmMachine::ALL {
+            let params = FmEngine::machine_params(machine);
+            let ranges = FmEngine::dest_ranges(machine);
+            assert_eq!(
+                params.len(),
+                ranges.len(),
+                "{machine:?}: every machine param needs an LFO range"
+            );
+            for (id, lo, hi) in ranges {
+                let p = params
+                    .iter()
+                    .find(|p| p.id == *id)
+                    .unwrap_or_else(|| panic!("{machine:?}: range id {id} is not a machine param"));
+                assert_eq!(*lo, p.min as f32, "{machine:?}: {} range min drifts", p.name);
+                assert_eq!(*hi, p.max as f32, "{machine:?}: {} range max drifts", p.name);
+            }
+        }
     }
 
     /// Union-wide in the bank, per-machine on the encoder (#179) — the pair
@@ -1603,6 +1747,38 @@ mod tests {
                 .expect("the overlay narrows the encoder");
             assert_eq!(overlay.max, FmEngine::dest_names(machine).len() as f64);
             assert!(!overlay.identity, "`lfo_dest` is a setting, not identity");
+        }
+    }
+
+    /// ADR-041 amendment 2026-08-02 (M1), FM half — see
+    /// `AnalogEngine::each_variant_carries_that_machines_dest_labels`.
+    #[test]
+    fn each_variant_carries_that_machines_dest_labels() {
+        for machine in FmMachine::ALL {
+            let variants = FmEngine::machine_variants();
+            let v = variants
+                .iter()
+                .find(|v| v.value == machine.value())
+                .expect("every machine has a variant");
+            let (_, labels) = v
+                .param_labels
+                .iter()
+                .find(|(id, _)| *id == fp("lfo_dest"))
+                .unwrap_or_else(|| {
+                    panic!("{machine:?}: the variant must declare `lfo_dest` labels")
+                });
+            let want: Vec<Option<String>> = FmEngine::dest_param_labels(machine)
+                .iter()
+                .map(|o| o.as_ref().map(|s| s.to_string()))
+                .collect();
+            let got: Vec<Option<String>> = labels
+                .iter()
+                .map(|o| o.as_ref().map(|s| s.to_string()))
+                .collect();
+            assert_eq!(
+                got, want,
+                "{machine:?}: the variant's dest labels must be this machine's"
+            );
         }
     }
 

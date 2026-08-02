@@ -181,6 +181,62 @@ static KICK_DEST_NAMES:  &[&str] = &["tune", "punch", "decay", "drive", "tone"];
 static SNARE_DEST_NAMES: &[&str] = &["tune", "snap", "noise", "decay", "tone"];
 static HIHAT_DEST_NAMES: &[&str] = &["tone", "decay", "open"];
 
+// Per-machine **id** tables, mirroring the name tables above. `lfo_dest_id`
+// resolves through these rather than hashing a name per sub-block — the names
+// stay the labels' source, the ids stay the audio path's, and
+// `the_dest_ids_and_names_correspond` pins each pair entry-for-entry exactly
+// as it pins the union pair, so a drift in either direction fails loudly.
+// APPEND ONLY, same contract as the names they mirror.
+const KICK_DEST_IDS: &[u32] = &[
+    ParamDescriptor::id_for_name("tune"),
+    ParamDescriptor::id_for_name("punch"),
+    ParamDescriptor::id_for_name("decay"),
+    ParamDescriptor::id_for_name("drive"),
+    ParamDescriptor::id_for_name("tone"),
+];
+const SNARE_DEST_IDS: &[u32] = &[
+    ParamDescriptor::id_for_name("tune"),
+    ParamDescriptor::id_for_name("snap"),
+    ParamDescriptor::id_for_name("noise"),
+    ParamDescriptor::id_for_name("decay"),
+    ParamDescriptor::id_for_name("tone"),
+];
+const HIHAT_DEST_IDS: &[u32] = &[
+    ParamDescriptor::id_for_name("tone"),
+    ParamDescriptor::id_for_name("decay"),
+    ParamDescriptor::id_for_name("open"),
+];
+
+// Per-machine (id, min, max) range tables, for the LFO's scale and clamp
+// (BUG-069). The bank's range is the UNION across machines and must never be
+// narrowed (MM-C3), so `update_lfo` cannot read it: on a Kick, `tone`'s union
+// range is 200..18000 (the HiHat's ceiling), and a depth of 1.0 scaled by
+// 17800 instead of 7800 pins the cutoff at a clamp for ~78% of every cycle.
+// These tables carry the ACTIVE machine's declared ranges — the same numbers
+// `machine_params` declares — so the LFO scales and clamps like a native
+// control of the machine it is on. APPEND ONLY, same contract as the id
+// tables; `the_lfo_range_tables_match_machine_params` pins every entry
+// against `machine_params` so the two copies cannot drift.
+const KICK_DEST_RANGES: &[(u32, f32, f32)] = &[
+    (ParamDescriptor::id_for_name("tune"),  -24.0, 24.0),
+    (ParamDescriptor::id_for_name("punch"),   0.0, 1.0),
+    (ParamDescriptor::id_for_name("decay"),   0.01, 2.0),
+    (ParamDescriptor::id_for_name("drive"),   0.0, 1.0),
+    (ParamDescriptor::id_for_name("tone"),  200.0, 8000.0),
+];
+const SNARE_DEST_RANGES: &[(u32, f32, f32)] = &[
+    (ParamDescriptor::id_for_name("tune"),  -24.0, 24.0),
+    (ParamDescriptor::id_for_name("snap"),   0.005, 0.3),
+    (ParamDescriptor::id_for_name("noise"),  0.0, 1.0),
+    (ParamDescriptor::id_for_name("decay"),  0.01, 2.0),
+    (ParamDescriptor::id_for_name("tone"),  200.0, 8000.0),
+];
+const HIHAT_DEST_RANGES: &[(u32, f32, f32)] = &[
+    (ParamDescriptor::id_for_name("tone"),  1000.0, 18000.0),
+    (ParamDescriptor::id_for_name("decay"),   0.01, 1.0),
+    (ParamDescriptor::id_for_name("open"),    0.0, 1.0),
+];
+
 static KICK_DEST_LABELS:  LfoDestLabels = LfoDestLabels(KICK_DEST_NAMES);
 static SNARE_DEST_LABELS: LfoDestLabels = LfoDestLabels(SNARE_DEST_NAMES);
 static HIHAT_DEST_LABELS: LfoDestLabels = LfoDestLabels(HIHAT_DEST_NAMES);
@@ -364,6 +420,46 @@ impl AnalogEngine {
         }
     }
 
+    /// The value-indexed `lfo_dest` labels for `machine`, for
+    /// `MachineVariant::param_labels` (ADR-041 amendment 2026-08-02): index 0
+    /// is "off", `1..=N` this machine's destinations, and every slot past the
+    /// machine's count up to the union width is a gap (`None`) — the same
+    /// shape `ParamDescriptor::value_labels` produces, so a client indexes a
+    /// foreign machine's value and gets "no choice here" rather than a decoy
+    /// or out-of-bounds. Doc-build time only, never the audio thread.
+    fn dest_param_labels(machine: AnalogMachine) -> Vec<Option<Cow<'static, str>>> {
+        let names = Self::dest_names(machine);
+        let mut out: Vec<Option<Cow<'static, str>>> = Vec::with_capacity(Self::LFO_DESTS.len() + 1);
+        out.push(Some(Cow::Borrowed("off")));
+        out.extend(names.iter().map(|n| Some(Cow::Borrowed(*n))));
+        while out.len() <= Self::LFO_DESTS.len() {
+            out.push(None);
+        }
+        out
+    }
+
+    /// The same tables as [`Self::dest_names`], as compile-time ids. The
+    /// audio thread reads these; `dest_names` feeds labels and the append-only
+    /// pins.
+    fn dest_ids(machine: AnalogMachine) -> &'static [u32] {
+        match machine {
+            AnalogMachine::Kick => KICK_DEST_IDS,
+            AnalogMachine::Snare => SNARE_DEST_IDS,
+            AnalogMachine::HiHat => HIHAT_DEST_IDS,
+        }
+    }
+
+    /// The active machine's declared (id, min, max) for each destination
+    /// (BUG-069). The LFO scales and clamps against these instead of the
+    /// bank's union range — see `KICK_DEST_RANGES` for why.
+    fn dest_ranges(machine: AnalogMachine) -> &'static [(u32, f32, f32)] {
+        match machine {
+            AnalogMachine::Kick => KICK_DEST_RANGES,
+            AnalogMachine::Snare => SNARE_DEST_RANGES,
+            AnalogMachine::HiHat => HIHAT_DEST_RANGES,
+        }
+    }
+
     fn dest_labels(machine: AnalogMachine) -> &'static LfoDestLabels {
         match machine {
             AnalogMachine::Kick => &KICK_DEST_LABELS,
@@ -378,24 +474,35 @@ impl AnalogEngine {
     /// `dest_names(machine)[0]`. An out-of-range index reads as off rather
     /// than clamping to a neighbour — a malformed value, or one belonging to
     /// a machine with a longer list, must not quietly modulate something.
+    ///
+    /// Resolution is a zero-cost slice read through `KICK_DEST_IDS` &c — the
+    /// ids are `const`-built at compile time, so no name hash runs on the
+    /// audio thread.
     fn lfo_dest_id(&self) -> Option<u32> {
         let v = self.raw_param(ap("lfo_dest"));
         if !v.is_finite() || v < 1.0 {
             return None;
         }
-        Self::dest_names(self.machine)
+        Self::dest_ids(self.machine)
             .get(v as usize - 1)
-            .map(|n| ap(n))
+            .copied()
     }
 
     /// Advance the LFO one sub-block and latch what it modulates.
     fn update_lfo(&mut self, samples: usize) {
         let dest = self.lfo_dest_id();
+        // BUG-069: the range is the ACTIVE machine's declared (min, max), not
+        // the bank's union — the union is the widest machine's and miscalibrates
+        // the depth on every other one (2.3x too wide for a Kick's `tone`).
         // Only meaningful when there IS a destination; `update` ignores the
         // range when `dest` is `None`.
         let range = dest
-            .and_then(|d| self.bank.range(d))
-            .map(|(lo, hi)| (lo as f32, hi as f32))
+            .and_then(|d| {
+                Self::dest_ranges(self.machine)
+                    .iter()
+                    .find(|(id, _, _)| *id == d)
+                    .map(|&(_, lo, hi)| (lo, hi))
+            })
             .unwrap_or((0.0, 1.0));
         let depth = self.raw_param(ap("lfo_depth"));
         let settings = self.lfo_settings();
@@ -901,9 +1008,13 @@ impl AnalogEngine {
                 page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP"), Cow::Borrowed("MOD")]),
                 pages: Cow::Owned(Self::machine_page_refs(m)),
                 overlays: Cow::Owned(Self::machine_overlays(m)),
-                // Filled by the BUG-069 follow-up commit; empty here so this
-                // commit compiles standalone (ADR-041 amendment field).
-                param_labels: Cow::Borrowed(&[]),
+                // ADR-041 amendment 2026-08-02: the dest labels are this
+                // machine's, so a surface naming `lfo_dest` after a live
+                // switch shows the machine that is actually selected.
+                param_labels: Cow::Owned(vec![(
+                    ap("lfo_dest"),
+                    Self::dest_param_labels(m).into(),
+                )]),
             })
             .collect()
     }
@@ -1081,22 +1192,20 @@ impl Node for AnalogEngine {
                 Event::ParamLock(ref pl) if pl.node_id == self.node_id => {
                     self.push_lock(pl.param_id, pl.value);
                 }
-                Event::Midi2(ref ump) => {
-                    if let UmpMessage::ChannelVoice2(cv2) = ump {
-                        match cv2 {
-                            ChannelVoice2::NoteOn(n) => {
-                                let off = timed.sample_offset as usize;
-                                if off > cursor {
-                                    self.render_span(cursor, off);
-                                    cursor = off;
-                                }
-                                let velocity = n.velocity() as f32 / 65535.0;
-                                self.retrigger(u8::from(n.note_number()), velocity);
-                                output.emit_debug(off as u32, DebugEventKind::VoiceTrigger, u8::from(n.note_number()) as i64, velocity as f64);
+                Event::Midi2(UmpMessage::ChannelVoice2(cv2)) => {
+                    match cv2 {
+                        ChannelVoice2::NoteOn(n) => {
+                            let off = timed.sample_offset as usize;
+                            if off > cursor {
+                                self.render_span(cursor, off);
+                                cursor = off;
                             }
-                            ChannelVoice2::NoteOff(_) => {}
-                            _ => {}
+                            let velocity = n.velocity() as f32 / 65535.0;
+                            self.retrigger(u8::from(n.note_number()), velocity);
+                            output.emit_debug(off as u32, DebugEventKind::VoiceTrigger, u8::from(n.note_number()) as i64, velocity as f64);
                         }
+                        ChannelVoice2::NoteOff(_) => {}
+                        _ => {}
                     }
                 }
                 _ => {}
@@ -1574,6 +1683,19 @@ mod tests {
         for (name, id) in ANALOG_DEST_NAMES.iter().zip(AnalogEngine::LFO_DESTS) {
             assert_eq!(ap(name), *id, "`{name}` does not hash to its table entry");
         }
+        // M2: each per-machine NAME table has a mirror ID table, pinned
+        // entry-for-entry, so the audio-thread zero-cost lookup can never
+        // point at a different param than the names advertise.
+        for (names, ids) in [
+            (KICK_DEST_NAMES, KICK_DEST_IDS),
+            (SNARE_DEST_NAMES, SNARE_DEST_IDS),
+            (HIHAT_DEST_NAMES, HIHAT_DEST_IDS),
+        ] {
+            assert_eq!(names.len(), ids.len(), "name and id tables must mirror");
+            for (name, id) in names.iter().zip(ids) {
+                assert_eq!(ap(name), *id, "`{name}` does not hash to its id table entry");
+            }
+        }
     }
 
     /// MM §0 D4: the cap-doc carries the `lfo_dest` labels, so a surface can
@@ -1732,13 +1854,57 @@ mod tests {
             "and must never write the bank — p-locks, the state bus and kits \
              all read the base"
         );
-        let (lo, hi) = eng.bank.range(ap("tone")).unwrap();
+        // BUG-069: the clamp is now the ACTIVE machine's declared range, not
+        // the bank's union. Before the fix this asserted against the union
+        // (200..18000) and passed while a Kick's `tone` was being driven to
+        // 18000 — the issue's own note calls that out. The machine range is
+        // the meaningful one: a modulated value must never leave what the
+        // machine it is on declares.
+        let (lo, hi) = AnalogEngine::dest_ranges(AnalogMachine::Kick)
+            .iter()
+            .find(|(id, _, _)| *id == ap("tone"))
+            .map(|&(_, lo, hi)| (lo as f64, hi as f64))
+            .unwrap();
         for v in &seen {
             assert!(
                 *v as f64 >= lo - 1e-3 && *v as f64 <= hi + 1e-3,
-                "modulated value {v} left the declared range {lo}..{hi}"
+                "modulated value {v} left Kick's declared range {lo}..{hi}"
             );
         }
+    }
+
+    /// BUG-069 regression: a depth-1 LFO on `tone` must be calibrated to the
+    /// ACTIVE machine's range, not the bank's union. On a Kick the union is
+    /// 200..18000 (the HiHat's ceiling) — the old code scaled by 17800
+    /// instead of 7800, pinning the cutoff at a clamp for ~78% of every
+    /// cycle. Two properties pin the fix: the excursion must be a *fraction*
+    /// of Kick's own 7800 span (a union-calibrated LFO overshoots it), and it
+    /// must never touch the HiHat ceiling 18000 that the union clamp allowed.
+    #[test]
+    fn the_lfo_depth_is_calibrated_to_the_active_machine_not_the_union() {
+        let mut eng = AnalogEngine::kick();
+        eng.activate(44100.0, 512);
+        // tone: 200..8000 on Kick, union 200..18000. Tri sweeps the full
+        // -1..+1 so the excursion covers the whole span within the window.
+        set_lfo(
+            &mut eng,
+            &[("lfo_dest", 5.0), ("lfo_depth", 1.0), ("lfo_speed", 4.0),
+              ("lfo_shape", 0.0), ("lfo_mode", 1.0), ("tone", 4000.0)],
+        );
+        eng.retrigger(60, 1.0);
+
+        let mut min = f32::MAX;
+        let mut max = f32::MIN;
+        for _ in 0..200 {
+            eng.update_lfo(LFO_SUB_BLOCK);
+            let v = eng.get_param(ap("tone"));
+            min = min.min(v);
+            max = max.max(v);
+        }
+        // Kick's span is 7800; the excursion is 1.0 * 7800 around 4000.
+        assert!(max - min > 4000.0, "depth 1 must sweep most of Kick's span, got {}..{}", min, max);
+        assert!(min > 200.0 - 1e-3, "floor stays at Kick's 200, got {min}");
+        assert!(max < 18000.0, "the HiHat ceiling 18000 must be unreachable on a Kick, got {max}");
     }
 
     /// Only the **destination** is modulated. Nothing else on the node moves,
@@ -1805,6 +1971,18 @@ mod tests {
                 .collect();
             read.sort();
             offered.sort();
+            // m1: the sorted comparison alone has a blind spot — a duplicate
+            // mirrored in BOTH lists (e.g. `tune` offered twice and read
+            // twice) compares equal. Distinct-count each side so a dup in
+            // either direction fails loudly instead of being compared away.
+            assert!(
+                read.windows(2).all(|w| w[0] != w[1]),
+                "{machine:?}: machine_params declares a duplicate param: {read:?}"
+            );
+            assert!(
+                offered.windows(2).all(|w| w[0] != w[1]),
+                "{machine:?}: dest table offers a duplicate: {offered:?}"
+            );
             assert_eq!(
                 offered, read,
                 "{machine:?}: every destination offered must be a param this \
@@ -1823,6 +2001,33 @@ mod tests {
         assert_eq!(KICK_DEST_NAMES, &["tune", "punch", "decay", "drive", "tone"]);
         assert_eq!(SNARE_DEST_NAMES, &["tune", "snap", "noise", "decay", "tone"]);
         assert_eq!(HIHAT_DEST_NAMES, &["tone", "decay", "open"]);
+    }
+
+    /// BUG-069: the LFO range tables are a second copy of `machine_params`
+    /// (the bank's union range must stay union — narrowing it is MM's one
+    /// unrecoverable mistake), so this pins each copy against the source
+    /// entry-for-entry. Both directions: a dest whose range is missing is a
+    /// destination that would scale by the union; a range whose id is not a
+    /// dest would never be read but still drift.
+    #[test]
+    fn the_lfo_range_tables_match_machine_params() {
+        for machine in AnalogMachine::ALL {
+            let params = AnalogEngine::machine_params(machine);
+            let ranges = AnalogEngine::dest_ranges(machine);
+            assert_eq!(
+                params.len(),
+                ranges.len(),
+                "{machine:?}: every machine param needs an LFO range"
+            );
+            for (id, lo, hi) in ranges {
+                let p = params
+                    .iter()
+                    .find(|p| p.id == *id)
+                    .unwrap_or_else(|| panic!("{machine:?}: range id {id} is not a machine param"));
+                assert_eq!(*lo, p.min as f32, "{machine:?}: {} range min drifts", p.name);
+                assert_eq!(*hi, p.max as f32, "{machine:?}: {} range max drifts", p.name);
+            }
+        }
     }
 
     /// The bank's `lfo_dest` range stays the **union** width while the
@@ -1859,6 +2064,44 @@ mod tests {
                 "{machine:?}: the encoder must reach only its own dests"
             );
             assert!(!overlay.identity, "`lfo_dest` is a setting, not identity");
+        }
+    }
+
+    /// ADR-041 amendment 2026-08-02 (M1): each variant's `param_labels`
+    /// carries THAT machine's destination names, so a surface that switches
+    /// machines gets the new machine's labels. This is the two-sided pin: the
+    /// variant's entry for `lfo_dest` must equal `dest_param_labels(machine)`
+    /// (which is `dest_names` with `off` at 0 and gaps past the count), and
+    /// the label array must be present on every machine — a machine whose
+    /// labels were dropped would silently fall back to the frozen node-level
+    /// ones, which is the exact regression M1 fixed.
+    #[test]
+    fn each_variant_carries_that_machines_dest_labels() {
+        for machine in AnalogMachine::ALL {
+            let variants = AnalogEngine::machine_variants();
+            let v = variants
+                .iter()
+                .find(|v| v.value == machine.value())
+                .expect("every machine has a variant");
+            let (_, labels) = v
+                .param_labels
+                .iter()
+                .find(|(id, _)| *id == ap("lfo_dest"))
+                .unwrap_or_else(|| {
+                    panic!("{machine:?}: the variant must declare `lfo_dest` labels")
+                });
+            let want: Vec<Option<String>> = AnalogEngine::dest_param_labels(machine)
+                .iter()
+                .map(|o| o.as_ref().map(|s| s.to_string()))
+                .collect();
+            let got: Vec<Option<String>> = labels
+                .iter()
+                .map(|o| o.as_ref().map(|s| s.to_string()))
+                .collect();
+            assert_eq!(
+                got, want,
+                "{machine:?}: the variant's dest labels must be this machine's"
+            );
         }
     }
 
