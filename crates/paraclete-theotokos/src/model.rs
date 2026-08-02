@@ -902,9 +902,25 @@ impl Model {
             if parts.len() != 4 {
                 continue;
             }
-            let entry_step: usize = parts[0].strip_prefix('s').and_then(|s| s.parse().ok())?;
-            let entry_nid: u32 = parts[1].parse().ok()?;
-            let entry_pid: u32 = parts[2].parse().ok()?;
+            // #181 (BUG-071): `continue`, not `?`. An unreadable entry costs
+            // that entry, not the rest of the scan — `published_state` emits a
+            // whole pattern's locks as one `;`-joined string, so aborting here
+            // would hide every lock after the bad one. The caller cannot tell
+            // that from "no lock on this step", and `lib.rs`'s jog path then
+            // falls back to the live param value and overwrites the lock it
+            // could not see.
+            let Some(entry_step) = parts[0]
+                .strip_prefix('s')
+                .and_then(|s| s.parse::<usize>().ok())
+            else {
+                continue;
+            };
+            let Ok(entry_nid) = parts[1].parse::<u32>() else {
+                continue;
+            };
+            let Ok(entry_pid) = parts[2].parse::<u32>() else {
+                continue;
+            };
             if entry_step == step && entry_nid == node_id && entry_pid == param_id {
                 return parts[3].parse::<f64>().ok();
             }
@@ -1083,40 +1099,59 @@ impl Model {
                     })
                     .min_by_key(|(_, s)| *s)
                     .ok_or_else(|| format!("unknown param: {name}"))?;
-                // Find the node that has this param on the active track
+                // Find the node that has this param on the active track, and
+                // keep its declared range — #177 (BUG-068): this used to
+                // record only *whether* the param exists and then clamp to a
+                // literal 0..1, so every param whose range is not a subset of
+                // that was unreachable. `tone` (200..8000) landed on 200
+                // whatever you typed, because `ParameterBank::set` then
+                // clamped the 1.0 back *up* to the minimum; `lfo_fade` (-1..1)
+                // lost its whole fade-out half to the lower bound.
+                let param_lname = best.0.text.to_lowercase();
+                let range_on = |nid: u32, pid: Option<u32>| -> Option<(f64, f64)> {
+                    self.caps.get(&nid).and_then(|c| {
+                        c.params
+                            .iter()
+                            .find(|p| {
+                                p.name.to_string().to_lowercase() == param_lname
+                                    && pid.is_none_or(|want| p.id == want)
+                            })
+                            .map(|p| (p.min, p.max))
+                    })
+                };
+
                 let track = &self.tracks[self.active_track];
                 let mut node_id = track.generator_id;
-                let mut found = self.caps.get(&node_id).is_some_and(|c| {
-                    c.params
-                        .iter()
-                        .any(|p| p.name.to_string().to_lowercase() == best.0.text.to_lowercase())
-                });
-                // Also check composite chain nodes
-                if !found {
+                let mut range = range_on(node_id, None);
+                // Also check composite chain nodes. Matched by **name**: this
+                // used to take the first page entry whose id merely existed in
+                // its own node's cap-doc, i.e. the first composite param on the
+                // track regardless of what the performer typed. Harmless while
+                // the range was a literal; not once the range comes from
+                // whichever descriptor we land on.
+                if range.is_none() {
                     if let Some(cv) = self.active_composite() {
-                        for page in &cv.pages {
+                        'pages: for page in &cv.pages {
                             for cp in &page.params {
-                                let cap = self.caps.get(&cp.node_id);
-                                if cap.is_some_and(|c| c.params.iter().any(|p| p.id == cp.param_id))
-                                {
+                                if let Some(r) = range_on(cp.node_id, Some(cp.param_id)) {
                                     node_id = cp.node_id;
-                                    found = true;
-                                    break;
+                                    range = Some(r);
+                                    break 'pages;
                                 }
-                            }
-                            if found {
-                                break;
                             }
                         }
                     }
                 }
-                if !found {
+                let Some((min, max)) = range else {
                     return Err(format!("param {} not found on active track", best.0.text));
-                }
+                };
+                // Still a silent clamp, not an acknowledgement: telling the
+                // performer their value was adjusted is #147 (OQ-T31), which
+                // governs how every command reports itself and is parked.
                 Ok(CmdlineVerb::Set {
                     node_id,
                     param_name: best.0.text.clone(),
-                    value: value.clamp(0.0, 1.0),
+                    value: value.clamp(min, max),
                 })
             }
             "bpm" => {

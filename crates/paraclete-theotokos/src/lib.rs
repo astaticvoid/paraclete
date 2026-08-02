@@ -4252,6 +4252,32 @@ mod tests {
         assert_eq!(Model::parse_lock_value(locks, 0, 200, 600), Some(0.1));
     }
 
+    /// #181 (BUG-071): a malformed entry costs that entry, not the scan.
+    ///
+    /// `published_state` emits a whole pattern's locks as one `;`-joined
+    /// string ordered by step, so aborting on a bad entry hid every lock
+    /// after it — and the caller cannot distinguish that from "no lock here",
+    /// so the jog path would overwrite the lock it could not see. Each case
+    /// below corrupts a different field, since each had its own `?`.
+    #[test]
+    fn a_malformed_lock_entry_does_not_hide_the_ones_after_it() {
+        let good = "s9:100:500=0.900";
+        for bad in [
+            "sX:100:500=0.300", // step not a number
+            "s2:1zz:500=0.300", // node id not a number
+            "s2:100:5e5=0.300", // param id not a number
+            "s2:100:500=0.300", // well-formed, just not the one we want
+            "2:100:500=0.300",  // step missing its `s` prefix
+        ] {
+            let locks = format!("{bad};{good}");
+            assert_eq!(
+                Model::parse_lock_value(&locks, 9, 100, 500),
+                Some(0.9),
+                "entry after {bad:?} must still be found"
+            );
+        }
+    }
+
     #[test]
     fn parse_lock_value_returns_none_for_mismatch() {
         let locks = "s2:100:500=0.300";
@@ -4338,6 +4364,69 @@ mod tests {
             }),
             "must emit CMD_SET_PARAM decay=0.8"
         );
+    }
+
+    /// #177 (BUG-068): `:set` must clamp to the param's **declared** range.
+    ///
+    /// It clamped to a literal 0..1, so a param whose range sits above 1.0
+    /// always landed on its minimum (`ParameterBank::set` clamps the 1.0 back
+    /// *up*) and the negative half of a signed range was unreachable. Every
+    /// existing `set` test uses `"set dec 0.8"` — `decay` is 0..1, the one
+    /// range that cannot expose it — so this builds its own caps rather than
+    /// extending the shared fixture, whose params are all 0..1 by design.
+    #[test]
+    fn set_clamps_to_the_params_declared_range_not_a_literal_0_1() {
+        let param = |name: &'static str, min: f64, max: f64| ParamDescriptor {
+            id: ParamDescriptor::id_for_name(name),
+            name: name.into(),
+            min,
+            max,
+            default: min,
+            stepped: false,
+            unit: ParamUnit::Generic,
+            display: None,
+        };
+        let mut caps = HashMap::new();
+        caps.insert(
+            100,
+            CapabilityDocument {
+                name: "Engine".into(),
+                vendor: "test".into(),
+                version: (0, 1, 0),
+                ports: vec![],
+                params: vec![
+                    param("tone", 200.0, 8000.0),
+                    param("lfo_fade", -1.0, 1.0),
+                    param("decay", 0.0, 1.0),
+                ],
+                extensions: vec![],
+                view: None,
+            },
+        );
+        let names = vec!["Kick".to_string()];
+        let model = Model::new(1, &[200], &[100], &names, &names, caps, vec![]);
+
+        let set_value = |cmd: &str| match model.parse_cmdline(cmd) {
+            Ok(CmdlineVerb::Set { value, .. }) => value,
+            Ok(_) => panic!("{cmd:?} did not parse as `set`"),
+            Err(e) => panic!("{cmd:?} failed to parse: {e}"),
+        };
+
+        // Range entirely above 1.0: the value must survive, and the bounds
+        // must be the descriptor's.
+        assert_eq!(set_value("set tone 4000"), 4000.0);
+        assert_eq!(set_value("set tone 200"), 200.0);
+        assert_eq!(set_value("set tone 99999"), 8000.0, "clamped to max, not 1.0");
+        assert_eq!(set_value("set tone 0.5"), 200.0, "clamped up to min");
+
+        // Signed range: the fade-out half was unreachable past the 0.0 floor.
+        assert_eq!(set_value("set lfo_fade -0.5"), -0.5);
+        assert_eq!(set_value("set lfo_fade -9"), -1.0);
+        assert_eq!(set_value("set lfo_fade 1"), 1.0);
+
+        // The 0..1 case the old literal happened to get right still holds.
+        assert_eq!(set_value("set decay 0.8"), 0.8);
+        assert_eq!(set_value("set decay 5"), 1.0);
     }
 
     /// TK2.1 C5b (D15): `:set` routes to the lock target when it's on the

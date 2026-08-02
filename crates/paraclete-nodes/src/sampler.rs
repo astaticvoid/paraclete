@@ -332,7 +332,8 @@ impl Sampler {
     /// (`Voice::effective`); every other param reads `effective_node`, so an
     /// overlapping unlocked note ends a still-sounding voice's locks early.
     /// One-voice-per-step sequencer use — the case #169 was found in — is
-    /// unaffected. Tracked separately from this fix.
+    /// unaffected. Tracked as #182 (BUG-072); it predates #169 and turns on
+    /// whether the LFO is per-node or per-voice, so it is not a lifetime fix.
     fn consume_pending_locks(&mut self) {
         if self.locks_pending {
             self.locks_pending = false;
