@@ -769,7 +769,7 @@ pub fn button_to_action(
                 if screen.rec == RecMode::Grid {
                     Action::SetLockTarget(col)
                 } else {
-                    Action::Noop
+                    Action::LockTargetRefused(col)
                 }
             }
         };
@@ -1389,7 +1389,7 @@ mod tests {
             lock_target_step: None,
         };
         let action = button_to_action(&held, &screen, PanelButton::Trig5, Mods::default());
-        assert!(matches!(action, Action::Noop));
+        assert!(matches!(action, Action::LockTargetRefused(4)));
     }
 
     /// Re-pressing the trig that set the current target clears it.

@@ -99,6 +99,10 @@ pub enum Action {
     /// C5b: the latched path — Lock armed + the next Grid-mode trig sets
     /// `(active_track, col)` as the lock target.
     SetLockTarget(usize),
+    /// C5b: Lock armed + a trig OUTSIDE Grid mode — the arm is consumed but
+    /// there is no step to target, so the refusal is surfaced rather than
+    /// silently ignored (#171).
+    LockTargetRefused(usize),
     /// C5b: re-pressing the trig that set the target, pressing Lock again
     /// while a target is set, or Esc — all clear it.
     ClearLockTarget,
@@ -155,6 +159,7 @@ impl Action {
             | Action::Echo(_)
             | Action::ToggleEnc
             | Action::SetLockTarget(_)
+            | Action::LockTargetRefused(_)
             | Action::ClearLockTarget => Outcome::StateOnly,
             Action::PlayToggle => {
                 if playing {

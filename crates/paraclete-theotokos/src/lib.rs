@@ -1161,19 +1161,47 @@ impl TheotokosApp {
                                 dirty = true;
                                 continue;
                             }
-                            // TK2.2 C4 (E5): record what this jog is about
-                            // to write — set after the identity-param check,
-                            // so the status line never advertises a lock
-                            // destination that was refused (#171).
-                            self.last_jog_param = Some(name.clone());
-                            if let Some(step) = self.model.lock_step_for_active_track() {
+                            // BUG-064 item 2: read the current value once
+                            // before both the boundary check and the command
+                            // paths — for a locked step, use the lock value
+                            // (falling back to live); for a live jog, use
+                            // the live value.
+                            let lock_step = self.model.lock_step_for_active_track();
+                            let current = if let Some(step) = lock_step {
                                 let seq_id = self.model.tracks[track].sequencer_id;
-                                let current = self
-                                    .model
-                                    .read_lock_value(state, seq_id, step, node_id, param_id)
+                                self.model
+                                    .read_lock_value(
+                                        state, seq_id, step, node_id, param_id,
+                                    )
                                     .unwrap_or_else(|| {
-                                        self.model.read_param_value(state, node_id, param_id)
-                                    });
+                                        self.model.read_param_value(
+                                            state, node_id, param_id,
+                                        )
+                                    })
+                            } else {
+                                self.model.read_param_value(state, node_id, param_id)
+                            };
+
+                            // BUG-064 item 2: range-end feedback — when the
+                            // performer jogs into the end of a selector or
+                            // parameter range, tell them rather than silently
+                            // ignoring the press (#171).
+                            if (signed > 0.0 && current >= max)
+                                || (signed < 0.0 && current <= min)
+                            {
+                                self.model.cmdline_error =
+                                    Some(format!("{} at limit", name));
+                                dirty = true;
+                                continue;
+                            }
+
+                            // TK2.2 C4 (E5): record what this jog is about
+                            // to write — set after both the identity-param
+                            // and range-end checks, so the status line never
+                            // advertises a destination that was refused (#171).
+                            self.last_jog_param = Some(name.clone());
+                            if let Some(step) = lock_step {
+                                let seq_id = self.model.tracks[track].sequencer_id;
                                 let new_value = (current + signed).clamp(min, max);
                                 self.pending.push(NodeCommand {
                                     target_id: seq_id,
@@ -1281,6 +1309,14 @@ impl TheotokosApp {
                 Action::SetLockTarget(col) => {
                     self.model.lock_target = Some((self.model.active_track, col));
                     lock_target_changed = true;
+                    dirty = true;
+                }
+                // BUG-064 item 3: Lock armed outside Grid mode —
+                // surface the refusal rather than silently consuming
+                // the arm indistinguishably from success (#171).
+                Action::LockTargetRefused(_col) => {
+                    self.model.cmdline_error =
+                        Some("lock target needs GRID mode".into());
                     dirty = true;
                 }
                 Action::ClearLockTarget => {
@@ -3691,6 +3727,53 @@ mod tests {
         assert!(
             app.model.cmdline_error.is_some(),
             "identity-param refusal must set a cmdline error"
+        );
+    }
+
+    /// BUG-064 item 2: jogging a param that is already at its max (or min)
+    /// must set `cmdline_error` rather than silently ignoring the press,
+    /// so the performer can tell "end of range" from "dropped keypress" (#171).
+    #[test]
+    fn jog_at_range_end_sets_cmdline_error() {
+        let bus = test_bus();
+        let mut app = machine_host_app(100, 200);
+        // machine_host_app puts `machine` (range 0..1) at encoder column 0
+        set_machine(&bus, 100, 1.0); // at max
+        app.model.sync_machine_selection(&bus.borrow());
+
+        // Jog encoder 0 (machine) forward — already at max
+        app.handle_keys(&bus, &[func_trig('q')]);
+
+        assert!(
+            app.model.cmdline_error.is_some(),
+            "encoder at max must set a cmdline error"
+        );
+        assert!(
+            app.last_jog_param.is_none(),
+            "refused jog must not record last_jog_param"
+        );
+    }
+
+    /// BUG-064 item 3: arming Lock target outside Grid mode must surface
+    /// a refusal — the arm is consumed but nothing was targeted (#171).
+    #[test]
+    fn lock_armed_outside_grid_sets_cmdline_error() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.rec = RecMode::Off; // not Grid
+
+        // Press Lock, then a trig — same gesture as Grid mode, different rec.
+        let dirty = app.handle_keys(&bus, &[kc('m'), kc('q')]);
+        assert!(dirty, "the refusal must flag dirty");
+
+        assert!(
+            app.model.cmdline_error.is_some(),
+            "lock target refused must set a cmdline error: {:?}",
+            app.model.cmdline_error
+        );
+        assert!(
+            app.model.lock_target.is_none(),
+            "lock target must NOT be set outside Grid mode"
         );
     }
 
