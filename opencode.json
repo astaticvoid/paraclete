@@ -10,11 +10,6 @@
       "command": ["narsil-mcp", "--repos", ".", "--git", "--call-graph", "--preset", "balanced"],
       "enabled": true
     },
-    "serena": {
-      "type": "local",
-      "command": ["/home/dv6n/.local/bin/uvx", "serena-agent", "start-mcp-server"],
-      "enabled": false
-    },
     "chrome-devtools": {
       "type": "local",
       "command": ["npx", "-y", "chrome-devtools-mcp@latest"],

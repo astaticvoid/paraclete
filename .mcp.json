@@ -1,9 +1,5 @@
 {
   "mcpServers": {
-    "serena": {
-      "command": "/home/dv6n/.local/bin/serena-agent",
-      "args": ["start-mcp-server", "--context", "claude-code", "--project-from-cwd"]
-    },
     "narsil": {
       "command": "narsil-mcp",
       "args": ["--repos", ".", "--git", "--call-graph", "--preset", "balanced"]
