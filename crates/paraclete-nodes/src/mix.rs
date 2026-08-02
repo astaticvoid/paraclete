@@ -97,7 +97,7 @@ impl Node for MixNode {
             ports: self.ports.clone(),
             params,
             extensions: vec![],
-    view: None,
+    view: Some(self.to_rule(0, &[])),
         }
     }
 
