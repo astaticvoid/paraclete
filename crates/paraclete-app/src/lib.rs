@@ -2,7 +2,9 @@
 pub mod app_ops;
 pub mod builder;
 pub mod instrument;
+pub mod kit;
 pub mod patch;
+pub mod perform_state;
 pub mod project;
 pub mod registry;
 

@@ -15,7 +15,8 @@ use paraclete_antiphon::view::ViewRegistry;
 use paraclete_antiphon::{AntiphonConfig, AntiphonHandle, AntiphonServer};
 use paraclete_app::builder::{build_from_instrument, load_instrument_definition, InstrumentIds};
 use paraclete_app::instrument::InstrumentDefinition;
-use paraclete_app::project::{load_project, save_project, ProfileBinding, ProjectMetadata};
+use paraclete_app::perform_state::PerformState;
+use paraclete_app::project::{load_project_v3, save_project_v3, ProfileBinding, ProjectMetadata};
 use paraclete_clap_host::{scan_clap_paths, PluginLibrary};
 use paraclete_hal::{
     query_sample_rate, AudioBackend, DigitaktMidiNode, KeystepNode, LaunchpadEmulator,
@@ -149,6 +150,11 @@ fn main() {
         }
     };
 
+    // P11 C2: perform-state lives for the whole session so project load/save
+    // (sections 5/6, before the executor) can restore/persist it alongside
+    // node state, and the main loop (section 13) can tick it each iteration.
+    let mut perform_state = PerformState::new();
+
     // ── 4. Hardware devices ───────────────────────────────────────────────────
     let launchpad_id = try_open_launchpad(&mut conf, no_emulator);
     let digitakt_id = try_open_digitakt(&mut conf);
@@ -180,7 +186,7 @@ fn main() {
 
     // ── 5. Project load (before executor — nodes still in configurator) ──────
     if let Some(ref path) = load_path {
-        match load_project(path, &mut conf) {
+        match load_project_v3(path, &mut conf, &mut perform_state) {
             Ok(warnings) => {
                 for w in &warnings {
                     eprintln!("[paraclete] WARN: {w}");
@@ -203,7 +209,14 @@ fn main() {
             created: String::new(),
         };
         let profiles = ProfileBinding { active: vec![] };
-        if let Err(e) = save_project(path, &conf, meta, profiles) {
+        if let Err(e) = save_project_v3(
+            path,
+            &conf,
+            meta,
+            profiles,
+            &perform_state.kit_store.kits,
+            perform_state.kit_binding.map(|slot| slot.map(|k| k.0)),
+        ) {
             eprintln!("[paraclete] save failed: {e}");
         } else {
             eprintln!("[paraclete] project saved: {}", path.display());
@@ -487,6 +500,10 @@ fn main() {
 
         conf.process_main_thread();
 
+        // P11 C2: perform-state tick — chunked kit apply, pattern-switch
+        // kit triggers, /context/perform publish.
+        perform_state.tick(&mut conf, &bus_handle);
+
         // Step 1.4: contextual encoders — follow the profile's selected
         // track (see step 10.5 for the policy). Before the mirror pump so a
         // selection change and its new context leave in the same flush.
@@ -566,12 +583,22 @@ fn main() {
         // executes before Theotokos renders the result.
         if let Some(h) = antiphon.as_ref() {
             for op in h.take_pending_app_ops() {
-                paraclete_app::app_ops::execute_app_op(op, &mut conf, &bus_handle);
+                paraclete_app::app_ops::execute_app_op(
+                    op,
+                    &mut perform_state,
+                    &mut conf,
+                    &bus_handle,
+                );
             }
         }
         if let Some((ref mut tk, _)) = theotokos_opt {
             for op in tk.take_pending_app_ops() {
-                paraclete_app::app_ops::execute_app_op(op, &mut conf, &bus_handle);
+                paraclete_app::app_ops::execute_app_op(
+                    op,
+                    &mut perform_state,
+                    &mut conf,
+                    &bus_handle,
+                );
             }
         }
 

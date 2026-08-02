@@ -2,7 +2,9 @@
 //!
 //! P11 C1: the drain site and stub `execute` function.  Real execution
 //! (kit capture/apply, temp save/reload, mute toggles) lands in C2–C5.
-//! Until then, every `AppOp` variant logs and returns.
+//! C2: every `AppOp` now delegates to `PerformState`.
+//! C3–C5 fill in the remaining stub variants (TempSave/TempReload,
+//! KitCommit/KitReload).
 
 use log::debug;
 use paraclete_node_api::app_op::AppOp;
@@ -10,12 +12,15 @@ use paraclete_runtime::NodeConfigurator;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Execute one app-level operation.  Stub in C1 — logs and returns;
-/// C2–C5 fill in each variant.
+use crate::perform_state::PerformState;
+
+/// Execute one app-level operation, delegating to `PerformState`.
 pub fn execute_app_op(
     op: AppOp,
-    _conf: &mut NodeConfigurator,
-    _bus: &Rc<RefCell<paraclete_node_api::StateBusHandle>>,
+    perform: &mut PerformState,
+    conf: &mut NodeConfigurator,
+    bus: &Rc<RefCell<paraclete_node_api::StateBusHandle>>,
 ) {
-    debug!("[app_ops] stub execute: {op:?}");
+    debug!("[app_ops] execute: {op:?}");
+    perform.execute(op, conf, bus);
 }
