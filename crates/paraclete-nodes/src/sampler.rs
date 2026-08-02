@@ -328,12 +328,13 @@ impl Sampler {
 
     /// See `AnalogEngine::consume_pending_locks` (#169).
     ///
-    /// Polyphony caveat: only `pitch` is read through the per-voice snapshot
-    /// (`Voice::effective`); every other param reads `effective_node`, so an
-    /// overlapping unlocked note ends a still-sounding voice's locks early.
-    /// One-voice-per-step sequencer use — the case #169 was found in — is
-    /// unaffected. Tracked as #182 (BUG-072); it predates #169 and turns on
-    /// whether the LFO is per-node or per-voice, so it is not a lifetime fix.
+    /// Since #182 (BUG-072, 2026-08-02) every p-lock param is read through
+    /// the per-voice snapshot (`Voice::effective`) inside the voice loop —
+    /// pitch, volume, pan, start, end, attack, release, loop, slice. The LFO
+    /// stays per hosting node (ADR-042 decision 1): `effective_node` applies
+    /// it to the base, and `Voice::effective` overrides that base with the
+    /// voice's own lock snapshot, so an overlapping unlocked note no longer
+    /// ends a still-sounding voice's locks early.
     fn consume_pending_locks(&mut self) {
         if self.locks_pending {
             self.locks_pending = false;
@@ -444,9 +445,10 @@ impl Sampler {
     /// velocity are per-voice. A no-op span leaves the zeroed buffer.
     /// MM-C10: chunk the span into `LFO_SUB_BLOCK` pieces, tick the LFO once
     /// per chunk, then render. Same structure as the engines' `render_span`
-    /// (MM-C7) and for the same reason — `render_chunk` reads every param once
-    /// before its sample loop, so nothing re-reads a modulated one within a
-    /// span.
+    /// (MM-C7) and for the same reason — `render_chunk` reads every param
+    /// once per voice before its sample loop, so nothing re-reads a
+    /// modulated one within a span. BUG-072: p-locks are per-voice (the
+    /// voice's snapshot taken at its trigger); the LFO base is per node.
     fn render_voices_span(&mut self, start: usize, end: usize, pitch_mod: f64, volume_mod: f64) {
         for (lo, hi) in sub_blocks(start, end) {
             self.update_lfo(hi - lo);
@@ -457,29 +459,18 @@ impl Sampler {
     fn render_chunk(&mut self, start: usize, end: usize, pitch_mod: f64, volume_mod: f64) {
         if start >= end { return; }
 
-        let eff_volume = (self.effective_node(P_VOLUME) + volume_mod).clamp(0.0, 1.0);
-        let eff_pan = self.effective_node(P_PAN).clamp(-1.0, 1.0);
-        let pan_l = ((1.0 - eff_pan) * 0.5 + 0.5).sqrt() as f32;
-        let pan_r = ((1.0 + eff_pan) * 0.5 + 0.5).sqrt() as f32;
-        let vol = eff_volume as f32;
-
-        let node_pitch  = self.effective_node(P_PITCH);
-        let slice_idx   = self.effective_node(P_SLICE) as usize;
-        let eff_start   = self.effective_node(P_START);
-        let eff_end     = self.effective_node(P_END);
-        let looping     = self.effective_node(P_LOOP) >= 0.5;
-
-        let (slice_start, slice_end) = self.slices.get(slice_idx)
-            .copied().unwrap_or((0, self.sample_frames));
-        let range = slice_end.saturating_sub(slice_start);
-        let start_frame = slice_start + (eff_start * range as f64) as usize;
-        let end_frame   = slice_start + (eff_end   * range as f64) as usize;
-
-        // Playable region, clamped to the data actually present. Hermite
-        // taps outside [region_lo, region_hi) read as silence so loop wraps
-        // and slice edges cannot bleed neighboring audio into the voice.
-        let region_lo = start_frame.min(self.sample_data.len());
-        let region_hi = end_frame.min(self.sample_data.len());
+        // Node-level bases — LFO applied ONCE per chunk here, then each
+        // voice overrides with its own p-lock snapshot (BUG-072: per-voice
+        // locks; ADR-042 decision 1 keeps the LFO per hosting node).
+        let node_volume  = self.effective_node(P_VOLUME);
+        let node_pan     = self.effective_node(P_PAN);
+        let node_pitch   = self.effective_node(P_PITCH);
+        let node_slice   = self.effective_node(P_SLICE);
+        let node_start   = self.effective_node(P_START);
+        let node_end     = self.effective_node(P_END);
+        let node_loop    = self.effective_node(P_LOOP);
+        let node_attack  = self.effective_node(P_ATTACK);
+        let node_release = self.effective_node(P_RELEASE);
 
         let output_sr = self.output_sample_rate;
         // sample_data sits at sample_data_rate (the output rate after a
@@ -487,18 +478,22 @@ impl Sampler {
         let rate_scale = self.sample_data_rate as f64 / output_sr as f64;
         let root_note = self.bank.get(P_ROOT_NOTE);
 
-        // Envelope parameters — precomputed to avoid per-sample HashMap lookups.
-        let eff_attack_s  = self.effective_node(P_ATTACK)  as f32;
-        let eff_release_s = self.effective_node(P_RELEASE) as f32;
-        let attack_inc    = 1.0 / (eff_attack_s  * output_sr).max(1.0);
-        let release_coeff = 0.001_f32.powf(1.0 / (eff_release_s * output_sr).max(1.0));
-
         // Take a shared slice of sample_data — coexists with the mutable
         // borrow of voices below since they are different fields.
         let sample_data = self.sample_data.as_slice();
 
         for voice in self.voices.iter_mut() {
             if !voice.active { continue; }
+
+            // Per-voice effective values: the p-lock snapshot taken at this
+            // voice's trigger, falling back to the node base (which already
+            // carries the LFO). Volume/pan/start/end/attack/release/loop/
+            // slice are voice identity + mix per-voice since #182.
+            let eff_volume = (voice.effective(P_VOLUME, node_volume) + volume_mod).clamp(0.0, 1.0);
+            let eff_pan = voice.effective(P_PAN, node_pan).clamp(-1.0, 1.0);
+            let pan_l = ((1.0 - eff_pan) * 0.5 + 0.5).sqrt() as f32;
+            let pan_r = ((1.0 + eff_pan) * 0.5 + 0.5).sqrt() as f32;
+            let vol = eff_volume as f32;
 
             // Recompute note pitch each span so live CMD_BUMP_PARAM changes take effect.
             let voice_pitch = voice.effective(P_PITCH, node_pitch) + pitch_mod;
@@ -508,6 +503,27 @@ impl Sampler {
             // pitch_mod cannot produce an inf/NaN playback position.
             let note_diff = if note_diff.is_finite() { note_diff.clamp(-48.0, 48.0) } else { 0.0 };
             let playback_rate = 2.0_f64.powf(note_diff / 12.0) * rate_scale;
+
+            let slice_idx = voice.effective(P_SLICE, node_slice) as usize;
+            let (slice_start, slice_end) = self.slices.get(slice_idx)
+                .copied().unwrap_or((0, self.sample_frames));
+            let range = slice_end.saturating_sub(slice_start);
+            let start_frame = slice_start + (voice.effective(P_START, node_start) * range as f64) as usize;
+            let end_frame   = slice_start + (voice.effective(P_END,   node_end)   * range as f64) as usize;
+
+            // Playable region, clamped to the data actually present. Hermite
+            // taps outside [region_lo, region_hi) read as silence so loop wraps
+            // and slice edges cannot bleed neighboring audio into the voice.
+            let region_lo = start_frame.min(sample_data.len());
+            let region_hi = end_frame.min(sample_data.len());
+            let looping = voice.effective(P_LOOP, node_loop) >= 0.5;
+
+            // Envelope parameters — precomputed per voice to avoid
+            // per-sample HashMap lookups.
+            let eff_attack_s  = voice.effective(P_ATTACK, node_attack) as f32;
+            let eff_release_s = voice.effective(P_RELEASE, node_release) as f32;
+            let attack_inc    = 1.0 / (eff_attack_s  * output_sr).max(1.0);
+            let release_coeff = 0.001_f32.powf(1.0 / (eff_release_s * output_sr).max(1.0));
 
             let mut deactivate = false;
             for frame in start..end {
@@ -1195,6 +1211,56 @@ mod tests {
             "an unlocked trigger must retire the previous step's set");
         let peak = buf.channel(0).iter().fold(0.0f32, |a, &x| a.max(x.abs()));
         assert!(peak > 0.0, "and the unlocked step must sound; got peak={peak}");
+    }
+
+    /// #182 (BUG-072): with two overlapping voices, the second (unlocked)
+    /// trigger must NOT re-render the first, still-sounding voice with its
+    /// values. Pre-fix every param except pitch read `effective_node` — the
+    /// node-level lock set — so A's volume=0.0 lock was replaced by B's
+    /// (unlocked → 1.0) as soon as B sounded, and A came back loud.
+    #[test]
+    fn an_overlapping_unlocked_voice_does_not_relevel_the_locked_voice() {
+        let mut s = Sampler::new();
+        s.set_node_id(1);
+        load_test_sample(&mut s, 65536); // ~1.5 s at 44.1 kHz: both voices stay active
+
+        // Voice A: volume locked to 0.0 (silent).
+        run_sampler(&mut s, &[
+            make_param_lock(1, param_hash("volume"), 0.0),
+            make_note_on(60),
+        ]);
+
+        // Voice B: overlapping, unlocked (default volume). The lock set is
+        // retired by this trigger (#169), so node-level volume returns to 1.0.
+        run_sampler(&mut s, &[make_note_on(60)]);
+        assert_eq!(
+            s.voices.iter().filter(|v| v.active).count(),
+            2,
+            "sanity: both voices overlap"
+        );
+
+        // Measure after B's attack settles. A must still be silent.
+        let buf = run_sampler(&mut s, &[]);
+        let peak = buf.channel(0).iter().fold(0.0f32, |a, &x| a.max(x.abs()));
+
+        // Reference: two overlapping UNLOCKED voices — both loud, so the peak
+        // is roughly double a single loud voice.
+        let mut s_ref = Sampler::new();
+        s_ref.set_node_id(1);
+        load_test_sample(&mut s_ref, 65536);
+        run_sampler(&mut s_ref, &[make_note_on(60)]);
+        run_sampler(&mut s_ref, &[make_note_on(60)]);
+        let buf_ref = run_sampler(&mut s_ref, &[]);
+        let peak_ref = buf_ref.channel(0).iter().fold(0.0f32, |a, &x| a.max(x.abs()));
+
+        assert!(
+            peak_ref > peak * 1.8,
+            "the locked-silent voice must stay silent under overlap: \
+             locked peak={peak} vs both-loud ref={peak_ref}"
+        );
+        // And the unlocked voice B must actually sound (A's lock was 0.0 —
+        // if the whole node went silent the test would pass vacuously).
+        assert!(peak > 1e-3, "voice B must sound: got peak={peak}");
     }
 
     /// A re-activate kills every voice, so it must kill their locks.
