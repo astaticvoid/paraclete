@@ -243,3 +243,76 @@ fn a_real_engines_stepped_selectors_carry_their_names() {
         );
     }
 }
+
+/// ADR-041 amendment 2026-08-02 (M1): the app layer must show the
+/// SELECTED machine's dest labels, not the node's construction-time ones.
+/// The construction-time labels are exactly what a doc built on a machine
+/// freezes into `ParamInfo.options`, so this builds the doc on one
+/// machine (HiHat/Bell) and assembles for a DIFFERENT one (Kick/Bass):
+/// the assembled `lfo_dest` options must name the selected machine's
+/// destinations, and must NOT leak the frozen node-level ones. A
+/// regression back to frozen-at-construction labels fails this (the
+/// same-machine assertions above cannot see it — the frozen and the
+/// active variant's labels are identical then).
+#[test]
+fn assembled_dest_labels_follow_the_selected_machine_not_the_built_machine() {
+        for (label, node, selected, want, dont_want) in [
+            // HiHat offers tone/decay/open; Kick offers tune/punch/decay/drive/tone.
+            ("analog", Box::new(AnalogEngine::hihat()) as Box<dyn Node>, 0u32, "tune", "open"),
+            // Bell offers tune/ratio/index/decay/feedback; Bass offers
+            // tune/ratio/index/attack/decay/drive — `feedback` is Bell-only,
+            // `attack` Bass-only.
+            ("fm", Box::new(FmEngine::bell()) as Box<dyn Node>, 2u32, "attack", "feedback"),
+        ] {
+            let doc = node.capability_document();
+            let rule = doc.view.clone().expect("engines declare a view Rule");
+            let nodes = HashMap::from([(
+                20u32,
+                NodeInfo {
+                    display_name: None,
+                    params: doc
+                        .params
+                        .iter()
+                        .map(|p| ParamInfo {
+                            id: p.id,
+                            name: p.name.to_string(),
+                            stepped: p.stepped,
+                            options: p.value_labels(),
+                            default: p.default,
+                        })
+                        .collect(),
+                },
+            )]);
+            let cv = paraclete_view_assembly::assemble_for(
+                &HashMap::from([(20u32, rule)]),
+                &[TrackChain {
+                    engine_node_id: 20,
+                    chain_ids: vec![],
+                }],
+                0,
+                &nodes,
+                &HashMap::from([(20u32, selected)]),
+            )
+            .expect("a one-engine chain assembles");
+
+            let dest_names: Vec<&str> = cv
+                .pages
+                .iter()
+                .flat_map(|p| p.params.iter())
+                .find(|p| p.name == "lfo_dest")
+                .and_then(|p| p.options.as_deref())
+                .expect("lfo_dest must carry labels")
+                .iter()
+                .filter_map(|o| o.as_deref())
+                .collect();
+            assert!(
+                dest_names.contains(&want),
+                "{label}: selected machine's dest `{want}` must be offered; got {dest_names:?}"
+            );
+            assert!(
+                !dest_names.contains(&dont_want),
+                "{label}: the built machine's dest `{dont_want}` must NOT leak from the \
+                 frozen node-level labels; got {dest_names:?}"
+            );
+        }
+}

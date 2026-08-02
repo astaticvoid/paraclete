@@ -603,19 +603,24 @@ fn merge_page(
             // so `lfo_dest` on a switched machine names the machine that is
             // actually selected. Absent an entry, the descriptor's labels
             // are the behaviour every non-differing param always had.
+            // Gated on `stepped`: a label array for a continuous param would
+            // otherwise give it a value-indexed options list, and a client
+            // would draw the continuous value as a stepped selector (the
+            // engines only declare `lfo_dest`, which is stepped; the gate
+            // makes a future mistake a no-op instead of a mislabel).
             let options = if is_identity {
                 c.options.clone()
-            } else if let Some((_, labels)) = c
-                .param_labels
-                .iter()
-                .find(|(id, _)| *id == *param_id)
-            {
-                Some(
-                    labels
-                        .iter()
-                        .map(|o| o.as_ref().map(|s| s.to_string()))
-                        .collect(),
-                )
+            } else if stepped {
+                c.param_labels
+                    .iter()
+                    .find(|(id, _)| *id == *param_id)
+                    .map(|(_, labels)| {
+                        labels
+                            .iter()
+                            .map(|o| o.as_ref().map(|s| s.to_string()))
+                            .collect()
+                    })
+                    .or_else(|| info.and_then(|p| p.options.clone()))
             } else {
                 info.and_then(|p| p.options.clone())
             };
