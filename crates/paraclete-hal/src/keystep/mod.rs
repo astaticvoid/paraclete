@@ -63,8 +63,9 @@ pub struct KeystepNode {
     /// (midir µs timestamp, event). The timestamp lets `process()` map an
     /// event's arrival time to a best-effort intra-block sample offset
     /// (P11 C5b, ADR-039 Amd 2 — "sample-accurate" is otherwise
-    /// aspirational). midir's `ts` is microseconds since the connection;
-    /// only deltas between events are meaningful, which is all we use.
+    /// aspirational). midir's `ts` epoch varies by backend (ALSA: µs since
+    /// the Unix epoch; others: since the connection); only monotonic
+    /// deltas between events are meaningful, which is all we use.
     incoming: Arc<Mutex<VecDeque<(u64, TimedEvent)>>>,
     surface: SurfaceDescriptor,
     /// µs timestamp (midir clock) of the newest event drained by the
@@ -118,7 +119,8 @@ fn arrival_offset(ts: u64, block_start_ts: u64, sample_rate: f32, block_size: u3
     samples.min(block_size - 1)
 }
 
-fn parse_keystep_midi(bytes: &[u8]) -> Vec<TimedEvent> {    if bytes.len() < 2 {
+fn parse_keystep_midi(bytes: &[u8]) -> Vec<TimedEvent> {
+    if bytes.len() < 2 {
         return vec![];
     }
     let status = bytes[0] & 0xF0;

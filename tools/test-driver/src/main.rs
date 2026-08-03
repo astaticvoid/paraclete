@@ -1498,7 +1498,7 @@ fn render_deterministic(scenario: &TestScenario) -> Result<Vec<f32>, String> {
     let libraries = HashMap::new();
     let ids = build_from_instrument(&def, &mut conf, &libraries)
         .map_err(|e| format!("failed to build graph: {}", e))?;
-    let mut executor = std::sync::Mutex::new(conf.build_executor());
+    let executor = std::sync::Mutex::new(conf.build_executor());
     executor.lock().unwrap().set_debug_log_enabled(true);
 
     // P11 C2/C3: same PerformState the app main loop owns, ticked per block
