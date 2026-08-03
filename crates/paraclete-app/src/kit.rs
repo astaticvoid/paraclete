@@ -47,6 +47,15 @@ impl KitStore {
             self.kits[id.0 as usize] = Some(kit);
         }
     }
+
+    /// Iterate non-empty slots in slot order as `(slot_index, &Kit)` — the
+    /// KIT screen's list source (P11 C6a).
+    pub fn iter_nonempty(&self) -> impl Iterator<Item = (usize, &Kit)> {
+        self.kits
+            .iter()
+            .enumerate()
+            .filter_map(|(i, o)| o.as_ref().map(|k| (i, k)))
+    }
 }
 
 #[cfg(test)]

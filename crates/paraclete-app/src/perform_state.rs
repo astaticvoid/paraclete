@@ -68,6 +68,36 @@ impl PerformState {
             "/context/perform",
             StateBusValue::Float(if self.perform_mode { 1.0 } else { 0.0 }),
         );
+
+        // 4. Publish /context/kits — the KIT screen's list source (P11 C6a):
+        //    `idx:name` per non-empty slot, semicolon-separated, in slot
+        //    order. Empty slots are omitted; the Theotokos resolves which
+        //    slot is "loaded" via the selected track's active-pattern
+        //    binding (/context/kit_binding).
+        let mut kits_line = String::new();
+        for (i, kit) in self.kit_store.iter_nonempty() {
+            if !kits_line.is_empty() {
+                kits_line.push(';');
+            }
+            let _ = std::fmt::write(&mut kits_line, format_args!("{i}:{}", kit.name));
+        }
+        conf.state_bus_write("/context/kits", StateBusValue::Text(kits_line));
+
+        // 5. Publish /context/kit_binding — `slot:kit` per bound slot,
+        //    semicolon-separated (`slot:-1` = unbound). The KIT screen
+        //    marks the slot bound to the selected track's active pattern
+        //    as "loaded".
+        let mut binding_line = String::new();
+        for (slot, kit) in self.kit_binding.iter().enumerate() {
+            if !binding_line.is_empty() {
+                binding_line.push(';');
+            }
+            let _ = std::fmt::write(
+                &mut binding_line,
+                format_args!("{slot}:{}", kit.map_or(-1, |k| k.0 as i32)),
+            );
+        }
+        conf.state_bus_write("/context/kit_binding", StateBusValue::Text(binding_line));
     }
 
     /// Execute one AppOp.
