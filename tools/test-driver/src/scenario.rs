@@ -188,6 +188,17 @@ pub enum TimelineAction {
     ClockRewind {
         target: String,
     },
+    /// P11 C5: inject a Midi2 note-on into the target node's events_in
+    /// (the same event a Keystep note produces). `note` defaults to 60;
+    /// `velocity` 0..=1 scales to the UMP 16-bit range. Consumed by the
+    /// sequencer's live-record arm (ADR-039 decision 7).
+    Midi2NoteOn {
+        target: String,
+        #[serde(default)]
+        note: i64,
+        #[serde(default)]
+        velocity: f64,
+    },
     /// P11 C2: app-level — capture current in_kit param state into a
     /// named kit (first free slot), via `PerformState::execute`.
     KitSave {
@@ -342,6 +353,11 @@ pub enum ResolvedActionKind {
     },
     ClockRewind {
         target_id: u32,
+    },
+    Midi2NoteOn {
+        target_id: u32,
+        note: u8,
+        velocity: u16,
     },
     KitSave {
         name: String,

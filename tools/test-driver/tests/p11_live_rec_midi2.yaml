@@ -1,0 +1,64 @@
+# P11 C5 live test: Midi2 note-on live record (ADR-039 decision 7) with
+# the hard-quantize control (OQ-12 resolution) armed.
+#
+# The sequencer consumes Midi2 note-ons on events_in while the transport
+# is playing and `live_rec` is armed (the piece TK2.1 C3b deferred); the
+# step is written with zero micro-offset when `live_quantize` is a
+# note-value (here 1/4). The audible proof is the UNPROMPTED replay: the
+# injected note sounds immediately (emit_live_trig), and the recorded
+# step fires again on its own on the pattern's next pass — nothing in the
+# timeline re-authors any steps after the injection.
+#
+# Timing: default 16-step pattern at 140bpm; loop period P ∈ [1.72, 3.5]
+# wall (release 1.72, this machine's debug ~2.29). Injections at 0.4/0.5
+# record steps near the playhead; their first replays sound within one
+# step, then every P. The silence window [1.2, 1.5] sits after the
+# injection tails (done by ~0.8) and before the second replays (>= 0.4+P
+# >= 2.1). The replay window at 3.2 (capture [2.2, 3.2] ≈ wall
+# [1.6, 3.2]... corrected: the window reads capture [0.75*3.2 - 1.5,
+# 0.75*3.2] = [0.9, 2.4] = wall [1.2, 3.2]) contains the second replays
+# (0.4+P ∈ [2.1, 2.7] for P ∈ [1.72, 2.6]) and excludes the injections.
+#
+# The exact recorded step index and micro=0 under quantize are unit-tested
+# (live_quantize_hard_snaps_to_grid_with_zero_micro); the harness proves
+# the Midi2 path end-to-end with quantize armed.
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 3.6
+output: /tmp/p11_live_rec_midi2.wav
+play: false
+
+timeline:
+  # Short kick tail so the silence window is clean.
+  - at: 0.01
+    set_param: { target: "analog_engine:kick", param: decay, value: 0.1 }
+  # Empty pattern: every sound after the injections is a replay.
+  - at: 0.03
+    clear: { target: "10" }
+  # Hard quantize to 1/4 notes.
+  - at: 0.1
+    set_param: { target: "10", param: live_quantize, value: 1.0 }
+  - at: 0.2
+    set_param: { target: "10", param: live_rec, value: 1.0 }
+  # Two Keystep-style note-ons while playing + armed.
+  - at: 0.4
+    midi2_note_on: { target: "10", note: 36, velocity: 0.9 }
+  - at: 0.5
+    midi2_note_on: { target: "10", note: 36, velocity: 0.9 }
+  - at: 0.7
+    set_param: { target: "10", param: live_rec, value: 0.0 }
+  - at: 0.8
+    set_param: { target: "10", param: live_quantize, value: 0.0 }
+
+assert:
+  # Silence between the injection tails (~0.8) and the second replays
+  # (>= 0.4+P >= 2.1): proves the first window isn't just hearing the
+  # injections' own tails.
+  - at: 1.4
+    peak_lt: 0.01
+    window_ms: 300
+  # The recorded steps replay on their own, one loop later (~2.1-2.7),
+  # with no further midi2_note_on/set_step in the timeline.
+  - at: 3.2
+    peak_gte: 0.01
+    window_ms: 1500

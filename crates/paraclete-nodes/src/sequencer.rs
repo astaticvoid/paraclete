@@ -1,7 +1,9 @@
 use paraclete_node_api::{
+    midi::ChannelVoice2,
     CapabilityDocument, DebugEventKind, Event, Node, NodeCommand, ParamDescriptor, ParamLockEvent,
-    ParamUnit, ParameterBank, PortDescriptor, PortDirection, PortName, PortType, ProcessInput,
-    ProcessOutput, StateBusValue, TimedEvent, TransportEvent, TICKS_PER_BEAT,
+    ParamUnit, ParameterBank, ParamDisplay, ParamDisplayAdapter, PortDescriptor, PortDirection,
+    PortName, PortType, ProcessInput, ProcessOutput, StateBusValue, TimedEvent, TransportEvent,
+    UmpMessage, TICKS_PER_BEAT,
 };
 
 use std::cell::Cell;
@@ -261,6 +263,36 @@ impl Pattern {
 }
 
 // ── Sequencer ────────────────────────────────────────────────────────────────
+
+/// P11 C5 (OQ-12 resolution): labels for the `live_quantize` stepped
+/// selector — index 0 is `off` (record-as-played with micro-timing);
+/// 1..=4 are hard-quantize note values (1/4, 1/8, 1/16, 1/32 of a beat),
+/// where the recorded step is snapped to that grid with zero
+/// micro-offset. Static so the cap-doc path can clone the descriptor.
+pub(crate) struct LiveQuantizeLabels;
+
+impl ParamDisplay for LiveQuantizeLabels {
+    fn format(&self, value: f64) -> String {
+        match value as u32 {
+            0 => "off".into(),
+            1 => "1/4".into(),
+            2 => "1/8".into(),
+            3 => "1/16".into(),
+            4 => "1/32".into(),
+            _ => String::new(),
+        }
+    }
+    fn parse(&self, s: &str) -> Option<f64> {
+        match s {
+            "off" => Some(0.0),
+            "1/4" => Some(1.0),
+            "1/8" => Some(2.0),
+            "1/16" => Some(3.0),
+            "1/32" => Some(4.0),
+            _ => None,
+        }
+    }
+}
 
 pub struct Sequencer {
     ports: Vec<PortDescriptor>,
@@ -1330,6 +1362,19 @@ impl Sequencer {
         self.bank.get(ParamDescriptor::id_for_name("live_rec")) >= 0.5
     }
 
+    /// P11 C5 (ADR-039 decision 7): extract `(note, velocity)` from a Midi2
+    /// message if it is a note-on. Note-offs, CC, aftertouch and any other
+    /// channel-voice2 message return `None` — live record only consumes
+    /// note-ons. Velocity is the UMP 16-bit value (0..=65535).
+    fn midi_note_on(midi: &UmpMessage) -> Option<(u8, u16)> {
+        match midi {
+            UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(n)) => {
+                Some((u8::from(n.note_number()), n.velocity()))
+            }
+            _ => None,
+        }
+    }
+
     /// TK2.1 C3b (D8, ADR-039 decision 7): quantizes a live trig to the
     /// nearest step of the active pattern and writes it in — step-active,
     /// note, velocity, and the signed distance to the grid as the step's
@@ -1341,20 +1386,59 @@ impl Sequencer {
     /// `delta_ticks = pos − nearest × period`;
     /// `micro = clamp(round(delta_ticks / (TICKS_PER_BEAT / 96)), −47, 47)`.
     /// `StepTiming::micro_offset` is in 1/96-beat units, not ticks — with
-    /// `TICKS_PER_BEAT = 960` one unit is 10 ticks. Caller gates on
-    /// `is_live_recording() && self.playing`; a stopped transport records
-    /// nothing (the trig still sounds — `emit_live_trig` gates on mute
-    /// only, independently of recording).
-    fn record_live_trig(&mut self, note: u8, velocity: u16) {
+    /// `TICKS_PER_BEAT = 960` one unit is 10 ticks.
+    ///
+    /// P11 C5 refinements:
+    /// - The event's `sample_offset` within the block refines `pos` to the
+    ///   sample-accurate arrival (ADR-039 decision 7: "micro-timing from
+    ///   the event's sample offset"); an offset of 0 (CMD_TRIG_NOW,
+    ///   harness-injected events) keeps the block-start position exactly
+    ///   as before.
+    /// - `live_quantize` (P11 C5, OQ-12 resolution): 0 = record-as-played
+    ///   with micro-timing (above). 1..=4 = HARD quantize to a note-value
+    ///   grid (1/4, 1/8, 1/16, 1/32 of a beat): the recorded step is the
+    ///   grid slot nearest the arrival and `micro` is written 0 — a clean
+    ///   on-grid take. A grid finer than the step grid (e.g. 1/32 with
+    ///   16th steps) degenerates to the step grid with micro 0, since the
+    ///   step is the finest writable unit.
+    ///
+    /// Caller gates on `is_live_recording() && self.playing`; a stopped
+    /// transport records nothing (the trig still sounds — `emit_live_trig`
+    /// gates on mute only, independently of recording).
+    fn record_live_trig(&mut self, note: u8, velocity: u16, sample_offset: u32) {
         let pat = self.active_index();
         let pattern_length = self.patterns[pat].length.max(1) as f64;
         let period = self.step_period.max(1) as f64;
-        let pos = self.current_step as f64 * period + self.step_tick as f64;
-        let nearest_unwrapped = (pos / period).round();
-        let nearest = nearest_unwrapped.rem_euclid(pattern_length) as usize;
-        let delta_ticks = pos - nearest_unwrapped * period;
-        let micro_unit_ticks = TICKS_PER_BEAT as f64 / 96.0;
-        let micro = (delta_ticks / micro_unit_ticks).round().clamp(-47.0, 47.0) as i8;
+        let samples_per_tick =
+            60.0_f64 / self.last_bpm.max(1.0) as f64 / TICKS_PER_BEAT as f64 * self.sample_rate as f64;
+        let pos = self.current_step as f64 * period + self.step_tick as f64
+            + (sample_offset as f64) / samples_per_tick.max(1.0);
+
+        let q = self
+            .bank
+            .get(ParamDescriptor::id_for_name("live_quantize"))
+            .round() as i64;
+        let (nearest, micro) = if (1..=4).contains(&q) {
+            // Hard quantize: snap the arrival to the note-value grid
+            // (denominator 4/8/16/32 of a beat), then to the step
+            // containing that grid point; micro is zeroed. A 1/N note
+            // spans TICKS_PER_BEAT*4/N ticks (a 16th step is
+            // TICKS_PER_BEAT/4), so 1/4 → 4 steps, 1/8 → 2, 1/16 → 1,
+            // 1/32 → half a step.
+            let denom = [4.0, 8.0, 16.0, 32.0][(q - 1) as usize];
+            let grid_ticks = TICKS_PER_BEAT as f64 * 4.0 / denom;
+            let grid_pos = (pos / grid_ticks).round() * grid_ticks;
+            let nearest = (grid_pos / period).round().rem_euclid(pattern_length) as usize;
+            (nearest, 0i8)
+        } else {
+            // Record-as-played: nearest step + signed micro-timing.
+            let nearest_unwrapped = (pos / period).round();
+            let nearest = nearest_unwrapped.rem_euclid(pattern_length) as usize;
+            let delta_ticks = pos - nearest_unwrapped * period;
+            let micro_unit_ticks = TICKS_PER_BEAT as f64 / 96.0;
+            let micro = (delta_ticks / micro_unit_ticks).round().clamp(-47.0, 47.0) as i8;
+            (nearest, micro)
+        };
 
         self.set_step(nearest, note, velocity, true);
         self.patterns[pat].steps[nearest].timing.micro_offset = micro;
@@ -1565,6 +1649,22 @@ impl Node for Sequencer {
                     unit: ParamUnit::Generic,
                     display: None,
                 },
+                // P11 C5 (OQ-12 resolution, user decision 2026-08-02): the
+                // live-record quantization control. 0 = off — record as
+                // played with micro-timing; 1..=4 = hard quantize to a
+                // note-value grid (1/4, 1/8, 1/16, 1/32) with zero
+                // micro-offset. Structural, never part of a kit.
+                ParamDescriptor {
+                    id: ParamDescriptor::id_for_name("live_quantize"),
+                    name: "live_quantize".into(),
+                    min: 0.0,
+                    max: 4.0,
+                    default: 0.0,
+                    stepped: true,
+                    in_kit: false,
+                    unit: ParamUnit::Generic,
+                    display: Some(ParamDisplayAdapter::Static(&LiveQuantizeLabels)),
+                },
             ],
             extensions: vec!["paraclete.sequencer".into()],
             view: None,
@@ -1631,7 +1731,8 @@ impl Node for Sequencer {
             // synth can double-trigger a few samples apart. Scoped out of
             // C3b; see BUG-042 for the fix direction.
             if self.playing && self.is_live_recording() {
-                self.record_live_trig(note, velocity);
+                // CMD_TRIG_NOW fires at sample offset 0 by contract.
+                self.record_live_trig(note, velocity, 0);
             }
             self.emit_live_trig(note, velocity, output);
         }
@@ -1649,9 +1750,28 @@ impl Node for Sequencer {
         self.swing_amount = self.patterns[pat].swing;
 
         for timed in input.events {
-            if let Event::Transport(ref k) = timed.event {
-                let k = *k;
-                self.handle_transport(&k, timed.sample_offset, output);
+            match timed.event {
+                Event::Transport(ref k) => {
+                    let k = *k;
+                    self.handle_transport(&k, timed.sample_offset, output);
+                }
+                // P11 C5 (ADR-039 decision 7, the piece TK2.1 C3b deferred):
+                // Midi2 note-ons on `events_in` record themselves into the
+                // active pattern while the transport is playing and
+                // `live_rec` is armed. Anything else (note-off, CC,
+                // aftertouch) is ignored. The Keystep→sequencer edge is
+                // app-side routing (C5a); the sequencer only consumes.
+                Event::Midi2(ref midi) => {
+                    // midi_note_on filters non-note-ons; the live-record arm
+                    // (playing + live_rec) gates the rest. `.filter` keeps
+                    // both conditions in one if-let — collapsible_if has
+                    // nothing to collapse (let-chains need edition 2024).
+                    if let Some((note, velocity)) = Self::midi_note_on(midi)
+                        .filter(|_| self.playing && self.is_live_recording())
+                    {
+                        self.record_live_trig(note, velocity, timed.sample_offset);
+                    }
+                }                _ => {}
             }
         }
         // BUG-042: live_recorded_step is consumed by the transport loop
@@ -5761,6 +5881,186 @@ mod tests {
             seq.patterns[0].steps.iter().any(|s| s.active),
             "sanity: the trig must also have been recorded"
         );
+    }
+
+    // ── P11 C5: Midi2 note-on consumption + live_quantize ──────────────────
+
+    fn midi_note_on_event(note: u8, velocity: u16, offset: u32) -> TimedEvent {
+        TimedEvent::new(offset, Event::Midi2(build_note_on(0, 0, note, velocity)))
+    }
+
+    #[test]
+    fn midi_note_on_helper_rejects_non_note_on() {
+        // CC / aftertouch / note-off / system messages are not note-ons.
+        let note_on = build_note_on(0, 0, 60, 30000);
+        assert_eq!(
+            Sequencer::midi_note_on(&note_on),
+            Some((60, 30000)),
+            "a NoteOn must yield (note, velocity)"
+        );
+        let note_off = build_note_off(0, 0, 60);
+        assert_eq!(Sequencer::midi_note_on(&note_off), None);
+        // A ChannelVoice2 variant that is neither — construct one and
+        // assert the match is exhaustive-safe (None).
+        let msg = paraclete_node_api::UmpMessage::ChannelVoice2(
+            paraclete_node_api::midi::ChannelVoice2::NoteOff(
+                paraclete_node_api::midi::NoteOff::<[u32; 4]>::new(),
+            ),
+        );
+        assert_eq!(Sequencer::midi_note_on(&msg), None);
+    }
+
+    #[test]
+    fn midi2_note_on_records_step_when_live_rec_armed() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        seq.bank.set(ParamDescriptor::id_for_name("live_rec"), 1.0);
+
+        // position: step 3, tick 50 (period 240) — same arithmetic the
+        // trig_now tests use: nearest=3, micro=5.
+        seq.current_step = 3;
+        seq.step_tick = 50;
+        run_seq(&mut seq, &[midi_note_on_event(70, 30000, 0)]);
+
+        assert!(seq.patterns[0].steps[3].active, "step must be activated");
+        assert_eq!(seq.patterns[0].steps[3].note, 70);
+        assert_eq!(seq.patterns[0].steps[3].velocity, 30000);
+        assert_eq!(
+            seq.patterns[0].steps[3].timing.micro_offset, 5,
+            "offset-0 Midi2 note must record the same micro-timing as CMD_TRIG_NOW"
+        );
+    }
+
+    #[test]
+    fn midi2_note_on_sample_offset_refines_micro_timing() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        seq.bank.set(ParamDescriptor::id_for_name("live_rec"), 1.0);
+        seq.last_bpm = 120.0;
+        // samples_per_tick at 120 bpm = 44100 * (60/120) / 960 = 22.97, so
+        // a 23-sample offset adds ~1 tick. At step 3, tick 44 the micro
+        // rounds to 4 (44/10 = 4.4); the extra tick makes it 45/10 = 4.5,
+        // which rounds to 5 — the sample offset visibly refines the write.
+        seq.current_step = 3;
+        seq.step_tick = 44;
+        run_seq(&mut seq, &[midi_note_on_event(70, 30000, 0)]);
+        assert_eq!(
+            seq.patterns[0].steps[3].timing.micro_offset, 4,
+            "sanity: no offset → 44 ticks late = 4.4 → 4"
+        );
+
+        let mut seq2 = Sequencer::new();
+        seq2.activate(44100.0, 64);
+        run_seq(&mut seq2, &[transport_tick(0, true, true, false, false)]);
+        seq2.bank.set(ParamDescriptor::id_for_name("live_rec"), 1.0);
+        seq2.last_bpm = 120.0;
+        seq2.current_step = 3;
+        seq2.step_tick = 44;
+        run_seq(&mut seq2, &[midi_note_on_event(70, 30000, 23)]);
+
+        assert_eq!(
+            seq2.patterns[0].steps[3].timing.micro_offset, 5,
+            "a 23-sample (one tick) offset must refine micro from 4 to 5"
+        );
+    }
+
+    #[test]
+    fn midi2_note_on_ignored_when_live_rec_off() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        let before = seq.steps_bitfield();
+
+        run_seq(&mut seq, &[midi_note_on_event(70, 30000, 0)]);
+        assert_eq!(
+            seq.steps_bitfield(), before,
+            "playing with live_rec off must not record Midi2 note-ons"
+        );
+    }
+
+    #[test]
+    fn midi2_note_on_ignored_while_stopped() {
+        let mut seq = Sequencer::new();
+        assert!(!seq.playing, "sanity: a fresh sequencer is stopped");
+        seq.bank.set(ParamDescriptor::id_for_name("live_rec"), 1.0);
+        let before = seq.steps_bitfield();
+
+        run_seq(&mut seq, &[midi_note_on_event(70, 30000, 0)]);
+        assert_eq!(
+            seq.steps_bitfield(), before,
+            "a stopped transport must not record Midi2 note-ons"
+        );
+    }
+
+    #[test]
+    fn live_quantize_hard_snaps_to_grid_with_zero_micro() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        seq.bank.set(ParamDescriptor::id_for_name("live_rec"), 1.0);
+        // Hard quantize to 1/8 notes: grid every 2 steps (period 240 ticks
+        // = 16th; 1/8 = 2 steps = 480 ticks).
+        seq.bank.set(ParamDescriptor::id_for_name("live_quantize"), 2.0);
+
+        // Arrive 30 ticks into step 3 (pos = 3*240+30 = 750). The nearest
+        // 1/8 grid point is 2 steps (480 ticks) → round(750/480)=2 → grid
+        // at 960 ticks → step 4 (960/240). Micro must be 0.
+        seq.current_step = 3;
+        seq.step_tick = 30;
+        run_seq(&mut seq, &[midi_note_on_event(70, 30000, 0)]);
+
+        assert!(
+            seq.patterns[0].steps[4].active,
+            "the 1/8 grid slot (step 4) must receive the trig"
+        );
+        assert!(
+            !seq.patterns[0].steps[3].active,
+            "the off-grid arrival step must stay empty"
+        );
+        assert_eq!(seq.patterns[0].steps[4].timing.micro_offset, 0);
+    }
+
+    #[test]
+    fn live_quantize_off_preserves_micro_timing() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        seq.bank.set(ParamDescriptor::id_for_name("live_rec"), 1.0);
+        // live_quantize defaults to 0 (off).
+        seq.current_step = 3;
+        seq.step_tick = 30;
+        run_seq(&mut seq, &[midi_note_on_event(70, 30000, 0)]);
+
+        assert!(
+            seq.patterns[0].steps[3].active,
+            "off: the nearest step is recorded"
+        );
+        assert_eq!(
+            seq.patterns[0].steps[3].timing.micro_offset, 3,
+            "off: 30 ticks late at 10 ticks/unit = +3 micro"
+        );
+    }
+
+    #[test]
+    fn live_quantize_labels_cover_selector() {
+        // The stepped selector's labels are the contract a surface reads
+        // (value_labels path) — pin them.
+        let doc = Sequencer::new().capability_document();
+        let d = doc
+            .params
+            .iter()
+            .find(|p| p.name.as_str() == "live_quantize")
+            .expect("live_quantize must be declared");
+        let labels = d.value_labels().expect("stepped selector with labels");
+        assert_eq!(labels.len(), 5);
+        assert_eq!(labels[0].as_deref(), Some("off"));
+        assert_eq!(labels[1].as_deref(), Some("1/4"));
+        assert_eq!(labels[2].as_deref(), Some("1/8"));
+        assert_eq!(labels[3].as_deref(), Some("1/16"));
+        assert_eq!(labels[4].as_deref(), Some("1/32"));
+        assert!(!d.in_kit, "live_quantize is structural, never in a kit");
     }
 
     /// Review finding (post-C1 hostile review): the live gate's close was

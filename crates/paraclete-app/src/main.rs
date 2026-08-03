@@ -495,6 +495,11 @@ fn main() {
     // 2) — antiphon does no clock reads of its own; the caller passes now_ms.
     let loop_clock = std::time::Instant::now();
 
+    // P11 C5a: the sequencer the Keystep's events_out currently routes to
+    // (ADR-039 decision 7 — one track live-recordable at a time). None =
+    // no edge yet; the first tick that sees a Theotokos selection creates it.
+    let mut ks_seq_edge: Option<u32> = None;
+
     while running.load(std::sync::atomic::Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(1));
 
@@ -630,6 +635,31 @@ fn main() {
             }
             if tk.should_quit() {
                 running.store(false, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+
+        // P11 C5a (ADR-039 decision 7, Amd 2): after the Theotokos tick has
+        // published any track-select change, route the Keystep's events_out
+        // to the selected sequencer's events_in — one track live-recordable
+        // at a time (the Elektron model). Tearing down and re-creating the
+        // edge is the existing dynamic-topology path (ADR-029); a selection
+        // that is not a sequencer in the graph leaves the current edge in
+        // place.
+        if let Some(kid) = keystep_id {
+            let selected = conf.state_bus_read("/script/theotokos/selected");
+            let target = match selected {
+                Some(paraclete_node_api::StateBusValue::Int(sid)) => {
+                    keystep_routing_decision(Some(sid), ks_seq_edge, &ids.sequencers)
+                }
+                _ => keystep_routing_decision(None, ks_seq_edge, &ids.sequencers),
+            };
+            if let Some(sid) = target {
+                if let Some(old) = ks_seq_edge {
+                    conf.disconnect(kid, 0, old, paraclete_nodes::Sequencer::PORT_EVENTS_IN).ok();
+                }
+                conf.connect(kid, 0, sid, paraclete_nodes::Sequencer::PORT_EVENTS_IN).ok();
+                ks_seq_edge = Some(sid);
+                log::info!("[keystep] routing events_out → sequencer {sid}");
             }
         }
 
@@ -1211,5 +1241,51 @@ fn try_open_keystep(conf: &mut NodeConfigurator) -> Option<u32> {
             Some(ID_KEYSTEP)
         }
         Err(_) => None,
+    }
+}
+
+/// P11 C5a (ADR-039 decision 7): the Keystep→sequencer routing decision for
+/// one tick. Returns the sequencer id the edge should target when the
+/// Theotokos selection changed AND names a sequencer in the graph; `None`
+/// leaves the current edge untouched (same selection, a non-sequencer
+/// selection, no selection, or a negative sentinel). Pure so the rebind
+/// policy is unit-testable without a running app.
+fn keystep_routing_decision(
+    selected: Option<i64>,
+    current_edge: Option<u32>,
+    sequencers: &[u32],
+) -> Option<u32> {
+    match selected {
+        Some(sid) if sid >= 0 => {
+            let sid = sid as u32;
+            if sid != current_edge.unwrap_or(u32::MAX) && sequencers.contains(&sid) {
+                Some(sid)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::keystep_routing_decision;
+
+    #[test]
+    fn keystep_routing_decision_rebinds_on_selection_change() {
+        let seqs = [10u32, 11, 12, 13];
+        // First selection → create the edge.
+        assert_eq!(keystep_routing_decision(Some(11), None, &seqs), Some(11));
+        // Same selection → no change.
+        assert_eq!(keystep_routing_decision(Some(11), Some(11), &seqs), None);
+        // Changed selection → rebind.
+        assert_eq!(keystep_routing_decision(Some(12), Some(11), &seqs), Some(12));
+        // A node that is not a sequencer in the graph → no change.
+        assert_eq!(keystep_routing_decision(Some(99), Some(11), &seqs), None);
+        // No selection (headless) → no change.
+        assert_eq!(keystep_routing_decision(None, Some(11), &seqs), None);
+        // Negative sentinel → no change.
+        assert_eq!(keystep_routing_decision(Some(-1), Some(11), &seqs), None);
     }
 }

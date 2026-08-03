@@ -15,7 +15,10 @@ use std::time::{Duration, Instant};
 use paraclete_app::builder::{build_from_instrument, load_instrument_definition};
 use paraclete_node_api::capability::ParamDescriptor;
 use paraclete_node_api::state_bus::StateBusHandle;
-use paraclete_node_api::{NodeCommand, StateBusValue, CMD_BUMP_PARAM, CMD_SET_PARAM, CMD_TRIGGER};
+use paraclete_node_api::{
+    Event, NodeCommand, StateBusValue, TimedEvent, UmpMessage, CMD_BUMP_PARAM, CMD_SET_PARAM,
+    CMD_TRIGGER,
+};
 use paraclete_nodes::internal_clock::CMD_CLOCK_START;
 use paraclete_nodes::sequencer::Sequencer;
 use paraclete_runtime::NodeConfigurator;
@@ -355,6 +358,11 @@ fn dispatch_action(conf: &mut NodeConfigurator, action: &ResolvedActionKind) -> 
             arg0: 0,
             arg1: 0.0,
         },
+        // Event injection is an executor operation, not a NodeCommand —
+        // `dispatch_any` routes it (same standing as the app-level ops).
+        ResolvedActionKind::Midi2NoteOn { .. } => {
+            return Err("midi2_note_on must go through dispatch_any".into());
+        }
         // App-level ops are not node commands — `dispatch_any` routes them
         // through PerformState, mirroring the app main loop's drain.
         ResolvedActionKind::KitSave { .. }
@@ -408,6 +416,7 @@ fn dispatch_any(
     perform: &mut paraclete_app::perform_state::PerformState,
     conf: &mut NodeConfigurator,
     bus: &Rc<std::cell::RefCell<StateBusHandle>>,
+    executor: &std::sync::Mutex<paraclete_runtime::NodeExecutor>,
     action: &ResolvedActionKind,
 ) -> Result<(), String> {
     match action {
@@ -417,8 +426,37 @@ fn dispatch_any(
         | ResolvedActionKind::SetPerformMode { .. }
         | ResolvedActionKind::AppTempSave
         | ResolvedActionKind::AppTempReload => dispatch_app_action(perform, conf, bus, action),
+        ResolvedActionKind::Midi2NoteOn {
+            target_id,
+            note,
+            velocity,
+        } => {
+            // P11 C5: inject the same Midi2 note-on a Keystep produces
+            // into the target's events_in. Event injection is an
+            // executor operation (no NodeCommand form exists) — the
+            // sequencer's live-record arm consumes it next block.
+            let ev = TimedEvent::new(
+                0,
+                Event::Midi2(build_harness_note_on(*note, *velocity)),
+            );
+            executor.lock().unwrap().inject_event_for_node(*target_id, ev);
+            Ok(())
+        }
         _ => dispatch_action(conf, action),
     }
+}
+
+/// P11 C5: construct a Midi2 note-on UMP message with the group/channel
+/// the sequencer's own `build_note_on` uses (0/0 — the sequencer does not
+/// filter by channel on the live-record arm).
+fn build_harness_note_on(note: u8, velocity: u16) -> UmpMessage {
+    use paraclete_node_api::midi::{ChannelVoice2, Channeled, Grouped, NoteOn, u4, u7};
+    let mut msg = NoteOn::<[u32; 4]>::new();
+    msg.set_group(u4::new(0));
+    msg.set_channel(u4::new(0));
+    msg.set_note_number(u7::new(note & 0x7F));
+    msg.set_velocity(velocity);
+    UmpMessage::from(ChannelVoice2::from(msg))
 }
 
 fn param_id_for_name(name: &str) -> u32 {
@@ -570,7 +608,7 @@ fn run_batch(scenario: TestScenario) -> Result<(), String> {
 
         while next_action < timeline.len() && timeline[next_action].0 <= elapsed {
             let action = &timeline[next_action];
-            dispatch_any(&mut perform, &mut ctx.conf, &ctx.bus_handle, &action.1)?;
+            dispatch_any(&mut perform, &mut ctx.conf, &ctx.bus_handle, &ctx.executor, &action.1)?;
             next_action += 1;
         }
 
@@ -1094,7 +1132,7 @@ fn handle_json_command(
         other => match json_to_action(&ctx.resolver, other, &v) {
             Ok(Some(action)) => {
                 ctx.mutation_seq += 1;
-                match dispatch_any(perform, &mut ctx.conf, &ctx.bus_handle, &action) {
+                match dispatch_any(perform, &mut ctx.conf, &ctx.bus_handle, &ctx.executor, &action) {
                     Ok(()) => (ok_json(), false),
                     Err(e) => (err_json(&e), false),
                 }
@@ -1361,6 +1399,19 @@ fn resolve_action(
         TimelineAction::ClockRewind { target } => ResolvedActionKind::ClockRewind {
             target_id: resolve_target(resolver, target)?,
         },
+        TimelineAction::Midi2NoteOn {
+            target,
+            note,
+            velocity,
+        } => ResolvedActionKind::Midi2NoteOn {
+            target_id: resolve_target(resolver, target)?,
+            note: if *note <= 0 {
+                60u8
+            } else {
+                (*note).clamp(0, 127) as u8
+            },
+            velocity: ((velocity.clamp(0.0, 1.0) * 65535.0) as u32).min(65535) as u16,
+        },
         TimelineAction::KitSave { name } => ResolvedActionKind::KitSave { name: name.clone() },
         TimelineAction::KitLoad { id } => ResolvedActionKind::KitLoad { id: *id },
         TimelineAction::BindKit { slot, kit_id } => ResolvedActionKind::BindKit {
@@ -1447,8 +1498,8 @@ fn render_deterministic(scenario: &TestScenario) -> Result<Vec<f32>, String> {
     let libraries = HashMap::new();
     let ids = build_from_instrument(&def, &mut conf, &libraries)
         .map_err(|e| format!("failed to build graph: {}", e))?;
-    let mut executor = conf.build_executor();
-    executor.set_debug_log_enabled(true);
+    let mut executor = std::sync::Mutex::new(conf.build_executor());
+    executor.lock().unwrap().set_debug_log_enabled(true);
 
     // P11 C2/C3: same PerformState the app main loop owns, ticked per block
     // so chunked kit applies and pattern-switch kit-apply stay deterministic.
@@ -1488,11 +1539,11 @@ fn render_deterministic(scenario: &TestScenario) -> Result<Vec<f32>, String> {
         // Commands sent before process() are drained and applied by the executor
         // in that same call, so an action fires in the block its offset lands in.
         while next < timeline.len() && timeline[next].0 < block_end {
-            dispatch_any(&mut perform, &mut conf, &bus_handle, &timeline[next].1)?;
+            dispatch_any(&mut perform, &mut conf, &bus_handle, &executor, &timeline[next].1)?;
             next += 1;
         }
         block.iter_mut().for_each(|s| *s = 0.0);
-        executor.process(&mut block, channels);
+        executor.lock().unwrap().process(&mut block, channels);
         all.extend(block.chunks(channels).map(|ch| ch[0]));
         conf.process_main_thread();
         perform.tick(&mut conf, &bus_handle);
