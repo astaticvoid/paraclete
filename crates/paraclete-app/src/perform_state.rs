@@ -110,14 +110,8 @@ impl PerformState {
         match op {
             AppOp::KitLoad(id) => self.kit_load(id, conf),
             AppOp::KitSaveAs(name) => self.kit_save_as(name, conf, bus),
-            AppOp::KitCommit => {
-                // C3: needs Theotokos-selected track context.
-                info!("[kit] commit — stub, needs selected-track context");
-            }
-            AppOp::KitReload => {
-                // C3: needs Theotokos-selected track context.
-                info!("[kit] reload — stub, needs selected-track context");
-            }
+            AppOp::KitCommit => self.kit_commit(conf, bus),
+            AppOp::KitReload => self.kit_reload(conf, bus),
             AppOp::BindKit { slot, kit } => self.bind_kit(slot, kit),
             AppOp::SetPerformMode(on) => self.set_perform_mode(on),
             AppOp::TempSave => {
@@ -207,6 +201,66 @@ impl PerformState {
             info!("[kit] loading kit {}: {}", id.0, kit.name);
             self.apply_pending = kit.entries.clone();
         }
+    }
+
+    /// P11 C2c (the piece C3 deferred): capture the current in_kit param
+    /// state back into the kit bound to the Theotokos-selected track's
+    /// active pattern slot. The selection is published to
+    /// `/script/theotokos/selected` (Int = sequencer id) whenever the
+    /// performer changes track; the active pattern is `/node/{id}/state/
+    /// active_pattern` (Int = slot). No binding → no-op with a log.
+    fn kit_commit(&mut self, conf: &NodeConfigurator, bus: &Rc<RefCell<StateBusHandle>>) {
+        let Some(kit_id) = self.bound_kit_for_selected_track(bus) else {
+            return;
+        };
+        let entries = capture_kit_entries(conf, bus);
+        // Keep the kit's existing name; only the params are re-captured.
+        let name = self
+            .kit_store
+            .get(kit_id)
+            .map(|k| k.name.clone())
+            .unwrap_or_else(|| format!("Kit {}", kit_id.0 + 1));
+        let entry_count = entries.len();
+        self.kit_store.set(kit_id, Kit { name, entries });
+        info!(
+            "[kit] committed {} params into kit {}",
+            entry_count, kit_id.0
+        );
+    }
+
+    /// P11 C2c: re-apply the kit bound to the Theotokos-selected track's
+    /// active pattern slot (the same resolution as `kit_commit`).
+    fn kit_reload(&mut self, conf: &mut NodeConfigurator, bus: &Rc<RefCell<StateBusHandle>>) {
+        let Some(kit_id) = self.bound_kit_for_selected_track(bus) else {
+            return;
+        };
+        self.kit_load(kit_id, conf);
+    }
+
+    /// Resolve the kit bound to the Theotokos-selected track's active
+    /// pattern slot: `/script/theotokos/selected` (sequencer id) →
+    /// `/node/{id}/state/active_pattern` (pattern index) →
+    /// `kit_binding[pattern]`. `None` when any hop is missing (no
+    /// selection, no active-pattern publication, or an unbound slot).
+    fn bound_kit_for_selected_track(
+        &self,
+        bus: &Rc<RefCell<StateBusHandle>>,
+    ) -> Option<KitId> {
+        let seq_id = match bus.borrow().read("/script/theotokos/selected") {
+            Some(StateBusValue::Int(i)) if *i >= 0 => *i as u32,
+            _ => return None,
+        };
+        let slot = match bus
+            .borrow()
+            .read(&format!("/node/{seq_id}/state/active_pattern"))
+        {
+            Some(StateBusValue::Int(i)) if *i >= 0 => *i as usize,
+            _ => return None,
+        };
+        if slot >= self.kit_binding.len() {
+            return None;
+        }
+        self.kit_binding[slot]
     }
 
     fn kit_save_as(
@@ -361,6 +415,103 @@ mod tests {
         // or an out-of-bounds index.
         perform.execute(AppOp::KitLoad(KitId(64)), &mut conf, &bus);
         assert!(perform.apply_pending.is_empty());
+    }
+
+    /// Build the default instrument graph (real sequencer + engines with
+    /// in_kit params) and the selected-track context (`/script/theotokos/
+    /// selected` → the first sequencer, active pattern 0) with kit 0 bound
+    /// to pattern slot 0 — the context the P11 C2c commit/reload ops
+    /// resolve against.
+    fn test_graph_with_selection_and_binding() -> (
+        NodeConfigurator,
+        Rc<RefCell<StateBusHandle>>,
+        PerformState,
+    ) {
+        let instrument = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instrument.yaml");
+        let def =
+            crate::builder::load_instrument_definition(&instrument).expect("load instrument.yaml");
+        let mut conf = NodeConfigurator::new(44100.0, 512);
+        let ids = crate::builder::build_from_instrument(&def, &mut conf, &HashMap::new())
+            .expect("build graph");
+        let seq_id = ids.sequencers[0];
+        let bus = conf.state_bus_handle();
+        let mut perform = PerformState::new();
+        perform.kit_binding[0] = Some(KitId(0));
+        bus.borrow_mut()
+            .write("/script/theotokos/selected", StateBusValue::Int(seq_id as i64));
+        bus.borrow_mut()
+            .write(&format!("/node/{seq_id}/state/active_pattern"), StateBusValue::Int(0));
+        (conf, bus, perform)
+    }
+
+    #[test]
+    fn kit_commit_captures_into_bound_kit() {
+        let (mut conf, bus, mut perform) = test_graph_with_selection_and_binding();
+        // A kit in slot 0 first, so commit has a name to keep.
+        perform.kit_store.set(
+            KitId(0),
+            Kit {
+                name: "LiveKick".into(),
+                entries: vec![],
+            },
+        );
+        // The graph's nodes are un-activated in a unit test (no executor),
+        // so their published bus values are absent — simulate the live
+        // graph's `/node/{id}/param/{name}` mirrors for one in_kit param.
+        bus.borrow_mut()
+            .write("/node/20/param/decay", StateBusValue::Float(0.42));
+
+        perform.execute(AppOp::KitCommit, &mut conf, &bus);
+
+        let kit = perform.kit_store.get(KitId(0)).expect("kit 0 exists");
+        assert_eq!(kit.name, "LiveKick", "commit keeps the existing name");
+        assert!(
+            !kit.entries.is_empty(),
+            "commit must capture the graph's in_kit params"
+        );
+        assert!(
+            kit.entries
+                .iter()
+                .any(|e| e.node_id == 20 && e.value == 0.42),
+            "the simulated decay value must be captured"
+        );
+    }
+
+    #[test]
+    fn kit_commit_noop_without_binding() {
+        let (mut conf, bus, mut perform) = test_graph_with_selection_and_binding();
+        // Unbind slot 0 → nothing to commit into.
+        perform.kit_binding[0] = None;
+
+        perform.execute(AppOp::KitCommit, &mut conf, &bus);
+        assert!(
+            perform.kit_store.get(KitId(0)).is_none(),
+            "no binding → no kit created"
+        );
+    }
+
+    #[test]
+    fn kit_reload_applies_bound_kit() {
+        let (mut conf, bus, mut perform) = test_graph_with_selection_and_binding();
+        // A kit whose entries set the kick's decay.
+        perform.kit_store.set(
+            KitId(0),
+            Kit {
+                name: "LiveKick".into(),
+                entries: vec![KitEntry {
+                    node_id: 20,
+                    param_id: paraclete_node_api::ParamDescriptor::id_for_name("decay"),
+                    value: 0.7,
+                }],
+            },
+        );
+
+        perform.execute(AppOp::KitReload, &mut conf, &bus);
+        assert_eq!(
+            perform.apply_pending.len(),
+            1,
+            "reload must queue the bound kit's entries for apply"
+        );
     }
 
     #[test]
