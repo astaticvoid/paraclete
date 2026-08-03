@@ -1771,7 +1771,8 @@ impl Node for Sequencer {
                     {
                         self.record_live_trig(note, velocity, timed.sample_offset);
                     }
-                }                _ => {}
+                }
+                _ => {}
             }
         }
         // BUG-042: live_recorded_step is consumed by the transport loop
