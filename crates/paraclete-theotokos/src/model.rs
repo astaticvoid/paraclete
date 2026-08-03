@@ -5,6 +5,59 @@ use paraclete_node_api::{CapabilityDocument, PageRef, ParamDescriptor, StateBusH
 use paraclete_view_assembly::{CompositeOverlay, CompositeView, SUB_PAGE_SLOTS};
 use std::collections::HashMap;
 
+/// P11 C6a: the kit store's fixed slot count (mirrors `KitStore`'s 64
+/// slots in `paraclete-app` — the Theotokos cannot import that crate, so
+/// the constant is duplicated here).
+pub const KIT_SLOT_COUNT: usize = 64;
+/// P11 C6a: how many kit slots the KIT screen's list shows at once, and
+/// the page step of `scroll_kit_list`.
+pub const KIT_PAGE_SIZE: usize = 16;
+
+/// P11 C6a: parse the `/context/kits` bus text
+/// (`idx:name;idx:name;...`, per non-empty slot in slot order) into
+/// `(slot, name)` pairs. An unreadable entry costs that entry, not the
+/// rest of the list (mirrors `parse_lock_value`'s per-entry tolerance).
+pub fn parse_kit_list(text: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    for entry in text.split(';') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let Some((idx, name)) = entry.split_once(':') else {
+            continue;
+        };
+        if let Ok(i) = idx.trim().parse::<usize>() {
+            out.push((i, name.to_string()));
+        }
+    }
+    out
+}
+
+/// P11 C6a: parse the `/context/kit_binding` bus text
+/// (`slot:kit;slot:-1;...` — 8 pattern slots, `-1` = unbound) into
+/// `(pattern_slot, kit_slot)` pairs. Same per-entry tolerance.
+pub fn parse_kit_binding(text: &str) -> Vec<(usize, i64)> {
+    let mut out = Vec::new();
+    for entry in text.split(';') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let Some((slot, kit)) = entry.split_once(':') else {
+            continue;
+        };
+        if let (Ok(s), Ok(k)) = (
+            slot.trim().parse::<usize>(),
+            kit.trim().parse::<i64>(),
+        ) {
+            out.push((s, k));
+        }
+    }
+    out
+}
+
+
 /// TK2 C3 (D12): replaces `Mode` (deleted at the wiring flip, per §0 A4).
 /// TK2.1 C6 (D12): `Mute` retired — mute state has lived on the track
 /// indicator since C0, and `PanelButton::Mute`'s only reachable action was
@@ -16,6 +69,10 @@ pub enum Screen {
     Tempo,
     Chain,
     Settings,
+    /// P11 C6a: the KIT screen — kit list (64 slots, 16 visible), the
+    /// loaded-kit marker, and the LOAD/SAVE/COMMIT/RELD bottom-row
+    /// buttons. Opened by the KIT button (7); ESC returns to Grid.
+    Kit,
 }
 
 /// TK2.1 C1 (D5): replaces `grid_rec: bool`. `Off` (default) and `Live`
@@ -149,6 +206,13 @@ pub struct Model {
     /// TK2 C6 (D12): which pattern (0-7) the Chain screen's bank-row
     /// cursor points at — YES pushes this one onto the chain.
     pub chain_cursor: usize,
+    /// P11 C6a: the KIT screen's list scroll offset — the first visible
+    /// slot. Page-aligned (multiples of `KIT_PAGE_SIZE`) by
+    /// `scroll_kit_list`, clamped ≥ 0.
+    pub kit_scroll: usize,
+    /// P11 C6a: the KIT screen's selected kit slot (0-63) — what the
+    /// encoder-bank preview shows and what LOAD/SAVE target.
+    pub kit_cursor: usize,
     /// TK2.1 C5b (D15): the shared p-lock target — replaces `step_focus`
     /// (deleted; its only reader, `Action::FocusStep`, was unreachable
     /// dead code — nothing has mapped a key to it since the TK2 C3 wiring
@@ -293,6 +357,8 @@ impl Model {
             slot_c: None,
             sub_page: 0,
             chain_cursor: 0,
+            kit_scroll: 0,
+            kit_cursor: 0,
             lock_target: None,
             cmdline: None,
             cmdline_error: None,
@@ -353,6 +419,17 @@ impl Model {
             self.active_track = i;
             self.bind_page();
         }
+    }
+
+    /// P11 C6a: move the KIT screen's cursor one slot in `dir` and
+    /// page-align the list scroll window to keep it visible. `Prev`
+    /// clamps at slot 0, `Next` at `KIT_SLOT_COUNT - 1`.
+    pub fn scroll_kit_list(&mut self, dir: Dir) {
+        self.kit_cursor = match dir {
+            Dir::Prev => self.kit_cursor.saturating_sub(1),
+            Dir::Next => self.kit_cursor.saturating_add(1).min(KIT_SLOT_COUNT - 1),
+        };
+        self.kit_scroll = (self.kit_cursor / KIT_PAGE_SIZE) * KIT_PAGE_SIZE;
     }
 
     /// TK2.1 C5b (D15): `lock_target`'s step, but only if it's on the
@@ -1483,5 +1560,76 @@ mod tests {
         let t1 = Instant::now() + Duration::from_millis(10);
         let held = jt.repeat(t1, 10);
         assert!(held.is_none(), "release must prevent future repeats");
+    }
+
+    // ── P11 C6a: KIT list parsing + scroll ──────────────────────────────
+
+    #[test]
+    fn parse_kit_list_extracts_slots_in_order() {
+        let parsed = parse_kit_list("0:Kick Basic;2:Hat Crisp;7:Snare Tight");
+        assert_eq!(
+            parsed,
+            vec![
+                (0, "Kick Basic".to_string()),
+                (2, "Hat Crisp".to_string()),
+                (7, "Snare Tight".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_kit_list_tolerates_a_malformed_entry() {
+        // A garbage entry (missing colon, non-numeric idx) costs that
+        // entry, not the rest of the list — same policy as lock parsing.
+        let parsed = parse_kit_list("0:Kick;garbage;2:Snare;:broken");
+        assert_eq!(
+            parsed,
+            vec![(0, "Kick".to_string()), (2, "Snare".to_string())]
+        );
+    }
+
+    #[test]
+    fn parse_kit_binding_extracts_bound_and_unbound() {
+        let parsed = parse_kit_binding("0:2;1:-1;2:5;3:-1;4:-1;5:-1;6:-1;7:-1");
+        assert_eq!(parsed[0], (0, 2));
+        assert_eq!(parsed[1], (1, -1));
+        assert_eq!(parsed[2], (2, 5));
+        assert_eq!(parsed.len(), 8);
+    }
+
+    #[test]
+    fn kit_scroll_prev_clamps_at_zero() {
+        let mut model = Model::new(1, &[200], &[100], &["T1".into()], &["T1".into()], Default::default(), vec![]);
+        model.kit_cursor = 0;
+        model.kit_scroll = 0;
+        model.scroll_kit_list(Dir::Prev);
+        assert_eq!(model.kit_cursor, 0);
+        assert_eq!(model.kit_scroll, 0);
+    }
+
+    #[test]
+    fn kit_scroll_next_page_aligns_the_window() {
+        let mut model = Model::new(1, &[200], &[100], &["T1".into()], &["T1".into()], Default::default(), vec![]);
+        // 16 presses from slot 0 land on slot 16: the cursor must stay
+        // inside the 16-slot visible window and the window must page-align.
+        for _ in 0..16 {
+            model.scroll_kit_list(Dir::Next);
+        }
+        assert_eq!(model.kit_cursor, 16);
+        assert_eq!(model.kit_scroll, 16);
+        // A cursor that crossed into page 1 still keeps the window aligned.
+        model.scroll_kit_list(Dir::Prev);
+        assert_eq!(model.kit_cursor, 15);
+        assert_eq!(model.kit_scroll, 0);
+    }
+
+    #[test]
+    fn kit_scroll_next_clamps_at_last_slot() {
+        let mut model = Model::new(1, &[200], &[100], &["T1".into()], &["T1".into()], Default::default(), vec![]);
+        for _ in 0..80 {
+            model.scroll_kit_list(Dir::Next);
+        }
+        assert_eq!(model.kit_cursor, KIT_SLOT_COUNT - 1);
+        assert_eq!(model.kit_scroll, 48);
     }
 }

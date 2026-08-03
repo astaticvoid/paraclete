@@ -26,6 +26,18 @@ pub const CMD_CLEAR: u32 = 18;
 /// Chain screen).
 pub const CMD_CHAIN_PUSH: u32 = 31;
 pub const CMD_CHAIN_CLEAR: u32 = 32;
+/// P11 C6e (mirrors `paraclete_node_api::command::CMD_SET_PATTERN_MUTE`):
+/// set/toggle the active pattern's muted flag. arg0: 0 = off, 1 = on,
+/// 2 = toggle.
+pub const CMD_SET_PATTERN_MUTE: u32 = 41;
+/// P11 C6e (mirrors `paraclete_node_api::command::CMD_PREPARE_PATTERN_MUTE`):
+/// defer a pattern-mute change to the next pattern wrap. arg0: 0 = off,
+/// 1 = on.
+pub const CMD_PREPARE_PATTERN_MUTE: u32 = 43;
+/// P11 C6 (OQ-T25, mirrors `paraclete_node_api::command::CMD_LIVE_ERASE`):
+/// arm/disarm live erasing (hold NO while the transport plays). arg0:
+/// 0 = off, 1 = on. Disarmed on transport stop.
+pub const CMD_LIVE_ERASE: u32 = 44;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Action {
@@ -111,6 +123,32 @@ pub enum Action {
     /// start (`CMD_CLOCK_STOP` + `CMD_CLOCK_REWIND`, in that order). This
     /// is the reference box's "stop" grammar: PLAY alone only pauses.
     Stop,
+
+    // ── P11 C6 (Theotokos surfaces) ──
+    /// C6e: TRK+FUNC+trig — toggle `pattern_mute` on track N's sequencer
+    /// (`CMD_SET_PATTERN_MUTE` arg0 = 2).
+    TogglePatternMute(usize),
+    /// C6e: TRK+FUNC+Ctrl+trig — defer a pattern-mute change to the next
+    /// pattern wrap (`CMD_PREPARE_PATTERN_MUTE`, arg0 read from the
+    /// current `/node/{id}/state/pattern_muted`).
+    PreparePatternMute(usize),
+    /// C6a: the KIT screen's encoder scroll — moves the cursor one slot
+    /// and page-aligns the list window.
+    KitListScroll(Dir),
+    /// C6a: KIT screen LOAD (trig 13) — `AppOp::KitLoad(kit_cursor)`.
+    KitLoad,
+    /// C6a: KIT screen SAVE (trig 14) — `AppOp::KitSaveAs("Kit N")`.
+    KitSaveAs,
+    /// C6a: KIT screen COMMIT (trig 15) — `AppOp::KitCommit`.
+    KitCommit,
+    /// C6a: KIT screen RELD (trig 16) — `AppOp::KitReload`.
+    KitReload,
+    /// C6b: FUNC+KIT — `AppOp::SetPerformMode(!current)`.
+    TogglePerformMode,
+    /// C6c: FUNC+YES — `AppOp::TempSave`.
+    TempSave,
+    /// C6c: FUNC+NO — `AppOp::TempReload`.
+    TempReload,
 }
 
 #[derive(Debug)]
@@ -160,7 +198,19 @@ impl Action {
             | Action::ToggleEnc
             | Action::SetLockTarget(_)
             | Action::LockTargetRefused(_)
-            | Action::ClearLockTarget => Outcome::StateOnly,
+            | Action::ClearLockTarget
+            // P11 C6: all dispatched directly in lib.rs — they need the
+            // state bus, the selected track, or AppOp push access.
+            | Action::TogglePatternMute(_)
+            | Action::PreparePatternMute(_)
+            | Action::KitListScroll(_)
+            | Action::KitLoad
+            | Action::KitSaveAs
+            | Action::KitCommit
+            | Action::KitReload
+            | Action::TogglePerformMode
+            | Action::TempSave
+            | Action::TempReload => Outcome::StateOnly,
             Action::PlayToggle => {
                 if playing {
                     Outcome::Command(NodeCommand {

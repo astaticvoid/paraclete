@@ -749,7 +749,11 @@ pub fn button_to_action(
     if let (Some(hold), Some(col)) = (held.armed, trig_col(button)) {
         if mods.func {
             return match hold {
-                Hold::Trk => Action::ToggleMute(col),
+                // P11 C6e: TRK+FUNC+trig toggles the track's pattern mute
+                // (CMD_SET_PATTERN_MUTE, arg0=2); TRK+FUNC+Ctrl+trig
+                // queues a deferred (prepared) pattern mute instead.
+                Hold::Trk if mods.ctrl => Action::PreparePatternMute(col),
+                Hold::Trk => Action::TogglePatternMute(col),
                 Hold::Ptn | Hold::Rec | Hold::Lock => Action::Noop,
             };
         }
@@ -773,6 +777,31 @@ pub fn button_to_action(
                 }
             }
         };
+    }
+
+    // P11 C6a: the KIT screen re-purposes the trig rows. Trigs 13-16 are
+    // the LOAD/SAVE/COMMIT/RELD buttons; the encoder jog (FUNC+trig)
+    // scrolls the list — the encoder bank is read-only here, so a jog has
+    // no other meaning — with the top row scrolling toward slot 0 and the
+    // bottom row toward the end. An armed TRK/PTN prefix still wins (step
+    // above), and bare trigs 1-12 have no KIT-screen meaning (a no-op).
+    if matches!(screen.screen, Screen::Kit) {
+        if let Some(col) = trig_col(button) {
+            if mods.func {
+                return if col < 8 {
+                    Action::KitListScroll(Dir::Prev)
+                } else {
+                    Action::KitListScroll(Dir::Next)
+                };
+            }
+            return match col {
+                12 => Action::KitLoad,
+                13 => Action::KitSaveAs,
+                14 => Action::KitCommit,
+                15 => Action::KitReload,
+                _ => Action::Noop,
+            };
+        }
     }
 
     // D7: while TRK/PTN is held, FUNC+transport (REC/PLAY/STOP) is
@@ -884,6 +913,13 @@ pub fn button_to_action(
         PanelButton::Song => Action::OpenScreen(Screen::Chain),
         PanelButton::Tempo => Action::OpenScreen(Screen::Tempo),
         PanelButton::Settings => Action::OpenScreen(Screen::Settings),
+        // P11 C6c: FUNC+YES / FUNC+NO — the temp save/reload chords.
+        // Checked before the screen-specific YES/NO meanings below, so
+        // FUNC+NO beats Chain's clear and every screen's bare-NO "back to
+        // Grid" (the spec's tentative chord, ADR-039:133 — one-line to
+        // change if a session prefers different keys).
+        PanelButton::Yes if mods.func => Action::TempSave,
+        PanelButton::No if mods.func => Action::TempReload,
         // TK2 C6 (D12): Tempo screen — YES taps, UP/DOWN nudge bpm (FUNC
         // = fine, ±0.1; bare = ±1).
         PanelButton::Yes if matches!(screen.screen, Screen::Tempo) => Action::TapTempo,
@@ -905,8 +941,10 @@ pub fn button_to_action(
         PanelButton::Right if matches!(screen.screen, Screen::Chain) => {
             Action::MoveChainCursor(Dir::Next)
         }
-        // D12: KIT has no screen in TK2 — echoes reserved.
-        PanelButton::Kit => Action::Echo("reserved (kit)"),
+        // P11 C6a/C6b: bare KIT opens the KIT screen; FUNC+KIT toggles
+        // perform mode (AppOp::SetPerformMode).
+        PanelButton::Kit if mods.func => Action::TogglePerformMode,
+        PanelButton::Kit => Action::OpenScreen(Screen::Kit),
         // D12: SAMPLING is hidden entirely unless some capability
         // declares it (none does today) — a plain no-op, not even an
         // echo (unlike KIT).
@@ -1047,9 +1085,11 @@ mod tests {
     }
 
     /// D7/A10 (TK2 C4): TRK-held + FUNC+trig is the mute-toggle chord —
-    /// distinct from bare TRK+trig (track select, tested above).
+    /// distinct from bare TRK+trig (track select, tested above). P11 C6e
+    /// re-points it at the pattern mute (CMD_SET_PATTERN_MUTE arg0=2);
+    /// the global-mute toggle survives as `:mute`/`:unmute` only.
     #[test]
-    fn trk_func_trig_toggles_mute() {
+    fn trk_func_trig_toggles_pattern_mute() {
         let held = HeldState {
             kitty: false,
             armed: Some(Hold::Trk),
@@ -1061,7 +1101,118 @@ mod tests {
             ctrl: false,
         };
         let action = button_to_action(&held, &default_grid(), PanelButton::Trig5, mods);
-        assert!(matches!(action, Action::ToggleMute(4)));
+        assert!(matches!(action, Action::TogglePatternMute(4)));
+    }
+
+    /// P11 C6e: TRK+FUNC+Ctrl+trig queues a prepared (deferred) pattern
+    /// mute instead of an immediate toggle.
+    #[test]
+    fn trk_func_ctrl_trig_prepares_pattern_mute() {
+        let held = HeldState {
+            kitty: false,
+            armed: Some(Hold::Trk),
+            pressed: HashSet::new(),
+            last_prefix_press: None,
+        };
+        let mods = Mods {
+            func: true,
+            ctrl: true,
+        };
+        let action = button_to_action(&held, &default_grid(), PanelButton::Trig5, mods);
+        assert!(matches!(action, Action::PreparePatternMute(4)));
+    }
+
+    /// P11 C6a: on the KIT screen, trigs 13-16 are LOAD/SAVE/COMMIT/RELD;
+    /// bare trigs 1-12 are a no-op (they are not steps here).
+    #[test]
+    fn kit_screen_bottom_row_trigs_map_to_kit_actions() {
+        let screen = ScreenState {
+            screen: Screen::Kit,
+            rec: RecMode::Off,
+            enc: false,
+            lock_target_step: None,
+        };
+        let held = HeldState::new(false);
+        let no_mods = Mods::default();
+        let cases = [
+            (PanelButton::Trig13, Action::KitLoad),
+            (PanelButton::Trig14, Action::KitSaveAs),
+            (PanelButton::Trig15, Action::KitCommit),
+            (PanelButton::Trig16, Action::KitReload),
+        ];
+        for (button, want) in cases {
+            let got = button_to_action(&held, &screen, button, no_mods);
+            assert!(
+                std::mem::discriminant(&got) == std::mem::discriminant(&want),
+                "{button:?} must resolve to {want:?}, got {got:?}"
+            );
+        }
+        // Bare top-row trigs have no KIT-screen meaning.
+        let got = button_to_action(&held, &screen, PanelButton::Trig5, no_mods);
+        assert!(matches!(got, Action::Noop));
+    }
+
+    /// P11 C6a: on the KIT screen, the encoder jog (FUNC+trig) scrolls
+    /// the list — top row toward slot 0, bottom row toward the end.
+    #[test]
+    fn kit_screen_func_trig_scrolls_the_list() {
+        let screen = ScreenState {
+            screen: Screen::Kit,
+            rec: RecMode::Off,
+            enc: false,
+            lock_target_step: None,
+        };
+        let held = HeldState::new(false);
+        let func = Mods {
+            func: true,
+            ctrl: false,
+        };
+        let up = button_to_action(&held, &screen, PanelButton::Trig8, func);
+        assert!(matches!(up, Action::KitListScroll(Dir::Prev)));
+        let down = button_to_action(&held, &screen, PanelButton::Trig9, func);
+        assert!(matches!(down, Action::KitListScroll(Dir::Next)));
+    }
+
+    /// P11 C6a/C6b: bare KIT opens the KIT screen; FUNC+KIT toggles
+    /// perform mode.
+    #[test]
+    fn kit_button_opens_kit_screen_and_func_toggles_perform() {
+        let held = HeldState::new(false);
+        let bare = button_to_action(&held, &default_grid(), PanelButton::Kit, Mods::default());
+        assert!(matches!(bare, Action::OpenScreen(Screen::Kit)));
+        let func = Mods {
+            func: true,
+            ctrl: false,
+        };
+        let toggled = button_to_action(&held, &default_grid(), PanelButton::Kit, func);
+        assert!(matches!(toggled, Action::TogglePerformMode));
+    }
+
+    /// P11 C6c: FUNC+YES / FUNC+NO are the temp save/reload chords, and
+    /// FUNC+NO must win over Chain's clear and the bare-NO "back to Grid".
+    #[test]
+    fn func_yes_and_func_no_map_to_temp_save_and_reload() {
+        let held = HeldState::new(false);
+        let func = Mods {
+            func: true,
+            ctrl: false,
+        };
+        let save = button_to_action(&held, &default_grid(), PanelButton::Yes, func);
+        assert!(matches!(save, Action::TempSave));
+        let reload = button_to_action(&held, &default_grid(), PanelButton::No, func);
+        assert!(matches!(reload, Action::TempReload));
+        // On the Chain screen too — FUNC+NO must beat ChainClear.
+        let chain_screen = ScreenState {
+            screen: Screen::Chain,
+            rec: RecMode::Off,
+            enc: false,
+            lock_target_step: None,
+        };
+        let reload_chain = button_to_action(&held, &chain_screen, PanelButton::No, func);
+        assert!(matches!(reload_chain, Action::TempReload));
+        // Bare NO still returns to Grid (the existing back gesture).
+        let back = button_to_action(&held, &default_grid(), PanelButton::No, Mods::default());
+        assert!(matches!(back, Action::OpenScreen(Screen::Grid)));
     }
 
     /// D7 (TK2 C4): while TRK/PTN is held, FUNC+transport (REC/PLAY/STOP)

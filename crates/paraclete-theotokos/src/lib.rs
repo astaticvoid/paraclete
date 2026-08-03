@@ -18,14 +18,16 @@ use ratatui::Terminal;
 
 use crate::action::{
     Action, Outcome, CMD_CHAIN_CLEAR, CMD_CHAIN_PUSH, CMD_CLEAR, CMD_CLEAR_STEP_LOCK,
-    CMD_CLOCK_REWIND, CMD_CLOCK_START, CMD_CLOCK_STOP, CMD_SET_LOCK_TARGET, CMD_SET_PATTERN,
-    CMD_SET_STEP_LOCK, CMD_TRIG_NOW, PATTERN_BANK_SIZE,
+    CMD_CLOCK_REWIND, CMD_CLOCK_START, CMD_CLOCK_STOP, CMD_LIVE_ERASE, CMD_PREPARE_PATTERN_MUTE,
+    CMD_SET_LOCK_TARGET, CMD_SET_PATTERN, CMD_SET_PATTERN_MUTE, CMD_SET_STEP_LOCK, CMD_TRIG_NOW,
+    PATTERN_BANK_SIZE,
 };
 use crate::input::{
     button_to_action, key_label, key_to_button, trig_button, HeldState, Keymap, Mods, PanelButton,
 };
 use crate::model::{
-    CmdlineVerb, Dir, JogTracker, Model, RecMode, Screen, Slot, Tuning, YankedLock, YankedStep,
+    parse_kit_binding, parse_kit_list, CmdlineVerb, Dir, JogTracker, Model, RecMode, Screen, Slot,
+    Tuning, YankedLock, YankedStep,
 };
 
 pub type BusHandle = Rc<RefCell<StateBusHandle>>;
@@ -312,6 +314,41 @@ impl TheotokosApp {
             read_int(format!("/node/{active_seq_id}/state/page_loop_end")).unwrap_or(0) as u8,
         );
 
+        // P11 C6a: KIT screen state from the app-published context paths.
+        // `/context/kits` is names-only (`idx:name;...`) — the encoder-bank
+        // preview therefore shows the selected kit's name as a placeholder
+        // for its entries (values are not on the bus in P11).
+        let read_text = |path: &str| -> String {
+            bus.read(path)
+                .and_then(|v| match v {
+                    StateBusValue::Text(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+        let kit_list = parse_kit_list(&read_text("/context/kits"));
+        let kit_binding = parse_kit_binding(&read_text("/context/kit_binding"));
+        // The "loaded" kit is the one bound to the selected track's active
+        // pattern slot (from `/context/kit_binding`, `slot:kit` pairs).
+        let kit_loaded_slot = kit_binding
+            .iter()
+            .find(|(slot, kit)| *slot == active_pattern && *kit >= 0)
+            .map(|(_, kit)| *kit as usize);
+        // P11 C6b: perform-mode indicator — `/context/perform` Float ≥ 0.5.
+        let perform_mode = bus
+            .read("/context/perform")
+            .is_some_and(|v| matches!(v, StateBusValue::Float(f) if *f >= 0.5));
+        // P11 C6e: per-track pattern-mute state for the track indicator.
+        let pattern_muted_states: Vec<bool> = self
+            .model
+            .tracks
+            .iter()
+            .map(|t| {
+                bus.read(&format!("/node/{}/state/pattern_muted", t.sequencer_id))
+                    .is_some_and(|v| matches!(v, StateBusValue::Bool(b) if *b))
+            })
+            .collect();
+
         // TK2 C5 (D8/§0 A11): the active page's params in Rule order,
         // restricted to the current sub-page's 8-wide window (pages with
         // more than 8 params split into sub-pages instead of silently
@@ -472,6 +509,12 @@ impl TheotokosApp {
             chain_len,
             page_loop,
             chain_cursor: self.model.chain_cursor,
+            kit_scroll: self.model.kit_scroll,
+            kit_cursor: self.model.kit_cursor,
+            kit_list,
+            kit_loaded_slot,
+            perform_mode,
+            pattern_muted_states,
         };
 
         drop(bus_ref);
@@ -632,6 +675,26 @@ impl TheotokosApp {
                         match ev.kind {
                             KeyEventKind::Release => {
                                 self.held.on_kitty_release(button);
+                                // P11 C6 (OQ-T25): releasing a bare NO
+                                // while the transport plays disarms live
+                                // erase on the selected track (the press
+                                // armed it; see below).
+                                if !mods.func && button == PanelButton::No && playing {
+                                    if let Some(seq_id) = self
+                                        .model
+                                        .tracks
+                                        .get(self.model.active_track)
+                                        .map(|t| t.sequencer_id)
+                                    {
+                                        self.pending.push(NodeCommand {
+                                            target_id: seq_id,
+                                            type_id: CMD_LIVE_ERASE,
+                                            arg0: 0,
+                                            arg1: 0.0,
+                                        });
+                                        dirty = true;
+                                    }
+                                }
                                 true
                             }
                             // TK2.1 C1 (D5, hostile review finding): unlike
@@ -699,6 +762,39 @@ impl TheotokosApp {
                         enc: self.model.enc,
                         lock_target_step: lock_target_step_before,
                     };
+                    // P11 C6 (OQ-T25, user decision 2026-08-02): a bare NO
+                    // press while the transport plays arms live erase on
+                    // the selected track's sequencer (`CMD_LIVE_ERASE 1`).
+                    // The kitty path disarms on the matching release (the
+                    // Release arm above); the sticky fallback has no
+                    // release event, so it arms on press only and relies on
+                    // the engine disarming at transport stop — a documented
+                    // limitation of terminals without kitty support.
+                    // Grid-only (review finding): on the Chain screen NO
+                    // means "clear chain" — a bare NO there must not ALSO
+                    // arm step erasing (a surprising destructive side
+                    // effect); on Tempo/Settings NO navigates back to Grid.
+                    if !mods.func
+                        && button == PanelButton::No
+                        && matches!(ev.kind, KeyEventKind::Press)
+                        && playing
+                        && self.model.screen == Screen::Grid
+                    {
+                        if let Some(seq_id) = self
+                            .model
+                            .tracks
+                            .get(self.model.active_track)
+                            .map(|t| t.sequencer_id)
+                        {
+                            self.pending.push(NodeCommand {
+                                target_id: seq_id,
+                                type_id: CMD_LIVE_ERASE,
+                                arg0: 1,
+                                arg1: 0.0,
+                            });
+                            dirty = true;
+                        }
+                    }
                     button_to_action(&held_for_resolution, &screen_state, button, mods)
                 }
             };
@@ -720,12 +816,10 @@ impl TheotokosApp {
                 self.last_debug_event = Some(format!("{:?} → {:?}", ev, action));
             }
 
-            // Clear any stale echo (a D9 out-of-range clamp, KIT's
-            // "reserved" message, ...) once a genuinely different action
-            // fires, so it can't persist indefinitely and mask a later,
-            // more relevant one — e.g. a stray KIT press pinning "reserved
-            // (kit)" over the screen forever (post-C6 hostile review). The
-            // arms below that need a fresh echo (out-of-range
+            // Clear any stale echo (a D9 out-of-range clamp, ...) once a
+            // genuinely different action fires, so it can't persist
+            // indefinitely and mask a later, more relevant one. The arms
+            // below that need a fresh echo (out-of-range
             // SelectTrack/SelectPattern, Action::Echo itself) re-set it
             // after this clear, in the same dispatch. `cmdline_status`
             // (TK2 C8's success confirmations) gets the same treatment.
@@ -1327,6 +1421,97 @@ impl TheotokosApp {
                 Action::ClearLockTarget => {
                     self.model.lock_target = None;
                     lock_target_changed = true;
+                    dirty = true;
+                }
+                // ── P11 C6: Theotokos surfaces ──
+                // C6e: TRK+FUNC+trig — immediate pattern-mute toggle on
+                // track N's sequencer (arg0 = 2).
+                Action::TogglePatternMute(i) => {
+                    if i < self.model.tracks.len() {
+                        let seq_id = self.model.tracks[i].sequencer_id;
+                        self.pending.push(NodeCommand {
+                            target_id: seq_id,
+                            type_id: CMD_SET_PATTERN_MUTE,
+                            arg0: 2,
+                            arg1: 0.0,
+                        });
+                        dirty = true;
+                    }
+                }
+                // C6e: TRK+FUNC+Ctrl+trig — prepared (deferred) pattern
+                // mute. The target direction is read from the CURRENT
+                // `/node/{id}/state/pattern_muted` so a second press of the
+                // same chord queues the opposite state, mirroring how
+                // ToggleMute reads the current mute before toggling.
+                Action::PreparePatternMute(i) => {
+                    if i < self.model.tracks.len() {
+                        let seq_id = self.model.tracks[i].sequencer_id;
+                        let muted = state
+                            .read(&format!("/node/{}/state/pattern_muted", seq_id))
+                            .is_some_and(|v| matches!(v, StateBusValue::Bool(b) if *b));
+                        self.pending.push(NodeCommand {
+                            target_id: seq_id,
+                            type_id: CMD_PREPARE_PATTERN_MUTE,
+                            arg0: if muted { 0 } else { 1 },
+                            arg1: 0.0,
+                        });
+                        dirty = true;
+                    }
+                }
+                // C6a: encoder scroll on the KIT screen.
+                Action::KitListScroll(dir) => {
+                    self.model.scroll_kit_list(dir);
+                    dirty = true;
+                }
+                // C6a: KIT screen LOAD/SAVE/COMMIT/RELD — app-level ops,
+                // drained by the main loop's PerformState.
+                Action::KitLoad => {
+                    let id = (self.model.kit_cursor as u8).min(paraclete_node_api::app_op::KitId::MAX);
+                    self.pending_app_ops.push(paraclete_node_api::app_op::AppOp::KitLoad(
+                        paraclete_node_api::app_op::KitId(id),
+                    ));
+                    dirty = true;
+                }
+                Action::KitSaveAs => {
+                    // C6a spec: auto-names "Kit N" from the selected slot.
+                    self.pending_app_ops.push(
+                        paraclete_node_api::app_op::AppOp::KitSaveAs(format!(
+                            "Kit {}",
+                            self.model.kit_cursor + 1
+                        )),
+                    );
+                    dirty = true;
+                }
+                Action::KitCommit => {
+                    self.pending_app_ops
+                        .push(paraclete_node_api::app_op::AppOp::KitCommit);
+                    dirty = true;
+                }
+                Action::KitReload => {
+                    self.pending_app_ops
+                        .push(paraclete_node_api::app_op::AppOp::KitReload);
+                    dirty = true;
+                }
+                // C6b: FUNC+KIT toggles perform mode — the new value is
+                // the inverse of the published `/context/perform`.
+                Action::TogglePerformMode => {
+                    let current = state
+                        .read("/context/perform")
+                        .is_some_and(|v| matches!(v, StateBusValue::Float(f) if *f >= 0.5));
+                    self.pending_app_ops.push(
+                        paraclete_node_api::app_op::AppOp::SetPerformMode(!current),
+                    );
+                    dirty = true;
+                }
+                // C6c: FUNC+YES / FUNC+NO — temp snapshot save/reload.
+                Action::TempSave => {
+                    self.pending_app_ops
+                        .push(paraclete_node_api::app_op::AppOp::TempSave);
+                    dirty = true;
+                }
+                Action::TempReload => {
+                    self.pending_app_ops
+                        .push(paraclete_node_api::app_op::AppOp::TempReload);
                     dirty = true;
                 }
             }
@@ -4283,12 +4468,14 @@ mod tests {
         );
     }
 
+    /// P11 C6a: the KIT button (7) opens the KIT screen (it no longer
+    /// echoes "reserved (kit)" — the screen exists now).
     #[test]
-    fn kit_button_echoes_reserved() {
+    fn kit_button_opens_kit_screen() {
         let bus = test_bus();
         let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
         app.handle_keys(&bus, &[kc('7')]);
-        assert_eq!(app.model.cmdline_error.as_deref(), Some("reserved (kit)"));
+        assert_eq!(app.model.screen, Screen::Kit);
     }
 
     #[test]
@@ -4320,7 +4507,7 @@ mod tests {
     #[test]
     fn esc_returns_to_grid_from_other_screens() {
         let bus = test_bus();
-        for screen in [Screen::Settings, Screen::Tempo, Screen::Param(0)] {
+        for screen in [Screen::Settings, Screen::Tempo, Screen::Param(0), Screen::Kit] {
             let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
             app.model.screen = screen;
             app.handle_keys(&bus, &[esc_key()]);
@@ -4339,6 +4526,272 @@ mod tests {
             app.model.screen,
             Screen::Chain,
             "Esc on Chain must clear, not navigate away"
+        );
+    }
+
+    // ── P11 C6: Theotokos surfaces (KIT screen, perform, temp chords,
+    //    pattern mute, live erase) ──
+
+    use paraclete_node_api::app_op::{AppOp, KitId};
+
+    /// P11 C6a: KIT screen trigs 13-16 push the matching AppOps (LOAD,
+    /// SAVE with the "Kit N" auto-name, COMMIT, RELD).
+    #[test]
+    fn kit_screen_trig13_16_push_the_right_app_ops() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.screen = Screen::Kit;
+        app.model.kit_cursor = 5;
+
+        app.handle_keys(&bus, &[kc('g')]); // Trig13 = LOAD
+        app.handle_keys(&bus, &[kc('h')]); // Trig14 = SAVE
+        app.handle_keys(&bus, &[kc('j')]); // Trig15 = COMMIT
+        app.handle_keys(&bus, &[kc('k')]); // Trig16 = RELD
+
+        let ops = &app.pending_app_ops;
+        assert!(
+            ops.iter().any(|op| matches!(op, AppOp::KitLoad(KitId(5)))),
+            "LOAD must push KitLoad(cursor=5), got {:?}",
+            ops
+        );
+        assert!(
+            ops.iter()
+                .any(|op| matches!(op, AppOp::KitSaveAs(name) if name == "Kit 6")),
+            "SAVE must auto-name 'Kit 6' from slot 5, got {:?}",
+            ops
+        );
+        assert!(
+            ops.iter().any(|op| matches!(op, AppOp::KitCommit)),
+            "COMMIT must push KitCommit, got {:?}",
+            ops
+        );
+        assert!(
+            ops.iter().any(|op| matches!(op, AppOp::KitReload)),
+            "RELD must push KitReload, got {:?}",
+            ops
+        );
+    }
+
+    /// P11 C6a: the encoder scroll on the KIT screen moves the cursor and
+    /// page-aligns the list window; Prev clamps at 0.
+    #[test]
+    fn kit_screen_encoder_scroll_moves_cursor_and_clamps() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.screen = Screen::Kit;
+
+        // FUNC+Trig9 (bottom row, col 8) scrolls toward the end.
+        app.handle_keys(&bus, &[func_key('a')]);
+        assert_eq!(app.model.kit_cursor, 1);
+        assert_eq!(app.model.kit_scroll, 0);
+
+        // FUNC+Trig1 (top row) scrolls back toward slot 0.
+        app.handle_keys(&bus, &[func_key('q')]);
+        assert_eq!(app.model.kit_cursor, 0);
+
+        // Prev at 0 clamps.
+        app.handle_keys(&bus, &[func_key('q')]);
+        assert_eq!(app.model.kit_cursor, 0, "Prev must clamp at slot 0");
+    }
+
+    /// P11 C6b: FUNC+KIT toggles perform mode — the pushed AppOp is the
+    /// inverse of the published `/context/perform`.
+    #[test]
+    fn func_kit_toggles_perform_mode_app_op() {
+        let bus = test_bus();
+        bus.borrow_mut()
+            .write("/context/perform", StateBusValue::Float(1.0));
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+
+        app.handle_keys(&bus, &[func_key('7')]);
+        assert!(
+            app.pending_app_ops
+                .iter()
+                .any(|op| matches!(op, AppOp::SetPerformMode(false))),
+            "perform is on → FUNC+KIT must push SetPerformMode(false), got {:?}",
+            app.pending_app_ops
+        );
+
+        bus.borrow_mut()
+            .write("/context/perform", StateBusValue::Float(0.0));
+        app.pending_app_ops.clear();
+        app.handle_keys(&bus, &[func_key('7')]);
+        assert!(
+            app.pending_app_ops
+                .iter()
+                .any(|op| matches!(op, AppOp::SetPerformMode(true))),
+            "perform is off → FUNC+KIT must push SetPerformMode(true), got {:?}",
+            app.pending_app_ops
+        );
+    }
+
+    /// P11 C6c: FUNC+YES pushes TempSave; FUNC+NO pushes TempReload.
+    #[test]
+    fn func_yes_and_func_no_push_temp_save_and_reload() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+
+        app.handle_keys(&bus, &[KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)]);
+        assert!(
+            app.pending_app_ops.iter().any(|op| matches!(op, AppOp::TempSave)),
+            "FUNC+YES must push TempSave, got {:?}",
+            app.pending_app_ops
+        );
+
+        app.pending_app_ops.clear();
+        app.handle_keys(&bus, &[KeyEvent::new(KeyCode::Esc, KeyModifiers::SHIFT)]);
+        assert!(
+            app.pending_app_ops.iter().any(|op| matches!(op, AppOp::TempReload)),
+            "FUNC+NO must push TempReload, got {:?}",
+            app.pending_app_ops
+        );
+    }
+
+    /// P11 C6e: TRK+FUNC+trig emits CMD_SET_PATTERN_MUTE (arg0=2) for the
+    /// pressed column's track sequencer.
+    #[test]
+    fn trk_func_trig_emits_pattern_mute_toggle_for_that_track() {
+        let bus = test_bus();
+        let mut app = test_app(
+            1,
+            vec![200, 201],
+            vec![100, 101],
+            vec!["T1".into(), "T2".into()],
+        );
+
+        // 'w' is Trig2 → column 1 → track 1's sequencer (201).
+        app.handle_keys(&bus, &[tab_key(), func_trig('w')]);
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.target_id == 201
+                    && c.type_id == CMD_SET_PATTERN_MUTE
+                    && c.arg0 == 2),
+            "TRK+FUNC+Trig2 must toggle pattern mute on sequencer 201, got {:?}",
+            app.pending
+        );
+    }
+
+    /// P11 C6e: TRK+FUNC+Ctrl+trig emits CMD_PREPARE_PATTERN_MUTE with
+    /// arg0 read from the current `/node/{id}/state/pattern_muted` — 1
+    /// when unmuted, 0 when already muted.
+    #[test]
+    fn trk_func_ctrl_trig_prepares_pattern_mute_from_current_state() {
+        let bus = test_bus();
+        // Unmuted → the prepared direction is ON (arg0 = 1).
+        let mut app = test_app(
+            1,
+            vec![200, 201],
+            vec![100, 101],
+            vec!["T1".into(), "T2".into()],
+        );
+        app.handle_keys(&bus, &[tab_key(), func_fine_trig('w')]);
+        let prepared = app
+            .pending
+            .iter()
+            .find(|c| c.type_id == CMD_PREPARE_PATTERN_MUTE)
+            .expect("TRK+FUNC+Ctrl+trig must emit CMD_PREPARE_PATTERN_MUTE");
+        assert_eq!(prepared.target_id, 201, "must target the column's track");
+        assert_eq!(prepared.arg0, 1, "unmuted → prepared on");
+
+        // Muted → the prepared direction is OFF (arg0 = 0).
+        bus.borrow_mut().write(
+            "/node/201/state/pattern_muted",
+            StateBusValue::Bool(true),
+        );
+        let mut app2 = test_app(
+            1,
+            vec![200, 201],
+            vec![100, 101],
+            vec!["T1".into(), "T2".into()],
+        );
+        app2.handle_keys(&bus, &[tab_key(), func_fine_trig('w')]);
+        let prepared2 = app2
+            .pending
+            .iter()
+            .find(|c| c.type_id == CMD_PREPARE_PATTERN_MUTE)
+            .expect("second press must emit CMD_PREPARE_PATTERN_MUTE");
+        assert_eq!(prepared2.arg0, 0, "muted → prepared off");
+    }
+
+    /// P11 C6 (OQ-T25): a bare NO press while the transport plays queues
+    /// CMD_LIVE_ERASE 1 to the selected track; the kitty release queues 0.
+    #[test]
+    fn live_erase_arms_on_no_press_and_disarms_on_release() {
+        let bus = test_bus();
+        bus.borrow_mut()
+            .write("/transport/playing", StateBusValue::Bool(true));
+        let mut app = test_app(
+            1,
+            vec![200, 201],
+            vec![100, 101],
+            vec!["T1".into(), "T2".into()],
+        );
+        app.held.kitty = true;
+        app.model.active_track = 1; // erase targets the selected track
+
+        // Press: Esc = NO.
+        app.handle_keys(&bus, &[KeyEvent::new_with_kind(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+            KeyEventKind::Press,
+        )]);
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.target_id == 201 && c.type_id == CMD_LIVE_ERASE && c.arg0 == 1),
+            "NO press while playing must arm live erase on the selected \
+             track (201), got {:?}",
+            app.pending
+        );
+
+        // Release: disarms.
+        app.pending.clear();
+        app.handle_keys(&bus, &[KeyEvent::new_with_kind(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        )]);
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.target_id == 201 && c.type_id == CMD_LIVE_ERASE && c.arg0 == 0),
+            "NO release must disarm live erase, got {:?}",
+            app.pending
+        );
+    }
+
+    /// P11 C6 (OQ-T25): live erase does not arm when the transport is
+    /// stopped, and FUNC+NO (temp reload) never arms it either.
+    #[test]
+    fn live_erase_not_armed_when_stopped_or_with_func() {
+        let bus = test_bus();
+        bus.borrow_mut()
+            .write("/transport/playing", StateBusValue::Bool(false));
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+
+        app.handle_keys(&bus, &[esc_key()]);
+        assert!(
+            app.pending.iter().all(|c| c.type_id != CMD_LIVE_ERASE),
+            "stopped transport must not arm live erase, got {:?}",
+            app.pending
+        );
+
+        bus.borrow_mut()
+            .write("/transport/playing", StateBusValue::Bool(true));
+        app.pending.clear();
+        app.handle_keys(&bus, &[KeyEvent::new(KeyCode::Esc, KeyModifiers::SHIFT)]);
+        assert!(
+            app.pending.iter().all(|c| c.type_id != CMD_LIVE_ERASE),
+            "FUNC+NO is the temp-reload chord, not live erase, got {:?}",
+            app.pending
+        );
+        assert!(
+            app.pending_app_ops
+                .iter()
+                .any(|op| matches!(op, AppOp::TempReload)),
+            "FUNC+NO must still push TempReload, got {:?}",
+            app.pending_app_ops
         );
     }
 

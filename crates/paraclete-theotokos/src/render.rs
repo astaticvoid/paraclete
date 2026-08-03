@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 use crate::input::PanelButton;
-use crate::model::{EnvelopeData, RecMode, Screen, SlotBinding, StepState};
+use crate::model::{EnvelopeData, RecMode, Screen, SlotBinding, StepState, KIT_PAGE_SIZE};
 
 const PAGE_SIZE: usize = 8;
 
@@ -170,6 +170,23 @@ pub struct RenderData {
     pub chain_len: usize,
     pub page_loop: (u8, u8),
     pub chain_cursor: usize,
+    /// P11 C6a: KIT screen state — list scroll offset and selected slot.
+    pub kit_scroll: usize,
+    pub kit_cursor: usize,
+    /// P11 C6a: parsed `/context/kits` (`slot, name` pairs, slot order).
+    /// Names-only on the bus in P11 — the encoder-bank preview is a
+    /// documented placeholder.
+    pub kit_list: Vec<(usize, String)>,
+    /// P11 C6a: the kit slot bound to the selected track's active pattern
+    /// (`/context/kit_binding` + `/node/{seq}/state/active_pattern`) — the
+    /// list's `◄ loaded` marker.
+    pub kit_loaded_slot: Option<usize>,
+    /// P11 C6b: perform mode on (`/context/perform` ≥ 0.5) — the status
+    /// bar's `⚡` indicator.
+    pub perform_mode: bool,
+    /// P11 C6e: per-track `/node/{id}/state/pattern_muted` — marks the
+    /// track indicator.
+    pub pattern_muted_states: Vec<bool>,
 }
 
 pub fn render(frame: &mut Frame, data: &RenderData) {
@@ -198,6 +215,7 @@ pub fn render(frame: &mut Frame, data: &RenderData) {
             Screen::Tempo => render_tempo_screen(frame, chunks[1], data),
             Screen::Settings => render_settings_screen(frame, chunks[1], data),
             Screen::Chain => render_chain_screen(frame, chunks[1], data),
+            Screen::Kit => render_kit_screen(frame, chunks[1], data),
         }
     }
     render_track_indicator(frame, chunks[2], data);
@@ -273,6 +291,83 @@ fn render_chain_screen(frame: &mut Frame, area: Rect, data: &RenderData) {
     );
 }
 
+/// P11 C6a: the KIT screen — the scrollable kit list (up to 16 slots
+/// visible from `kit_scroll`), the loaded-kit marker (`◄ loaded` — the
+/// slot bound to the selected track's active pattern), the LOAD/SAVE/
+/// COMMIT/RELD bottom-row buttons (trigs 13-16), and the read-only
+/// encoder-bank preview (row 2) of the selected kit (`kit_cursor`).
+///
+/// The bank shows the selected kit's *name* in all 8 cells, standing in
+/// for its entries: `/context/kits` publishes names only in P11, so entry
+/// (param name + value) data is not on the bus. This is the documented
+/// preview limitation from the C6a commit; empty selected slot = `(empty)`.
+fn render_kit_screen(frame: &mut Frame, area: Rect, data: &RenderData) {
+    let chunks = Layout::vertical([
+        Constraint::Length(1), // encoder-bank preview (row 2)
+        Constraint::Min(0),    // kit list
+        Constraint::Length(1), // [LOAD] [SAVE] [COMMIT] [RELD]
+    ])
+    .split(area);
+
+    let selected_name = data
+        .kit_list
+        .iter()
+        .find(|(slot, _)| *slot == data.kit_cursor)
+        .map(|(_, name)| name.clone());
+    let bank_cells: Vec<String> = (0..8)
+        .map(|_| selected_name.clone().unwrap_or_else(|| "(empty)".to_string()))
+        .collect();
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![Span::styled(
+            format!(" {}", bank_cells.join("  ")),
+            Style::default().fg(Color::DarkGray),
+        )])),
+        chunks[0],
+    );
+
+    let mut lines: Vec<Line> = Vec::with_capacity(KIT_PAGE_SIZE);
+    for n in 0..KIT_PAGE_SIZE {
+        let slot = data.kit_scroll + n;
+        let is_empty = !data.kit_list.iter().any(|(s, _)| *s == slot);
+        let name = data
+            .kit_list
+            .iter()
+            .find(|(s, _)| *s == slot)
+            .map(|(_, name)| name.clone())
+            .unwrap_or_else(|| "(empty)".to_string());
+        let loaded = data.kit_loaded_slot == Some(slot);
+        let is_cursor = data.kit_cursor == slot;
+        let mut text = format!(" {:>2} {name}", slot + 1);
+        if loaded {
+            text.push_str("  ◄ loaded");
+        }
+        let color = if is_cursor {
+            Color::White
+        } else if loaded {
+            Color::Green
+        } else if is_empty {
+            Color::DarkGray
+        } else {
+            Color::Gray
+        };
+        let style = Style::default().fg(color).add_modifier(if is_cursor {
+            Modifier::REVERSED
+        } else {
+            Modifier::empty()
+        });
+        lines.push(Line::from(Span::styled(text, style)));
+    }
+    frame.render_widget(Paragraph::new(lines), chunks[1]);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " [LOAD]   [SAVE]   [COMMIT]   [RELD]",
+            Style::default().fg(Color::White),
+        ))),
+        chunks[2],
+    );
+}
+
 fn screen_name(screen: Screen) -> &'static str {
     match screen {
         Screen::Grid => "GRID",
@@ -280,6 +375,7 @@ fn screen_name(screen: Screen) -> &'static str {
         Screen::Tempo => "TEMPO",
         Screen::Chain => "CHAIN",
         Screen::Settings => "SETTINGS",
+        Screen::Kit => "KIT",
     }
 }
 
@@ -366,6 +462,15 @@ fn legend_chips_for_screen(screen: Screen, enc: bool) -> Vec<LegendChip> {
         ],
         Screen::Settings => vec![
             Dynamic(No, "BACK"),
+            Literal("?", "HELP"),
+            Literal("^C", "QUIT"),
+        ],
+        Screen::Kit => vec![
+            Dynamic(No, "BACK"),
+            Literal("FUNC", "PERF"),
+            Literal("FUNC+trig", "SCROLL"),
+            Literal("trig13-16", "LOAD/SAVE/CMIT/RLD"),
+            Literal(":", "CMD"),
             Literal("?", "HELP"),
             Literal("^C", "QUIT"),
         ],
@@ -527,6 +632,11 @@ fn render_track_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
             let marker = if i == data.active_track { "▸" } else { " " };
             let muted = data.mute_states.get(i).copied().unwrap_or(false);
             let mute_glyph = if muted { "●" } else { "" };
+            // P11 C6e: the per-pattern mute gets its own marker (`◌`) —
+            // distinct from the global bank mute's `●` so the two cannot
+            // be confused.
+            let pattern_muted = data.pattern_muted_states.get(i).copied().unwrap_or(false);
+            let pattern_mute_glyph = if pattern_muted { "◌" } else { "" };
             let color = if i == data.active_track {
                 Color::White
             } else {
@@ -549,9 +659,13 @@ fn render_track_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
                 " ".repeat(chip_would_be.chars().count())
             };
             let text = if narrow {
-                format!("{marker}{chip}{}{mute_glyph}  ", i + 1)
+                format!("{marker}{chip}{}{mute_glyph}{pattern_mute_glyph}  ", i + 1)
             } else {
-                format!("{marker}{chip}{} {}{mute_glyph}  ", i + 1, name)
+                format!(
+                    "{marker}{chip}{} {}{mute_glyph}{pattern_mute_glyph}  ",
+                    i + 1,
+                    name
+                )
             };
             (text, color)
         })
@@ -1072,6 +1186,12 @@ fn render_status_line(frame: &mut Frame, area: Rect, data: &RenderData) {
         },
     ];
 
+    // P11 C6b: perform-mode indicator — `⚡` while `/context/perform` is
+    // on (≥ 0.5). FUNC+KIT toggles it.
+    if data.perform_mode {
+        spans.push(Span::styled("⚡ ", Style::default().fg(Color::Yellow)));
+    }
+
     // TK2.1 C5b: "L:" (Lock), not "F:" (Focus) — the status line is
     // showing the lock target now, not the retired step_focus concept.
     if let Some(sf) = data.lock_target_step {
@@ -1156,7 +1276,7 @@ fn render_status_line(frame: &mut Frame, area: Rect, data: &RenderData) {
         // TK2 C6 builds these screens; until then, no stale slot A/B info
         // next to the "not yet implemented" placeholder (review finding,
         // post-C3 hostile review).
-        Screen::Tempo | Screen::Chain | Screen::Settings => {}
+        Screen::Tempo | Screen::Chain | Screen::Settings | Screen::Kit => {}
     }
 
     let line = Line::from(spans);
@@ -1245,6 +1365,12 @@ impl RenderData {
             chain_len: 0,
             page_loop: (0, 0),
             chain_cursor: 0,
+            kit_scroll: 0,
+            kit_cursor: 0,
+            kit_list: vec![],
+            kit_loaded_slot: None,
+            perform_mode: false,
+            pattern_muted_states: vec![false; track_count],
             help_visible: false,
         }
     }
@@ -1317,6 +1443,12 @@ mod tests {
             chain_len: 0,
             page_loop: (0, 0),
             chain_cursor: 0,
+            kit_scroll: 0,
+            kit_cursor: 0,
+            kit_list: vec![],
+            kit_loaded_slot: None,
+            perform_mode: false,
+            pattern_muted_states: vec![false; 2],
             help_visible: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
@@ -1401,6 +1533,12 @@ mod tests {
             chain_len: 0,
             page_loop: (0, 0),
             chain_cursor: 0,
+            kit_scroll: 0,
+            kit_cursor: 0,
+            kit_list: vec![],
+            kit_loaded_slot: None,
+            perform_mode: false,
+            pattern_muted_states: vec![false; 1],
             help_visible: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
@@ -1563,6 +1701,132 @@ mod tests {
         );
     }
 
+    /// P11 C6e: the track indicator also marks pattern-muted tracks with
+    /// a distinct glyph (`◌`), separate from the global mute's `●`.
+    #[test]
+    fn track_indicator_marks_pattern_muted_tracks() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 2);
+        data.display_names = vec!["Kick".into(), "Snare".into()];
+        data.pattern_muted_states = vec![false, true];
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let indicator_row = find_row(&terminal, 24, 80, "PTN P");
+        let line = buffer_row_text(&terminal, indicator_row, 80);
+        assert!(
+            line.contains("Snare◌"),
+            "a pattern-muted track must carry the pattern-mute marker; got: {line:?}"
+        );
+        assert!(
+            !line.contains("Kick◌"),
+            "an unmuted track must not carry the marker; got: {line:?}"
+        );
+    }
+
+    /// P11 C6b: the status line shows `⚡` while perform mode is on, and
+    /// nothing when it's off.
+    #[test]
+    fn status_line_shows_perform_mode_indicator() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.perform_mode = true;
+        terminal.draw(|f| render(f, &data)).unwrap();
+        let status_row = 23; // fixed last row on the 24-row test terminal
+        let line = buffer_row_text(&terminal, status_row, 80);
+        assert!(
+            line.contains('⚡'),
+            "the status line must show the perform indicator; got: {line:?}"
+        );
+
+        let mut terminal2 = ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24))
+            .unwrap();
+        let data2 = RenderData::for_test(Screen::Grid, 1); // perform_mode = false
+        terminal2.draw(|f| render(f, &data2)).unwrap();
+        let line2 = buffer_row_text(&terminal2, status_row, 80);
+        assert!(
+            !line2.contains('⚡'),
+            "perform mode off must not show the indicator; got: {line2:?}"
+        );
+    }
+
+    /// P11 C6a: the KIT screen renders the parsed kit list with the
+    /// loaded-kit marker, the cursor, and the bottom-row button labels.
+    fn kit_render_data() -> RenderData {
+        let mut data = RenderData::for_test(Screen::Kit, 1);
+        data.kit_list = crate::model::parse_kit_list("0:Kick Basic;1:Snare Tight;2:Hat Crisp");
+        data.kit_loaded_slot = Some(1);
+        data.kit_cursor = 0;
+        data
+    }
+
+    #[test]
+    fn kit_screen_renders_list_loaded_marker_and_buttons() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let data = kit_render_data();
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(text.contains("Kick Basic"), "must list kit 0; got: {text}");
+        assert!(text.contains("Snare Tight"), "must list kit 1; got: {text}");
+        assert!(text.contains("Hat Crisp"), "must list kit 2; got: {text}");
+        assert!(text.contains("(empty)"), "unlisted slots read empty; got: {text}");
+        assert!(
+            text.contains("◄ loaded"),
+            "the slot bound to the active pattern must be marked loaded; got: {text}"
+        );
+        assert!(
+            text.contains("[LOAD]") && text.contains("[SAVE]") && text.contains("[COMMIT]")
+                && text.contains("[RELD]"),
+            "the bottom row must show the four button labels; got: {text}"
+        );
+        // The encoder-bank preview (row 2 per spec — the contextual
+        // window's first row, which is terminal row 1 after the transport
+        // bar) shows the selected kit's name as the names-only placeholder
+        // for its entries.
+        let bank_row = find_row(&terminal, 24, 80, "Kick Basic");
+        assert_eq!(bank_row, 1, "the bank preview must sit on row 2; got: {bank_row}");
+    }
+
+    #[test]
+    fn kit_screen_marks_the_cursor_slot_with_reversed_style() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = kit_render_data();
+        data.kit_cursor = 2;
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        // The cursor row is ` 3 Hat Crisp` in the LIST (the bank preview
+        // row above also spells "Hat Crisp", so match the numbered line).
+        let row = find_row(&terminal, 24, 80, " 3 Hat Crisp");
+        let buf = terminal.backend().buffer();
+        let cell = buf.get(2, row); // the `3` in the slot number prefix
+        assert!(
+            cell.modifier.contains(Modifier::REVERSED),
+            "the cursor slot must render inverted; got {:?} at ({}, {})",
+            cell,
+            2,
+            row
+        );
+    }
+
+    /// P11 C6a: the selected slot's name feeds the read-only encoder-bank
+    /// preview; an empty selected slot renders `(empty)`.
+    #[test]
+    fn kit_screen_empty_selected_slot_bank_shows_empty() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Kit, 1);
+        data.kit_list = crate::model::parse_kit_list("0:Kick Basic");
+        data.kit_cursor = 5; // not in the list → empty
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let bank_row = find_row(&terminal, 24, 80, "(empty)");
+        assert_eq!(bank_row, 1, "an empty selected slot must preview (empty) on row 2");
+    }
+
     /// ADR-044 D2: when the full track list doesn't fit, the indicator
     /// windows around the selected track with `‹`/`›` markers rather than
     /// truncating silently.
@@ -1600,6 +1864,7 @@ mod tests {
             Screen::Tempo,
             Screen::Chain,
             Screen::Settings,
+            Screen::Kit,
         ] {
             let backend = ratatui::backend::TestBackend::new(80, 24);
             let mut terminal = ratatui::Terminal::new(backend).unwrap();
@@ -1629,6 +1894,7 @@ mod tests {
             Screen::Tempo,
             Screen::Chain,
             Screen::Settings,
+            Screen::Kit,
         ] {
             let backend = ratatui::backend::TestBackend::new(80, 24);
             let mut terminal = ratatui::Terminal::new(backend).unwrap();
