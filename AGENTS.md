@@ -355,8 +355,26 @@ cargo run -p test-driver -- <scenario>.yaml --check-baseline    # diff; exit 1 o
 #     perform mode and is suppressed inside it; pattern lengths are
 #     shortened to 2 steps because the default is 64 (~6.9s wraps) and
 #     set_length acts on the active pattern only.
-# All three are mutation-checked (each fails when the code it covers is
+#   p11_mute_tiers          C4: immediate pattern mute (state + audio),
+#     prepared mute DEFER (cued mid-loop after a clock_rewind — the read
+#     at 3.5 is deterministic because the earliest possible wrap is
+#     2.0+1.72s; the loop period P ∈ [1.72, 3.5] derivation is in the
+#     header), wrap application, prepared OFF restores. Mutation-checked
+#     both directions.
+#   p11_live_rec_midi2      C5: midi2_note_on verb injects Keystep-style
+#     note-ons; the recorded steps' UNPROMPTED next-loop replays are the
+#     assertion (silence window proves they aren't the injections' own
+#     tails). live_quantize armed (1/4).
+#   p11_live_erase          C6 (OQ-T25): live_erase verb; the pattern
+#     sounds before the arm (window at 2.8 provably contains the first
+#     post-rewind kick for every r ∈ [0.75, 1.0] — the rewind does NOT
+#     fire step 0, the first kick is step 4's entry at +0.43s) and is
+#     silent after the erase pass completes.
+# All are mutation-checked (each fails when the code it covers is
 # broken) and are part of the Live-test gate for any P11-touching commit.
+# Harness verbs added for P11: set_pattern_mute/prepare_mute/
+# prepare_pattern_mute, clock_rewind (known wrap phase), midi2_note_on
+# (executor event injection), live_erase; Bool `eq` assertions.
 
 # Interactive mode: JSON-lines REPL for live engine interrogation
 cargo run -p test-driver -- --interactive --instrument instrument.yaml
@@ -436,7 +454,8 @@ Pads:     qwertyui/asdfghjk = Trig1-16   bare trig = play + select track (REC of
           Tab(hold)+trig = select track silently   p(hold)+trig = select pattern
 Rec:      z = REC toggles Off↔Grid (step-entry)   z(hold)+x = REC+PLAY → Live (record)
           x/c = PLAY/STOP (Space=PLAY)   Shift+z/x/c = copy/clear/paste lane
-Screens:  1-6 = param pages   7/9 = KIT/SAMPLING (reserved)   8 = Settings   0 = Tempo
+Screens:  1-6 = param pages   7 = KIT (P11 C6a: list, LOAD/SAVE/COMMIT/RELD on
+          trigs 13-16, FUNC+trig scroll, Esc back)   8 = Settings   0 = Tempo
           o = Chain   Esc = NO (also: back to Grid; disarms a held prefix)
           arrows = Tempo ±bpm / Chain cursor (no-op elsewhere)
 Enc/Lock: n = toggle ENC mode (bare trig jogs encoder n; Ctrl = fine, Shift(FUNC) = coarse)
@@ -444,6 +463,13 @@ Enc/Lock: n = toggle ENC mode (bare trig jogs encoder n; Ctrl = fine, Shift(FUNC
           Outside ENC mode: Shift(FUNC)+trig = encoder n up/down, Ctrl+FUNC = fine
           (numpad slot A/B/C jog remains unwired — formally descoped, BUG-038/OQ-T24)
 Other:    Shift+; = : line   ? = help   Backspace = clear locks   Ctrl-C = quit
+          P11 C6: FUNC+Enter = temp save, FUNC+Esc = temp reload (FUNC+NO
+          is TempReload, NOT the lock-target clear — bare Esc keeps it);
+          FUNC+KIT = perform-mode toggle (⚡ on the status line);
+          TRK+FUNC+trig = pattern mute (◌ on the track indicator),
+          TRK+FUNC+Ctrl+trig = prepared (wrap-deferred) pattern mute;
+          hold Esc (NO) on Grid while playing = live erase — each step
+          the playhead passes is cleared (OQ-T25 resolution).
 ```
 
 ```
@@ -804,6 +830,13 @@ Each ~1 ms iteration:
 | 35 | `CMD_CLEAR_STEP_LOCK` | arg0: step, arg1: param_id (f64; −1 = all lanes) |
 | 36 | `CMD_SET_STEP_VELOCITY` | arg0: step, arg1: velocity (0.0–1.0) |
 | 37 | `CMD_SET_STEP_LENGTH` | arg0: step, arg1: length (f32 unit) |
+| 38 | `CMD_TRIG_NOW` | arg0: note (≤ 0 = default), arg1: velocity (live trig; records itself when `live_rec` on) |
+| 39 | `CMD_TEMP_SAVE` | P11 C3: clone active pattern into the pre-allocated shadow |
+| 40 | `CMD_TEMP_RELOAD` | P11 C3: restore shadow into active pattern (one-shot) |
+| 41 | `CMD_SET_PATTERN_MUTE` | P11 C4: arg0 0 = off, 1 = on, 2 = toggle (per-pattern tier) |
+| 42 | `CMD_PREPARE_MUTE` | P11 C4: defer a global-mute change to the next pattern wrap (arg0 0/1) |
+| 43 | `CMD_PREPARE_PATTERN_MUTE` | P11 C4: defer a pattern-mute change to the next wrap (arg0 0/1) |
+| 44 | `CMD_LIVE_ERASE` | P11 C6 (OQ-T25): arg0 0/1 — while armed + playing, each step the playhead reaches is cleared as it passes (does not sound); disarmed on stop |
 
 ## Web client (Theoria)
 

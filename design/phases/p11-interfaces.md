@@ -62,6 +62,22 @@ This is the first application of the trifecta leg 3 (autonomous real-app live
 session). Temp-save/reload chords, the KIT screen and the perform-mode toggle
 have no surface yet (C6) — #184 tracks surface-side AppOp production.
 
+**Implementation note (2026-08-03) — C4–C7 shipped, milestone #17 closed:**
+C4 (mute tiers), C5 (live record + live_quantize), C6 (Theotokos surfaces)
+and C7 (Antiphon/Theoria verbs) all landed; see `design/phases/p11-report.md`.
+OQ-12 (#76) resolved by the `live_quantize` hard-quantize param (C5);
+OQ-T25 (#137) resolved by the hold-NO Elektron-style live erase (C6);
+OQ-T11 (#136) moot (C3 shipped the full engine+app scope); OQ-T29 (#122)
+closed as the #76 duplicate. The live session from C2 was extended
+(2026-08-03, autonomous): KIT screen save/load (kitty `7`/`h`/`g`, `[kit]
+saved kit Kit 1 in slot 0` / `[kit] loading kit 0: Kit 1`), FUNC+KIT →
+`⚡` perform indicator on the status line, FUNC+Enter/Esc → `[temp_save]` /
+`[temp_reload]` log lines, TRK+FUNC+trig → `◌` pattern-mute marker (both
+ways), and hold-Esc (NO) live erase wiping the authored 4-on-the-floor.
+The C7 verbs were additionally probed over the raw WebSocket against the
+running graph (kit_save/temp_save executed in PerformState; `kit_list`
+replied `0:ProbeKit`).
+
 **Design decisions this spec makes where ADR-039 is silent:**
 
 | Decision | Choice | Rationale |
