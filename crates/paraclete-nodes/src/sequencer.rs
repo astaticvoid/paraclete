@@ -1091,8 +1091,12 @@ impl Sequencer {
 
             // When a genuine resync lands at tick 0 (exact start of a step) and
             // the sequencer is playing, fire that step if active — a node that
-            // connects mid-session enters its pattern here.
-            if !in_sync && new_tick == 0 && self.playing && k.flags.playing {
+            // connects mid-session enters its pattern here. P11 C6: a resync
+            // while live erase is armed must not sound the step it lands on
+            // (erase means "clear as the playhead passes", and this fire is
+            // exactly that pass).
+            if !in_sync && new_tick == 0 && self.playing && k.flags.playing && !self.live_erase_armed
+            {
                 let step_active = self.patterns[pat].steps[self.current_step].active;
                 if step_active {
                     let cond = self.patterns[pat].steps[self.current_step]
@@ -6468,6 +6472,39 @@ mod tests {
             !seq.live_erase_armed,
             "a stop must disarm live erase (it is a held gesture)"
         );
+    }
+
+    #[test]
+    fn live_erase_preserves_bug042_suppression() {
+        // Review regression (P11 C6): erase must not disturb the
+        // live_recorded_step / early_fired suppressions — it only flips
+        // active + locks before the fire, and the fire paths take the
+        // suppression flags afterwards. Drive a live trig + an erase arm
+        // in the same window and assert neither suppression path regresses
+        // (the erased step is skipped because active=false, and the
+        // suppression flags still clear normally).
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        seq.patterns[0].steps[1].active = true;
+        seq.patterns[0].steps[1]
+            .param_locks
+            .push(StepParamLock { node_id: 20, param_id: 1, value: 0.5 });
+        let tps = TICKS_PER_BEAT / 4;
+
+        // Arm erase, then drive up to the step-1 boundary.
+        run_seq_with_cmds(&mut seq, &[live_erase_cmd(1)]);
+        for t in 1..=tps {
+            run_seq(&mut seq, &[transport_tick(t, true, false, false, false)]);
+        }
+        // Step 1 was erased (active false, locks gone) and did not fire.
+        assert!(!seq.patterns[0].steps[1].active);
+        assert!(seq.patterns[0].steps[1].param_locks.is_empty());
+        // The suppression flags are cleared/consumed by the boundary path
+        // regardless — nothing hangs over into the next window.
+        assert_eq!(seq.early_fired, None);
+        assert_eq!(seq.live_recorded_step, None);
+        assert!(!seq.live_recorded_pending);
     }
 
     #[test]

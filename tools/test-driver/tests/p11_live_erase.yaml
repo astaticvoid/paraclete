@@ -45,12 +45,15 @@ timeline:
     live_erase: { target: "10", value: 0 }
 
 assert:
-  # Pre-arm: the pattern sounds (the rewind restarted it at 2.0; kicks at
-  # 2.0 + k*0.43 — window [3.6, 5.0] capture [2.7, 3.75] ≈ wall [3.6, 5.0]
-  # contains several).
-  - at: 4.4
+  # Pre-arm: the rewind restarted the pattern at 2.0 (sim 2r, r = audio/
+  # wall ratio ∈ [0.75, 1.0]); the FIRST post-rewind kick fires at sim
+  # 2r+0.107 (step 0's next boundary). The tail window at wall 2.5
+  # (sim [2.5r−0.5, 2.5r]) contains that kick for every r in range
+  # (2r+0.107 ≥ 2.5r−0.5 ⟺ r ≤ 1.21, and 2r+0.107 ≤ 2.5r ⟺ r ≥ 0.214),
+  # and it always sounds BEFORE the arm lands (2r+0.107 < 3r ⟺ r > 0.107).
+  - at: 2.5
     peak_gte: 0.01
-    window_ms: 1200
+    window_ms: 500
   # Post-erase: every step was cleared as the playhead passed it during
   # the first full loop after arming (≤ 2.0+2P ≤ 9.0); from ~9.2 on the
   # pattern is silent (last erased step's tail long gone). The window at
