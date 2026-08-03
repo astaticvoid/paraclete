@@ -20,6 +20,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use paraclete_node_api::app_op::{AppOp, KitId};
 use paraclete_node_api::{NodeCommand, SurfaceEvent, CMD_BUMP_PARAM, CMD_SET_PARAM};
 use tungstenite::{Message, WebSocket};
 
@@ -50,6 +51,10 @@ pub struct SessionInfo {
     pub transport: TransportSummary,
     /// [W2] per-track chain config + node rules for composite view assembly.
     pub view_registry: ViewRegistry,
+    /// [P11 C7] shared latest `/context/kits` bus line (`idx:name;...`),
+    /// written by the main thread's `pump` and read here to answer
+    /// `list_kits` queries.
+    pub kits_line: Arc<Mutex<String>>,
 }
 
 /// Producer ends of the surface node's inbound rings, indexed by client slot.
@@ -104,6 +109,11 @@ pub enum FrameAction {
     /// [W2] Reply with a `view_meta` message. The I/O thread serialises and
     /// sends it directly to the client that requested it.
     ViewMeta(ServerMsg),
+    /// [P11 C7] Forward an app-level op (kit load/save, temp save/reload,
+    /// perform mode, bind) to the main loop's `take_pending_app_ops` drain.
+    AppOp(AppOp),
+    /// [P11 C7] Reply with the `/context/kits` line read at query time.
+    KitList(String),
 }
 
 /// Resolve a semantic-plane message against the cap-doc snapshot in
@@ -175,6 +185,29 @@ pub fn route_frame(msg: ClientMsg, session: &SessionInfo) -> FrameAction {
                 None => FrameAction::Drop("get_view_meta: unknown track"),
             }
         }
+        // P11 C7: the app-op verbs map straight onto `AppOp`s for the main
+        // loop's drain. `bind_kit` with `None` unbinds the slot.
+        ClientMsg::KitLoad { kit_id } => FrameAction::AppOp(AppOp::KitLoad(KitId(kit_id))),
+        ClientMsg::KitSave { name } => FrameAction::AppOp(AppOp::KitSaveAs(name)),
+        ClientMsg::KitCommit {} => FrameAction::AppOp(AppOp::KitCommit),
+        ClientMsg::KitReload {} => FrameAction::AppOp(AppOp::KitReload),
+        ClientMsg::TempSave {} => FrameAction::AppOp(AppOp::TempSave),
+        ClientMsg::TempReload {} => FrameAction::AppOp(AppOp::TempReload),
+        ClientMsg::SetPerformMode { on } => FrameAction::AppOp(AppOp::SetPerformMode(on)),
+        ClientMsg::BindKit { slot, kit_id } => FrameAction::AppOp(AppOp::BindKit {
+            slot,
+            kit: kit_id.map(KitId),
+        }),
+        // A query, not an op: read the shared `/context/kits` line at query
+        // time. A poisoned mutex yields an empty list rather than a wedged
+        // client thread.
+        ClientMsg::ListKits {} => FrameAction::KitList(
+            session
+                .kits_line
+                .lock()
+                .map(|line| line.clone())
+                .unwrap_or_default(),
+        ),
         ref m @ (ClientMsg::SetParam { .. }
         | ClientMsg::BumpParam { .. }
         | ClientMsg::NodeCmd { .. }) => resolve_semantic(m.clone(), session),
@@ -198,6 +231,7 @@ pub fn spawn_listener(
     clients: Arc<Mutex<ClientTable>>,
     pool: ProducerPool,
     cmd_tx: mpsc::Sender<NodeCommand>,
+    app_op_tx: mpsc::Sender<AppOp>,
 ) -> std::io::Result<()> {
     let listener = TcpListener::bind(("0.0.0.0", ws_port))?;
     std::thread::Builder::new()
@@ -209,9 +243,12 @@ pub fn spawn_listener(
                 let clients = Arc::clone(&clients);
                 let pool = Arc::clone(&pool);
                 let cmd_tx = cmd_tx.clone();
+                let app_op_tx = app_op_tx.clone();
                 let _ = std::thread::Builder::new()
                     .name("antiphon-client".into())
-                    .spawn(move || client_session(stream, session, clients, pool, cmd_tx));
+                    .spawn(move || {
+                        client_session(stream, session, clients, pool, cmd_tx, app_op_tx)
+                    });
             }
         })?;
     Ok(())
@@ -267,6 +304,7 @@ fn client_session(
     clients: Arc<Mutex<ClientTable>>,
     pool: ProducerPool,
     cmd_tx: mpsc::Sender<NodeCommand>,
+    app_op_tx: mpsc::Sender<AppOp>,
 ) {
     // Bound the WS upgrade + hello so a stalled connection can't pin the
     // thread forever.
@@ -372,6 +410,17 @@ fn client_session(
                     FrameAction::Command(cmd) => {
                         let _ = cmd_tx.send(cmd);
                     }
+                    // P11 C7: forward the app-op to the main-loop drain;
+                    // drop on a full/disconnected channel rather than wedging
+                    // the client thread.
+                    FrameAction::AppOp(op) => {
+                        let _ = app_op_tx.send(op);
+                    }
+                    FrameAction::KitList(line) => {
+                        if !send_msg(&mut ws, &ServerMsg::KitList { kits: line }) {
+                            return;
+                        }
+                    }
                     FrameAction::ViewMeta(msg) => {
                         if !send_msg(&mut ws, &msg) {
                             return;
@@ -415,6 +464,7 @@ mod tests {
                 node_infos: HashMap::new(),
                 selections: Default::default(),
             },
+            kits_line: Arc::new(Mutex::new(String::new())),
         }
     }
 
@@ -558,7 +608,13 @@ mod tests {
                 playing: false,
                 bpm: 120.0,
             },
-            view_registry: ViewRegistry { rules: HashMap::new(), chains: Vec::new(), node_infos: HashMap::new(), selections: Default::default() },
+            view_registry: ViewRegistry {
+                rules: HashMap::new(),
+                chains: Vec::new(),
+                node_infos: HashMap::new(),
+                selections: Default::default(),
+            },
+            kits_line: Arc::new(Mutex::new(String::new())),
         };
         // A sane per-detent delta passes through unclamped…
         let FrameAction::Command(cmd) = route_frame(
@@ -606,6 +662,76 @@ mod tests {
             FrameAction::Drop("control id out of range")
         ));
     }
+
+    /// P11 C7: each app-op verb maps to the right `AppOp` (variant + payload),
+    /// and `list_kits` reads the shared `/context/kits` line at query time.
+    #[test]
+    fn route_frame_maps_app_op_verbs() {
+        let session = empty_session();
+        let kits_line = Arc::clone(&session.kits_line);
+        *kits_line.lock().unwrap() = "0:Kick Basic;3:Snare Tight".to_string();
+
+        let cases = [
+            (ClientMsg::KitLoad { kit_id: 7 }, AppOp::KitLoad(KitId(7))),
+            (
+                ClientMsg::KitSave {
+                    name: "New Kit".into(),
+                },
+                AppOp::KitSaveAs("New Kit".into()),
+            ),
+            (ClientMsg::KitCommit {}, AppOp::KitCommit),
+            (ClientMsg::KitReload {}, AppOp::KitReload),
+            (ClientMsg::TempSave {}, AppOp::TempSave),
+            (ClientMsg::TempReload {}, AppOp::TempReload),
+            (
+                ClientMsg::SetPerformMode { on: true },
+                AppOp::SetPerformMode(true),
+            ),
+            (
+                ClientMsg::SetPerformMode { on: false },
+                AppOp::SetPerformMode(false),
+            ),
+            (
+                ClientMsg::BindKit {
+                    slot: 2,
+                    kit_id: Some(7),
+                },
+                AppOp::BindKit {
+                    slot: 2,
+                    kit: Some(KitId(7)),
+                },
+            ),
+            (
+                ClientMsg::BindKit {
+                    slot: 3,
+                    kit_id: None,
+                },
+                AppOp::BindKit { slot: 3, kit: None },
+            ),
+        ];
+        for (msg, expected) in cases {
+            let FrameAction::AppOp(got) = route_frame(msg.clone(), &session) else {
+                panic!("expected AppOp, got something else");
+            };
+            assert_eq!(
+                format!("{got:?}"),
+                format!("{expected:?}"),
+                "verb {msg:?} must map onto {expected:?}"
+            );
+        }
+
+        // list_kits is a query: it must carry the current shared line, and
+        // changing the line changes the reply.
+        let FrameAction::KitList(line) = route_frame(ClientMsg::ListKits {}, &session) else {
+            panic!("expected KitList");
+        };
+        assert_eq!(line, "0:Kick Basic;3:Snare Tight");
+        *kits_line.lock().unwrap() = "1:Only".to_string();
+        let FrameAction::KitList(line) = route_frame(ClientMsg::ListKits {}, &session) else {
+            panic!("expected KitList");
+        };
+        assert_eq!(line, "1:Only", "list_kits reads the line at query time");
+    }
 }
 
 #[cfg(test)]
@@ -640,6 +766,7 @@ mod semantic_tests {
                 node_infos: HashMap::new(),
                 selections: Default::default(),
             },
+            kits_line: Arc::new(Mutex::new(String::new())),
         }
     }
 

@@ -359,7 +359,10 @@ mod tests {
         );
 
         let src = pages.iter().find(|p| p.id == "SRC").unwrap();
-        assert_eq!(src.params[0].stepped, None, "a continuous param sends no flag");
+        assert_eq!(
+            src.params[0].stepped, None,
+            "a continuous param sends no flag"
+        );
         assert!(src.params[0].options.is_none());
     }
 

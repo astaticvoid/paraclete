@@ -3,6 +3,8 @@
 // TRIG · SRC · FLTR · AMP · FX · MOD — the Elektron page keys.
 // Each button lights when that page has content in the active track's
 // view_meta; the active page is highlighted. Empty pages are dimmed.
+// KIT is a fixed tab like GRID/CHAIN (not a view_meta page): the P11 C7
+// kit list, load/save/commit/reload, and pattern bindings.
 
 import type { ViewMetaPage } from "@paraclete/core";
 
@@ -21,9 +23,10 @@ const PAGE_LABELS: Record<string, string> = {
   MOD: "MOD",
   GRID: "GRID",
   CHAIN: "CHAIN",
+  KIT: "KIT",
 };
 
-const PAGE_ORDER = ["GRID", "TRIG", "SRC", "FLTR", "AMP", "FX", "MOD", "CHAIN"];
+const PAGE_ORDER = ["GRID", "TRIG", "SRC", "FLTR", "AMP", "FX", "MOD", "CHAIN", "KIT"];
 
 export function PageNav({ pages, activePage, onSelect }: PageNavProps) {
   const pageIds = new Set(pages.map((p) => p.id));
@@ -36,7 +39,7 @@ export function PageNav({ pages, activePage, onSelect }: PageNavProps) {
   return (
     <div class="page-nav">
       {PAGE_ORDER.map((id) => {
-        const hasContent = pageIds.has(id) || id === "GRID" || id === "CHAIN";
+        const hasContent = pageIds.has(id) || id === "GRID" || id === "CHAIN" || id === "KIT";
         const label = PAGE_LABELS[id] ?? id;
         return (
           <button

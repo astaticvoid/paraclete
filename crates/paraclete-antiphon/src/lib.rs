@@ -24,8 +24,12 @@ use std::sync::{Arc, Mutex};
 
 use http::StaticSource;
 use kerygma::{ClientTable, Kerygma, MAX_CLIENTS};
+use paraclete_node_api::app_op::AppOp;
 use paraclete_node_api::{NodeCommand, StateBusHandle, StateBusValue};
-use protocol::{ContextSlot, NodeSummary, ServerMsg, StateUpdate, TransportSummary};
+use protocol::{
+    ContextPathSlot, ContextPathValue, ContextSlot, ContextSlotLike, NodeSummary, ServerMsg,
+    StateUpdate, TransportSummary,
+};
 use server::SessionInfo;
 use surface::TheoriaSurfaceNode;
 
@@ -87,6 +91,16 @@ pub struct AntiphonHandle {
     /// consumer (the main loop) — `std::sync::mpsc`, not `rtrb`; this is off
     /// the audio thread so its allocation is fine.
     cmd_rx: mpsc::Receiver<NodeCommand>,
+    /// Receiving end of the app-op channel: client I/O threads forward
+    /// `AppOp`s produced by protocol verb dispatch (P11 C7) and the main
+    /// loop drains them once per tick via `take_pending_app_ops`. One
+    /// consumer (the main loop), many producers (the client threads) — the
+    /// same `std::sync::mpsc` pattern as `cmd_rx`.
+    app_op_rx: mpsc::Receiver<AppOp>,
+    /// Latest `/context/kits` bus line (`idx:name;idx:name;...`, empty
+    /// slots omitted). `pump` is the only writer; client I/O threads read it
+    /// to answer `list_kits` queries. Shared with `SessionInfo` (same Arc).
+    kits_line: Arc<Mutex<String>>,
     /// State-bus paths that carry a machine selection, from
     /// `ViewRegistry::machine_select_paths()`.
     ///
@@ -115,11 +129,12 @@ impl AntiphonHandle {
         self.cmd_rx.try_iter()
     }
 
-    /// P11 C1: drain app-level ops (kit load/save, temp save/reload, etc.)
-    /// produced by WebSocket verb dispatch.  Stub in C1 — returns empty
-    /// until C7 wires the protocol verbs.
-    pub fn take_pending_app_ops(&self) -> Vec<paraclete_node_api::app_op::AppOp> {
-        Vec::new()
+    /// P11 C7: drain app-level ops (kit load/save, temp save/reload, perform
+    /// mode, bind) produced by WebSocket verb dispatch since the last call.
+    /// Main-thread only; call once per main-loop iteration and forward each
+    /// to the `PerformState`.
+    pub fn take_pending_app_ops(&self) -> Vec<AppOp> {
+        self.app_op_rx.try_iter().collect()
     }
 
     /// Diff the state bus against the shadow, coalesce changes, and flush a
@@ -136,6 +151,16 @@ impl AntiphonHandle {
                 if changed {
                     self.context_shadow.insert(path.to_string(), value.clone());
                     self.context_dirty = true;
+                    // P11 C7: keep the shared `/context/kits` line fresh so
+                    // `list_kits` queries answered on I/O threads see the
+                    // current list (raw Text, exactly as published).
+                    if path == "/context/kits" {
+                        if let StateBusValue::Text(line) = value {
+                            if let Ok(mut kits_line) = self.kits_line.lock() {
+                                *kits_line = line.clone();
+                            }
+                        }
+                    }
                 }
                 continue;
             }
@@ -249,7 +274,7 @@ impl AntiphonHandle {
                 .state_shadow
                 .iter()
                 .map(|(path, v)| StateUpdate {
-                    path: path.clone(),
+                    path: path.to_string(),
                     v: *v,
                 })
                 .collect();
@@ -312,7 +337,7 @@ fn build_context_frame(bus: &StateBusHandle) -> Option<String> {
         }
     }
 
-    let mut slots: Vec<ContextSlot> = halves
+    let mut slots: Vec<ContextSlotLike> = halves
         .into_iter()
         .filter_map(|(key, (node, param))| {
             let node = node?;
@@ -323,14 +348,40 @@ fn build_context_frame(bus: &StateBusHandle) -> Option<String> {
             // one profile-encoder-key-per-slot convention; it may need a
             // defined map once the web encoder row binds ids 90-97.
             let enc = trailing_int(key)?;
-            Some(ContextSlot {
+            Some(ContextSlotLike::Encoder(ContextSlot {
                 enc,
                 node: node as u32,
                 param: param.to_string(),
-            })
+            }))
         })
         .collect();
-    slots.sort_by_key(|s| s.enc);
+    slots.sort_by_key(|s| match s {
+        ContextSlotLike::Encoder(e) => e.enc,
+        ContextSlotLike::Path(_) => u32::MAX,
+    });
+
+    // P11 C7: append the raw non-encoder `/context/*` paths (the KIT
+    // screen's data sources) as `{path, value}` slots so Theoria reads
+    // kits/binding/perform from the same snapshot as everything else.
+    for (path, value) in bus.iter() {
+        if !path.starts_with("/context/") {
+            continue;
+        }
+        let rest = &path["/context/".len()..];
+        if rest.ends_with("/node") || rest.ends_with("/param") {
+            continue; // encoder halves, handled above
+        }
+        let value = match value {
+            StateBusValue::Text(s) => ContextPathValue::Text(s.clone()),
+            StateBusValue::Float(f) => ContextPathValue::Num(*f),
+            StateBusValue::Int(i) => ContextPathValue::Num(*i as f64),
+            StateBusValue::Bool(b) => ContextPathValue::Num(*b as u8 as f64),
+        };
+        slots.push(ContextSlotLike::Path(ContextPathSlot {
+            path: path.to_string(),
+            value,
+        }));
+    }
 
     serde_json::to_string(&ServerMsg::Context { slots }).ok()
 }
@@ -367,6 +418,9 @@ impl AntiphonServer {
         debug_assert_eq!(producers.len(), MAX_CLIENTS);
         let pool: server::ProducerPool =
             Arc::new(Mutex::new(producers.into_iter().map(Some).collect()));
+        // P11 C7: the shared `/context/kits` line. `pump` writes it on the
+        // main thread; client I/O threads read it to answer `list_kits`.
+        let kits_line: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
 
         let session = Arc::new(SessionInfo {
             token: config.token.clone(),
@@ -374,9 +428,18 @@ impl AntiphonServer {
             nodes,
             transport,
             view_registry,
+            kits_line: Arc::clone(&kits_line),
         });
         let (cmd_tx, cmd_rx) = mpsc::channel::<NodeCommand>();
-        server::spawn_listener(config.port + 1, session, Arc::clone(&clients), pool, cmd_tx)?;
+        let (app_op_tx, app_op_rx) = mpsc::channel::<AppOp>();
+        server::spawn_listener(
+            config.port + 1,
+            session,
+            Arc::clone(&clients),
+            pool,
+            cmd_tx,
+            app_op_tx,
+        )?;
         if let Some(dir) = config.static_dir {
             http::spawn_http(dir, config.port)?;
         }
@@ -400,6 +463,8 @@ impl AntiphonServer {
                 last_flush_ms: None,
                 context_dirty: false,
                 cmd_rx,
+                app_op_rx,
+                kits_line,
                 machine_select_paths,
                 selections,
             },
@@ -530,6 +595,7 @@ mod pump_tests {
         let mut table = ClientTable::new();
         table.allocate(tx).expect("one slot");
         let (_cmd_tx, cmd_rx) = mpsc::channel();
+        let (_app_op_tx, app_op_rx) = mpsc::channel();
         let handle = AntiphonHandle {
             url: String::new(),
             clients: Arc::new(Mutex::new(table)),
@@ -539,6 +605,8 @@ mod pump_tests {
             last_flush_ms: None,
             context_dirty: false,
             cmd_rx,
+            app_op_rx,
+            kits_line: Arc::new(Mutex::new(String::new())),
             machine_select_paths,
             selections: Default::default(),
         };
@@ -805,6 +873,12 @@ mod pump_tests {
             "/context/encoder_3/param",
             StateBusValue::Text("decay".into()),
         );
+        // P11 C7: non-encoder context paths ride along as raw path slots.
+        bus.write(
+            "/context/kits",
+            StateBusValue::Text("0:Kick Basic;3:Snare".into()),
+        );
+        bus.write("/context/perform", StateBusValue::Float(1.0));
         h.pump(&bus, 0);
         let msgs = drain(&rx);
         let ctx = msgs
@@ -814,23 +888,39 @@ mod pump_tests {
                 _ => None,
             })
             .expect("a context frame");
-        assert_eq!(ctx.len(), 2, "two resolved slots, got {ctx:?}");
+        assert_eq!(ctx.len(), 4, "two encoder + two path slots, got {ctx:?}");
         assert_eq!(
             ctx[0],
-            protocol::ContextSlot {
+            protocol::ContextSlotLike::Encoder(protocol::ContextSlot {
                 enc: 0,
                 node: 20,
                 param: "cutoff".into()
-            }
+            })
         );
         assert_eq!(
             ctx[1],
-            protocol::ContextSlot {
+            protocol::ContextSlotLike::Encoder(protocol::ContextSlot {
                 enc: 3,
                 node: 21,
                 param: "decay".into()
-            }
+            })
         );
+        // P11 C7 path slots ride along (bus iteration order is not
+        // insertion order — find them by path, not index).
+        let path_slot = |path: &str| {
+            ctx.iter().find_map(|s| match s {
+                protocol::ContextSlotLike::Path(p) if p.path == path => Some(&p.value),
+                _ => None,
+            })
+        };
+        assert!(matches!(
+            path_slot("/context/kits"),
+            Some(protocol::ContextPathValue::Text(s)) if s == "0:Kick Basic;3:Snare"
+        ));
+        assert!(matches!(
+            path_slot("/context/perform"),
+            Some(protocol::ContextPathValue::Num(v)) if *v == 1.0
+        ));
     }
 
     #[test]
@@ -862,6 +952,33 @@ mod pump_tests {
             "context change from the non-due pump must still be flushed"
         );
     }
+
+    /// P11 C7: `pump` mirrors `/context/kits` into the shared line the I/O
+    /// threads read to answer `list_kits` — the latest published value wins,
+    /// and only a change rewrites it.
+    #[test]
+    fn pump_keeps_the_kits_line_fresh() {
+        let (mut h, _rx) = test_handle();
+        let mut bus = StateBusHandle::new();
+        bus.write("/context/kits", StateBusValue::Text("0:Kick Basic".into()));
+        h.pump(&bus, 0);
+        assert_eq!(
+            &*h.kits_line.lock().unwrap(),
+            "0:Kick Basic",
+            "first publication lands in the shared line"
+        );
+
+        bus.write(
+            "/context/kits",
+            StateBusValue::Text("0:Kick Basic;3:Snare".into()),
+        );
+        h.pump(&bus, 40);
+        assert_eq!(
+            &*h.kits_line.lock().unwrap(),
+            "0:Kick Basic;3:Snare",
+            "a later change is picked up"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -887,6 +1004,8 @@ mod semantic_channel_tests {
             last_flush_ms: None,
             context_dirty: false,
             cmd_rx,
+            app_op_rx: mpsc::channel().1,
+            kits_line: Arc::new(Mutex::new(String::new())),
             machine_select_paths: HashMap::new(),
             selections: Default::default(),
         };
@@ -912,5 +1031,58 @@ mod semantic_channel_tests {
         assert_eq!(drained[0].arg0, 123);
         assert_eq!(drained[1].target_id, 21);
         assert_eq!(drained[1].arg0, 5);
+    }
+
+    /// P11 C7: the same wiring for the app-op channel — client I/O threads
+    /// forward protocol-verb `AppOp`s into the channel the handle owns the
+    /// receiving end of; `take_pending_app_ops` drains them in order.
+    #[test]
+    fn take_pending_app_ops_returns_forwarded_ops_in_order() {
+        let (app_op_tx, app_op_rx) = mpsc::channel::<AppOp>();
+        let mut table = ClientTable::new();
+        let (out_tx, _out_rx) = mpsc::channel();
+        table.allocate(out_tx).expect("one slot");
+        let handle = AntiphonHandle {
+            url: String::new(),
+            clients: Arc::new(Mutex::new(table)),
+            state_shadow: HashMap::new(),
+            pending: HashMap::new(),
+            context_shadow: HashMap::new(),
+            last_flush_ms: None,
+            context_dirty: false,
+            cmd_rx: mpsc::channel().1,
+            app_op_rx,
+            kits_line: Arc::new(Mutex::new(String::new())),
+            machine_select_paths: HashMap::new(),
+            selections: Default::default(),
+        };
+
+        app_op_tx.send(AppOp::TempSave).unwrap();
+        app_op_tx
+            .send(AppOp::KitLoad(paraclete_node_api::app_op::KitId(3)))
+            .unwrap();
+        app_op_tx
+            .send(AppOp::BindKit {
+                slot: 2,
+                kit: Some(paraclete_node_api::app_op::KitId(7)),
+            })
+            .unwrap();
+
+        let drained = handle.take_pending_app_ops();
+        assert_eq!(drained.len(), 3, "all forwarded ops, in order");
+        assert!(matches!(drained[0], AppOp::TempSave));
+        assert!(matches!(
+            drained[1],
+            AppOp::KitLoad(paraclete_node_api::app_op::KitId(3))
+        ));
+        assert!(matches!(
+            drained[2],
+            AppOp::BindKit { slot: 2, .. } if matches!(drained[2], AppOp::BindKit { kit: Some(paraclete_node_api::app_op::KitId(7)), .. })
+        ));
+
+        assert!(
+            handle.take_pending_app_ops().is_empty(),
+            "a second drain returns nothing new"
+        );
     }
 }

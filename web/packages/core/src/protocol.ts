@@ -81,6 +81,56 @@ export interface NodeCmdMsg {
   a1: number;
 }
 
+// ── P11 C7: kit app-op verbs ───────────────────────────────────────────────
+
+/** Load a kit from the store. `kit_id` is a 0-based kit-store slot index. */
+export interface KitLoadMsg {
+  t: "kit_load";
+  kit_id: number;
+}
+
+/** Capture the current param state as a new kit with this name. */
+export interface KitSaveMsg {
+  t: "kit_save";
+  name: string;
+}
+
+/** Capture into the kit bound to the selected track's pattern slot. */
+export interface KitCommitMsg {
+  t: "kit_commit";
+}
+
+/** Re-apply the kit bound to the selected track's pattern slot. */
+export interface KitReloadMsg {
+  t: "kit_reload";
+}
+
+export interface TempSaveMsg {
+  t: "temp_save";
+}
+
+export interface TempReloadMsg {
+  t: "temp_reload";
+}
+
+/** `on: true` = perform mode (pattern switches skip bound-kit apply). */
+export interface SetPerformModeMsg {
+  t: "set_perform_mode";
+  on: boolean;
+}
+
+/** Bind (or, with `kit_id: null`, unbind) a kit to a pattern slot. */
+export interface BindKitMsg {
+  t: "bind_kit";
+  slot: number;
+  kit_id: number | null;
+}
+
+/** Query the current kit list; the server replies with `KitListMsg`. */
+export interface ListKitsMsg {
+  t: "list_kits";
+}
+
 export type ClientMsg =
   | HelloMsg
   | PadDownMsg
@@ -92,7 +142,16 @@ export type ClientMsg =
   | SetParamMsg
   | BumpParamMsg
   | NodeCmdMsg
-  | GetViewMetaMsg;
+  | GetViewMetaMsg
+  | KitLoadMsg
+  | KitSaveMsg
+  | KitCommitMsg
+  | KitReloadMsg
+  | TempSaveMsg
+  | TempReloadMsg
+  | SetPerformModeMsg
+  | BindKitMsg
+  | ListKitsMsg;
 
 // ── Server → client ─────────────────────────────────────────────────────────
 
@@ -139,6 +198,19 @@ export interface ContextSlot {
   param: string;
 }
 
+/** [P11 C7] a `/context/*` value riding the same `context` snapshot as the
+ * encoder slots: `/context/kits` and `/context/kit_binding` are Text,
+ * `/context/perform` is Float. The server publishes a full snapshot on any
+ * change, so clients read these exactly like encoder slots — one accessor,
+ * no extra plumbing. */
+export interface ContextPathSlot {
+  path: string;
+  value: string | number;
+}
+
+/** One element of a `context` snapshot. */
+export type ContextSlotLike = ContextSlot | ContextPathSlot;
+
 export interface WelcomeMsg {
   t: "welcome";
   protocol: number;
@@ -173,7 +245,7 @@ export interface StateMsg {
 /** [W1] full 8-slot snapshot each time any slot changes. */
 export interface ContextMsg {
   t: "context";
-  slots: ContextSlot[];
+  slots: ContextSlotLike[];
 }
 
 /** [W1] same shape as `welcome.nodes`, sent after a topology patch. */
@@ -190,7 +262,15 @@ export type ServerMsg =
   | StateMsg
   | ContextMsg
   | TopologyMsg
-  | ViewMetaMsg;
+  | ViewMetaMsg
+  | KitListMsg;
+
+/** [P11 C7] reply to `list_kits`: the raw `/context/kits` bus line
+ * (`idx:name;idx:name;...`, empty slots omitted), read at query time. */
+export interface KitListMsg {
+  t: "kit_list";
+  kits: string;
+}
 
 // ── W2: view_meta types ────────────────────────────────────────────────────
 

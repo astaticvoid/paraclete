@@ -23,6 +23,7 @@ import { TrackSelect } from "./views/TrackSelect";
 import { PageNav } from "./views/PageNav";
 import { ParamPage } from "./views/ParamPage";
 import { ChainView } from "./views/ChainView";
+import { KitsView } from "./views/KitsView";
 import { tracksFromNodes } from "./profileLink";
 
 const TOKEN_STORAGE_KEY = "antiphon-token";
@@ -142,6 +143,8 @@ export function App() {
               pageIds={pages.map((p) => p.id)}
               onNavigate={handlePageSelect}
             />
+          ) : activePage === "KIT" ? (
+            <KitsView connection={connection} contextStore={contextStore} bus={bus} />
           ) : currentPage ? (
             <ParamPage
               connection={connection}

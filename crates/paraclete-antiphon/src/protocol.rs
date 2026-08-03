@@ -70,6 +70,28 @@ pub enum ClientMsg {
         track_id: u32,
         nonce: Option<String>,
     },
+    /// [P11 C7] app-op verbs. `kit_id` is a 0-based kit-slot index.
+    KitLoad {
+        kit_id: u8,
+    },
+    KitSave {
+        name: String,
+    },
+    KitCommit {},
+    KitReload {},
+    TempSave {},
+    TempReload {},
+    SetPerformMode {
+        on: bool,
+    },
+    /// `None` = unbind the slot.
+    BindKit {
+        slot: usize,
+        kit_id: Option<u8>,
+    },
+    /// [P11 C7] kit-list query (not an app-op); the server replies with
+    /// `ServerMsg::KitList`, read at query time.
+    ListKits {},
 }
 
 // ── Server → client ───────────────────────────────────────────────────────────
@@ -101,7 +123,7 @@ pub enum ServerMsg {
     },
     /// [W1]
     Context {
-        slots: Vec<ContextSlot>,
+        slots: Vec<ContextSlotLike>,
     },
     /// [W1] same shape as `welcome.nodes`, sent after apply_patch.
     Topology {
@@ -132,6 +154,11 @@ pub enum ServerMsg {
         /// `AnalogEngine` or `FmEngine`.
         #[serde(skip_serializing_if = "Vec::is_empty", default)]
         variants: Vec<ViewMetaVariantSet>,
+    },
+    /// [P11 C7] reply to `list_kits`: the `/context/kits` bus line
+    /// (`idx:name;idx:name;...`, empty slots omitted), read at query time.
+    KitList {
+        kits: String,
     },
 }
 
@@ -187,6 +214,35 @@ pub struct ContextSlot {
     pub enc: u32,
     pub node: u32,
     pub param: String,
+}
+
+/// P11 C7: a raw `/context/*` path value in the `context` snapshot — the
+/// web KIT tab's source for `/context/kits`, `/context/kit_binding` and
+/// `/context/perform` (the encoder slots above carry only encoder
+/// bindings; these carry the perform-state text/number values). Untagged
+/// so the wire value is the bare JSON scalar the client already types as
+/// `string | number`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ContextPathValue {
+    Text(String),
+    Num(f64),
+}
+
+/// One element of a `context` snapshot: either an encoder slot (legacy
+/// shape) or a raw path slot (P11 C7). Untagged so existing clients keep
+/// parsing the encoder slots unchanged.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ContextSlotLike {
+    Encoder(ContextSlot),
+    Path(ContextPathSlot),
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ContextPathSlot {
+    pub path: String,
+    pub value: ContextPathValue,
 }
 
 // ── W2: view_meta types ──────────────────────────────────────────────────────
@@ -392,6 +448,24 @@ mod tests {
                 track_id: 0,
                 nonce: Some("req-1".into()),
             },
+            ClientMsg::KitLoad { kit_id: 7 },
+            ClientMsg::KitSave {
+                name: "Kick Basic".into(),
+            },
+            ClientMsg::KitCommit {},
+            ClientMsg::KitReload {},
+            ClientMsg::TempSave {},
+            ClientMsg::TempReload {},
+            ClientMsg::SetPerformMode { on: true },
+            ClientMsg::BindKit {
+                slot: 2,
+                kit_id: Some(7),
+            },
+            ClientMsg::BindKit {
+                slot: 3,
+                kit_id: None,
+            },
+            ClientMsg::ListKits {},
         ];
         for m in &msgs {
             round_trip_client(m);
@@ -409,6 +483,41 @@ mod tests {
         assert!(serde_json::to_string(&msgs[9])
             .unwrap()
             .contains(r#""t":"node_cmd""#));
+        // P11 C7 wire tags + payloads.
+        for (raw, tag) in [
+            (r#"{"t":"kit_load","kit_id":7}"#, "kit_load"),
+            (r#"{"t":"kit_save","name":"Kick"}"#, "kit_save"),
+            (r#"{"t":"kit_commit"}"#, "kit_commit"),
+            (r#"{"t":"kit_reload"}"#, "kit_reload"),
+            (r#"{"t":"temp_save"}"#, "temp_save"),
+            (r#"{"t":"temp_reload"}"#, "temp_reload"),
+            (r#"{"t":"set_perform_mode","on":true}"#, "set_perform_mode"),
+            (r#"{"t":"bind_kit","slot":2,"kit_id":7}"#, "bind_kit"),
+            (r#"{"t":"bind_kit","slot":3,"kit_id":null}"#, "bind_kit"),
+            (r#"{"t":"list_kits"}"#, "list_kits"),
+        ] {
+            let msg: ClientMsg = serde_json::from_str(raw).expect("new variant must parse");
+            let serialized = serde_json::to_string(&msg).expect("serialize");
+            assert!(
+                serialized.contains(&format!(r#""t":"{tag}""#)),
+                "wire tag mismatch for {raw} -> {serialized}"
+            );
+            assert_eq!(
+                serde_json::to_string(&msg).unwrap(),
+                raw,
+                "exact wire shape must match the spec for {raw}"
+            );
+        }
+        assert!(
+            matches!(
+                serde_json::from_str::<ClientMsg>(r#"{"t":"bind_kit","slot":0}"#),
+                Ok(ClientMsg::BindKit {
+                    slot: 0,
+                    kit_id: None
+                })
+            ),
+            "missing kit_id deserializes as None (Option default)"
+        );
     }
 
     #[test]
@@ -452,11 +561,11 @@ mod tests {
                 }],
             },
             ServerMsg::Context {
-                slots: vec![ContextSlot {
+                slots: vec![ContextSlotLike::Encoder(ContextSlot {
                     enc: 90,
                     node: 20,
                     param: "cutoff".into(),
-                }],
+                })],
             },
             ServerMsg::Topology { nodes: vec![] },
             ServerMsg::ViewMeta {
@@ -533,6 +642,9 @@ mod tests {
                     }],
                 }],
             },
+            ServerMsg::KitList {
+                kits: "0:Kick Basic;3:Snare".into(),
+            },
         ];
         for m in &msgs {
             round_trip_server(m);
@@ -543,6 +655,18 @@ mod tests {
         assert!(serde_json::to_string(&msgs[1])
             .unwrap()
             .contains(r#""t":"led""#));
+        // P11 C7: kit_list wire shape.
+        let raw = r#"{"t":"kit_list","kits":"0:Kick Basic;3:Snare"}"#;
+        let msg: ServerMsg = serde_json::from_str(raw).expect("kit_list must parse");
+        assert_eq!(
+            serde_json::to_string(&msg).unwrap(),
+            raw,
+            "exact wire shape must match the spec"
+        );
+        assert!(matches!(
+            msg,
+            ServerMsg::KitList { kits } if kits == "0:Kick Basic;3:Snare"
+        ));
     }
 
     #[test]
