@@ -1,0 +1,61 @@
+# P11 C6 live test: live erase (OQ-T25 resolution) — the engine side of
+# the hold-NO gesture. While the sequencer's live-erase is armed and the
+# transport plays, each step the playhead reaches is cleared as it passes
+# (and does not sound).
+#
+# A 4-on-the-floor is authored on sequencer 10, then `live_erase: 1` is
+# sent at a KNOWN phase (clock_rewind at 2.0 → wraps at 2.0+k*P, P ∈
+# [1.72, 3.5] — see p11_mute_tiers.yaml for the full phase-lock
+# rationale). Arming mid-loop means the playhead passes all four steps
+# within the next loop (≤ 2.0+P+1.714 capture... wall: within 2.0+2P ≤
+# 9.0), after which nothing may sound: the audible proof is silence from
+# the first full erase pass onward.
+#
+# The precise per-step clearing (active + locks, no sound at the erased
+# boundary, stop-disarm) is unit-tested (live_erase_clears_steps_as_
+# playhead_passes etc.); the harness proves the command plumbing and the
+# audio consequence in a live graph.
+format_version: 1
+instrument: instrument.yaml
+duration_secs: 10.6
+output: /tmp/p11_live_erase.wav
+play: false
+
+timeline:
+  - at: 0.01
+    set_param: { target: "analog_engine:kick", param: decay, value: 0.1 }
+  # 4-on-the-floor.
+  - at: 0.05
+    set_step: { target: "10", step: 0, note: 36 }
+  - at: 0.06
+    set_step: { target: "10", step: 4, note: 36 }
+  - at: 0.07
+    set_step: { target: "10", step: 8, note: 36 }
+  - at: 0.08
+    set_step: { target: "10", step: 12, note: 36 }
+  # Known phase: playhead at step 0 from the rewind.
+  - at: 2.0
+    clock_rewind: { target: "internal_clock" }
+  # Arm live erase mid-loop (≥0.7s from any wrap for P ∈ [1.72, 3.5]).
+  - at: 3.0
+    live_erase: { target: "10", value: 1 }
+  # Disarm after the first full erase pass would have completed
+  # (≤ 2.0+2P ≤ 9.0).
+  - at: 9.4
+    live_erase: { target: "10", value: 0 }
+
+assert:
+  # Pre-arm: the pattern sounds (the rewind restarted it at 2.0; kicks at
+  # 2.0 + k*0.43 — window [3.6, 5.0] capture [2.7, 3.75] ≈ wall [3.6, 5.0]
+  # contains several).
+  - at: 4.4
+    peak_gte: 0.01
+    window_ms: 1200
+  # Post-erase: every step was cleared as the playhead passed it during
+  # the first full loop after arming (≤ 2.0+2P ≤ 9.0); from ~9.2 on the
+  # pattern is silent (last erased step's tail long gone). The window at
+  # 10.2 (capture [7.65, 8.1] ≈ wall [9.2, 10.2]) is after the erase
+  # completed for every P in range.
+  - at: 10.2
+    peak_lt: 0.01
+    window_ms: 600

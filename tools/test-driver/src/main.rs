@@ -52,6 +52,7 @@ const CMD_SET_PATTERN_MUTE: u32 = paraclete_node_api::command::CMD_SET_PATTERN_M
 const CMD_PREPARE_MUTE: u32 = paraclete_node_api::command::CMD_PREPARE_MUTE as u32;
 const CMD_PREPARE_PATTERN_MUTE: u32 = paraclete_node_api::command::CMD_PREPARE_PATTERN_MUTE as u32;
 const CMD_CLOCK_REWIND: u32 = paraclete_nodes::internal_clock::CMD_CLOCK_REWIND;
+const CMD_LIVE_ERASE: u32 = paraclete_node_api::command::CMD_LIVE_ERASE as u32;
 
 fn auto_play_command() -> &'static str {
     #[cfg(target_os = "macos")]
@@ -356,6 +357,12 @@ fn dispatch_action(conf: &mut NodeConfigurator, action: &ResolvedActionKind) -> 
             target_id: *target_id,
             type_id: CMD_CLOCK_REWIND,
             arg0: 0,
+            arg1: 0.0,
+        },
+        ResolvedActionKind::LiveErase { target_id, value } => NodeCommand {
+            target_id: *target_id,
+            type_id: CMD_LIVE_ERASE,
+            arg0: *value,
             arg1: 0.0,
         },
         // Event injection is an executor operation, not a NodeCommand —
@@ -1411,6 +1418,10 @@ fn resolve_action(
                 (*note).clamp(0, 127) as u8
             },
             velocity: ((velocity.clamp(0.0, 1.0) * 65535.0) as u32).min(65535) as u16,
+        },
+        TimelineAction::LiveErase { target, value } => ResolvedActionKind::LiveErase {
+            target_id: resolve_target(resolver, target)?,
+            value: *value,
         },
         TimelineAction::KitSave { name } => ResolvedActionKind::KitSave { name: name.clone() },
         TimelineAction::KitLoad { id } => ResolvedActionKind::KitLoad { id: *id },

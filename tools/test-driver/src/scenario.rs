@@ -199,6 +199,13 @@ pub enum TimelineAction {
         #[serde(default)]
         velocity: f64,
     },
+    /// P11 C6 (OQ-T25): arm/disarm the target sequencer's live erase
+    /// (`CMD_LIVE_ERASE`). `value`: 0 = off, 1 = on. While armed and
+    /// playing, each step the playhead reaches is cleared as it passes.
+    LiveErase {
+        target: String,
+        value: i64,
+    },
     /// P11 C2: app-level — capture current in_kit param state into a
     /// named kit (first free slot), via `PerformState::execute`.
     KitSave {
@@ -358,6 +365,10 @@ pub enum ResolvedActionKind {
         target_id: u32,
         note: u8,
         velocity: u16,
+    },
+    LiveErase {
+        target_id: u32,
+        value: i64,
     },
     KitSave {
         name: String,
