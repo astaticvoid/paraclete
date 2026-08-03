@@ -52,6 +52,13 @@ pub const CMD_PREPARE_MUTE: u8 = 42;
 /// pattern wrap. `arg0`: 0 = off, 1 = on. Applied at the wrap and cleared.
 pub const CMD_PREPARE_PATTERN_MUTE: u8 = 43;
 
+/// P11 C6 (OQ-T25 resolution, user decision 2026-08-02): arm or disarm
+/// live erasing (Elektron-style — hold NO while the transport plays).
+/// `arg0`: 0 = off, 1 = on. While armed and playing, each step the
+/// playhead reaches is cleared as it passes (it does not sound). Cleared
+/// on transport stop.
+pub const CMD_LIVE_ERASE: u8 = 44;
+
 #[cfg(test)]
 mod tests {
     use super::*;

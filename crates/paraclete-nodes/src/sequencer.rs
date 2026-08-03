@@ -415,6 +415,11 @@ pub struct Sequencer {
     /// P11 C4: deferred pattern-mute change (CMD_PREPARE_PATTERN_MUTE)
     /// held for the pattern that was active when the command arrived.
     pending_pattern_mute: Option<bool>,
+    /// P11 C6 (OQ-T25): live-erase arm — while true AND playing, every
+    /// step the playhead reaches is cleared as it passes (Elektron-style
+    /// live erase; the step does not sound). Disarmed by CMD_LIVE_ERASE 0
+    /// and on global_stop.
+    live_erase_armed: bool,
 }
 
 impl Sequencer {
@@ -482,6 +487,8 @@ impl Sequencer {
     pub(crate) const CMD_PREPARE_MUTE: u32 = paraclete_node_api::command::CMD_PREPARE_MUTE as u32;
     pub(crate) const CMD_PREPARE_PATTERN_MUTE: u32 =
         paraclete_node_api::command::CMD_PREPARE_PATTERN_MUTE as u32;
+    /// P11 C6: live-erase arm (canonical `u8` in `paraclete_node_api::command`).
+    pub(crate) const CMD_LIVE_ERASE: u32 = paraclete_node_api::command::CMD_LIVE_ERASE as u32;
 
     /// Runtime step capacity per pattern (P10: 8 pages × 8 steps). The
     /// serialized format stores counts as plain integers and does not depend
@@ -626,6 +633,7 @@ impl Sequencer {
             shadow_has_data: false,
             pending_global_mute: None,
             pending_pattern_mute: None,
+            live_erase_armed: false,
         }
     }
 
@@ -1020,6 +1028,11 @@ impl Sequencer {
                     // newly selected pattern — documented, accepted edge.
                     self.pending_pattern_mute = Some(cmd.arg0 != 0);
                 }
+                Self::CMD_LIVE_ERASE => {
+                    // P11 C6 (OQ-T25): arm/disarm live erase. arg0:
+                    // 0 = off, 1 = on.
+                    self.live_erase_armed = cmd.arg0 != 0;
+                }
                 _ => {}
             }
         }
@@ -1131,6 +1144,9 @@ impl Sequencer {
             // effect the performer never asked for.
             self.pending_global_mute = None;
             self.pending_pattern_mute = None;
+            // P11 C6: live erase is a held gesture — releasing it (or a
+            // stop) must never leave it armed.
+            self.live_erase_armed = false;
             if self.gate_open {
                 self.emit_note_off(sample_offset, output);
             }
@@ -1267,6 +1283,20 @@ impl Sequencer {
             self.step_period = self.next_step_period();
             let (next, wrapped) = self.advance_step(self.current_step);
             self.current_step = next;
+
+            // P11 C6 (OQ-T25): live erase — while armed, the step the
+            // playhead just reached is cleared BEFORE the boundary fire
+            // below, so it does not sound (Elektron-style: erase as the
+            // playhead passes). Cleared after use in the same cycle.
+            if self.live_erase_armed {
+                let s = &mut self.patterns[pat].steps[next];
+                s.active = false;
+                if !s.param_locks.is_empty() || !s.cv_locks.is_empty() {
+                    self.locks_dirty.set(true);
+                }
+                s.param_locks.clear();
+                s.cv_locks.clear();
+            }
 
             // The page-loop wrap is THE cycle boundary (P10 C2/C4):
             // loop_count increments here, and cued switches / chain
@@ -6119,6 +6149,15 @@ mod tests {
         }
     }
 
+    fn live_erase_cmd(arg0: i64) -> NodeCommand {
+        NodeCommand {
+            target_id: 0,
+            type_id: Sequencer::CMD_LIVE_ERASE,
+            arg0,
+            arg1: 0.0,
+        }
+    }
+
     /// Drive `count` full 16-step loops from a started transport (tps=240,
     /// so one loop = 3840 ticks) and return the events emitted.
     fn run_loops(seq: &mut Sequencer, count: usize) -> Vec<Event> {
@@ -6354,6 +6393,81 @@ mod tests {
 
         assert_eq!(seq.pending_global_mute, None, "cleared by the load");
         assert_eq!(seq.pending_pattern_mute, None, "cleared by the load");
+    }
+
+    #[test]
+    fn live_erase_clears_steps_as_playhead_passes() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        // Author active steps at 0 and 1 with a lock on step 1.
+        seq.patterns[0].steps[0].active = true;
+        seq.patterns[0].steps[1].active = true;
+        seq.patterns[0].steps[1]
+            .param_locks
+            .push(StepParamLock { node_id: 20, param_id: 1, value: 0.5 });
+        let tps = TICKS_PER_BEAT / 4;
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        run_seq_with_cmds(&mut seq, &[live_erase_cmd(1)]);
+        assert!(seq.live_erase_armed, "arm must take effect");
+
+        // Drive one step boundary (tps ticks): step 1 is reached and must
+        // be cleared BEFORE it fires.
+        for t in 1..=tps {
+            run_seq(&mut seq, &[transport_tick(t, true, false, false, false)]);
+        }
+        assert!(
+            !seq.patterns[0].steps[1].active,
+            "the passed step must be erased (active cleared)"
+        );
+        assert!(
+            seq.patterns[0].steps[1].param_locks.is_empty(),
+            "the passed step's locks must be erased too"
+        );
+
+        // Disarm: the next boundary must NOT erase step 2.
+        run_seq_with_cmds(&mut seq, &[live_erase_cmd(0)]);
+        assert!(!seq.live_erase_armed, "disarm must take effect");
+        seq.patterns[0].steps[2].active = true;
+        for t in (tps + 1)..=(2 * tps) {
+            run_seq(&mut seq, &[transport_tick(t, true, false, false, false)]);
+        }
+        assert!(
+            seq.patterns[0].steps[2].active,
+            "a disarmed sequencer must not erase the passed step"
+        );
+    }
+
+    #[test]
+    fn live_erase_does_not_sound_the_erased_step() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        seq.patterns[0].steps[1].active = true;
+        let tps = TICKS_PER_BEAT / 4;
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        run_seq_with_cmds(&mut seq, &[live_erase_cmd(1)]);
+
+        let mut all = Vec::new();
+        for t in 1..=tps {
+            all.extend(run_seq(&mut seq, &[transport_tick(t, true, false, false, false)]));
+        }
+        assert!(
+            !all.iter().any(is_note_on),
+            "the erased step must not sound at the boundary it was erased on"
+        );
+    }
+
+    #[test]
+    fn live_erase_disarmed_on_stop() {
+        let mut seq = Sequencer::new();
+        seq.activate(44100.0, 64);
+        run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        run_seq_with_cmds(&mut seq, &[live_erase_cmd(1)]);
+
+        run_seq(&mut seq, &[transport_tick(1, false, false, true, false)]);
+        assert!(
+            !seq.live_erase_armed,
+            "a stop must disarm live erase (it is a held gesture)"
+        );
     }
 
     #[test]
