@@ -5,9 +5,19 @@
     "paths": [".opencode/skills", "/home/dv6n/code/dev-agent/skills"]
   },
   "mcp": {
+    "serena": {
+      "type": "local",
+      "command": ["serena", "start-mcp-server"],
+      "enabled": true
+    },
     "narsil": {
       "type": "local",
-      "command": ["narsil-mcp", "--repos", ".", "--git", "--call-graph", "--preset", "balanced"],
+      "command": ["narsil-mcp", "--repos", ".", "--git", "--lsp", "--call-graph", "--preset", "balanced"],
+      "enabled": true
+    },
+    "context7": {
+      "type": "local",
+      "command": ["npx", "-y", "@upstash/context7-mcp@latest"],
       "enabled": true
     },
     "chrome-devtools": {
