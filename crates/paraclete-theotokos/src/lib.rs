@@ -1808,6 +1808,15 @@ impl TheotokosApp {
         std::mem::take(&mut self.pending_app_ops)
     }
 
+    /// TK3 C3 (#184): non-destructive observer for the pending app ops — a
+    /// test can inspect them (e.g. after driving key chords through
+    /// `handle_keys`) without consuming them, so the normal destructive
+    /// drain path can still run afterwards. `take_pending_app_ops` remains
+    /// the drain; this is its read-only companion.
+    pub fn pending_app_ops(&self) -> &[paraclete_node_api::app_op::AppOp] {
+        &self.pending_app_ops
+    }
+
     pub fn should_quit(&self) -> bool {
         self.quit
     }
@@ -5207,6 +5216,68 @@ mod tests {
             app.pending_app_ops.iter().any(|op| matches!(op, AppOp::TempReload)),
             "FUNC+NO must push TempReload, got {:?}",
             app.pending_app_ops
+        );
+    }
+
+    /// TK3 C3 (#184): the new `pending_app_ops()` observer is
+    /// NON-destructive — a test can inspect the ops without consuming
+    /// them, so the normal drain path still finds them afterwards.
+    #[test]
+    fn pending_app_ops_is_a_non_destructive_observer() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+
+        // FUNC+YES -> TempSave, surfaced through the accessor.
+        app.handle_keys(&bus, &[KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)]);
+        assert!(
+            app.pending_app_ops()
+                .iter()
+                .any(|op| matches!(op, AppOp::TempSave)),
+            "pending_app_ops() must surface the TempSave produced by FUNC+YES"
+        );
+        // Reading must not consume: the op is still there on a second read.
+        assert!(
+            app.pending_app_ops()
+                .iter()
+                .any(|op| matches!(op, AppOp::TempSave)),
+            "pending_app_ops() must NOT consume the ops it observes"
+        );
+        // And the destructive drain still returns it.
+        let drained = app.take_pending_app_ops();
+        assert!(
+            drained.iter().any(|op| matches!(op, AppOp::TempSave)),
+            "take_pending_app_ops() must still see the op after the read"
+        );
+
+        // FUNC+Esc -> TempReload via the accessor.
+        app.handle_keys(&bus, &[KeyEvent::new(KeyCode::Esc, KeyModifiers::SHIFT)]);
+        assert!(
+            app.pending_app_ops()
+                .iter()
+                .any(|op| matches!(op, AppOp::TempReload)),
+            "pending_app_ops() must surface the TempReload produced by FUNC+NO"
+        );
+
+        // FUNC+KIT -> SetPerformMode, both directions, via the accessor.
+        bus.borrow_mut()
+            .write("/context/perform", StateBusValue::Float(0.0));
+        app.take_pending_app_ops();
+        app.handle_keys(&bus, &[func_key('7')]);
+        assert!(
+            app.pending_app_ops()
+                .iter()
+                .any(|op| matches!(op, AppOp::SetPerformMode(true))),
+            "perform off → FUNC+KIT must push SetPerformMode(true)"
+        );
+        bus.borrow_mut()
+            .write("/context/perform", StateBusValue::Float(1.0));
+        app.take_pending_app_ops();
+        app.handle_keys(&bus, &[func_key('7')]);
+        assert!(
+            app.pending_app_ops()
+                .iter()
+                .any(|op| matches!(op, AppOp::SetPerformMode(false))),
+            "perform on → FUNC+KIT must push SetPerformMode(false)"
         );
     }
 
