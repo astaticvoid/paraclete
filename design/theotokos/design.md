@@ -499,14 +499,21 @@ Prove posture and feel, nothing else.
   Full spec in `design/phases/tk2-theotokos.md` (owned by design agent).
 - **Session #3** → verdicts on performance ergonomics.
 
-### TK3 — Breadth & convergence
+### TK3 — Breadth & convergence *(spec drafted 2026-08-05 — `design/phases/tk3-theotokos.md`)*
 
-- MIX mode; chain view; macro support from `Rule`; keymap **Ordo layout
-  profiles + convergence editor** (mechanism lands TK2; TK3 adds profile
-  switching, guided remap wizard, and WT integration); **WT convergence
-  decision** (does WT proceed as specced, fold into Theotokos, or stay
-  deferred — user decision, informed by three sessions of evidence).
-- **Session #4.**
+- **#180** — TRIG page gets the four sequencer per-step params (velocity,
+  length, timing, condition) via a sequencer `ViewPlugin` impl + virtual
+  encoder dispatch.
+- **#163** — Extract `RenderData` assembly into a pure, testable function.
+- **MIX screen** — per-track level view, encoder jogs gain. No sends
+  (graph has none).
+- **#184** — Expose `pending_app_ops()` for headless testing.
+- **OQ-T4** — ENC + jog step-size scaling (8/16/32+).
+- **OQ-T23b** — Dual-path tap tempo (global chord + ENC jog).
+- **OQ-T31** — Modifier highlight on panel.
+- **Deferred:** OQ-T21 (chromatic — needs melodic engine), Ordo profiles
+  (mechanism complete; switching deferred), ADR-045 (stays parked).
+- **Session #6.**
 
 Explicitly **not** one-shot: every phase gate is a session; every session
 can re-cut the next phase.
