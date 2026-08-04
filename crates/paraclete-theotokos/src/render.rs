@@ -141,6 +141,9 @@ pub struct RenderData {
     /// TK2.1 C5a (D9): explicit encoder-access mode — shown on the status
     /// line.
     pub enc: bool,
+    /// TK3 C4 (OQ-T4): the step-size tier (0..=4, ×1..×16) — shown on the
+    /// status line next to ENC.
+    pub step_size_tier: u8,
     /// TK2.1 C5b (D15): the lock target's step, but only if it's on the
     /// active track — replaces `step_focuses` (the per-track vec was
     /// always read via the active track anyway).
@@ -1272,10 +1275,12 @@ fn render_status_line(frame: &mut Frame, area: Rect, data: &RenderData) {
         spans.push(Span::styled(text, Style::default().fg(Color::Magenta)));
     }
 
-    // TK2.1 C5a (D9): status line shows ENC when on.
+    // TK2.1 C5a (D9): status line shows ENC when on; TK3 C4 appends the
+    // step-size tier (×1..×16) alongside it.
     if data.enc {
+        let mult = (2i32).pow(data.step_size_tier as u32);
         spans.push(Span::styled(
-            "ENC ",
+            format!(" ENC×{mult} "),
             Style::default().fg(Color::Cyan),
         ));
     }
@@ -1434,6 +1439,7 @@ impl RenderData {
             pattern_muted_states: vec![false; track_count],
             mix_gains: vec![0.0; track_count],
             mix_master: 0.0,
+            step_size_tier: 0,
             help_visible: false,
         }
     }
@@ -1514,6 +1520,7 @@ mod tests {
             pattern_muted_states: vec![false; 2],
             mix_gains: vec![0.0; 2],
             mix_master: 0.0,
+            step_size_tier: 0,
             help_visible: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
@@ -1606,6 +1613,7 @@ mod tests {
             pattern_muted_states: vec![false; 1],
             mix_gains: vec![0.0; 1],
             mix_master: 0.0,
+            step_size_tier: 0,
             help_visible: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();

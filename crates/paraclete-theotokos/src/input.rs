@@ -823,6 +823,14 @@ pub fn button_to_action(
     // stays the (only) way to jog while ENC is off.
     if screen.enc && held.armed.is_none() {
         if let Some(col) = trig_col(button) {
+            // TK3 C4 (OQ-T4): Ctrl+FUNC together in ENC mode is a step-
+            // size TIER change, not a jog magnitude — Fine and Coarse are
+            // suppressed while both are held simultaneously. Top row = +1
+            // (coarser), bottom row = -1 (finer).
+            if mods.func && mods.ctrl {
+                let delta = if col < 8 { 1 } else { -1 };
+                return Action::SetStepSizeTier(delta);
+            }
             let dir = if col < 8 { Dir::Next } else { Dir::Prev };
             let mag = if mods.func {
                 Mag::Coarse
@@ -1482,6 +1490,58 @@ mod tests {
 
         let normal = button_to_action(&held, &screen, PanelButton::Trig1, Mods::default());
         assert!(matches!(normal, Action::EncoderJog { mag: Mag::Normal, .. }));
+    }
+
+    /// TK3 C4 (OQ-T4): in ENC mode, Ctrl+FUNC together is a step-size
+    /// TIER change, not a jog magnitude — Fine/Coarse are suppressed while
+    /// both are held. Top row = +1 (coarser), bottom row = -1 (finer).
+    #[test]
+    fn enc_ctrl_func_is_step_size_tier_not_a_jog() {
+        let held = HeldState::new(false);
+        let screen = ScreenState {
+            screen: Screen::Grid,
+            rec: RecMode::Off,
+            enc: true,
+            lock_target_step: None,
+        };
+        // Top row (Trig1, col 0 < 8) = +1.
+        let up = button_to_action(
+            &held,
+            &screen,
+            PanelButton::Trig1,
+            Mods { func: true, ctrl: true },
+        );
+        assert!(
+            matches!(up, Action::SetStepSizeTier(1)),
+            "ENC + Ctrl+FUNC top row must be SetStepSizeTier(+1), got {up:?}"
+        );
+        // Bottom row (Trig9 = col 8) = -1.
+        let down = button_to_action(
+            &held,
+            &screen,
+            PanelButton::Trig9,
+            Mods { func: true, ctrl: true },
+        );
+        assert!(
+            matches!(down, Action::SetStepSizeTier(-1)),
+            "ENC + Ctrl+FUNC bottom row must be SetStepSizeTier(-1), got {down:?}"
+        );
+        // Outside ENC mode, Ctrl+FUNC keeps its Fine-jog meaning (no tier).
+        let off = button_to_action(
+            &HeldState::new(false),
+            &ScreenState {
+                screen: Screen::Grid,
+                rec: RecMode::Off,
+                enc: false,
+                lock_target_step: None,
+            },
+            PanelButton::Trig1,
+            Mods { func: true, ctrl: true },
+        );
+        assert!(
+            matches!(off, Action::EncoderJog { mag: Mag::Fine, .. }),
+            "outside ENC, Ctrl+FUNC must stay a Fine jog, got {off:?}"
+        );
     }
 
     /// Outside ENC mode, D8's original magnitude mapping stands: FUNC

@@ -939,8 +939,10 @@ impl TheotokosApp {
                                 0
                             }
                         };
-                        // MixNode gains span 0.0–2.0.
-                        let delta = self.tuning.jog_step(2.0, held, mag);
+                        // MixNode gains span 0.0–2.0. TK3 C4: the step-size
+                        // tier scales the base (range) before the ramp.
+                        let tier_mult = (2f64).powi(self.model.step_size_tier as i32);
+                        let delta = self.tuning.jog_step(2.0 * tier_mult, held, mag);
                         let signed = match dir {
                             Dir::Next => delta,
                             Dir::Prev => -delta,
@@ -1009,7 +1011,14 @@ impl TheotokosApp {
                             let delta = if stepped {
                                 self.tuning.jog_step_stepped()
                             } else {
-                                let range = max - min;
+                                // TK3 C4 (OQ-T4): the tier scales the base
+                                // step (`max(0.001, range/128)`) before the
+                                // acceleration ramp — scaling the range feeds
+                                // the same base, so the ramp curve is
+                                // unchanged and its output is scaled.
+                                let tier_mult =
+                                    (2f64).powi(self.model.step_size_tier as i32);
+                                let range = (max - min) * tier_mult;
                                 self.tuning.jog_step(range, held, mag)
                             };
                             let signed = match dir {
@@ -1219,6 +1228,15 @@ impl TheotokosApp {
                         arg1: (current + delta).max(1.0),
                     });
                     dirty = true;
+                }
+                // TK3 C4 (OQ-T4): change the step-size tier, clamped to
+                // 0..=4 (×1..×16). Persists until changed.
+                Action::SetStepSizeTier(delta) => {
+                    let new = (self.model.step_size_tier as i8 + delta).clamp(0, 4) as u8;
+                    if new != self.model.step_size_tier {
+                        self.model.step_size_tier = new;
+                        dirty = true;
+                    }
                 }
                 Action::ChainPush => {
                     let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
@@ -2218,6 +2236,7 @@ pub fn build_render_data(
             pattern_muted_states,
             mix_gains,
             mix_master,
+            step_size_tier: model.step_size_tier,
         };
         render_data
 
@@ -4297,6 +4316,64 @@ mod tests {
         let data = render_data(&bus, render_model(), &held);
         assert_eq!(data.mix_gains, vec![1.25]);
         assert_eq!(data.mix_master, 0.75);
+    }
+
+    // ── TK3 C4 (OQ-T4): step-size scaling ───────────────────────────────
+
+    #[test]
+    fn set_step_size_tier_dispatch_clamps() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.enc = true;
+        app.model.step_size_tier = 3;
+        // +1 -> 4 (cap).
+        app.handle_keys(&bus, &[func_fine_trig('q')]);
+        assert_eq!(app.model.step_size_tier, 4);
+        // +1 at cap -> stays 4.
+        app.handle_keys(&bus, &[func_fine_trig('q')]);
+        assert_eq!(app.model.step_size_tier, 4);
+        // -1 -> 3.
+        app.handle_keys(&bus, &[func_fine_trig('a')]);
+        assert_eq!(app.model.step_size_tier, 3);
+        // floor: set to 0, -1 stays 0.
+        app.model.step_size_tier = 0;
+        app.handle_keys(&bus, &[func_fine_trig('a')]);
+        assert_eq!(app.model.step_size_tier, 0);
+    }
+
+    /// Tier 0: jog step is the base. Tier 2: the base is ×4. Measured on a
+    /// real (continuous) param's emitted bump delta — the tier scales the
+    /// base before the acceleration ramp.
+    #[test]
+    fn step_size_tier_scales_base_jog_step() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        // test_caps engine (empty rule) -> decay on col 0, range 0..1.
+        app.handle_keys(&bus, &[func_trig('q')]);
+        let base = app
+            .pending
+            .iter()
+            .find(|c| c.type_id == paraclete_node_api::CMD_BUMP_PARAM)
+            .expect("jog must bump a param")
+            .arg1;
+        assert!(
+            (base - 1.0 / 128.0).abs() < 1e-9,
+            "tier 0 base for a range-1 param = 1/128, got {base}"
+        );
+
+        app.pending.clear();
+        app.model.step_size_tier = 2; // ×4
+        app.handle_keys(&bus, &[func_trig('q')]);
+        let scaled = app
+            .pending
+            .iter()
+            .find(|c| c.type_id == paraclete_node_api::CMD_BUMP_PARAM)
+            .expect("jog must bump a param")
+            .arg1;
+        assert!(
+            (scaled - base * 4.0).abs() < 1e-9,
+            "tier 2 must be 4× the tier-0 base: base={base} scaled={scaled}"
+        );
     }
 
     #[test]

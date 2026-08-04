@@ -266,6 +266,11 @@ pub struct Model {
     /// TRK/PTN prefix armed, §0 A10), a bare trig resolves to an encoder
     /// jog instead of its pad/step meaning, on any screen.
     pub enc: bool,
+    /// TK3 C4 (OQ-T4): the step-size tier, 0..=4 (×1, ×2, ×4, ×8, ×16).
+    /// Multiplies the base encoder jog step before the acceleration ramp.
+    /// Changed by ENC mode + Ctrl+FUNC + encoder jog; persisted until
+    /// changed (no auto-reset).
+    pub step_size_tier: u8,
     pub active_track: usize,
     pub tracks: Vec<TrackInfo>,
     pub clock_id: u32,
@@ -433,6 +438,7 @@ impl Model {
             screen: Screen::Grid,
             rec: RecMode::Off,
             enc: false,
+            step_size_tier: 0,
             active_track: 0,
             tracks,
             clock_id,

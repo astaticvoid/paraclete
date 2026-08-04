@@ -102,6 +102,9 @@ pub enum Action {
     /// Tempo screen: UP/DOWN nudge bpm by the given signed delta (±1,
     /// FUNC+UP/DOWN = ±0.1).
     NudgeBpm(f64),
+    /// TK3 C4 (OQ-T4): ENC mode + Ctrl+FUNC + encoder jog — change the
+    /// step-size tier by `+1`/`-1` (clamped 0..=4, i.e. ×1..×16).
+    SetStepSizeTier(i8),
     /// Chain screen: YES pushes the cursor pattern onto the volatile chain.
     ChainPush,
     /// Chain screen: NO/Backspace clears the chain.
@@ -193,6 +196,7 @@ impl Action {
             | Action::PasteLane
             | Action::NextSubPage
             | Action::NudgeBpm(_)
+            | Action::SetStepSizeTier(_)
             | Action::ChainPush
             | Action::ChainClear
             // ADR-046 T5: dispatched directly in lib.rs — needs two
