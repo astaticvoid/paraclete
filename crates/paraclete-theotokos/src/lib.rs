@@ -514,6 +514,16 @@ impl TheotokosApp {
                     button_to_action(&held_for_resolution, &screen_state, button, mods)
                 }
             };
+            // TK3 C5 (OQ-T23b): FUNC+Space is a GLOBAL tap-tempo chord from
+            // any screen — the "global chord" path. It must fire before the
+            // A12 guard below (which turns FUNC+Space's collapsed ClearLane
+            // into a Noop): this intercept produces TapTempo using the raw
+            // key + FUNC, so A12's ClearLane check never matches.
+            let action = if input::func_held(ev) && ev.code == KeyCode::Char(' ') {
+                Action::TapTempo
+            } else {
+                action
+            };
             // A12 (normative): FUNC+Space must stay a no-op — Space is a
             // transport-only Play alias; the destructive clear requires
             // the literal `x` home. `key_to_button` necessarily collapses
@@ -915,6 +925,36 @@ impl TheotokosApp {
                 // uses (CMD 33/34), reusing the ramp/acceleration
                 // machinery (`Tuning::jog_step`) via a per-column tracker.
                 Action::EncoderJog { col, dir, mag } => {
+                    // TK3 C5 (OQ-T23b): Tempo screen, encoder column 1
+                    // (index 0) = continuous BPM jog — NudgeBpm semantics
+                    // driven by encoder rotation instead of arrow keys.
+                    if self.model.screen == Screen::Tempo && col == 0 {
+                        let tracker = &mut self.encoder_trackers[col];
+                        let held = match tracker.repeat(now, tick_ms) {
+                            Some(h) => h,
+                            None => {
+                                tracker.press(now, tick_ms);
+                                0
+                            }
+                        };
+                        // Continuous over the 20..300 bpm span.
+                        let delta = self.tuning.jog_step(280.0, held, mag);
+                        let signed = match dir {
+                            Dir::Next => delta,
+                            Dir::Prev => -delta,
+                        };
+                        let current = self.model.read_bpm(state);
+                        let bpm_id = paraclete_node_api::ParamDescriptor::id_for_name("bpm");
+                        self.pending.push(NodeCommand {
+                            target_id: self.model.clock_id,
+                            type_id: paraclete_node_api::CMD_SET_PARAM,
+                            arg0: bpm_id as i64,
+                            arg1: (current + signed).max(1.0),
+                        });
+                        self.last_jog_param = Some("bpm".to_string());
+                        dirty = true;
+                        continue;
+                    }
                     // TK3 C2: on the MIX screen the encoder bank's columns
                     // map to the MixNode's per-track gains (1..N) and master
                     // (column 8), not the active page's params.
@@ -4373,6 +4413,72 @@ mod tests {
         assert!(
             (scaled - base * 4.0).abs() < 1e-9,
             "tier 2 must be 4× the tier-0 base: base={base} scaled={scaled}"
+        );
+    }
+
+    // ── TK3 C5 (OQ-T23b): dual-path tap tempo ───────────────────────────
+
+    #[test]
+    fn func_space_is_global_tap_tempo_on_any_screen() {
+        let bus = test_bus();
+        // Grid screen.
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.handle_keys(&bus, &[KeyEvent::new(KeyCode::Char(' '), KeyModifiers::SHIFT)]);
+        assert!(
+            app.pending.iter().all(|c| c.type_id != CMD_CLEAR),
+            "FUNC+Space must NOT clear the lane (A12 preserved); got {:?}",
+            app.pending
+        );
+        assert!(
+            app.last_debug_event.as_deref().unwrap_or("").contains("TapTempo"),
+            "FUNC+Space on Grid must resolve to TapTempo; debug={:?}",
+            app.last_debug_event
+        );
+
+        // Param screen.
+        let mut app2 = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app2.model.screen = Screen::Param(0);
+        app2.handle_keys(&bus, &[KeyEvent::new(KeyCode::Char(' '), KeyModifiers::SHIFT)]);
+        assert!(
+            app2.last_debug_event.as_deref().unwrap_or("").contains("TapTempo"),
+            "FUNC+Space on a Param screen must resolve to TapTempo; debug={:?}",
+            app2.last_debug_event
+        );
+    }
+
+    #[test]
+    fn bare_space_still_toggles_transport() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.handle_keys(&bus, &[KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE)]);
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.type_id == CMD_CLOCK_START || c.type_id == CMD_CLOCK_STOP),
+            "bare Space must toggle the transport; got {:?}",
+            app.pending
+        );
+        assert!(
+            !app.last_debug_event.as_deref().unwrap_or("").contains("TapTempo"),
+            "bare Space must NOT be tap tempo"
+        );
+    }
+
+    #[test]
+    fn tempo_screen_encoder_jog_nudges_bpm() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.screen = Screen::Tempo;
+        let bpm_id = paraclete_node_api::ParamDescriptor::id_for_name("bpm");
+        app.handle_keys(&bus, &[func_trig('q')]); // encoder col 0 on Tempo
+        assert!(
+            app.pending.iter().any(|c| {
+                c.type_id == paraclete_node_api::CMD_SET_PARAM
+                    && c.arg0 == bpm_id as i64
+                    && c.target_id == app.model.clock_id
+            }),
+            "Tempo encoder col 1 must emit a bpm set; got {:?}",
+            app.pending
         );
     }
 
