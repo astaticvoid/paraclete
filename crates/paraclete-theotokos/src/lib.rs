@@ -219,330 +219,15 @@ impl TheotokosApp {
 
         let bus_ref = bus.borrow();
         let bus = &*bus_ref;
-        let step_states: Vec<_> = (0..self.model.tracks.len())
-            .map(|t| self.model.read_step_state(bus, t))
-            .collect();
-        let step_state = step_states
-            .get(self.model.active_track)
-            .cloned()
-            .unwrap_or_default();
-        let bpm = self.model.read_bpm(bus);
-
-        let slot_a_value = self
-            .model
-            .slot_a
-            .as_ref()
-            .map(|s| self.model.read_param_value(bus, s.node_id, s.param_id))
-            .unwrap_or(0.0);
-        let slot_b_value = self
-            .model
-            .slot_b
-            .as_ref()
-            .map(|s| self.model.read_param_value(bus, s.node_id, s.param_id))
-            .unwrap_or(0.0);
-        let slot_c_value = self
-            .model
-            .slot_c
-            .as_ref()
-            .map(|s| self.model.read_param_value(bus, s.node_id, s.param_id))
-            .unwrap_or(0.0);
-
-        self.model.update_flash(0, slot_a_value);
-        self.model.update_flash(1, slot_b_value);
-        // TK2 C5 (D13): slot C flashes too — was bound but never tracked
-        // (review finding, post-C5 hostile review).
-        self.model.update_flash(2, slot_c_value);
-
-        let envelope = self.model.envelope_for_active_track().map(|e| {
-            let val = self.model.read_param_value(bus, e.node_id, e.param_id);
-            (e, val)
-        });
-        let live_env_level = envelope.as_ref().and_then(|(env, _)| {
-            bus.read(&format!("/node/{}/state/env_level", env.node_id))
-                .and_then(|v| match &v {
-                    StateBusValue::Float(f) => Some(*f),
-                    _ => None,
-                })
-        });
-
-        let live_lfo_phase: Option<f64> = {
-            bus.iter()
-                .find(|(k, _)| k.ends_with("/state/lfo_phase"))
-                .and_then(|(_, v)| match v {
-                    StateBusValue::Float(f) => Some(*f),
-                    _ => None,
-                })
-        };
-
-        let step_locks: Vec<Vec<usize>> = (0..self.model.tracks.len())
-            .map(|t| self.model.read_step_locks(bus, t))
-            .collect();
-        // TK2 C4 (D12): per-track mute state, rendered on the track
-        // indicator — the dedicated Mute screen this was originally
-        // built for was retired in TK2.1 C6.
-        let mute_states: Vec<bool> = self
-            .model
-            .tracks
-            .iter()
-            .map(|t| {
-                bus.read(&format!("/node/{}/param/mute", t.sequencer_id))
-                    .is_some_and(|v| matches!(v, paraclete_node_api::StateBusValue::Float(f) if *f >= 0.5))
-            })
-            .collect();
-
-        // TK2 C6 (D12): Chain screen state, read from the active track's
-        // published sequencer state.
-        let active_seq_id = self.model.tracks[self.model.active_track].sequencer_id;
-        let read_int = |path: String| -> Option<i64> {
-            match bus.read(&path) {
-                Some(paraclete_node_api::StateBusValue::Int(i)) => Some(*i),
-                _ => None,
-            }
-        };
-        let active_pattern =
-            read_int(format!("/node/{active_seq_id}/state/active_pattern")).unwrap_or(0) as usize;
-        let cued_pattern_raw =
-            read_int(format!("/node/{active_seq_id}/state/cued_pattern")).unwrap_or(-1);
-        let cued_pattern = if cued_pattern_raw >= 0 {
-            Some(cued_pattern_raw as usize)
-        } else {
-            None
-        };
-        let chain_len =
-            read_int(format!("/node/{active_seq_id}/state/chain_len")).unwrap_or(0) as usize;
-        let page_loop = (
-            read_int(format!("/node/{active_seq_id}/state/page_loop_start")).unwrap_or(0) as u8,
-            read_int(format!("/node/{active_seq_id}/state/page_loop_end")).unwrap_or(0) as u8,
+        let render_data = build_render_data(
+            &mut self.model,
+            bus,
+            &self.held,
+            &self.keymap,
+            &self.tuning,
+            self.last_jog_param.clone(),
+            self.last_debug_event.take(),
         );
-
-        // P11 C6a: KIT screen state from the app-published context paths.
-        // `/context/kits` is names-only (`idx:name;...`) — the encoder-bank
-        // preview therefore shows the selected kit's name as a placeholder
-        // for its entries (values are not on the bus in P11).
-        let read_text = |path: &str| -> String {
-            bus.read(path)
-                .and_then(|v| match v {
-                    StateBusValue::Text(s) => Some(s.clone()),
-                    _ => None,
-                })
-                .unwrap_or_default()
-        };
-        let kit_list = parse_kit_list(&read_text("/context/kits"));
-        let kit_binding = parse_kit_binding(&read_text("/context/kit_binding"));
-        // The "loaded" kit is the one bound to the selected track's active
-        // pattern slot (from `/context/kit_binding`, `slot:kit` pairs).
-        let kit_loaded_slot = kit_binding
-            .iter()
-            .find(|(slot, kit)| *slot == active_pattern && *kit >= 0)
-            .map(|(_, kit)| *kit as usize);
-        // P11 C6b: perform-mode indicator — `/context/perform` Float ≥ 0.5.
-        let perform_mode = bus
-            .read("/context/perform")
-            .is_some_and(|v| matches!(v, StateBusValue::Float(f) if *f >= 0.5));
-        // P11 C6e: per-track pattern-mute state for the track indicator.
-        let pattern_muted_states: Vec<bool> = self
-            .model
-            .tracks
-            .iter()
-            .map(|t| {
-                bus.read(&format!("/node/{}/state/pattern_muted", t.sequencer_id))
-                    .is_some_and(|v| matches!(v, StateBusValue::Bool(b) if *b))
-            })
-            .collect();
-
-        // TK2 C5 (D8/§0 A11): the active page's params in Rule order,
-        // restricted to the current sub-page's 8-wide window (pages with
-        // more than 8 params split into sub-pages instead of silently
-        // truncating). Resolved fresh each render, matching the jog
-        // dispatch below.
-        let encoder_params = self.model.resolve_encoder_params();
-        let encoder_cells: Vec<Option<render::EncoderCell>> = encoder_params
-            .iter()
-            .map(|cell| {
-                cell.as_ref()
-                    .map(|p| {
-                        // TK3 C0 (#180): a virtual step cell reads the
-                        // focused step's per-step detail, not a bank param.
-                        let value = match p.target {
-                            model::EncoderTarget::VirtualStep { seq_id, kind } => {
-                                let focus = self
-                                    .model
-                                    .lock_step_for_active_track()
-                                    .unwrap_or_else(|| {
-                                        self.model
-                                            .read_step_state(bus, self.model.active_track)
-                                            .current_step
-                                    });
-                                self.model
-                                    .read_step_detail(bus, seq_id, focus)
-                                    .map(|d| match kind {
-                                        model::StepParamKind::Velocity => d.velocity,
-                                        model::StepParamKind::Length => d.length,
-                                        model::StepParamKind::Timing => d.timing,
-                                        model::StepParamKind::Condition => d.fill as f64,
-                                    })
-                                    .unwrap_or(0.0)
-                            }
-                            model::EncoderTarget::Real => {
-                                self.model.read_param_value(bus, p.node_id, p.param_id)
-                            }
-                        };
-                        render::EncoderCell {
-                            name: p.name.clone(),
-                            value,
-                            min: p.min,
-                            max: p.max,
-                            resolved: p.resolved,
-                            options: p.options.clone(),
-                            target: p.target,
-                        }
-                    })
-            })
-            .collect();
-        for (i, cell) in encoder_cells.iter().enumerate() {
-            if let Some(c) = cell {
-                self.model.update_encoder_flash(i, c.value);
-            }
-        }
-        let encoder_flash: Vec<bool> = (0..8)
-            .map(|i| {
-                self.model.encoder_flash[i]
-                    .is_some_and(|t| t.elapsed().as_millis() < self.tuning.flash_ms as u128)
-            })
-            .collect();
-
-        let mut slot_a_locked = false;
-        let mut slot_b_locked = false;
-        let mut slot_c_locked = false;
-        if let Some(focus) = self.model.lock_step_for_active_track() {
-            if let Some(ref s) = self.model.slot_a {
-                let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
-                slot_a_locked = self
-                    .model
-                    .read_lock_value(bus, seq_id, focus, s.node_id, s.param_id)
-                    .is_some();
-            }
-            if let Some(ref s) = self.model.slot_b {
-                let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
-                slot_b_locked = self
-                    .model
-                    .read_lock_value(bus, seq_id, focus, s.node_id, s.param_id)
-                    .is_some();
-            }
-            if let Some(ref s) = self.model.slot_c {
-                let seq_id = self.model.tracks[self.model.active_track].sequencer_id;
-                slot_c_locked = self
-                    .model
-                    .read_lock_value(bus, seq_id, focus, s.node_id, s.param_id)
-                    .is_some();
-            }
-        }
-
-        // TK2.1 C2 (D3/D4): key chip labels, resolved fresh each render
-        // against the live keymap (bindings can change via `:bind` at
-        // runtime).
-        let trig_key_labels: Vec<Option<String>> = (0..16)
-            .map(|i| trig_button(i).and_then(|b| key_label(&self.keymap, b)))
-            .collect();
-        let track_key_labels: Vec<Option<String>> =
-            trig_key_labels[..self.model.tracks.len().min(16)].to_vec();
-        let legend_key_labels: HashMap<PanelButton, String> = [
-            PanelButton::Trk,
-            PanelButton::Ptn,
-            PanelButton::Rec,
-            PanelButton::Play,
-            PanelButton::Stop,
-            PanelButton::Song,
-            PanelButton::Tempo,
-            PanelButton::Settings,
-            PanelButton::Yes,
-            PanelButton::No,
-            PanelButton::Enc,
-            PanelButton::Lock,
-        ]
-        .into_iter()
-        .filter_map(|b| key_label(&self.keymap, b).map(|k| (b, k)))
-        .collect();
-
-        let render_data = render::RenderData {
-            screen: self.model.screen,
-            rec: self.model.rec,
-            armed_prefix: match self.held.armed {
-                Some(input::Hold::Trk) => Some("TRK…".to_string()),
-                Some(input::Hold::Ptn) => Some("PTN…".to_string()),
-                // TK2.1 C5b: Lock armed and waiting for the next trig.
-                Some(input::Hold::Lock) => Some("LOCK…".to_string()),
-                // REC has its own three-state transport/status indicator
-                // (D5) — it isn't an "armed prefix" chip like TRK/PTN.
-                Some(input::Hold::Rec) | None => None,
-            },
-            active_track: self.model.active_track,
-            // #161: per-track engine label, machine-aware — not
-            // `TrackInfo.name`, which freezes at the built-with machine.
-            track_names: (0..self.model.tracks.len())
-                .map(|t| self.model.engine_label(t))
-                .collect(),
-            display_names: self.model.tracks.iter().map(|t| t.display_name.clone()).collect(),
-            trig_key_labels,
-            track_key_labels,
-            legend_key_labels,
-            bpm,
-            playing: self.model.playing(bus),
-            page_window: self.model.page_windows[self.model.active_track],
-            step_state,
-            step_states,
-            slot_a: self.model.slot_a.clone(),
-            slot_a_value,
-            slot_b: self.model.slot_b.clone(),
-            slot_b_value,
-            slot_c: self.model.slot_c.clone(),
-            slot_c_value,
-            page_groups: self.model.page_groups_for_active_track(),
-            perf_page: self.model.perf_page,
-            sub_page: self.model.sub_page,
-            sub_page_count: self.model.page_sub_page_count(),
-            envelope,
-            live_env_level,
-            live_lfo_phase,
-            debug_event: self.last_debug_event.take(),
-            enc: self.model.enc,
-            lock_target_step: self.model.lock_step_for_active_track(),
-            last_jog_param: self.last_jog_param.clone(),
-            step_locks,
-            mute_states,
-            slot_a_locked,
-            slot_b_locked,
-            slot_c_locked,
-            cmdline: self.model.cmdline.clone(),
-            cmdline_error: self.model.cmdline_error.clone(),
-            cmdline_status: self.model.cmdline_status.clone(),
-            cmdline_candidates: self.model.cmdline_candidates(),
-            slot_a_flash: self.model.slot_flash[0].map_or(false, |t| {
-                t.elapsed().as_millis() < self.tuning.flash_ms as u128
-            }),
-            slot_b_flash: self.model.slot_flash[1].map_or(false, |t| {
-                t.elapsed().as_millis() < self.tuning.flash_ms as u128
-            }),
-            slot_c_flash: self.model.slot_flash[2].map_or(false, |t| {
-                t.elapsed().as_millis() < self.tuning.flash_ms as u128
-            }),
-            help_visible: self.model.help_visible,
-            encoder_cells,
-            encoder_flash,
-            kitty: self.held.kitty,
-            pattern_bank_size: PATTERN_BANK_SIZE,
-            active_pattern,
-            cued_pattern,
-            chain_len,
-            page_loop,
-            chain_cursor: self.model.chain_cursor,
-            kit_scroll: self.model.kit_scroll,
-            kit_cursor: self.model.kit_cursor,
-            kit_list,
-            kit_loaded_slot,
-            perform_mode,
-            pattern_muted_states,
-        };
 
         drop(bus_ref);
 
@@ -2106,6 +1791,345 @@ fn pop_keyboard_flags() -> Result<(), String> {
     )
         .map(|_| {})
         .map_err(|e| format!("kitty flags pop: {e}"))
+}
+
+
+/// TK3 C1 (#163): assemble the data the panel draws — extracted from
+/// `render_if_needed`, which used to build `RenderData` inline. No I/O
+/// (no `Terminal`, no bus writes): reads the state bus and the model.
+/// It is not functionally pure — it takes `&mut Model` because the slot/
+/// encoder flash timestamps are a bookkeeping side effect.
+///
+/// Signature note: the spec sketch listed a `now: Instant` param; it is
+/// omitted because the assembly uses stored `Instant` timestamps
+/// internally (`update_flash` stamps `Instant::now()`), so an external
+/// `now` would be dead.
+pub fn build_render_data(
+    model: &mut Model,
+    bus: &StateBusHandle,
+    held: &HeldState,
+    keymap: &Keymap,
+    tuning: &Tuning,
+    last_jog_param: Option<String>,
+    debug_event: Option<String>,
+) -> render::RenderData {
+        let step_states: Vec<_> = (0..model.tracks.len())
+            .map(|t| model.read_step_state(bus, t))
+            .collect();
+        let step_state = step_states
+            .get(model.active_track)
+            .cloned()
+            .unwrap_or_default();
+        let bpm = model.read_bpm(bus);
+
+        let slot_a_value = model
+            .slot_a
+            .as_ref()
+            .map(|s| model.read_param_value(bus, s.node_id, s.param_id))
+            .unwrap_or(0.0);
+        let slot_b_value = model
+            .slot_b
+            .as_ref()
+            .map(|s| model.read_param_value(bus, s.node_id, s.param_id))
+            .unwrap_or(0.0);
+        let slot_c_value = model
+            .slot_c
+            .as_ref()
+            .map(|s| model.read_param_value(bus, s.node_id, s.param_id))
+            .unwrap_or(0.0);
+
+        model.update_flash(0, slot_a_value);
+        model.update_flash(1, slot_b_value);
+        // TK2 C5 (D13): slot C flashes too — was bound but never tracked
+        // (review finding, post-C5 hostile review).
+        model.update_flash(2, slot_c_value);
+
+        let envelope = model.envelope_for_active_track().map(|e| {
+            let val = model.read_param_value(bus, e.node_id, e.param_id);
+            (e, val)
+        });
+        let live_env_level = envelope.as_ref().and_then(|(env, _)| {
+            bus.read(&format!("/node/{}/state/env_level", env.node_id))
+                .and_then(|v| match &v {
+                    StateBusValue::Float(f) => Some(*f),
+                    _ => None,
+                })
+        });
+
+        let live_lfo_phase: Option<f64> = {
+            bus.iter()
+                .find(|(k, _)| k.ends_with("/state/lfo_phase"))
+                .and_then(|(_, v)| match v {
+                    StateBusValue::Float(f) => Some(*f),
+                    _ => None,
+                })
+        };
+
+        let step_locks: Vec<Vec<usize>> = (0..model.tracks.len())
+            .map(|t| model.read_step_locks(bus, t))
+            .collect();
+        // TK2 C4 (D12): per-track mute state, rendered on the track
+        // indicator — the dedicated Mute screen this was originally
+        // built for was retired in TK2.1 C6.
+        let mute_states: Vec<bool> = model
+            .tracks
+            .iter()
+            .map(|t| {
+                bus.read(&format!("/node/{}/param/mute", t.sequencer_id))
+                    .is_some_and(|v| matches!(v, paraclete_node_api::StateBusValue::Float(f) if *f >= 0.5))
+            })
+            .collect();
+
+        // TK2 C6 (D12): Chain screen state, read from the active track's
+        // published sequencer state.
+        let active_seq_id = model.tracks[model.active_track].sequencer_id;
+        let read_int = |path: String| -> Option<i64> {
+            match bus.read(&path) {
+                Some(paraclete_node_api::StateBusValue::Int(i)) => Some(*i),
+                _ => None,
+            }
+        };
+        let active_pattern =
+            read_int(format!("/node/{active_seq_id}/state/active_pattern")).unwrap_or(0) as usize;
+        let cued_pattern_raw =
+            read_int(format!("/node/{active_seq_id}/state/cued_pattern")).unwrap_or(-1);
+        let cued_pattern = if cued_pattern_raw >= 0 {
+            Some(cued_pattern_raw as usize)
+        } else {
+            None
+        };
+        let chain_len =
+            read_int(format!("/node/{active_seq_id}/state/chain_len")).unwrap_or(0) as usize;
+        let page_loop = (
+            read_int(format!("/node/{active_seq_id}/state/page_loop_start")).unwrap_or(0) as u8,
+            read_int(format!("/node/{active_seq_id}/state/page_loop_end")).unwrap_or(0) as u8,
+        );
+
+        // P11 C6a: KIT screen state from the app-published context paths.
+        // `/context/kits` is names-only (`idx:name;...`) — the encoder-bank
+        // preview therefore shows the selected kit's name as a placeholder
+        // for its entries (values are not on the bus in P11).
+        let read_text = |path: &str| -> String {
+            bus.read(path)
+                .and_then(|v| match v {
+                    StateBusValue::Text(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .unwrap_or_default()
+        };
+        let kit_list = parse_kit_list(&read_text("/context/kits"));
+        let kit_binding = parse_kit_binding(&read_text("/context/kit_binding"));
+        // The "loaded" kit is the one bound to the selected track's active
+        // pattern slot (from `/context/kit_binding`, `slot:kit` pairs).
+        let kit_loaded_slot = kit_binding
+            .iter()
+            .find(|(slot, kit)| *slot == active_pattern && *kit >= 0)
+            .map(|(_, kit)| *kit as usize);
+        // P11 C6b: perform-mode indicator — `/context/perform` Float ≥ 0.5.
+        let perform_mode = bus
+            .read("/context/perform")
+            .is_some_and(|v| matches!(v, StateBusValue::Float(f) if *f >= 0.5));
+        // P11 C6e: per-track pattern-mute state for the track indicator.
+        let pattern_muted_states: Vec<bool> = model
+            .tracks
+            .iter()
+            .map(|t| {
+                bus.read(&format!("/node/{}/state/pattern_muted", t.sequencer_id))
+                    .is_some_and(|v| matches!(v, StateBusValue::Bool(b) if *b))
+            })
+            .collect();
+
+        // TK2 C5 (D8/§0 A11): the active page's params in Rule order,
+        // restricted to the current sub-page's 8-wide window (pages with
+        // more than 8 params split into sub-pages instead of silently
+        // truncating). Resolved fresh each render, matching the jog
+        // dispatch below.
+        let encoder_params = model.resolve_encoder_params();
+        let encoder_cells: Vec<Option<render::EncoderCell>> = encoder_params
+            .iter()
+            .map(|cell| {
+                cell.as_ref()
+                    .map(|p| {
+                        // TK3 C0 (#180): a virtual step cell reads the
+                        // focused step's per-step detail, not a bank param.
+                        let value = match p.target {
+                            model::EncoderTarget::VirtualStep { seq_id, kind } => {
+                                let focus = model
+                                    .lock_step_for_active_track()
+                                    .unwrap_or_else(|| {
+                                        model
+                                            .read_step_state(bus, model.active_track)
+                                            .current_step
+                                    });
+                                model
+                                    .read_step_detail(bus, seq_id, focus)
+                                    .map(|d| match kind {
+                                        model::StepParamKind::Velocity => d.velocity,
+                                        model::StepParamKind::Length => d.length,
+                                        model::StepParamKind::Timing => d.timing,
+                                        model::StepParamKind::Condition => d.fill as f64,
+                                    })
+                                    .unwrap_or(0.0)
+                            }
+                            model::EncoderTarget::Real => {
+                                model.read_param_value(bus, p.node_id, p.param_id)
+                            }
+                        };
+                        render::EncoderCell {
+                            name: p.name.clone(),
+                            value,
+                            min: p.min,
+                            max: p.max,
+                            resolved: p.resolved,
+                            options: p.options.clone(),
+                            target: p.target,
+                        }
+                    })
+            })
+            .collect();
+        for (i, cell) in encoder_cells.iter().enumerate() {
+            if let Some(c) = cell {
+                model.update_encoder_flash(i, c.value);
+            }
+        }
+        let encoder_flash: Vec<bool> = (0..8)
+            .map(|i| {
+                model.encoder_flash[i]
+                    .is_some_and(|t| t.elapsed().as_millis() < tuning.flash_ms as u128)
+            })
+            .collect();
+
+        let mut slot_a_locked = false;
+        let mut slot_b_locked = false;
+        let mut slot_c_locked = false;
+        if let Some(focus) = model.lock_step_for_active_track() {
+            if let Some(ref s) = model.slot_a {
+                let seq_id = model.tracks[model.active_track].sequencer_id;
+                slot_a_locked = model
+                    .read_lock_value(bus, seq_id, focus, s.node_id, s.param_id)
+                    .is_some();
+            }
+            if let Some(ref s) = model.slot_b {
+                let seq_id = model.tracks[model.active_track].sequencer_id;
+                slot_b_locked = model
+                    .read_lock_value(bus, seq_id, focus, s.node_id, s.param_id)
+                    .is_some();
+            }
+            if let Some(ref s) = model.slot_c {
+                let seq_id = model.tracks[model.active_track].sequencer_id;
+                slot_c_locked = model
+                    .read_lock_value(bus, seq_id, focus, s.node_id, s.param_id)
+                    .is_some();
+            }
+        }
+
+        // TK2.1 C2 (D3/D4): key chip labels, resolved fresh each render
+        // against the live keymap (bindings can change via `:bind` at
+        // runtime).
+        let trig_key_labels: Vec<Option<String>> = (0..16)
+            .map(|i| trig_button(i).and_then(|b| key_label(&keymap, b)))
+            .collect();
+        let track_key_labels: Vec<Option<String>> =
+            trig_key_labels[..model.tracks.len().min(16)].to_vec();
+        let legend_key_labels: HashMap<PanelButton, String> = [
+            PanelButton::Trk,
+            PanelButton::Ptn,
+            PanelButton::Rec,
+            PanelButton::Play,
+            PanelButton::Stop,
+            PanelButton::Song,
+            PanelButton::Tempo,
+            PanelButton::Settings,
+            PanelButton::Yes,
+            PanelButton::No,
+            PanelButton::Enc,
+            PanelButton::Lock,
+        ]
+        .into_iter()
+        .filter_map(|b| key_label(&keymap, b).map(|k| (b, k)))
+        .collect();
+
+        let render_data = render::RenderData {
+            screen: model.screen,
+            rec: model.rec,
+            armed_prefix: match held.armed {
+                Some(input::Hold::Trk) => Some("TRK…".to_string()),
+                Some(input::Hold::Ptn) => Some("PTN…".to_string()),
+                // TK2.1 C5b: Lock armed and waiting for the next trig.
+                Some(input::Hold::Lock) => Some("LOCK…".to_string()),
+                // REC has its own three-state transport/status indicator
+                // (D5) — it isn't an "armed prefix" chip like TRK/PTN.
+                Some(input::Hold::Rec) | None => None,
+            },
+            active_track: model.active_track,
+            // #161: per-track engine label, machine-aware — not
+            // `TrackInfo.name`, which freezes at the built-with machine.
+            track_names: (0..model.tracks.len())
+                .map(|t| model.engine_label(t))
+                .collect(),
+            display_names: model.tracks.iter().map(|t| t.display_name.clone()).collect(),
+            trig_key_labels,
+            track_key_labels,
+            legend_key_labels,
+            bpm,
+            playing: model.playing(bus),
+            page_window: model.page_windows[model.active_track],
+            step_state,
+            step_states,
+            slot_a: model.slot_a.clone(),
+            slot_a_value,
+            slot_b: model.slot_b.clone(),
+            slot_b_value,
+            slot_c: model.slot_c.clone(),
+            slot_c_value,
+            page_groups: model.page_groups_for_active_track(),
+            perf_page: model.perf_page,
+            sub_page: model.sub_page,
+            sub_page_count: model.page_sub_page_count(),
+            envelope,
+            live_env_level,
+            live_lfo_phase,
+            debug_event,
+            enc: model.enc,
+            lock_target_step: model.lock_step_for_active_track(),
+            last_jog_param,
+            step_locks,
+            mute_states,
+            slot_a_locked,
+            slot_b_locked,
+            slot_c_locked,
+            cmdline: model.cmdline.clone(),
+            cmdline_error: model.cmdline_error.clone(),
+            cmdline_status: model.cmdline_status.clone(),
+            cmdline_candidates: model.cmdline_candidates(),
+            slot_a_flash: model.slot_flash[0].map_or(false, |t| {
+                t.elapsed().as_millis() < tuning.flash_ms as u128
+            }),
+            slot_b_flash: model.slot_flash[1].map_or(false, |t| {
+                t.elapsed().as_millis() < tuning.flash_ms as u128
+            }),
+            slot_c_flash: model.slot_flash[2].map_or(false, |t| {
+                t.elapsed().as_millis() < tuning.flash_ms as u128
+            }),
+            help_visible: model.help_visible,
+            encoder_cells,
+            encoder_flash,
+            kitty: held.kitty,
+            pattern_bank_size: PATTERN_BANK_SIZE,
+            active_pattern,
+            cued_pattern,
+            chain_len,
+            page_loop,
+            chain_cursor: model.chain_cursor,
+            kit_scroll: model.kit_scroll,
+            kit_cursor: model.kit_cursor,
+            kit_list,
+            kit_loaded_slot,
+            perform_mode,
+            pattern_muted_states,
+        };
+        render_data
+
 }
 
 #[cfg(test)]
@@ -4013,10 +4037,111 @@ mod tests {
         assert_eq!(cond.target_id, 200);
         assert_eq!(cond.arg0, 4, "targets the focused step");
         let enc = cond.arg1 as i64 as u64;
-        assert_eq!(((enc >> 24) & 0xFF) as u8 != 1, true, "fill must change");
+        assert!(((enc >> 24) & 0xFF) as u8 != 1, "fill must change");
         assert_eq!((enc & 0xFF) as u8, 75, "probability preserved");
         assert_eq!(((enc >> 8) & 0xFF) as u8, 1, "repeat_n preserved");
         assert_eq!(((enc >> 16) & 0xFF) as u8, 2, "repeat_m preserved");
+    }
+
+    // ── TK3 C1 (#163): build_render_data is a testable free function ────
+
+    /// Drive `build_render_data` directly — the seam #163 exists to give.
+    fn render_data(bus: &BusHandle, mut model: Model, held: &HeldState) -> render::RenderData {
+        let b = bus.borrow();
+        build_render_data(
+            &mut model,
+            &*b,
+            held,
+            &Keymap::default(),
+            &Tuning::default(),
+            None,
+            None,
+        )
+    }
+
+    fn render_model() -> Model {
+        Model::new(
+            1,
+            &[200],
+            &[100],
+            &["T1".to_string()],
+            &["T1".to_string()],
+            test_caps(),
+            vec![],
+        )
+    }
+
+    #[test]
+    fn build_render_data_default_state() {
+        let bus = test_bus();
+        let held = HeldState::new(false);
+        let data = render_data(&bus, render_model(), &held);
+        assert_eq!(data.screen, Screen::Grid);
+        assert_eq!(data.bpm, 120.0, "no tempo on the bus -> default 120");
+        assert!(data.armed_prefix.is_none(), "nothing armed");
+        assert_eq!(data.mute_states, vec![false]);
+        assert!(data.kit_list.is_empty());
+    }
+
+    #[test]
+    fn build_render_data_param_page_carries_encoder_cells() {
+        let bus = test_bus();
+        let held = HeldState::new(false);
+        // test_caps' engine (empty rule) resolves positionally to its
+        // declared params: decay, tune, width at cols 0..2.
+        let data = render_data(&bus, render_model(), &held);
+        assert_eq!(data.encoder_cells.len(), 8);
+        assert_eq!(data.encoder_cells[0].as_ref().unwrap().name, "decay");
+        assert_eq!(data.encoder_cells[1].as_ref().unwrap().name, "tune");
+        assert!(data.encoder_cells[3..].iter().all(|c| c.is_none()));
+    }
+
+    #[test]
+    fn build_render_data_reads_mute_states() {
+        let bus = test_bus();
+        let held = HeldState::new(false);
+        bus.borrow_mut().write(
+            "/node/200/param/mute",
+            paraclete_node_api::StateBusValue::Float(1.0),
+        );
+        let data = render_data(&bus, render_model(), &held);
+        assert_eq!(data.mute_states, vec![true]);
+    }
+
+    #[test]
+    fn build_render_data_armed_prefix() {
+        let bus = test_bus();
+        let mut held = HeldState::new(false);
+        let data = render_data(&bus, render_model(), &held);
+        assert!(data.armed_prefix.is_none());
+        held.armed = Some(input::Hold::Trk);
+        let data = render_data(&bus, render_model(), &held);
+        assert_eq!(data.armed_prefix.as_deref(), Some("TRK…"));
+    }
+
+    #[test]
+    fn build_render_data_kit_screen_state() {
+        let bus = test_bus();
+        let held = HeldState::new(false);
+        bus.borrow_mut().write(
+            "/context/kits",
+            paraclete_node_api::StateBusValue::Text("0:MyKit;1:Other".into()),
+        );
+        bus.borrow_mut().write(
+            "/context/kit_binding",
+            paraclete_node_api::StateBusValue::Text("0:0".into()),
+        );
+        // Active pattern 0 -> kit_loaded_slot = slot 0 -> kit 0.
+        bus.borrow_mut().write(
+            "/node/200/state/active_pattern",
+            paraclete_node_api::StateBusValue::Int(0),
+        );
+        let mut model = render_model();
+        model.screen = Screen::Kit;
+        let data = render_data(&bus, model, &held);
+        assert_eq!(data.screen, Screen::Kit);
+        assert_eq!(data.kit_list.len(), 2);
+        assert_eq!(data.kit_loaded_slot, Some(0));
     }
 
     #[test]
