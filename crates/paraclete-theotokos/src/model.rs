@@ -116,6 +116,26 @@ pub struct SlotBinding {
     pub max: f64,
 }
 
+/// TK3 C0 (#180): how the encoder dispatch resolves a jog on this column.
+/// `Real` is the existing path (`CMD_BUMP_PARAM` to a `node_id`/`param_id`
+/// pair). `VirtualStep` is a per-step sequencer param (`CMD_SET_STEP_*`)
+/// targeting the focused step; `node_id`/`param_id` are the 0 sentinel and
+/// the dispatch matches on `target` before ever reading them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EncoderTarget {
+    Real,
+    VirtualStep { seq_id: u32, kind: StepParamKind },
+}
+
+/// The four per-step params the TRIG page's virtual encoders edit (#180).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepParamKind {
+    Velocity,
+    Length,
+    Timing,
+    Condition,
+}
+
 /// One placed encoder cell — the param sitting on a specific encoder column.
 #[derive(Clone, Debug)]
 pub struct EncoderParam {
@@ -133,6 +153,11 @@ pub struct EncoderParam {
     /// Carried so the encoder can read `lfo_dest tune` rather than
     /// `lfo_dest 1.00`. `None` for anything continuous or unlabelled.
     pub options: Option<Vec<Option<String>>>,
+    /// TK3 C0 (#180): how the jog dispatch routes this column. `Real` for
+    /// every live bank param; `VirtualStep` for the TRIG page's four
+    /// per-step params. New construction sites must set this (there is no
+    /// implicit default because the dispatch matches exhaustively on it).
+    pub target: EncoderTarget,
 }
 
 /// The label a stepped selector's current value should read as (#176).
@@ -149,6 +174,65 @@ pub fn option_label(options: Option<&[Option<String>]>, value: f64) -> Option<&s
     options
         .get(value.round() as usize)
         .and_then(|o| o.as_deref())
+}
+
+/// TK3 C0 (#180): one step's per-step detail, parsed from the
+/// `/node/{id}/state/step_detail` bus path. Seven fields mirroring
+/// `Sequencer::write_step_record`'s encoding. The `velocity`/`length`/`timing`
+/// are normalized to their encoder ranges; the four condition fields are raw
+/// (so the condition encoder's read-modify-write can repack them exactly).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct StepDetail {
+    /// Normalized 0..1 (raw u16 / 65535.0).
+    pub velocity: f64,
+    /// Normalized 0..1.
+    pub length: f64,
+    /// Normalized -1..1 (micro_offset / 47.0).
+    pub timing: f64,
+    /// Raw condition probability (0..100).
+    pub probability: u8,
+    /// Raw repeat numerator (0 = Always).
+    pub repeat_n: u8,
+    /// Raw repeat denominator (0 = Always).
+    pub repeat_m: u8,
+    /// `FillCondition` discriminant (0=Ignore … 6=NotFillB).
+    pub fill: u8,
+}
+
+/// Parse the `step_detail` bus blob into one `StepDetail` per step, in step
+/// order. The format is a semicolon-delimited list of
+/// `vel_u16,len_f32,timing_i8,prob_u8,repeat_n_u8,repeat_m_u8,fill_u8`
+/// tuples. Malformed tuples are skipped (a malformed field never constitutes
+/// the whole parse failing — hostile or drifted bus data degrades to fewer
+/// readable steps, not a panic).
+pub fn parse_step_detail(text: &str) -> Vec<StepDetail> {
+    text.split(';')
+        .filter(|tuple| !tuple.is_empty())
+        .map(parse_step_tuple)
+        .collect()
+}
+
+fn parse_step_tuple(tuple: &str) -> StepDetail {
+    let mut parts = tuple.split(',');
+    let next_field = |parts: &mut std::str::Split<'_, char>| -> Option<String> {
+        parts.next().map(|s| s.to_string())
+    };
+    let vel = next_field(&mut parts).and_then(|s| s.parse::<u16>().ok());
+    let len = next_field(&mut parts).and_then(|s| s.parse::<f32>().ok());
+    let timing = next_field(&mut parts).and_then(|s| s.parse::<i8>().ok());
+    let probability = next_field(&mut parts).and_then(|s| s.parse::<u8>().ok());
+    let repeat_n = next_field(&mut parts).and_then(|s| s.parse::<u8>().ok());
+    let repeat_m = next_field(&mut parts).and_then(|s| s.parse::<u8>().ok());
+    let fill = next_field(&mut parts).and_then(|s| s.parse::<u8>().ok());
+    StepDetail {
+        velocity: vel.map_or(0.0, |v| v as f64 / 65535.0),
+        length: len.map_or(0.0, |l| l as f64),
+        timing: timing.map_or(0.0, |t| t as f64 / 47.0),
+        probability: probability.unwrap_or(100),
+        repeat_n: repeat_n.unwrap_or(0),
+        repeat_m: repeat_m.unwrap_or(0),
+        fill: fill.unwrap_or(0),
+    }
 }
 
 /// The 8-encoder bank, indexed by column. `None` is an empty column — which a
@@ -791,8 +875,10 @@ impl Model {
                             // rest (`main.rs::stepped_labels`). Nothing here
                             // needs to know what an LFO or a machine is.
                             options: p.options.clone(),
+                            target: EncoderTarget::Real,
                         });
                     }
+                    self.fill_trig_virtual_params(&mut bank, lo);
                     return bank;
                 }
             }
@@ -826,6 +912,7 @@ impl Model {
                         stepped: p.stepped,
                         resolved: true,
                         options: p.value_labels(),
+                        target: EncoderTarget::Real,
                     });
                 }
                 return bank;
@@ -854,10 +941,66 @@ impl Model {
                     stepped: pd.stepped,
                     resolved: true,
                     options: pd.value_labels(),
+                    target: EncoderTarget::Real,
                 });
             }
         }
+        self.fill_trig_virtual_params(&mut bank, lo);
         bank
+    }
+
+    /// TK3 C0 (#180): append the TRIG page's four virtual per-step params
+    /// (velocity/length/timing/condition) at slots 1–4 — after the engine's
+    /// `machine` at slot 0 — when the active page is TRIG. These bypass the
+    /// composite view entirely (the sequencer is not in the `TrackChain`);
+    /// each is an `EncoderTarget::VirtualStep` the jog dispatch routes to the
+    /// dedicated `CMD_SET_STEP_*` command. Sub-page 0 only: the virtual
+    /// params live at slots 1–4, so a later sub-page has none.
+    fn fill_trig_virtual_params(&self, bank: &mut EncoderBank, lo: u16) {
+        let is_trig = self
+            .page_groups_for_active_track()
+            .get(self.perf_page)
+            .map(|p| p == "TRIG")
+            .unwrap_or(false);
+        if !is_trig {
+            return;
+        }
+        let seq_id = self.tracks[self.active_track].sequencer_id;
+        let column = |slot: u8| (slot as u16).checked_sub(lo).map(|c| c as usize);
+        for (kind, slot) in [
+            (StepParamKind::Velocity, 1),
+            (StepParamKind::Length, 2),
+            (StepParamKind::Timing, 3),
+            (StepParamKind::Condition, 4),
+        ] {
+            let Some(col) = column(slot).filter(|c| *c < SUB_PAGE_SLOTS as usize) else {
+                continue;
+            };
+            // Never overwrite a real placed param — a node declaring a
+            // genuine param at one of these slots wins over the synthetic
+            // per-step entry (in practice TRIG only carries `machine` at
+            // slot 0, so slots 1–4 are empty and this guard is a no-op).
+            if bank[col].is_some() {
+                continue;
+            }
+            let (name, min, max, stepped) = match kind {
+                StepParamKind::Velocity => ("velocity", 0.0, 1.0, false),
+                StepParamKind::Length => ("length", 0.0, 1.0, false),
+                StepParamKind::Timing => ("timing", -1.0, 1.0, false),
+                StepParamKind::Condition => ("condition", 0.0, 6.0, true),
+            };
+            bank[col] = Some(EncoderParam {
+                node_id: 0,
+                param_id: 0,
+                name: name.to_string(),
+                min,
+                max,
+                stepped,
+                resolved: true,
+                options: None,
+                target: EncoderTarget::VirtualStep { seq_id, kind },
+            });
+        }
     }
 
     /// TK2 C5 (§0 A11): how many sub-pages the active page has (min 1) —
@@ -958,6 +1101,37 @@ impl Model {
             steps,
             page_count,
         }
+    }
+
+    /// TK3 C0 (#180): read one step's per-step detail from the
+    /// `/node/{id}/state/step_detail` bus path.
+    pub fn read_step_detail(
+        &self,
+        bus: &StateBusHandle,
+        seq_id: u32,
+        step: usize,
+    ) -> Option<StepDetail> {
+        let text = bus
+            .read(&format!("/node/{}/state/step_detail", seq_id))
+            .and_then(|v| match v {
+                StateBusValue::Text(s) => Some(s.clone()),
+                _ => None,
+            })?;
+        parse_step_detail(&text).into_iter().nth(step)
+    }
+
+    /// Repack a full `CMD_SET_STEP_CONDITION` `arg1`
+    /// (`probability | (repeat_n << 8) | (repeat_m << 16) | (fill << 24)`)
+    /// with the step's fill **swapped** for `new_fill`, preserving
+    /// probability and repeat. The condition encoder edits only the fill
+    /// field (Elektron model); the other two are unrecoverable elsewhere,
+    /// so the read-modify-write must keep them intact (#180).
+    pub fn pack_condition(detail: &StepDetail, new_fill: u8) -> f64 {
+        let enc = detail.probability as u64
+            | ((detail.repeat_n as u64) << 8)
+            | ((detail.repeat_m as u64) << 16)
+            | ((new_fill as u64) << 24);
+        enc as f64
     }
 
     pub fn page_groups_for_active_track(&self) -> Vec<String> {
@@ -1560,6 +1734,70 @@ mod tests {
         let t1 = Instant::now() + Duration::from_millis(10);
         let held = jt.repeat(t1, 10);
         assert!(held.is_none(), "release must prevent future repeats");
+    }
+
+    // ── TK3 C0 (#180): step-detail parsing + condition repacking ────────
+
+    #[test]
+    fn parse_step_detail_parses_all_seven_fields() {
+        // vel 32768 (~0.5), len 0.25, timing -10, prob 75, repeat 1/2,
+        // fill 1 (FillA) — the exact shape a Sequencer publishes.
+        let parsed = parse_step_detail("32768,0.25,-10,75,1,2,1");
+        assert_eq!(parsed.len(), 1);
+        let d = parsed[0];
+        assert!((d.velocity - 0.5).abs() < 0.001, "got {}", d.velocity);
+        assert_eq!(d.length, 0.25);
+        assert!((d.timing - (-10.0 / 47.0)).abs() < 0.0001);
+        assert_eq!(d.probability, 75);
+        assert_eq!(d.repeat_n, 1);
+        assert_eq!(d.repeat_m, 2);
+        assert_eq!(d.fill, 1);
+    }
+
+    #[test]
+    fn parse_step_detail_splits_steps_in_order() {
+        let parsed = parse_step_detail("32768,0.75,0,100,0,0,0;32767,0.25,-10,75,1,2,1");
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].fill, 0, "step 0 default");
+        assert_eq!(parsed[1].fill, 1, "step 1 FillA");
+        assert_eq!(parsed[1].repeat_n, 1);
+    }
+
+    #[test]
+    fn parse_step_detail_skips_malformed_tuples_without_panicking() {
+        // A malformed tuple must degrade gracefully, not panic the whole
+        // parse — hostile/drifted bus data yields fewer readable steps.
+        let parsed = parse_step_detail("bogus;32768,0.75,0,100,0,0,0");
+        assert_eq!(parsed.len(), 2, "malformed tuple still yields one StepDetail");
+        assert_eq!(parsed[1].probability, 100);
+        // truncated tuple: missing tail fields default
+        let parsed2 = parse_step_detail("32768,0.5");
+        assert_eq!(parsed2.len(), 1);
+        assert_eq!(parsed2[0].fill, 0);
+    }
+
+    #[test]
+    fn pack_condition_preserves_prob_and_repeat_swaps_only_fill() {
+        let d = StepDetail {
+            velocity: 0.5,
+            length: 0.25,
+            timing: 0.0,
+            probability: 75,
+            repeat_n: 1,
+            repeat_m: 2,
+            fill: 1,
+        };
+        let packed = Model::pack_condition(&d, 4); // NoFill
+        // Unpack exactly as Sequencer::CMD_SET_STEP_CONDITION does.
+        let enc = packed as i64 as u64;
+        let probability = (enc & 0xFF) as u8;
+        let repeat_n = ((enc >> 8) & 0xFF) as u8;
+        let repeat_m = ((enc >> 16) & 0xFF) as u8;
+        let fill = ((enc >> 24) & 0xFF) as u8;
+        assert_eq!(probability, 75, "probability preserved");
+        assert_eq!(repeat_n, 1, "repeat_n preserved");
+        assert_eq!(repeat_m, 2, "repeat_m preserved");
+        assert_eq!(fill, 4, "only fill changes");
     }
 
     // ── P11 C6a: KIT list parsing + scroll ──────────────────────────────

@@ -8,6 +8,12 @@ pub const CMD_CLOCK_STOP: u32 = 17;
 pub const CMD_CLOCK_REWIND: u32 = 18;
 pub const CMD_TOGGLE_STEP: u32 = 16;
 pub const GRID_STEPS: usize = 16;
+/// TK3 C0 (#180): the TRIG page's virtual per-step commands (mirror
+/// `Sequencer::CMD_SET_STEP_*`). arg0 = step index in all four.
+pub const CMD_SET_STEP_VELOCITY: u32 = 36; // arg1: 0..1 velocity fraction
+pub const CMD_SET_STEP_LENGTH: u32 = 37; // arg1: length (unit)
+pub const CMD_SET_STEP_TIMING: u32 = 25; // arg1: micro_offset (i8)
+pub const CMD_SET_STEP_CONDITION: u32 = 26; // arg1: packed fill/prob/repeat
 /// TK1 C5: lock command family (mirrors Sequencer constants).
 pub const CMD_SET_LOCK_TARGET: u32 = 33;
 pub const CMD_SET_STEP_LOCK: u32 = 34;

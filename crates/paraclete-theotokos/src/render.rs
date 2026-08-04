@@ -53,9 +53,23 @@ pub struct EncoderCell {
     /// `lfo_dest` reads `tune` and `machine` reads `AnalogHiHat` instead of
     /// `1.00` / `2.00`. `None` for a continuous or unlabelled param.
     pub options: Option<Vec<Option<String>>>,
+    /// TK3 C0 (#180): how the jog dispatch routes this cell. `Real` for a
+    /// live bank param; `VirtualStep` for the TRIG page's per-step params.
+    pub target: crate::model::EncoderTarget,
 }
 
 impl EncoderCell {
+    /// The name as displayed. A `VirtualStep` cell carries a `▸` prefix to
+    /// signal "this edits a step, not a live param" (#180) — visual
+    /// shorthand that the cell's target is a per-step sequencer param.
+    pub fn display_name(&self) -> String {
+        if matches!(self.target, crate::model::EncoderTarget::VirtualStep { .. }) {
+            format!("▸{}", self.name)
+        } else {
+            self.name.clone()
+        }
+    }
+
     /// What the cell's value should read as (#176).
     ///
     /// A stepped selector whose value has a name reads the name; everything
@@ -888,7 +902,7 @@ fn render_track_context(frame: &mut Frame, area: Rect, data: &RenderData) {
             let bar = "▓".repeat(filled) + &"░".repeat(4 - filled);
             spans.push(Span::raw(format!(
                 "  {} {} {bar}",
-                cell.name,
+                cell.display_name(),
                 cell.value_text()
             )));
         }
@@ -952,7 +966,7 @@ fn render_encoder_cell(frame: &mut Frame, area: Rect, data: &RenderData, idx: us
                 Color::White
             };
             Line::styled(
-                format!("{} {} {}", c.name, bar, c.value_text()),
+                format!("{} {} {}", c.display_name(), bar, c.value_text()),
                 Style::default().fg(color),
             )
         }
@@ -2474,6 +2488,7 @@ mod tests {
                 max: 1.0,
                 resolved: true,
                 options: None,
+                target: crate::model::EncoderTarget::Real,
             }),
             Some(EncoderCell {
                 name: "tune".into(),
@@ -2482,6 +2497,7 @@ mod tests {
                 max: 1.0,
                 resolved: true,
                 options: None,
+                target: crate::model::EncoderTarget::Real,
             }),
             None,
             None,
@@ -2522,6 +2538,7 @@ mod tests {
                 max: 8.0,
                 resolved: true,
                 options: Some(vec![Some("off".into()), Some("tune".into())]),
+                target: crate::model::EncoderTarget::Real,
             }),
             Some(EncoderCell {
                 name: "decay".into(),
@@ -2530,6 +2547,7 @@ mod tests {
                 max: 1.0,
                 resolved: true,
                 options: None,
+                target: crate::model::EncoderTarget::Real,
             }),
             None,
             None,
@@ -2571,6 +2589,7 @@ mod tests {
                 max: 1.0,
                 resolved: false,
                 options: None,
+                target: crate::model::EncoderTarget::Real,
             }),
             None,
             None,

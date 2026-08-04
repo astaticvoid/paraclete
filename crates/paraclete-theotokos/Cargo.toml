@@ -10,3 +10,6 @@ crossterm = { workspace = true }
 serde_yml = { workspace = true }
 paraclete-node-api = { path = "../paraclete-node-api" }
 paraclete-view-assembly = { path = "../paraclete-view-assembly" }
+
+[dev-dependencies]
+paraclete-nodes = { path = "../paraclete-nodes" }

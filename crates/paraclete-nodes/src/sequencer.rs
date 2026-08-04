@@ -1,11 +1,12 @@
 use paraclete_node_api::{
     midi::ChannelVoice2,
-    CapabilityDocument, DebugEventKind, Event, Node, NodeCommand, ParamDescriptor, ParamLockEvent,
-    ParamUnit, ParameterBank, ParamDisplay, ParamDisplayAdapter, PortDescriptor, PortDirection,
-    PortName, PortType, ProcessInput, ProcessOutput, StateBusValue, TimedEvent, TransportEvent,
-    UmpMessage, TICKS_PER_BEAT,
+    CapabilityDocument, DebugEventKind, Event, Node, NodeCommand, PageRef, ParamDescriptor,
+    ParamLockEvent, ParamUnit, ParameterBank, ParamDisplay, ParamDisplayAdapter, PortDescriptor,
+    PortDirection, PortName, PortType, ProcessInput, ProcessOutput, Rule, StateBusValue,
+    TimedEvent, TransportEvent, UmpMessage, ViewPlugin, TICKS_PER_BEAT,
 };
 
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::fmt::Write;
 
@@ -376,7 +377,7 @@ pub struct Sequencer {
     /// Keyed to `self.node_id` at first `published_state()` call.
     /// The `track_name`, `locks` entries and all VALUEs are still computed
     /// fresh each call.
-    state_path_cache: std::sync::OnceLock<[String; 20]>,
+    state_path_cache: std::sync::OnceLock<[String; 21]>,
 
     /// TK1 C1: current lock target set by CMD_SET_LOCK_TARGET.
     lock_target: Option<(u32, u32)>,
@@ -730,6 +731,52 @@ impl Sequencer {
             .iter()
             .map(|s| if s.active { '1' } else { '0' })
             .collect()
+    }
+
+    /// Per-step detail packed as one text blob for the
+    /// `/node/{id}/state/step_detail` bus path (TK3 C0). One
+    /// semicolon-delimited tuple per step, in step order:
+    /// `vel_u16,len_f32,timing_i8,prob_u8,repeat_n_u8,repeat_m_u8,fill_u8`.
+    /// The four condition fields mirror `write_step_record`'s encoding:
+    /// `prob` is the raw probability, `repeat_n`/`repeat_m` the
+    /// `nm_from_repeat()` output (0,0 = Always), `fill` the
+    /// `fill_discriminant()` output (0=Ignore … 6=NotFillB).
+    ///
+    /// This is the **only** bus path that packs structured per-step data
+    /// into a text blob (every other path carries a single `StateBusValue`);
+    /// it is justified by the volume — N steps × 7 fields as separate paths
+    /// would be 7N — and by the fact that consumers read one step's tuple,
+    /// not the whole set. Do not pattern-match new paths against it.
+    fn step_detail(&self) -> String {
+        let p = &self.patterns[self.active_index()];
+        let mut s = String::with_capacity(p.length * 24);
+        for (i, step) in p.steps[..p.length].iter().enumerate() {
+            if i > 0 {
+                s.push(';');
+            }
+            let (prob, n, m, fill) = match &step.condition {
+                TrigCondition::Simple {
+                    repeat,
+                    fill,
+                    probability,
+                } => {
+                    let (n, m) = nm_from_repeat(*repeat);
+                    (*probability, n, m, fill_discriminant(*fill))
+                }
+            };
+            let _ = write!(
+                s,
+                "{},{},{},{},{},{},{}",
+                step.velocity,
+                step.length,
+                step.timing.micro_offset,
+                prob,
+                n,
+                m,
+                fill
+            );
+        }
+        s
     }
 
     fn handle_commands(&mut self, commands: &[NodeCommand]) {
@@ -1853,6 +1900,9 @@ impl Node for Sequencer {
                 format!("/node/{id}/state/locks"),
                 // P11 C4 — per-pattern mute tier
                 format!("/node/{id}/state/pattern_muted"),
+                // TK3 C0 — per-step velocity/length/timing/condition for the
+                // Theotokos TRIG page's virtual params (#180).
+                format!("/node/{id}/state/step_detail"),
             ]
         });
         let p = &self.patterns[self.active_index()];
@@ -1912,6 +1962,10 @@ impl Node for Sequencer {
             StateBusValue::Int(self.lock_dropped as i64),
         ));
         buf.push((paths[19].clone(), StateBusValue::Bool(p.muted)));
+        // TK3 C0 — per-step detail. Pushed unconditionally (like the other
+        // per-step text path, `steps_bitfield`) so a client never has to wait
+        // for a first-change tick to see the active pattern's step data.
+        buf.push((paths[20].clone(), StateBusValue::Text(self.step_detail())));
         if self.locks_dirty.get() {
             self.locks_dirty.set(false);
             let mut s = String::new();
@@ -2258,6 +2312,64 @@ impl Sequencer {
         self.bank
             .set(ParamDescriptor::id_for_name("swing"), swing as f64);
         self.last_bank_swing = swing;
+    }
+}
+
+/// TK3 C0 (#180): the sequencer's ViewPlugin — declares the TRIG page's
+/// four synthetic per-step params (velocity/length/timing/condition) at
+/// slots 1–4, after `machine` (slot 0, declared by the engine host).
+///
+/// **Scope note:** this impl exists for cap-doc completeness and discovery
+/// only. The TRIG page's virtual params are **not** resolved through the
+/// composite view — the sequencer is not in the `TrackChain`, and per-step
+/// (not per-param) step-internal data is a different kind of thing from what
+/// the view assembly merges. Resolution happens model-side in Theotokos
+/// (`Model::resolve_encoder_params`), which detects the TRIG page and appends
+/// `EncoderTarget::VirtualStep` entries. `to_rule` is therefore not wired
+/// into `Sequencer::capability_document` — the sequencer's bank is built from
+/// its cap-doc params, and these four are not bank params (each is a
+/// step-internal field accessed via `CMD_SET_STEP_*`), so declaring them as
+/// capability params would create four phantom bank slots that change
+/// serialization and p-lock reachability. The ids below are synthetic.
+impl ViewPlugin for Sequencer {
+    fn to_rule(&self, _node_id: u64, _sub_nodes: &[(u64, &dyn ViewPlugin)]) -> Rule {
+        Rule {
+            name: Cow::Borrowed("Sequencer"),
+            page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG")]),
+            param_pages: Cow::Owned(Self::virtual_step_param_pages()),
+            macros: Cow::Borrowed(&[]),
+            affordances: Cow::Borrowed(&[]),
+            envelopes: Cow::Borrowed(&[]),
+            routing: Cow::Borrowed(&[]),
+            diagram: None,
+            view_overrides: Cow::Borrowed(&[]),
+            variants: Cow::Borrowed(&[]),
+        }
+    }
+}
+
+impl Sequencer {
+    /// The four synthetic TRIG virtual-param placements: `velocity` 1,
+    /// `length` 2, `timing` 3, `condition` 4. Slot 0 is the engine host's
+    /// `machine` — shared across every machine, never moved.
+    pub fn virtual_step_param_pages() -> Vec<(u32, PageRef)> {
+        [
+            ("velocity", 1),
+            ("length", 2),
+            ("timing", 3),
+            ("condition", 4),
+        ]
+        .into_iter()
+        .map(|(name, slot)| {
+            (
+                ParamDescriptor::id_for_name(name),
+                PageRef {
+                    page: Cow::Borrowed("TRIG"),
+                    slot,
+                },
+            )
+        })
+        .collect()
     }
 }
 
@@ -6739,5 +6851,117 @@ mod tests {
         assert!(loaded.patterns[0].steps[0].active, "reload restores into loaded pattern");
         assert_eq!(loaded.patterns[0].steps[0].note, 63);
         assert_eq!(loaded.patterns[0].steps[2].note, 64);
+    }
+
+    // ── TK3 C0 (#180): TRIG virtual params ──────────────────────────────
+
+    #[test]
+    fn view_plugin_declares_trig_virtual_params() {
+        let seq = Sequencer::new();
+        let rule = seq.to_rule(0, &[]);
+        assert_eq!(rule.page_groups.to_vec(), vec!["TRIG"]);
+
+        let pages = Sequencer::virtual_step_param_pages();
+        assert_eq!(pages.len(), 4);
+        let names = ["velocity", "length", "timing", "condition"];
+        for (i, (pid, pr)) in pages.iter().enumerate() {
+            assert_eq!(pr.slot, (i + 1) as u8, "slot {}", i + 1);
+            assert_eq!(pr.page.as_ref(), "TRIG");
+            assert_eq!(*pid, ParamDescriptor::id_for_name(names[i]));
+        }
+        // The Rule's param_pages agree with the helper (same construction).
+        assert_eq!(rule.param_pages.len(), 4);
+        assert_eq!(rule.param_pages[0].1.slot, 1);
+        assert_eq!(rule.param_pages[3].1.slot, 4);
+    }
+
+    #[test]
+    fn published_state_includes_step_detail() {
+        let mut seq = Sequencer::new();
+        seq.set_node_id(9);
+        seq.activate(44100.0, 64);
+        // Step 0 gets a non-default profile: velocity 0.5, length 0.25,
+        // timing -10, condition { probability 75, repeat 1/2, fill FillA }.
+        let cond_enc = |prob: u8, n: u8, m: u8, fill: u8| {
+            (prob as u64 | ((n as u64) << 8) | ((m as u64) << 16) | ((fill as u64) << 24))
+                as f64
+        };
+        run_seq_with_cmds(
+            &mut seq,
+            &[
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_VELOCITY,
+                    arg0: 0,
+                    arg1: 0.5,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_LENGTH,
+                    arg0: 0,
+                    arg1: 0.25,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_TIMING,
+                    arg0: 0,
+                    arg1: -10.0,
+                },
+                NodeCommand {
+                    target_id: 0,
+                    type_id: Sequencer::CMD_SET_STEP_CONDITION,
+                    arg0: 0,
+                    arg1: cond_enc(75, 1, 2, 1),
+                },
+            ],
+        );
+
+        let mut state = Vec::new();
+        seq.published_state(&mut state);
+        let found = state
+            .iter()
+            .find(|(k, _)| k == "/node/9/state/step_detail")
+            .expect("step_detail path present");
+        let StateBusValue::Text(t) = &found.1 else {
+            panic!("step_detail not text")
+        };
+
+        // One tuple per step, in step order — the count must match the
+        // `steps` bitfield length (the publisher lengths both by
+        // `pattern_length`).
+        let tuples: Vec<&str> = t.split(';').collect();
+        let steps_text = match &state
+            .iter()
+            .find(|(k, _)| k == "/node/9/state/steps")
+            .expect("steps bitfield present")
+            .1
+        {
+            StateBusValue::Text(s) => s.clone(),
+            _ => panic!("steps not text"),
+        };
+        assert_eq!(tuples.len(), steps_text.len(), "one tuple per step: {t}");
+        for (i, tuple) in tuples.iter().enumerate() {
+            assert_eq!(tuple.split(',').count(), 7, "tuple {i}: {tuple}");
+        }
+        let first: Vec<&str> = tuples[0].split(',').collect();
+
+        let vel: u16 = first[0].parse().unwrap();
+        assert_eq!(
+            ((vel as f64 / 65535.0) * 1000.0).round() as u32,
+            500,
+            "0.5 velocity encoded as ~32768"
+        );
+        let len: f32 = first[1].parse().unwrap();
+        assert_eq!(len, 0.25);
+        let timing: i8 = first[2].parse().unwrap();
+        assert_eq!(timing, -10);
+        let prob: u8 = first[3].parse().unwrap();
+        assert_eq!(prob, 75);
+        let n: u8 = first[4].parse().unwrap();
+        assert_eq!(n, 1);
+        let m: u8 = first[5].parse().unwrap();
+        assert_eq!(m, 2);
+        let fill: u8 = first[6].parse().unwrap();
+        assert_eq!(fill, 1, "FillA");
     }
 }

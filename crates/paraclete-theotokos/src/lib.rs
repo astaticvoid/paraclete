@@ -19,15 +19,16 @@ use ratatui::Terminal;
 use crate::action::{
     Action, Outcome, CMD_CHAIN_CLEAR, CMD_CHAIN_PUSH, CMD_CLEAR, CMD_CLEAR_STEP_LOCK,
     CMD_CLOCK_REWIND, CMD_CLOCK_START, CMD_CLOCK_STOP, CMD_LIVE_ERASE, CMD_PREPARE_PATTERN_MUTE,
-    CMD_SET_LOCK_TARGET, CMD_SET_PATTERN, CMD_SET_PATTERN_MUTE, CMD_SET_STEP_LOCK, CMD_TRIG_NOW,
-    PATTERN_BANK_SIZE,
+    CMD_SET_LOCK_TARGET, CMD_SET_PATTERN, CMD_SET_PATTERN_MUTE, CMD_SET_STEP_CONDITION,
+    CMD_SET_STEP_LENGTH, CMD_SET_STEP_LOCK, CMD_SET_STEP_TIMING, CMD_SET_STEP_VELOCITY,
+    CMD_TRIG_NOW, PATTERN_BANK_SIZE,
 };
 use crate::input::{
     button_to_action, key_label, key_to_button, trig_button, HeldState, Keymap, Mods, PanelButton,
 };
 use crate::model::{
-    parse_kit_binding, parse_kit_list, CmdlineVerb, Dir, JogTracker, Model, RecMode, Screen, Slot,
-    Tuning, YankedLock, YankedStep,
+    parse_kit_binding, parse_kit_list, CmdlineVerb, Dir, EncoderTarget, JogTracker, Model,
+    RecMode, Screen, Slot, StepDetail, StepParamKind, Tuning, YankedLock, YankedStep,
 };
 
 pub type BusHandle = Rc<RefCell<StateBusHandle>>;
@@ -360,7 +361,32 @@ impl TheotokosApp {
             .map(|cell| {
                 cell.as_ref()
                     .map(|p| {
-                        let value = self.model.read_param_value(bus, p.node_id, p.param_id);
+                        // TK3 C0 (#180): a virtual step cell reads the
+                        // focused step's per-step detail, not a bank param.
+                        let value = match p.target {
+                            model::EncoderTarget::VirtualStep { seq_id, kind } => {
+                                let focus = self
+                                    .model
+                                    .lock_step_for_active_track()
+                                    .unwrap_or_else(|| {
+                                        self.model
+                                            .read_step_state(bus, self.model.active_track)
+                                            .current_step
+                                    });
+                                self.model
+                                    .read_step_detail(bus, seq_id, focus)
+                                    .map(|d| match kind {
+                                        model::StepParamKind::Velocity => d.velocity,
+                                        model::StepParamKind::Length => d.length,
+                                        model::StepParamKind::Timing => d.timing,
+                                        model::StepParamKind::Condition => d.fill as f64,
+                                    })
+                                    .unwrap_or(0.0)
+                            }
+                            model::EncoderTarget::Real => {
+                                self.model.read_param_value(bus, p.node_id, p.param_id)
+                            }
+                        };
                         render::EncoderCell {
                             name: p.name.clone(),
                             value,
@@ -368,6 +394,7 @@ impl TheotokosApp {
                             max: p.max,
                             resolved: p.resolved,
                             options: p.options.clone(),
+                            target: p.target,
                         }
                     })
             })
@@ -1212,6 +1239,7 @@ impl TheotokosApp {
                             stepped,
                             resolved: _,
                             options: _,
+                            target,
                         }) => {
                             let track = self.model.active_track;
                             let tracker = &mut self.encoder_trackers[col];
@@ -1237,6 +1265,81 @@ impl TheotokosApp {
                                 Dir::Next => delta,
                                 Dir::Prev => -delta,
                             };
+
+                            // TK3 C0 (#180): a TRIG virtual param routes to a
+                            // dedicated CMD_SET_STEP_* against the focused
+                            // step, not a bank bump. See `EncoderTarget`.
+                            if let EncoderTarget::VirtualStep { seq_id, kind } = target {
+                                // "Focused step": the p-lock target when
+                                // armed, else the current playing step — the
+                                // same step the p-lock jog routes through
+                                // (no new focus model).
+                                let focus = self
+                                    .model
+                                    .lock_step_for_active_track()
+                                    .unwrap_or_else(|| {
+                                        self.model.read_step_state(state, track).current_step
+                                    });
+                                let detail =
+                                    self.model.read_step_detail(state, seq_id, focus);
+                                let current = detail.map_or(0.0, |d| match kind {
+                                    StepParamKind::Velocity => d.velocity,
+                                    StepParamKind::Length => d.length,
+                                    StepParamKind::Timing => d.timing,
+                                    StepParamKind::Condition => d.fill as f64,
+                                });
+                                if (signed > 0.0 && current >= max)
+                                    || (signed < 0.0 && current <= min)
+                                {
+                                    self.model.cmdline_error =
+                                        Some(format!("{} at limit", name));
+                                    dirty = true;
+                                    continue;
+                                }
+                                self.last_jog_param = Some(name.clone());
+                                let new_value = (current + signed).clamp(min, max);
+                                let (type_id, arg1) = match kind {
+                                    StepParamKind::Velocity => {
+                                        (CMD_SET_STEP_VELOCITY, new_value)
+                                    }
+                                    StepParamKind::Length => {
+                                        (CMD_SET_STEP_LENGTH, new_value)
+                                    }
+                                    StepParamKind::Timing => {
+                                        (CMD_SET_STEP_TIMING, new_value)
+                                    }
+                                    // Condition is a read-modify-write: only
+                                    // the fill field changes; probability and
+                                    // repeat are preserved from the step.
+                                    StepParamKind::Condition => {
+                                        let d = detail.unwrap_or(StepDetail {
+                                            velocity: 0.0,
+                                            length: 0.0,
+                                            timing: 0.0,
+                                            probability: 100,
+                                            repeat_n: 0,
+                                            repeat_m: 0,
+                                            fill: 0,
+                                        });
+                                        (
+                                            CMD_SET_STEP_CONDITION,
+                                            crate::model::Model::pack_condition(
+                                                &d,
+                                                new_value.round() as u8,
+                                            ),
+                                        )
+                                    }
+                                };
+                                self.pending.push(NodeCommand {
+                                    target_id: seq_id,
+                                    type_id,
+                                    arg0: focus as i64,
+                                    arg1,
+                                });
+                                dirty = true;
+                                continue;
+                            }
+
                             // MM-C6 / ADR-041 §0 A4: an identity param is what
                             // the node *is*, not a setting, so it is refused
                             // as a p-lock target — per-step machine switching
@@ -3596,18 +3699,22 @@ mod tests {
         let tune_id = ParamDescriptor::id_for_name("tune");
         let rule = Rule {
             name: "Engine".into(),
-            page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG")]),
+            // Not "TRIG" on purpose: this fixture is about Rule-slot ordering
+            // vs rank, and the TRIG page now carries the four virtual per-step
+            // params (TK3 C0 #180) that would fill the slot-1 gap this test
+            // asserts is empty. A non-TRIG page keeps the gap semantics intact.
+            page_groups: Cow::Owned(vec![Cow::Borrowed("AMP")]),
             param_pages: Cow::Owned(vec![
                 // Declared decay-then-tune below, but Rule order is
                 // tune (slot 0) then decay (slot 2) — reversed, AND sparse.
                 // MM-C1: the gap at slot 1 is what distinguishes placement
                 // from rank; with slots 0/1 both conventions agree.
                 (tune_id, PageRef {
-                    page: Cow::Borrowed("TRIG"),
+                    page: Cow::Borrowed("AMP"),
                     slot: 0,
                 }),
                 (decay_id, PageRef {
-                    page: Cow::Borrowed("TRIG"),
+                    page: Cow::Borrowed("AMP"),
                     slot: 2,
                 }),
             ]),
@@ -3725,6 +3832,191 @@ mod tests {
                 && c.arg0 == decay_id as i64),
             "encoder 3 must target the Rule's slot-2 param (decay)"
         );
+    }
+
+    // ── TK3 C0 (#180): TRIG page virtual per-step params ────────────────
+
+    /// A cap whose single TRIG page names only `machine` at slot 0 — the
+    /// shape a real engine host produces — so the four virtual per-step
+    /// params (slots 1–4) resolve via the cap-doc path (no composite view
+    /// in these tests) to `EncoderTarget::VirtualStep`.
+    fn trig_virtual_caps() -> HashMap<u32, CapabilityDocument> {
+        let machine_id = ParamDescriptor::id_for_name("machine");
+        let rule = Rule {
+            name: "Engine".into(),
+            page_groups: Cow::Owned(vec![Cow::Borrowed("TRIG")]),
+            param_pages: Cow::Owned(vec![(
+                machine_id,
+                PageRef {
+                    page: Cow::Borrowed("TRIG"),
+                    slot: 0,
+                },
+            )]),
+            macros: Cow::Borrowed(&[]),
+            affordances: Cow::Borrowed(&[]),
+            envelopes: Cow::Borrowed(&[]),
+            routing: Cow::Borrowed(&[]),
+            diagram: None,
+            view_overrides: Cow::Borrowed(&[]),
+            variants: Cow::Borrowed(&[]),
+        };
+        let mut caps = HashMap::new();
+        caps.insert(
+            100,
+            CapabilityDocument {
+                name: "Engine".into(),
+                vendor: "test".into(),
+                version: (0, 1, 0),
+                ports: vec![],
+                params: vec![ParamDescriptor {
+                    id: machine_id,
+                    name: "machine".into(),
+                    min: 0.0,
+                    max: 1.0,
+                    default: 0.0,
+                    stepped: true,
+                    in_kit: false,
+                    unit: ParamUnit::Generic,
+                    display: None,
+                }],
+                extensions: vec![],
+                view: Some(rule),
+            },
+        );
+        caps.insert(
+            200,
+            CapabilityDocument {
+                name: "Seq".into(),
+                vendor: "test".into(),
+                version: (0, 1, 0),
+                ports: vec![],
+                params: vec![],
+                extensions: vec![],
+                view: None,
+            },
+        );
+        caps
+    }
+
+    fn write_step_detail(bus: &BusHandle, seq_id: u32, steps: &[(u8, u8)]) {
+        // `steps`: (step, fill) — build a default 8-step blob with the given
+        // steps carrying a non-default condition (prob 75, repeat 1/2).
+        let mut detail = String::new();
+        for i in 0..8 {
+            if i > 0 {
+                detail.push(';');
+            }
+            if let Some((_, fill)) = steps.iter().find(|(s, _)| *s == i as u8) {
+                detail.push_str(&format!("32768,0.75,0,75,1,2,{fill}"));
+            } else {
+                detail.push_str("32768,0.75,0,100,0,0,0");
+            }
+        }
+        bus.borrow_mut().write(
+            &format!("/node/{seq_id}/state/step_detail"),
+            paraclete_node_api::StateBusValue::Text(detail),
+        );
+    }
+
+    #[test]
+    fn trig_page_resolves_virtual_step_params() {
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.caps = trig_virtual_caps();
+        let bank = app.model.resolve_encoder_params();
+
+        assert!(
+            matches!(bank[0], Some(ref p) if p.target == EncoderTarget::Real),
+            "machine at slot 0 must stay a Real param"
+        );
+        let kinds = [
+            StepParamKind::Velocity,
+            StepParamKind::Length,
+            StepParamKind::Timing,
+            StepParamKind::Condition,
+        ];
+        for (i, kind) in kinds.iter().enumerate() {
+            let col = i + 1;
+            match &bank[col] {
+                Some(p) => assert!(
+                    matches!(p.target, EncoderTarget::VirtualStep { seq_id, kind: k }
+                        if seq_id == 200 && k == *kind),
+                    "col {col}: expected VirtualStep {kind:?} to seq 200, got {:?}",
+                    p.target
+                ),
+                None => panic!("col {col} should hold a virtual param"),
+            }
+        }
+        assert!(
+            bank[5].is_none() && bank[6].is_none() && bank[7].is_none(),
+            "slots 5–7 stay empty on TRIG"
+        );
+    }
+
+    #[test]
+    fn non_trig_page_has_no_virtual_params() {
+        // test_caps' engine has an empty rule (page_groups empty) -> position
+        // fallback; the TRIG gate must not fire.
+        let app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        let bank = app.model.resolve_encoder_params();
+        assert!(
+            bank.iter().flatten().all(|p| p.target == EncoderTarget::Real),
+            "no VirtualStep may leak to a non-TRIG page"
+        );
+    }
+
+    #[test]
+    fn encoder_jog_on_virtual_velocity_emits_set_step_velocity() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.caps = trig_virtual_caps();
+        // Focused step = current playing step (no lock target armed).
+        bus.borrow_mut().write(
+            "/node/200/state/current_step",
+            paraclete_node_api::StateBusValue::Int(2),
+        );
+        write_step_detail(&bus, 200, &[(2, 1)]);
+
+        app.handle_keys(&bus, &[func_trig('w')]); // col 1 = velocity
+        assert!(
+            app.pending
+                .iter()
+                .any(|c| c.type_id == CMD_SET_STEP_VELOCITY && c.target_id == 200 && c.arg0 == 2),
+            "must emit CMD_SET_STEP_VELOCITY to the focused step; got {:?}",
+            app.pending
+        );
+        assert!(
+            !app.pending
+                .iter()
+                .any(|c| c.type_id == paraclete_node_api::CMD_BUMP_PARAM),
+            "a virtual step jog must not be a bank bump"
+        );
+    }
+
+    #[test]
+    fn encoder_jog_on_condition_read_modify_write() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.caps = trig_virtual_caps();
+        bus.borrow_mut().write(
+            "/node/200/state/current_step",
+            paraclete_node_api::StateBusValue::Int(4),
+        );
+        // Step 4: prob 75, repeat 1/2, fill 1 (FillA).
+        write_step_detail(&bus, 200, &[(4, 1)]);
+
+        app.handle_keys(&bus, &[func_trig('t')]); // col 4 = condition
+        let cond = app
+            .pending
+            .iter()
+            .find(|c| c.type_id == CMD_SET_STEP_CONDITION)
+            .unwrap_or_else(|| panic!("no condition command; got {:?}", app.pending));
+        assert_eq!(cond.target_id, 200);
+        assert_eq!(cond.arg0, 4, "targets the focused step");
+        let enc = cond.arg1 as i64 as u64;
+        assert_eq!(((enc >> 24) & 0xFF) as u8 != 1, true, "fill must change");
+        assert_eq!((enc & 0xFF) as u8, 75, "probability preserved");
+        assert_eq!(((enc >> 8) & 0xFF) as u8, 1, "repeat_n preserved");
+        assert_eq!(((enc >> 16) & 0xFF) as u8, 2, "repeat_m preserved");
     }
 
     #[test]
@@ -5051,6 +5343,7 @@ mod tests {
             max: 8.0,
             resolved: true,
             options,
+            target: crate::model::EncoderTarget::Real,
         };
         let dests = Some(vec![Some("off".to_string()), Some("tune".to_string())]);
         assert_eq!(cell(1.0, dests.clone()).value_text(), "tune");
