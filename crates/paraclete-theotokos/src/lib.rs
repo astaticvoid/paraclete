@@ -33,6 +33,10 @@ use crate::model::{
 
 pub type BusHandle = Rc<RefCell<StateBusHandle>>;
 
+/// TK3 C2: the MixNode id the MIX screen reads/writes gains on. Mirrors the
+/// hard-coded app graph convention (AGENTS.md node table: 2 = MixNode).
+pub const MIX_NODE_ID: u32 = 2;
+
 pub struct TheotokosConfig {
     pub clock_id: u32,
     pub seq_ids: Vec<u32>,
@@ -524,6 +528,15 @@ impl TheotokosApp {
                 action
             };
 
+            // TK3 C2: FUNC+8 opens the MIX screen. Settings is bound to
+            // bare `8`; the FUNC chord distinguishes MIX from Settings using
+            // the raw key + modifier, the same way A12 above does.
+            let action = if input::func_held(ev) && ev.code == KeyCode::Char('8') {
+                Action::OpenScreen(Screen::Mix)
+            } else {
+                action
+            };
+
             if !matches!(action, Action::Noop) || self.last_debug_event.is_some() {
                 self.last_debug_event = Some(format!("{:?} → {:?}", ev, action));
             }
@@ -902,6 +915,59 @@ impl TheotokosApp {
                 // uses (CMD 33/34), reusing the ramp/acceleration
                 // machinery (`Tuning::jog_step`) via a per-column tracker.
                 Action::EncoderJog { col, dir, mag } => {
+                    // TK3 C2: on the MIX screen the encoder bank's columns
+                    // map to the MixNode's per-track gains (1..N) and master
+                    // (column 8), not the active page's params.
+                    if self.model.screen == Screen::Mix {
+                        let name = if col < self.model.tracks.len() {
+                            format!("input_gain_{}", col)
+                        } else if col == 7 {
+                            "master_gain".to_string()
+                        } else {
+                            self.model.cmdline_error =
+                                Some(format!("encoder {} unbound on MIX", col + 1));
+                            dirty = true;
+                            continue;
+                        };
+                        let param_id =
+                            paraclete_node_api::ParamDescriptor::id_for_name(&name);
+                        let tracker = &mut self.encoder_trackers[col];
+                        let held = match tracker.repeat(now, tick_ms) {
+                            Some(h) => h,
+                            None => {
+                                tracker.press(now, tick_ms);
+                                0
+                            }
+                        };
+                        // MixNode gains span 0.0–2.0.
+                        let delta = self.tuning.jog_step(2.0, held, mag);
+                        let signed = match dir {
+                            Dir::Next => delta,
+                            Dir::Prev => -delta,
+                        };
+                        let path = format!("/node/{MIX_NODE_ID}/param/{name}");
+                        let current = match state.read(&path) {
+                            Some(StateBusValue::Float(f)) => *f,
+                            _ => 0.0,
+                        };
+                        if (signed > 0.0 && current >= 2.0)
+                            || (signed < 0.0 && current <= 0.0)
+                        {
+                            self.model.cmdline_error =
+                                Some(format!("{} at limit", name));
+                            dirty = true;
+                            continue;
+                        }
+                        self.last_jog_param = Some(name.clone());
+                        self.pending.push(NodeCommand {
+                            target_id: MIX_NODE_ID,
+                            type_id: paraclete_node_api::CMD_BUMP_PARAM,
+                            arg0: param_id as i64,
+                            arg1: signed,
+                        });
+                        dirty = true;
+                        continue;
+                    }
                     let params = self.model.resolve_encoder_params();
                     // MM-C1: `col` indexes the placed bank directly, so an
                     // encoder whose slot no node declared is empty and jogs
@@ -1939,6 +2005,20 @@ pub fn build_render_data(
             })
             .collect();
 
+        // TK3 C2: per-track + master gains for the MIX screen. Read by name
+        // directly (MixNode may not be in `model.caps`). Paths are
+        // `input_gain_0..n-1` and `master_gain` on the hard-coded MixNode.
+        let read_gain = |path: &str| -> f64 {
+            match bus.read(path) {
+                Some(StateBusValue::Float(f)) => *f,
+                _ => 0.0,
+            }
+        };
+        let mix_gains: Vec<f64> = (0..model.tracks.len())
+            .map(|i| read_gain(&format!("/node/{MIX_NODE_ID}/param/input_gain_{i}")))
+            .collect();
+        let mix_master = read_gain(&format!("/node/{MIX_NODE_ID}/param/master_gain"));
+
         // TK2 C5 (D8/§0 A11): the active page's params in Rule order,
         // restricted to the current sub-page's 8-wide window (pages with
         // more than 8 params split into sub-pages instead of silently
@@ -2127,6 +2207,8 @@ pub fn build_render_data(
             kit_loaded_slot,
             perform_mode,
             pattern_muted_states,
+            mix_gains,
+            mix_master,
         };
         render_data
 
@@ -4142,6 +4224,70 @@ mod tests {
         assert_eq!(data.screen, Screen::Kit);
         assert_eq!(data.kit_list.len(), 2);
         assert_eq!(data.kit_loaded_slot, Some(0));
+    }
+
+    // ── TK3 C2: MIX screen ──────────────────────────────────────────────
+
+    #[test]
+    fn func8_opens_mix_bare8_opens_settings() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        // Bare 8 -> Settings.
+        app.handle_keys(&bus, &[KeyEvent::new(KeyCode::Char('8'), KeyModifiers::NONE)]);
+        assert_eq!(app.model.screen, Screen::Settings);
+        // FUNC+8 -> MIX (the new chord), not Settings.
+        app.model.screen = Screen::Grid;
+        app.handle_keys(&bus, &[KeyEvent::new(KeyCode::Char('8'), KeyModifiers::SHIFT)]);
+        assert_eq!(app.model.screen, Screen::Mix);
+    }
+
+    #[test]
+    fn mix_screen_encoder_jog_bumps_mixnode_gains() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.screen = Screen::Mix;
+        // Col 0 = track 0 = input_gain_0 on the MixNode.
+        app.handle_keys(&bus, &[func_trig('q')]);
+        let pid = paraclete_node_api::ParamDescriptor::id_for_name("input_gain_0");
+        assert!(
+            app.pending.iter().any(|c| {
+                c.type_id == paraclete_node_api::CMD_BUMP_PARAM
+                    && c.target_id == MIX_NODE_ID
+                    && c.arg0 == pid as i64
+            }),
+            "MIX col 0 must bump input_gain_0 on MixNode; got {:?}",
+            app.pending
+        );
+        app.pending.clear();
+        // Col 7 = master_gain.
+        app.handle_keys(&bus, &[func_trig('i')]);
+        let mpid = paraclete_node_api::ParamDescriptor::id_for_name("master_gain");
+        assert!(
+            app.pending.iter().any(|c| {
+                c.type_id == paraclete_node_api::CMD_BUMP_PARAM
+                    && c.target_id == MIX_NODE_ID
+                    && c.arg0 == mpid as i64
+            }),
+            "MIX col 7 must bump master_gain; got {:?}",
+            app.pending
+        );
+    }
+
+    #[test]
+    fn build_render_data_populates_mix_gains() {
+        let bus = test_bus();
+        bus.borrow_mut().write(
+            "/node/2/param/input_gain_0",
+            paraclete_node_api::StateBusValue::Float(1.25),
+        );
+        bus.borrow_mut().write(
+            "/node/2/param/master_gain",
+            paraclete_node_api::StateBusValue::Float(0.75),
+        );
+        let held = HeldState::new(false);
+        let data = render_data(&bus, render_model(), &held);
+        assert_eq!(data.mix_gains, vec![1.25]);
+        assert_eq!(data.mix_master, 0.75);
     }
 
     #[test]

@@ -73,6 +73,10 @@ pub enum Screen {
     /// loaded-kit marker, and the LOAD/SAVE/COMMIT/RELD bottom-row
     /// buttons. Opened by the KIT button (7); ESC returns to Grid.
     Kit,
+    /// TK3 C2: the MIX screen — per-track level view; encoder jogs per-
+    /// track `input_gain_{n}` on MixNode, column 8 jogs `master_gain`.
+    /// Opened by FUNC+8 (Settings is on bare 8).
+    Mix,
 }
 
 /// TK2.1 C1 (D5): replaces `grid_rec: bool`. `Off` (default) and `Live`

@@ -201,6 +201,13 @@ pub struct RenderData {
     /// P11 C6e: per-track `/node/{id}/state/pattern_muted` — marks the
     /// track indicator.
     pub pattern_muted_states: Vec<bool>,
+    /// TK3 C2: per-track input gains on the MixNode
+    /// (`/node/{mix}/param/input_gain_{i}`), one per track — the MIX
+    /// screen's level bars (columns 1..N of the encoder bank map to them).
+    pub mix_gains: Vec<f64>,
+    /// TK3 C2: the MixNode's `master_gain` (`/node/{mix}/param/master_gain`)
+    /// — the MIX screen's bottom row; encoder column 8 maps to it.
+    pub mix_master: f64,
 }
 
 pub fn render(frame: &mut Frame, data: &RenderData) {
@@ -230,6 +237,7 @@ pub fn render(frame: &mut Frame, data: &RenderData) {
             Screen::Settings => render_settings_screen(frame, chunks[1], data),
             Screen::Chain => render_chain_screen(frame, chunks[1], data),
             Screen::Kit => render_kit_screen(frame, chunks[1], data),
+            Screen::Mix => render_mix_screen(frame, chunks[1], data),
         }
     }
     render_track_indicator(frame, chunks[2], data);
@@ -390,6 +398,7 @@ fn screen_name(screen: Screen) -> &'static str {
         Screen::Chain => "CHAIN",
         Screen::Settings => "SETTINGS",
         Screen::Kit => "KIT",
+        Screen::Mix => "MIX",
     }
 }
 
@@ -488,7 +497,45 @@ fn legend_chips_for_screen(screen: Screen, enc: bool) -> Vec<LegendChip> {
             Literal("?", "HELP"),
             Literal("^C", "QUIT"),
         ],
+        Screen::Mix => vec![
+            Dynamic(Enc, "ENC"),
+            Dynamic(No, "BACK"),
+            Literal("FUNC+8", "RE-OPEN"),
+            Literal("trig N", "TRACK LEVEL"),
+            Literal("?", "HELP"),
+            Literal("^C", "QUIT"),
+        ],
     }
+}
+
+/// TK3 C2: the MIX screen — one row per track with a block-element level
+/// bar and the gain value, then a MASTER row. The encoder bank's columns
+/// 1..N map to those track rows (column 8 = master); the jog dispatch in
+/// lib.rs routes them to the MixNode's `input_gain_{n}` / `master_gain`.
+fn render_mix_screen(frame: &mut Frame, area: Rect, data: &RenderData) {
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, name) in data.display_names.iter().enumerate() {
+        let gain = data.mix_gains.get(i).copied().unwrap_or(0.0);
+        lines.push(level_line(name, gain, Color::Cyan));
+    }
+    lines.push(level_line("MASTER", data.mix_master, Color::Yellow));
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().fg(Color::White)),
+        area,
+    );
+}
+
+/// One MIX row: ` name  ████░░░░ 1.20` — a block bar scaled over the
+/// MixNode's 0.0–2.0 gain range and the two-decimal value.
+fn level_line(name: &str, value: f64, color: Color) -> Line<'static> {
+    let ratio = (value / 2.0).clamp(0.0, 1.0);
+    let filled = (ratio * 8.0).round() as usize;
+    let bar = "█".repeat(filled) + &"░".repeat(8 - filled);
+    Line::from(vec![
+        Span::styled(format!(" {:>7} ", name), Style::default().fg(Color::White)),
+        Span::styled(format!("{bar} "), Style::default().fg(color)),
+        Span::raw(format!("{:.2}", value)),
+    ])
 }
 
 /// TK2.1 C2 (D4): greedily fills line 0, then line 1, from an ordered chip
@@ -1290,7 +1337,7 @@ fn render_status_line(frame: &mut Frame, area: Rect, data: &RenderData) {
         // TK2 C6 builds these screens; until then, no stale slot A/B info
         // next to the "not yet implemented" placeholder (review finding,
         // post-C3 hostile review).
-        Screen::Tempo | Screen::Chain | Screen::Settings | Screen::Kit => {}
+        Screen::Tempo | Screen::Chain | Screen::Settings | Screen::Kit | Screen::Mix => {}
     }
 
     let line = Line::from(spans);
@@ -1385,6 +1432,8 @@ impl RenderData {
             kit_loaded_slot: None,
             perform_mode: false,
             pattern_muted_states: vec![false; track_count],
+            mix_gains: vec![0.0; track_count],
+            mix_master: 0.0,
             help_visible: false,
         }
     }
@@ -1463,6 +1512,8 @@ mod tests {
             kit_loaded_slot: None,
             perform_mode: false,
             pattern_muted_states: vec![false; 2],
+            mix_gains: vec![0.0; 2],
+            mix_master: 0.0,
             help_visible: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
@@ -1553,6 +1604,8 @@ mod tests {
             kit_loaded_slot: None,
             perform_mode: false,
             pattern_muted_states: vec![false; 1],
+            mix_gains: vec![0.0; 1],
+            mix_master: 0.0,
             help_visible: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
@@ -1762,6 +1815,29 @@ mod tests {
         assert!(
             !line2.contains('⚡'),
             "perform mode off must not show the indicator; got: {line2:?}"
+        );
+    }
+
+    /// TK3 C2: the MIX screen draws one row per track, a MASTER row, and
+    /// the two-decimal gain values.
+    #[test]
+    fn mix_screen_renders_track_rows_and_master() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Mix, 2);
+        data.display_names = vec!["Kick".into(), "Snare".into()];
+        data.mix_gains = vec![1.0, 0.5];
+        data.mix_master = 0.8;
+        terminal.draw(|f| render(f, &data)).unwrap();
+        let text = buffer_text(&terminal);
+        assert!(
+            text.contains("Kick") && text.contains("Snare"),
+            "each track row must render; got: {text}"
+        );
+        assert!(text.contains("MASTER"), "a MASTER row must render: {text}");
+        assert!(
+            text.contains("0.50") && text.contains("0.80"),
+            "gain values must render; got: {text}"
         );
     }
 
