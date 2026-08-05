@@ -565,6 +565,12 @@ const REPEAT_GUARD_MS: u128 = 400;
 pub struct HeldState {
     pub kitty: bool,
     pub armed: Option<Hold>,
+    /// TK3 C6 (OQ-T31): whether FUNC (Shift) / Ctrl are physically held
+    /// right now — kitty mode only (release events are what make the state
+    /// honest). Drives the status-line modifier chips. Sticky fallback
+    /// leaves them false; only the armed prefix shows there.
+    pub func_held: bool,
+    pub ctrl_held: bool,
     /// Physically-pressed panel buttons, kitty mode only — tracked so a
     /// release event can tell which prefix to drop. Unused by the sticky
     /// fallback below; wired alongside kitty release handling in C3.
@@ -581,6 +587,8 @@ impl HeldState {
         Self {
             kitty,
             armed: None,
+            func_held: false,
+            ctrl_held: false,
             pressed: HashSet::new(),
             last_prefix_press: None,
         }
@@ -1047,6 +1055,8 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Trk),
             pressed: HashSet::new(),
+            func_held: false,
+            ctrl_held: false,
             last_prefix_press: None,
         };
         let action = button_to_action(&held, &default_grid(), PanelButton::Trig5, Mods::default());
@@ -1067,6 +1077,8 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Ptn),
             pressed: HashSet::new(),
+            func_held: false,
+            ctrl_held: false,
             last_prefix_press: None,
         };
         let mods = Mods {
@@ -1086,6 +1098,8 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Ptn),
             pressed: HashSet::new(),
+            func_held: false,
+            ctrl_held: false,
             last_prefix_press: None,
         };
         let action = button_to_action(&held, &default_grid(), PanelButton::Trig3, Mods::default());
@@ -1102,6 +1116,8 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Trk),
             pressed: HashSet::new(),
+            func_held: false,
+            ctrl_held: false,
             last_prefix_press: None,
         };
         let mods = Mods {
@@ -1120,6 +1136,8 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Trk),
             pressed: HashSet::new(),
+            func_held: false,
+            ctrl_held: false,
             last_prefix_press: None,
         };
         let mods = Mods {
@@ -1231,6 +1249,8 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Trk),
             pressed: HashSet::new(),
+            func_held: false,
+            ctrl_held: false,
             last_prefix_press: None,
         };
         let mods = Mods {
@@ -1448,6 +1468,8 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Trk),
             pressed: HashSet::new(),
+            func_held: false,
+            ctrl_held: false,
             last_prefix_press: None,
         };
         let screen = ScreenState {
@@ -1576,6 +1598,8 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Lock),
             pressed: HashSet::new(),
+            func_held: false,
+            ctrl_held: false,
             last_prefix_press: None,
         };
         let screen = default_grid(); // rec: Grid
@@ -1591,6 +1615,8 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Lock),
             pressed: HashSet::new(),
+            func_held: false,
+            ctrl_held: false,
             last_prefix_press: None,
         };
         let screen = ScreenState {
@@ -1684,6 +1710,8 @@ mod tests {
             kitty: false,
             armed: Some(Hold::Trk),
             pressed: HashSet::new(),
+            func_held: false,
+            ctrl_held: false,
             last_prefix_press: None,
         };
         let screen = ScreenState {

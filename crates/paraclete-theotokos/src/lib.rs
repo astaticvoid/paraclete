@@ -307,6 +307,17 @@ impl TheotokosApp {
                 None
             };
 
+            // TK3 C6 (OQ-T31): persistent modifier tracking for the SHIFT /
+            // CTRL chips. Kitty delivers release events carrying the modifier
+            // state, so mirroring the current event's modifiers makes the
+            // chip reflect what is physically held. The sticky fallback has
+            // no releases, so `func_held`/`ctrl_held` stay false there and
+            // only the armed prefix shows (unchanged behaviour).
+            if self.held.kitty {
+                self.held.func_held = input::func_held(ev);
+                self.held.ctrl_held = ev.modifiers.contains(KeyModifiers::CONTROL);
+            }
+
             let action = match direct_action {
                 Some(a) => {
                     // D6: "any non-trig key disarms" — these direct keys
@@ -2086,6 +2097,21 @@ pub fn build_render_data(
             .collect();
         let mix_master = read_gain(&format!("/node/{MIX_NODE_ID}/param/master_gain"));
 
+        // TK3 C6 (OQ-T31): held-modifier chips. SHIFT/CTRL reflect the
+        // physically held state (kitty only — release events are what make
+        // it honest; the sticky fallback leaves them off and shows only the
+        // armed prefix, as before). TRK…/PTN…/LOCK… ride `armed_prefix`.
+        let held_modifiers: Vec<String> = {
+            let mut v = Vec::new();
+            if held.kitty && held.func_held {
+                v.push("SHIFT".to_string());
+            }
+            if held.kitty && held.ctrl_held {
+                v.push("CTRL".to_string());
+            }
+            v
+        };
+
         // TK2 C5 (D8/§0 A11): the active page's params in Rule order,
         // restricted to the current sub-page's 8-wide window (pages with
         // more than 8 params split into sub-pages instead of silently
@@ -2277,6 +2303,7 @@ pub fn build_render_data(
             mix_gains,
             mix_master,
             step_size_tier: model.step_size_tier,
+            held_modifiers,
         };
         render_data
 
@@ -4414,6 +4441,22 @@ mod tests {
             (scaled - base * 4.0).abs() < 1e-9,
             "tier 2 must be 4× the tier-0 base: base={base} scaled={scaled}"
         );
+    }
+
+    // ── TK3 C6 (OQ-T31): modifier highlight ─────────────────────────────
+
+    #[test]
+    fn build_render_data_surfaces_held_modifiers_in_kitty() {
+        let bus = test_bus();
+        // kitty on + SHIFT held -> SHIFT chip.
+        let mut held = HeldState::new(true);
+        held.func_held = true;
+        let data = render_data(&bus, render_model(), &held);
+        assert_eq!(data.held_modifiers, vec!["SHIFT".to_string()]);
+        // kitty off (sticky fallback): func_held left false -> no chips.
+        let held_off = HeldState::new(false);
+        let data2 = render_data(&bus, render_model(), &held_off);
+        assert!(data2.held_modifiers.is_empty());
     }
 
     // ── TK3 C5 (OQ-T23b): dual-path tap tempo ───────────────────────────

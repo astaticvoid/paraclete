@@ -144,6 +144,11 @@ pub struct RenderData {
     /// TK3 C4 (OQ-T4): the step-size tier (0..=4, ×1..×16) — shown on the
     /// status line next to ENC.
     pub step_size_tier: u8,
+    /// TK3 C6 (OQ-T31): held-modifier chips on the status line — `SHIFT`/
+    /// `CTRL` while physically held (kitty mode only). The armed prefix
+    /// (`TRK…`/`PTN…`/`LOCK…`) is carried by `armed_prefix`; REC has its
+    /// own three-state indicator.
+    pub held_modifiers: Vec<String>,
     /// TK2.1 C5b (D15): the lock target's step, but only if it's on the
     /// active track — replaces `step_focuses` (the per-track vec was
     /// always read via the active track anyway).
@@ -1285,6 +1290,15 @@ fn render_status_line(frame: &mut Frame, area: Rect, data: &RenderData) {
         ));
     }
 
+    // TK3 C6 (OQ-T31): held-modifier chips — SHIFT/CTRL while physically
+    // held (kitty mode). Bright while held; absent (not just dim) when not.
+    for m in &data.held_modifiers {
+        spans.push(Span::styled(
+            format!(" {m} "),
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        ));
+    }
+
     if let Some(ref prefix) = data.armed_prefix {
         spans.push(Span::styled(
             format!("{} ", prefix),
@@ -1440,6 +1454,7 @@ impl RenderData {
             mix_gains: vec![0.0; track_count],
             mix_master: 0.0,
             step_size_tier: 0,
+            held_modifiers: Vec::new(),
             help_visible: false,
         }
     }
@@ -1521,6 +1536,7 @@ mod tests {
             mix_gains: vec![0.0; 2],
             mix_master: 0.0,
             step_size_tier: 0,
+            held_modifiers: Vec::new(),
             help_visible: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
@@ -1614,6 +1630,7 @@ mod tests {
             mix_gains: vec![0.0; 1],
             mix_master: 0.0,
             step_size_tier: 0,
+            held_modifiers: Vec::new(),
             help_visible: false,
         };
         terminal.draw(|f| render(f, &data)).unwrap();
@@ -1846,6 +1863,37 @@ mod tests {
         assert!(
             text.contains("0.50") && text.contains("0.80"),
             "gain values must render; got: {text}"
+        );
+    }
+
+    /// TK3 C6 (OQ-T31): a held SHIFT renders a SHIFT chip on the status
+    /// line; an armed TRK prefix renders its existing TRK… chip; neither
+    /// renders when nothing is held/armed.
+    /// Render `data` to the fixed 80x24 test terminal and return its text.
+    fn draw_buffer(data: &RenderData) -> String {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| render(f, data)).unwrap();
+        buffer_text(&terminal)
+    }
+
+    #[test]
+    fn status_line_shows_held_modifier_chips() {
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.held_modifiers = vec!["SHIFT".into()];
+        let t1 = draw_buffer(&data);
+        assert!(t1.contains("SHIFT"), "SHIFT chip must show; got: {t1:?}");
+
+        let mut data2 = RenderData::for_test(Screen::Grid, 1);
+        data2.armed_prefix = Some("TRK…".to_string());
+        let t2 = draw_buffer(&data2);
+        assert!(t2.contains("TRK…"), "TRK… chip must show; got: {t2:?}");
+
+        let data3 = RenderData::for_test(Screen::Grid, 1);
+        let t3 = draw_buffer(&data3);
+        assert!(
+            !t3.contains("SHIFT") && !t3.contains("TRK…"),
+            "no modifiers -> no chips; got: {t3:?}"
         );
     }
 
