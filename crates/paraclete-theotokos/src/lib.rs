@@ -1116,8 +1116,13 @@ impl TheotokosApp {
                                     StepParamKind::Length => {
                                         (CMD_SET_STEP_LENGTH, new_value)
                                     }
+                                    // Timing: the encoder works in the
+                                    // normalized -1..1 range (micro_offset /
+                                    // 47.0), but CMD_SET_STEP_TIMING expects
+                                    // the raw i8 micro_offset (±47).
+                                    // Denormalize before sending.
                                     StepParamKind::Timing => {
-                                        (CMD_SET_STEP_TIMING, new_value)
+                                        (CMD_SET_STEP_TIMING, (new_value * 47.0).round())
                                     }
                                     // Condition is a read-modify-write: only
                                     // the fill field changes; probability and
@@ -4190,6 +4195,41 @@ mod tests {
                 .iter()
                 .any(|c| c.type_id == paraclete_node_api::CMD_BUMP_PARAM),
             "a virtual step jog must not be a bank bump"
+        );
+    }
+
+    /// TK3 C0 (#180): the timing encoder jog must denormalize from the
+    /// -1..1 display range to the raw i8 micro_offset (±47) the sequencer
+    /// expects. A single jog from timing=0 with range 2.0 produces a delta
+    /// of ~2/128 ≈ 0.016 normalized → round(0.016 * 47) = 1 raw. Without
+    /// the denormalization the arg1 would be ~0.016 (truncates to 0 as i8
+    /// — the timing encoder would be a no-op).
+    #[test]
+    fn encoder_jog_on_virtual_timing_denormalizes_to_raw_micro_offset() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.caps = trig_virtual_caps();
+        bus.borrow_mut().write(
+            "/node/200/state/current_step",
+            paraclete_node_api::StateBusValue::Int(0),
+        );
+        // Step 0: default timing (0).
+        write_step_detail(&bus, 200, &[(0, 0)]);
+
+        app.handle_keys(&bus, &[func_trig('r')]); // col 3 = timing
+        let cmd = app
+            .pending
+            .iter()
+            .find(|c| c.type_id == CMD_SET_STEP_TIMING)
+            .unwrap_or_else(|| panic!("no timing command; got {:?}", app.pending));
+        assert_eq!(cmd.target_id, 200);
+        assert_eq!(cmd.arg0, 0, "targets the focused step");
+        // With the fix: arg1 = round(2.0/128 * 47) = 1.0 (raw micro_offset).
+        // Without the fix: arg1 ≈ 0.016 (normalized, truncates to 0 as i8).
+        assert!(
+            cmd.arg1.abs() > 0.5,
+            "timing arg1 must be in raw micro_offset range (±47), not normalized (-1..1); got {}",
+            cmd.arg1
         );
     }
 
