@@ -4170,6 +4170,69 @@ mod tests {
         );
     }
 
+    /// Regression: `fill_trig_virtual_params` must check the composite view's
+    /// page **id** ("TRIG"), not the display label ("Trig"). The composite
+    /// view's `page_groups_for_active_track()` returns labels, so a naive
+    /// check against "TRIG" silently fails and the virtual params never
+    /// appear. Session #6 caught this — the TRIG page showed only `machine`
+    /// with slots 1–7 empty.
+    #[test]
+    fn trig_virtual_params_resolve_via_composite_view_with_display_label() {
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.model.caps = trig_virtual_caps();
+        // Build a composite view with page id="TRIG" but label="Trig"
+        // (the display form assembly produces).
+        let trig_page = CompositePage {
+            id: "TRIG".into(),
+            label: "Trig".into(), // display label, not canonical id
+            params: vec![CompositeParam {
+                node_id: 100,
+                param_id: MACHINE_PID,
+                name: "machine".into(),
+                label: "machine".into(),
+                affordance: AffordanceHint::None,
+                env_group: None,
+                slot: 0,
+                routing: None,
+                stepped: true,
+                options: None,
+            }],
+            envelopes: vec![],
+            macros: vec![],
+        };
+        let cv = CompositeView {
+            engine_node_id: 100,
+            engine_name: "Engine".into(),
+            display_name: "Engine".into(),
+            pages: vec![trig_page],
+            chain: vec![100],
+            routes: vec![],
+            variants: vec![],
+        };
+        app.model.composite = vec![Some(cv)];
+        app.model.perf_page = 0; // TRIG page
+        let bank = app.model.resolve_encoder_params();
+        // Virtual params must appear at slots 1–4 despite the label being
+        // "Trig" (not "TRIG").
+        assert!(
+            matches!(bank[1], Some(ref p) if matches!(p.target, EncoderTarget::VirtualStep { kind: StepParamKind::Velocity, .. })),
+            "slot 1 must be velocity VirtualStep, got {:?}",
+            bank[1].as_ref().map(|p| &p.target)
+        );
+        assert!(
+            matches!(bank[2], Some(ref p) if matches!(p.target, EncoderTarget::VirtualStep { kind: StepParamKind::Length, .. })),
+            "slot 2 must be length VirtualStep"
+        );
+        assert!(
+            matches!(bank[3], Some(ref p) if matches!(p.target, EncoderTarget::VirtualStep { kind: StepParamKind::Timing, .. })),
+            "slot 3 must be timing VirtualStep"
+        );
+        assert!(
+            matches!(bank[4], Some(ref p) if matches!(p.target, EncoderTarget::VirtualStep { kind: StepParamKind::Condition, .. })),
+            "slot 4 must be condition VirtualStep"
+        );
+    }
+
     #[test]
     fn encoder_jog_on_virtual_velocity_emits_set_step_velocity() {
         let bus = test_bus();

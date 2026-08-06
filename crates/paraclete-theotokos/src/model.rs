@@ -967,10 +967,25 @@ impl Model {
     /// dedicated `CMD_SET_STEP_*` command. Sub-page 0 only: the virtual
     /// params live at slots 1–4, so a later sub-page has none.
     fn fill_trig_virtual_params(&self, bank: &mut EncoderBank, lo: u16) {
+        // Check the page ID ("TRIG"), not the display label ("Trig").
+        // The composite view's page `id` is the canonical name; the
+        // `label` is the human-readable display form. `page_groups_for_
+        // active_track` returns labels, so we must check the source
+        // directly.
         let is_trig = self
-            .page_groups_for_active_track()
-            .get(self.perf_page)
-            .map(|p| p == "TRIG")
+            .active_composite()
+            .and_then(|cv| cv.pages.get(self.perf_page))
+            .map(|p| p.id == "TRIG")
+            .or_else(|| {
+                // Fallback: no composite view — check the cap-doc page
+                // groups, which use canonical names ("TRIG", "SRC", etc.)
+                let gen_id = self.tracks[self.active_track].generator_id;
+                self.caps
+                    .get(&gen_id)
+                    .and_then(|c| c.view.as_ref())
+                    .and_then(|r| r.page_groups.get(self.perf_page))
+                    .map(|p| p == "TRIG")
+            })
             .unwrap_or(false);
         if !is_trig {
             return;
