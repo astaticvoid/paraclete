@@ -10,3 +10,4 @@ web/packages/*/dist/
 ref/
 .serena/
 .scratch/
+.pi/
