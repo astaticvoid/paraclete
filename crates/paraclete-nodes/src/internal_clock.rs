@@ -171,6 +171,15 @@ impl InternalClock {
                 }
                 CMD_CLOCK_REWIND => {
                     saw_rewind_command = true;
+                    // ADR-046 T1: reset the clock's own position to the
+                    // window start. Without this, the sequencer rewinds
+                    // but the clock continues on its old phase, causing
+                    // the pattern to re-phase against the old boundary
+                    // on the next play (BUG-048 regression).
+                    self.bar = 1;
+                    self.beat = 0;
+                    self.tick = 0;
+                    self.tick_accumulator = 0.0;
                 }
                 CMD_SET_PARAM => {
                     if cmd.arg0 as u32 == bpm_id {
@@ -779,6 +788,35 @@ mod tests {
             Event::Transport(te) => assert!(te.flags.playing, "must reflect the running state"),
             _ => unreachable!(),
         }
+    }
+
+    /// Regression: BUG-048 — play, stop halfway, play again. The clock's
+    /// own position must reset on rewind, or the sequencer re-phases
+    /// against the old boundary on the next play.
+    #[test]
+    fn rewind_resets_clock_position_to_bar_1_beat_0_tick_0() {
+        let mut node = InternalClock::new();
+        node.activate(44100.0, 512);
+
+        // Start and advance some ticks
+        let start = NodeCommand { target_id: 0, type_id: CMD_CLOCK_START, arg0: 0, arg1: 0.0 };
+        run_internal_clock_with_commands(&mut node, 512, &[], &[start]);
+        assert!(node.playing, "sanity: running");
+
+        // Advance enough ticks to move past beat 0
+        run_internal_clock_with_commands(&mut node, 512, &[], &[]);
+        assert!(node.tick > 0 || node.beat > 0, "sanity: clock advanced");
+
+        // Rewind and stop in the same call so the clock doesn't advance
+        let rewind = NodeCommand { target_id: 0, type_id: CMD_CLOCK_REWIND, arg0: 0, arg1: 0.0 };
+        let stop = NodeCommand { target_id: 0, type_id: CMD_CLOCK_STOP, arg0: 0, arg1: 0.0 };
+        run_internal_clock_with_commands(&mut node, 512, &[], &[rewind, stop]);
+
+        // Verify position reset
+        assert_eq!(node.bar, 1, "bar must reset to 1 (BUG-048)");
+        assert_eq!(node.beat, 0, "beat must reset to 0 (BUG-048)");
+        assert_eq!(node.tick, 0, "tick must reset to 0 (BUG-048)");
+        assert_eq!(node.tick_accumulator, 0.0, "tick_accumulator must reset to 0.0 (BUG-048)");
     }
 
     /// ADR-046 T4/R4: clock-level `playing`, `bar`, `beat`, `tick` are
