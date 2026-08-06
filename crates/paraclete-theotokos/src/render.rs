@@ -18,14 +18,7 @@ const PAGE_SIZE: usize = 8;
 /// names for display (`Tab`, `Space`) and leaves single characters as
 /// typed (`q`). The keymap file format itself is untouched.
 fn chip_key_display(label: &str) -> String {
-    let mut chars = label.chars();
-    match chars.next() {
-        Some(first) if label.chars().count() > 1 => {
-            first.to_uppercase().collect::<String>() + chars.as_str()
-        }
-        Some(first) => first.to_string(),
-        None => String::new(),
-    }
+    label.to_uppercase()
 }
 
 /// TK2.2 C3 (E1): `[key]` for a button with an on-screen referent — empty
@@ -227,7 +220,7 @@ pub fn render(frame: &mut Frame, data: &RenderData) {
         Constraint::Length(1), // transport
         Constraint::Min(0),    // contextual window
         Constraint::Length(1), // track indicator
-        Constraint::Length(2), // trig strip (selected track only)
+        Constraint::Length(7), // trig strip (selected track only)
         Constraint::Length(2), // legend
         Constraint::Length(1), // echo
         Constraint::Length(1), // status
@@ -302,7 +295,7 @@ fn render_chain_screen(frame: &mut Frame, area: Rect, data: &RenderData) {
         } else if is_cued {
             Color::Cyan
         } else {
-            Color::DarkGray
+            Color::Gray
         };
         spans.push(Span::styled(text, Style::default().fg(color)));
         spans.push(Span::raw(" "));
@@ -316,7 +309,7 @@ fn render_chain_screen(frame: &mut Frame, area: Rect, data: &RenderData) {
         data.page_loop.1 + 1
     );
     frame.render_widget(
-        Paragraph::new(info).style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(info).style(Style::default().fg(Color::Gray)),
         chunks[1],
     );
 }
@@ -350,7 +343,7 @@ fn render_kit_screen(frame: &mut Frame, area: Rect, data: &RenderData) {
     frame.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             format!(" {}", bank_cells.join("  ")),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         )])),
         chunks[0],
     );
@@ -376,7 +369,7 @@ fn render_kit_screen(frame: &mut Frame, area: Rect, data: &RenderData) {
         } else if loaded {
             Color::Green
         } else if is_empty {
-            Color::DarkGray
+            Color::Gray
         } else {
             Color::Gray
         };
@@ -613,7 +606,7 @@ fn render_legend(frame: &mut Frame, area: Rect, data: &RenderData) {
             spans.push(Span::styled(key.clone(), Style::default().fg(Color::White)));
             spans.push(Span::styled(
                 format!(" {label}"),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(Color::Gray),
             ));
         }
         Line::from(spans)
@@ -628,7 +621,7 @@ fn render_legend(frame: &mut Frame, area: Rect, data: &RenderData) {
 /// transport bar and the status line.
 fn rec_indicator(rec: RecMode) -> (&'static str, Color) {
     match rec {
-        RecMode::Off => ("REC○", Color::DarkGray),
+        RecMode::Off => ("REC○", Color::Gray),
         RecMode::Grid => ("REC▦", Color::Red),
         RecMode::Live => ("REC●", Color::LightRed),
     }
@@ -651,14 +644,12 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
     // (halt + rewind) — it sits directly on the play/pause glyph, the same
     // element it and [x] both act on.
     let tempo_chip = inline_chip(data, PanelButton::Tempo);
-    let play_chip = inline_chip(data, PanelButton::Play);
-    let stop_chip = inline_chip(data, PanelButton::Stop);
     let rec_chip = inline_chip(data, PanelButton::Rec);
-
-    let prefix = format!(
-        " {tempo_chip}{:.1} BPM  {play_chip}{}{stop_chip}  ",
-        data.bpm, play_sym
-    );
+    let tempo_label = if tempo_chip.is_empty() {
+        format!(" {:.1} BPM  ", data.bpm)
+    } else {
+        format!(" {tempo_chip}Tempo {:.1} BPM  ", data.bpm)
+    };
     let suffix = format!(
         "  {}  P{}/{}  Step:{}  Len:{}",
         track_name,
@@ -668,8 +659,11 @@ fn render_transport(frame: &mut Frame, area: Rect, data: &RenderData) {
         data.step_state.pattern_length,
     );
 
+    let play_color = if data.playing { Color::Green } else { Color::Red };
     let line = Line::from(vec![
-        Span::styled(prefix, Style::default().fg(Color::White)),
+        Span::styled(tempo_label, Style::default().fg(Color::White)),
+        Span::styled(play_sym, Style::default().fg(play_color)),
+        Span::raw("  "),
         Span::styled(rec_chip, Style::default().fg(Color::White)),
         Span::styled(rec_sym, Style::default().fg(rec_color)),
         Span::styled(suffix, Style::default().fg(Color::White)),
@@ -693,6 +687,11 @@ fn render_track_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
     let trk_chip = inline_chip(data, PanelButton::Trk);
     let ptn_chip = inline_chip(data, PanelButton::Ptn);
     let ptn_text = format!("{ptn_chip}PTN P{}", data.active_pattern + 1);
+    let trk_label = if trk_chip.is_empty() {
+        String::new()
+    } else {
+        format!("{trk_chip}TRK")
+    };
     let entries: Vec<(String, Color)> = data
         .display_names
         .iter()
@@ -728,12 +727,10 @@ fn render_track_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
                 " ".repeat(chip_would_be.chars().count())
             };
             let text = if narrow {
-                format!("{marker}{chip}{}{mute_glyph}{pattern_mute_glyph}  ", i + 1)
+                format!("{marker}{chip}{mute_glyph}{pattern_mute_glyph}  ")
             } else {
                 format!(
-                    "{marker}{chip}{} {}{mute_glyph}{pattern_mute_glyph}  ",
-                    i + 1,
-                    name
+                    "{marker}{chip}{name}{mute_glyph}{pattern_mute_glyph}  "
                 )
             };
             (text, color)
@@ -742,11 +739,11 @@ fn render_track_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
 
     let mut spans: Vec<Span> = Vec::with_capacity(entries.len() * 2 + 3);
     spans.push(Span::styled(
-        trk_chip.clone(),
+        trk_label.clone(),
         Style::default().fg(Color::White),
     ));
     if entries.is_empty() {
-        spans.push(Span::styled(ptn_text, Style::default().fg(Color::DarkGray)));
+        spans.push(Span::styled(ptn_text, Style::default().fg(Color::Gray)));
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
         return;
     }
@@ -793,16 +790,16 @@ fn render_track_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
             }
         }
         if start > 0 {
-            spans.push(Span::styled("‹ ", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled("‹ ", Style::default().fg(Color::Gray)));
         }
         for (text, color) in &entries[start..=end] {
             spans.push(Span::styled(text.clone(), Style::default().fg(*color)));
         }
         if end + 1 < entries.len() {
-            spans.push(Span::styled("›", Style::default().fg(Color::DarkGray)));
+            spans.push(Span::styled("›", Style::default().fg(Color::Gray)));
         }
     }
-    spans.push(Span::styled(ptn_text, Style::default().fg(Color::DarkGray)));
+    spans.push(Span::styled(ptn_text, Style::default().fg(Color::Gray)));
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
@@ -810,6 +807,129 @@ fn render_track_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
 /// track, two rows of 8 cells, rendered on every screen. Below **48**
 /// columns *(tunable, §3 minimum width)* the row labels (` 1-8`/`9-16`)
 /// drop.
+/// One row of 8 pad-style step cells. Each cell is a 4-wide block with the
+/// key chip to its left and the step number underneath:
+///
+/// ```text
+///  [Q]████  [W]░░░░  [E]░░░░  [R]░░░░  [T]░░░░  [Y]░░░░  [U]░░░░  [I]░░░░
+///    ████    ░░░░    ░░░░    ░░░░    ░░░░    ░░░░    ░░░░    ░░░░
+///      1       2       3       4       5       6       7       8
+/// ```
+///
+/// Every line shares the same cell width and the block occupies the same
+/// columns in both block rows, so the pads stack into clean vertical
+/// columns (the key chip only sits on the first block row). In
+/// `RecMode::Off` the key chip's 3-col gutter stays reserved so the
+/// block columns do not shift between modes (E2).
+fn render_trig_row_pads(
+    track_idx: usize,
+    data: &RenderData,
+    row_off: usize,
+    label: &str,
+    show_label: bool,
+    focus: Option<usize>,
+    locks: &std::collections::HashSet<usize>,
+) -> Vec<Line<'static>> {
+    let st = data.step_states.get(track_idx).unwrap_or(&data.step_state);
+    let window = data.page_window * PAGE_SIZE * 2 + row_off;
+    let show_keys = data.rec != RecMode::Off;
+
+    const BLOCK_W: usize = 4;
+    const KEY_W: usize = 3;
+
+    // Collect per-cell data once.
+    let cells: Vec<_> = (0..PAGE_SIZE)
+        .map(|col| {
+            let step = window + col;
+            let is_active = st.steps.get(step).copied().unwrap_or(false);
+            let is_locked = locks.contains(&step);
+            let is_playhead = step == st.current_step;
+            let focused = focus == Some(step);
+            let (color, modifier) = if focused || is_playhead {
+                (Color::Yellow, Modifier::REVERSED)
+            } else if is_active && is_locked {
+                (Color::Green, Modifier::empty())
+            } else if is_active {
+                (Color::Cyan, Modifier::empty())
+            } else if is_locked {
+                (Color::White, Modifier::empty())
+            } else {
+                (Color::Gray, Modifier::empty())
+            };
+            let key_index = row_off + col;
+            let chip_text = data
+                .trig_key_labels
+                .get(key_index)
+                .and_then(|o| o.as_deref())
+                .map(chip_key_display)
+                .unwrap_or_else(|| " ".to_string());
+            let chip_color = if data.rec == RecMode::Grid {
+                Color::White
+            } else {
+                Color::Gray
+            };
+            (step, is_active, color, modifier, chip_text, chip_color)
+        })
+        .collect();
+
+    let gutter = |s: &str| -> String { format!("{:>5}", s) };
+    let gap = Span::raw(" ");
+
+    let mut line0: Vec<Span> = Vec::new(); // key + block (top)
+    let mut line1: Vec<Span> = Vec::new(); // block (bottom)
+    let mut line2: Vec<Span> = Vec::new(); // step numbers
+
+    if show_label {
+        line0.push(Span::styled(gutter(label), Style::default().fg(Color::Gray)));
+        line1.push(Span::styled(gutter(""), Style::default()));
+        line2.push(Span::styled(gutter(""), Style::default()));
+    }
+    for (i, cell) in cells.iter().enumerate() {
+        let block = if cell.1 { "█" } else { "░" };
+        let block_str = block.repeat(BLOCK_W);
+        let block_style = Style::default().fg(cell.2).add_modifier(cell.3);
+
+        // Line 0: key chip in the 3-col gutter + block; Off mode leaves the
+        // gutter blank (reserved) so block columns never shift.
+        let key_str = if show_keys {
+            format!("[{}]", cell.4)
+        } else {
+            " ".repeat(KEY_W)
+        };
+        line0.push(Span::styled(key_str, Style::default().fg(cell.5)));
+        line0.push(Span::styled(block_str.clone(), block_style));
+
+        // Line 1: blank key gutter (reserved) + identical block row.
+        line1.push(Span::styled(" ".repeat(KEY_W), Style::default()));
+        line1.push(Span::styled(block_str, block_style));
+
+        // Line 2: step number centered under the block. The block sits on
+        // the right side of the cell (after the KEY_W gutter), so the
+        // number must also skip the KEY_W gutter to land centered beneath it.
+        let num = format!("{}", cell.0 + 1);
+        let pad = BLOCK_W.saturating_sub(num.chars().count());
+        let left = pad / 2;
+        let right = pad - left;
+        line2.push(Span::styled(" ".repeat(KEY_W), Style::default()));
+        line2.push(Span::styled(
+            format!("{}{}{}", " ".repeat(left), num, " ".repeat(right)),
+            Style::default().fg(Color::Gray),
+        ));
+
+        if i + 1 < PAGE_SIZE {
+            line0.push(gap.clone());
+            line1.push(gap.clone());
+            line2.push(gap.clone());
+        }
+    }
+
+    vec![
+        Line::from(line0),
+        Line::from(line1),
+        Line::from(line2),
+    ]
+}
+
 fn render_trig_strip(frame: &mut Frame, area: Rect, data: &RenderData) {
     let track = data.active_track;
     let focus = data.lock_target_step;
@@ -819,93 +939,16 @@ fn render_trig_strip(frame: &mut Frame, area: Rect, data: &RenderData) {
         .map(|v| v.iter().copied().collect())
         .unwrap_or_default();
     let show_label = area.width >= 48;
-    let lines = vec![
-        render_trig_row(track, data, 0, " 1-8", show_label, focus, &locks),
-        render_trig_row(track, data, PAGE_SIZE, "9-16", show_label, focus, &locks),
-    ];
+    let mut lines: Vec<Line> = Vec::new();
+    lines.extend(render_trig_row_pads(track, data, 0, "1-8", show_label, focus, &locks));
+    lines.push(Line::default());
+    lines.extend(render_trig_row_pads(track, data, PAGE_SIZE, "9-16", show_label, focus, &locks));
     let para = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::NONE)
             .style(Style::default().fg(Color::Gray)),
     );
     frame.render_widget(para, area);
-}
-
-/// One trig-strip row. §3's exact cell format: `[k]g` (4 cols: bracket,
-/// chip, bracket, glyph) joined by one space. TK2.1 C2 (D3): `k` is the
-/// trig's key chip, always shown — bright in `RecMode::Grid` (the trig
-/// really does write that step right now), dimmed otherwise (display-only:
-/// pad modes address tracks, not steps, via this same key). State glyphs
-/// keep the TK2 colour/state rules (playhead yellow, active+locked green,
-/// active cyan, locked white, empty dark gray); focus/playhead are carried
-/// by `Modifier::REVERSED` since a single-column glyph leaves no room for
-/// a wider block.
-fn render_trig_row<'a>(
-    track_idx: usize,
-    data: &'a RenderData,
-    row_off: usize,
-    label: &str,
-    show_label: bool,
-    focus: Option<usize>,
-    locks: &std::collections::HashSet<usize>,
-) -> Line<'a> {
-    let st = data.step_states.get(track_idx).unwrap_or(&data.step_state);
-    let window = data.page_window * PAGE_SIZE * 2 + row_off;
-    let mut spans: Vec<Span> = Vec::with_capacity(PAGE_SIZE * 4);
-
-    if show_label {
-        spans.push(Span::styled(
-            format!("{:>4} ", label),
-            Style::default().fg(Color::Gray),
-        ));
-    }
-
-    for col in 0..PAGE_SIZE {
-        let step = window + col;
-        let is_active = st.steps.get(step).copied().unwrap_or(false);
-        let is_locked = locks.contains(&step);
-        let is_playhead = step == st.current_step;
-        let focused = focus == Some(step);
-
-        let glyph = if is_active { "▓" } else { "░" };
-        let (color, modifier) = if focused || is_playhead {
-            (Color::Yellow, Modifier::REVERSED)
-        } else if is_active && is_locked {
-            (Color::Green, Modifier::empty())
-        } else if is_active {
-            (Color::Cyan, Modifier::empty())
-        } else if is_locked {
-            (Color::White, Modifier::empty())
-        } else {
-            (Color::DarkGray, Modifier::empty())
-        };
-
-        let key_index = row_off + col;
-        let chip = data
-            .trig_key_labels
-            .get(key_index)
-            .and_then(|o| o.as_deref())
-            .map(chip_key_display)
-            .unwrap_or_else(|| " ".to_string());
-        let chip_color = if data.rec == RecMode::Grid {
-            Color::White
-        } else {
-            Color::DarkGray
-        };
-
-        spans.push(Span::styled("[", Style::default().fg(Color::DarkGray)));
-        spans.push(Span::styled(chip, Style::default().fg(chip_color)));
-        spans.push(Span::styled("]", Style::default().fg(Color::DarkGray)));
-        spans.push(Span::styled(
-            glyph,
-            Style::default().fg(color).add_modifier(modifier),
-        ));
-        if col + 1 < PAGE_SIZE {
-            spans.push(Span::raw(" "));
-        }
-    }
-
-    Line::from(spans)
 }
 
 /// TK2.1 C0: the contextual window for `Screen::Grid` — header
@@ -947,7 +990,7 @@ fn render_track_context(frame: &mut Frame, area: Rect, data: &RenderData) {
     let params: Vec<&EncoderCell> = data.encoder_cells.iter().take(4).flatten().collect();
     if params.is_empty() {
         let placeholder = Paragraph::new("   no page params")
-            .style(Style::default().fg(Color::DarkGray));
+            .style(Style::default().fg(Color::Gray));
         frame.render_widget(placeholder, chunks[1]);
     } else {
         let mut spans: Vec<Span> = Vec::with_capacity(params.len());
@@ -1014,7 +1057,7 @@ fn render_encoder_cell(frame: &mut Frame, area: Rect, data: &RenderData, idx: us
             // dimmed so the condition is visible rather than looking like
             // an ordinary, trustworthy 0..1 param.
             let color = if !c.resolved {
-                Color::DarkGray
+                Color::Gray
             } else if flash {
                 Color::Yellow
             } else {
@@ -1025,7 +1068,7 @@ fn render_encoder_cell(frame: &mut Frame, area: Rect, data: &RenderData, idx: us
                 Style::default().fg(color),
             )
         }
-        None => Line::styled("--", Style::default().fg(Color::DarkGray)),
+        None => Line::styled("--", Style::default().fg(Color::Gray)),
     };
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -1239,9 +1282,35 @@ fn render_echo_area(frame: &mut Frame, area: Rect, data: &RenderData) {
 fn render_status_line(frame: &mut Frame, area: Rect, data: &RenderData) {
     let screen_style = Style::default().fg(Color::Yellow);
 
+    let rec_chip = inline_chip(data, PanelButton::Rec);
+    let play_chip = inline_chip(data, PanelButton::Play);
+    let stop_chip = inline_chip(data, PanelButton::Stop);
+    let (rec_sym, rec_color) = rec_indicator(data.rec);
+    let play_color = if data.playing { Color::Green } else { Color::Red };
+
+    let rec_text = if rec_chip.is_empty() {
+        String::new()
+    } else {
+        format!("{rec_chip}{rec_sym} ")
+    };
+    let play_label = if data.playing { "PAUSE" } else { "PLAY " };
+    let play_text = if play_chip.is_empty() {
+        format!("{play_label} ")
+    } else {
+        format!("{play_chip} {play_label} ")
+    };
+    let stop_text = if stop_chip.is_empty() {
+        String::new()
+    } else {
+        format!("{stop_chip}STOP ")
+    };
+
     let mut spans = vec![
         Span::styled(format!(" {:8} ", screen_name(data.screen)), screen_style),
         Span::raw(" "),
+        Span::styled(rec_text, Style::default().fg(rec_color)),
+        Span::styled(play_text, Style::default().fg(play_color)),
+        Span::styled(stop_text, Style::default().fg(Color::Red)),
         Span::raw(
             data.display_names
                 .get(data.active_track)
@@ -1249,10 +1318,6 @@ fn render_status_line(frame: &mut Frame, area: Rect, data: &RenderData) {
                 .unwrap_or("?"),
         ),
         Span::raw(" "),
-        {
-            let (rec_sym, rec_color) = rec_indicator(data.rec);
-            Span::styled(format!("{rec_sym} "), Style::default().fg(rec_color))
-        },
     ];
 
     // P11 C6b: perform-mode indicator — `⚡` while `/context/perform` is
@@ -1705,7 +1770,7 @@ mod tests {
     /// — a second track's pattern must not leak into the rendered strip.
     #[test]
     fn trig_strip_renders_only_selected_track() {
-        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let backend = ratatui::backend::TestBackend::new(80, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut data = RenderData::for_test(Screen::Grid, 2);
         data.active_track = 1;
@@ -1727,11 +1792,11 @@ mod tests {
         ];
         terminal.draw(|f| render(f, &data)).unwrap();
 
-        // The strip is the two rows directly below the one-line track
-        // indicator, which is the row containing "PTN P" (§3).
-        let indicator_row = find_row(&terminal, 24, 80, "PTN P");
-        let strip_row_1 = buffer_row_text(&terminal, indicator_row + 1, 80);
-        let strip_row_2 = buffer_row_text(&terminal, indicator_row + 2, 80);
+        // The strip is the eleven rows directly below the one-line track
+        // indicator. Row 1 has blocks for steps 1-8, row 6 for steps 9-16.
+        let indicator_row = find_row(&terminal, 40, 80, "PTN P");
+        let strip_row_1 = buffer_row_text(&terminal, indicator_row + 2, 80);
+        let strip_row_2 = buffer_row_text(&terminal, indicator_row + 6, 80);
         assert!(
             !strip_row_1.contains('▓') && !strip_row_2.contains('▓'),
             "the strip must render track 1 (all empty), not track 0 (all \
@@ -1739,39 +1804,50 @@ mod tests {
         );
     }
 
-    /// TK2.2 C3 audit (spec: "verify, don't assume" `render_trig_row` is
-    /// stable against the E2 reflow class): the trig strip's `[k]g` cell
-    /// format is fixed at 5 columns (tk2.1-theotokos.md §3) and the chip
-    /// is shown — bright or dim — in every `RecMode`, never hidden, so
-    /// unlike the track line there is no mode-dependent column shift to
-    /// fix here. This pins that finding as a regression test.
+    /// The trig strip hides key brackets when REC is off and shows them
+    /// in Grid/Live. The block column must stay at the same position
+    /// regardless — the `[k]` block (3 cols) is replaced by 3 spaces so
+    /// the block doesn't shift.
     #[test]
-    fn trig_strip_cells_do_not_shift_between_off_and_grid() {
-        let backend = ratatui::backend::TestBackend::new(80, 24);
+    fn trig_strip_hides_brackets_when_rec_off() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let mut data = RenderData::for_test(Screen::Grid, 1);
 
         data.rec = RecMode::Off;
         terminal.draw(|f| render(f, &data)).unwrap();
-        let indicator_row = find_row(&terminal, 24, 80, "PTN P");
-        let off_row1 = buffer_row_text(&terminal, indicator_row + 1, 80);
+        let indicator_row = find_row(&terminal, 40, 80, "PTN P");
+        let off_key_row = buffer_row_text(&terminal, indicator_row + 1, 80);
 
         data.rec = RecMode::Grid;
         terminal.draw(|f| render(f, &data)).unwrap();
-        let grid_row1 = buffer_row_text(&terminal, indicator_row + 1, 80);
+        let grid_key_row = buffer_row_text(&terminal, indicator_row + 1, 80);
 
-        let off_col = off_row1
-            .find("[q]")
-            .expect("Trig1's cell must render in Off");
-        let grid_col = grid_row1
-            .find("[q]")
-            .expect("Trig1's cell must render in Grid");
+        assert!(
+            !off_key_row.contains("[Q]"),
+            "brackets must be hidden when REC is off; got: {off_key_row:?}"
+        );
+        assert!(
+            grid_key_row.contains("[Q]"),
+            "brackets must show when REC is Grid; got: {grid_key_row:?}"
+        );
+
+        // The block (░/█) must land at the same column in both modes —
+        // hidden brackets still reserve their width.
+        let off_glyph = off_key_row.find('░').or_else(|| off_key_row.find('█'))
+            .expect("block must render in Off");
+        let grid_glyph = grid_key_row.find('░').or_else(|| grid_key_row.find('█'))
+            .expect("block must render in Grid");
         assert_eq!(
-            off_col, grid_col,
-            "the trig strip's cells must not shift between Off and Grid; \
-             Off: {off_row1:?}, Grid: {grid_row1:?}"
+            off_glyph, grid_glyph,
+            "block column must not shift between Off and Grid; \
+             Off: {off_key_row:?}, Grid: {grid_key_row:?}"
         );
     }
+
+
+
+
 
     /// TK2.1 C0 (D2): the track line lists every track with its display
     /// name and a mute marker for muted tracks.
@@ -2147,9 +2223,9 @@ mod tests {
              got: {line:?}"
         );
         assert!(
-            line.contains("[q]1"),
-            "the track number AND its key chip must survive the narrow \
-             drop — names drop before chips (D3); got: {line:?}"
+            line.contains("[Q]"),
+            "the track key chip must survive the narrow drop — names \
+             drop before chips (D3); got: {line:?}"
         );
     }
 
@@ -2298,7 +2374,7 @@ mod tests {
 
         let text = buffer_text(&terminal);
         assert!(
-            text.contains("[q]"),
+            text.contains("[Q]"),
             "Grid mode must show the trig's key chip on its step cell; \
              got: {text}"
         );
@@ -2315,7 +2391,7 @@ mod tests {
         let indicator_row = find_row(&terminal, 24, 80, "PTN P");
         let line = buffer_row_text(&terminal, indicator_row, 80);
         assert!(
-            line.contains("[q]1"),
+            line.contains("[Q]"),
             "pad mode must show the key chip on the track indicator; \
              got: {line:?}"
         );
@@ -2339,9 +2415,9 @@ mod tests {
         terminal.draw(|f| render(f, &data)).unwrap();
         let grid_line = buffer_row_text(&terminal, row, 80);
 
-        let off_name_col = off_line.find(" T1").expect("track name must render in Off");
+        let off_name_col = off_line.find("T1").expect("track name must render in Off");
         let grid_name_col = grid_line
-            .find(" T1")
+            .find("T1")
             .expect("track name must render in Grid");
         assert_eq!(
             off_name_col, grid_name_col,
@@ -2378,7 +2454,7 @@ mod tests {
         let row = find_row(&terminal, 24, 80, "PTN P");
         let off_line = buffer_row_text(&terminal, row, 80);
         assert!(
-            off_line.contains("[Tab]"),
+            off_line.contains("[TAB]"),
             "sanity: the remapped chip must title-case in Off; got: {off_line:?}"
         );
 
@@ -2386,9 +2462,9 @@ mod tests {
         terminal.draw(|f| render(f, &data)).unwrap();
         let grid_line = buffer_row_text(&terminal, row, 80);
 
-        let off_col = off_line.find(" T1").expect("track name must render in Off");
+        let off_col = off_line.find("T1").expect("track name must render in Off");
         let grid_col = grid_line
-            .find(" T1")
+            .find("T1")
             .expect("track name must render in Grid");
         assert_eq!(
             off_col, grid_col,
@@ -2410,7 +2486,7 @@ mod tests {
         let indicator_row = find_row(&terminal, 24, 80, "PTN P");
         let line = buffer_row_text(&terminal, indicator_row, 80);
         assert!(
-            !line.contains("[w]"),
+            !line.contains("[W]"),
             "a pad column past the discovered track count must have no \
              chip; got: {line:?}"
         );
@@ -2428,12 +2504,12 @@ mod tests {
         // elements they act on and left the legend — only affordances
         // with no on-screen referent remain here.
         for expected in [
-            "[n] ENC",
-            "[m] LOCK",
-            "[o] SONG",
+            "[N] ENC",
+            "[M] LOCK",
+            "[O] SONG",
             "[8] SET",
-            "[Enter] YES",
-            "[Esc] NO",
+            "[ENTER] YES",
+            "[ESC] NO",
         ] {
             assert!(
                 text.contains(expected),
@@ -2456,7 +2532,7 @@ mod tests {
 
         let text = buffer_text(&terminal);
         assert!(
-            text.contains("[m] LOCK"),
+            text.contains("[M] LOCK"),
             "ENC-on legend must show the LOCK chip; got: {text}"
         );
         assert!(
@@ -2482,7 +2558,7 @@ mod tests {
 
         let text = buffer_text(&terminal);
         assert!(
-            text.contains("[n] ENC"),
+            text.contains("[N] ENC"),
             "the highest-priority chip must always survive; got: {text}"
         );
         assert!(
@@ -2529,13 +2605,13 @@ mod tests {
         let data = RenderData::for_test(Screen::Grid, 1);
         terminal.draw(|f| render(f, &data)).unwrap();
 
-        let legend_row0 = find_row(&terminal, 24, 100, "[n] ENC");
+        let legend_row0 = find_row(&terminal, 24, 100, "[N] ENC");
         let legend_text = format!(
             "{}{}",
             buffer_row_text(&terminal, legend_row0, 100),
             buffer_row_text(&terminal, legend_row0 + 1, 100),
         );
-        for absent in ["[z]", "[x]", "[p]", "[Tab]", "[0]", "[c]"] {
+        for absent in ["[Z]", "[X]", "[P]", "[TAB]", "[0]", "[C]"] {
             assert!(
                 !legend_text.contains(absent),
                 "the legend must not advertise {absent:?} — it moved \
@@ -2555,17 +2631,16 @@ mod tests {
 
         let text = buffer_text(&terminal);
         assert!(
-            text.contains("[c]"),
+            text.contains("[C]"),
             "the transport line must advertise [c] STOP; got: {text}"
         );
     }
 
-    /// D3: chip casing is display-only — multi-character key names
-    /// title-case (`[Tab]`, not `[tab]`), single characters stay as typed
-    /// (`[q]`, not `[Q]`). The keymap storage form (`key_name`) is
+    /// D3: chip casing is display-only — all key hints render uppercase
+    /// (`[TAB]`, `[Q]`, `[Z]`). The keymap storage form (`key_name`) is
     /// untouched by this — only the rendered chip.
     #[test]
-    fn chip_titlecases_named_keys_only() {
+    fn chip_all_keys_uppercase() {
         let backend = ratatui::backend::TestBackend::new(100, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         let data = RenderData::for_test(Screen::Grid, 1);
@@ -2573,20 +2648,20 @@ mod tests {
 
         let text = buffer_text(&terminal);
         assert!(
-            text.contains("[Tab]"),
-            "multi-char key names must title-case; got: {text}"
+            text.contains("[TAB]"),
+            "multi-char key names must be uppercase; got: {text}"
         );
         assert!(
             !text.contains("[tab]"),
             "must not render the lowercase storage form; got: {text}"
         );
         assert!(
-            text.contains("[q]"),
-            "single-char key names must stay as typed; got: {text}"
+            text.contains("[Q]"),
+            "single-char key names must be uppercase; got: {text}"
         );
         assert!(
-            !text.contains("[Q]"),
-            "single-char keys must not be uppercased; got: {text}"
+            !text.contains("[q]"),
+            "must not render lowercase single-char keys; got: {text}"
         );
     }
 
@@ -2739,7 +2814,7 @@ mod tests {
         let fg = terminal.backend().buffer().get(col, row).fg;
         assert_eq!(
             fg,
-            Color::DarkGray,
+            Color::Gray,
             "an unresolved cell must render dimmed, not the normal white"
         );
     }
