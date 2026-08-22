@@ -387,6 +387,15 @@ caught at least one real issue — do not skip this).
 - **OQ-P14-3** — The six macro machines' SRC curations (D5) are anchors,
   not frozen slot-by-slot layouts; if a session later finds a curation
   unplayable, that's a defect against this phase, not a spec violation.
+- **OQ-P14-4** — D3's `harm` normalization is peak-safe (bounded by the
+  triangle inequality) but not loudness-preserving: verified in the C1
+  review that total output power falls from ~1.0 at `harm=0` to ~0.28 at
+  `harm=1`. Several macros (D5) put `harm` on the curated SRC page as a
+  headline "brightness" control, so turning it up will read as "brighter
+  but quieter" unless something compensates. Decide in C2/C4 whether AMP
+  gain should compensate for `harm`, or whether "brighter and a little
+  quieter" is accepted as the tone (a real trade-off some additive designs
+  make deliberately) — not silently discovered at the playability session.
 
 ---
 
