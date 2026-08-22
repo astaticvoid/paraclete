@@ -216,6 +216,7 @@ fn main() {
             profiles,
             &perform_state.kit_store.kits,
             perform_state.kit_binding.map(|slot| slot.map(|k| k.0)),
+            &perform_state.sample_pool.slots,
         ) {
             eprintln!("[paraclete] save failed: {e}");
         } else {

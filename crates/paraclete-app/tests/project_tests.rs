@@ -1,6 +1,9 @@
+use paraclete_app::perform_state::PerformState;
 use paraclete_app::project::{
-    load_project, save_project, ProfileBinding, Project, ProjectError, ProjectMetadata,
+    load_project, load_project_v3, save_project, save_project_v3, ProfileBinding, Project,
+    ProjectError, ProjectMetadata,
 };
+use paraclete_app::sample_pool::{PoolEntry, SampleSource};
 use paraclete_node_api::{Node, ParamDescriptor};
 use paraclete_nodes::{
     AnalogEngine, DistortionNode, FilterNode, FmEngine, InternalClock, ReverbNode, Sequencer,
@@ -249,6 +252,137 @@ fn project_load_unknown_version_returns_error() {
         matches!(result, Err(ProjectError::UnknownVersion(99))),
         "expected UnknownVersion(99), got {result:?}",
     );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+/// AN0 C0: a v3 project file saved before the sample pool existed (no
+/// `sample_pool` key in the RON) must still load — `#[serde(default)]`
+/// gives an empty pool, same tolerance `kits`/`kit_binding` already have.
+/// Generates a real v3 file via `save_project_v3`, then strips the
+/// `sample_pool` field (RON's `PrettyConfig` puts it on its own line) to
+/// simulate a file saved before AN0 — same technique as
+/// `project_load_unknown_node_id_skips_with_warning`'s string injection.
+#[test]
+fn project_load_v3_without_sample_pool_key_defaults_to_empty_pool() {
+    let tmp = std::env::temp_dir().join("paraclete_v3_no_pool_test.ron");
+
+    let mut conf = NodeConfigurator::new(SR, BLOCK);
+    conf.add_node(1, Box::new(InternalClock::new()));
+    save_project_v3(&tmp, &conf, make_metadata(), empty_profiles(), &[], [None; 8], &[])
+        .expect("save should succeed");
+
+    let content = std::fs::read_to_string(&tmp).unwrap();
+    let stripped: String = content
+        .lines()
+        .filter(|l| !l.trim_start().starts_with("sample_pool"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_ne!(stripped, content, "fixture must actually contain a sample_pool line to strip");
+    std::fs::write(&tmp, &stripped).unwrap();
+
+    let mut conf2 = NodeConfigurator::new(SR, BLOCK);
+    conf2.add_node(1, Box::new(InternalClock::new()));
+    let mut perform = PerformState::new();
+    let warnings = load_project_v3(&tmp, &mut conf2, &mut perform).expect("load should succeed");
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+    assert!(
+        perform.sample_pool.slots.iter().all(|s| s.is_none()),
+        "pre-AN0 file has no sample_pool key; pool must default to empty"
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+/// AN0 C0: a populated sample pool survives a `save_project_v3` /
+/// `load_project_v3` round trip through the real app-facing entry points.
+#[test]
+fn project_v3_save_then_load_restores_sample_pool() {
+    let tmp = std::env::temp_dir().join("paraclete_v3_pool_roundtrip_test.ron");
+
+    let mut conf = NodeConfigurator::new(SR, BLOCK);
+    conf.add_node(1, Box::new(InternalClock::new()));
+
+    let mut pool: Vec<Option<PoolEntry>> = vec![None; 4];
+    pool[1] = Some(PoolEntry {
+        name: "kick".into(),
+        source: SampleSource::File("samples/kick.wav".into()),
+        frames: 1000,
+        rate: 44100.0,
+        bars: None,
+        gain: 1.0,
+        slice_table: vec![(0, 1000)],
+    });
+
+    save_project_v3(
+        &tmp,
+        &conf,
+        make_metadata(),
+        empty_profiles(),
+        &[],
+        [None; 8],
+        &pool,
+    )
+    .expect("save should succeed");
+
+    let mut conf2 = NodeConfigurator::new(SR, BLOCK);
+    conf2.add_node(1, Box::new(InternalClock::new()));
+    let mut perform = PerformState::new();
+    let warnings = load_project_v3(&tmp, &mut conf2, &mut perform).expect("load should succeed");
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+
+    let entry = perform.sample_pool.get(1).expect("slot 1 should be restored");
+    assert_eq!(entry.name, "kick");
+    assert!(matches!(&entry.source, SampleSource::File(p) if p == "samples/kick.wav"));
+    assert_eq!(entry.frames, 1000);
+    assert!(perform.sample_pool.get(0).is_none());
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+/// A pool grown past `NOMINAL_POOL_SIZE` (128 — `SamplePool::load_file`
+/// deliberately allows this, D2) must not be truncated back down on load.
+/// Regression for a resize-clobbers-growth bug caught in C0 review.
+#[test]
+fn project_v3_round_trip_preserves_a_pool_grown_past_nominal_size() {
+    let tmp = std::env::temp_dir().join("paraclete_v3_pool_overflow_test.ron");
+
+    let mut conf = NodeConfigurator::new(SR, BLOCK);
+    conf.add_node(1, Box::new(InternalClock::new()));
+
+    let mut pool: Vec<Option<PoolEntry>> = vec![None; 130];
+    pool[129] = Some(PoolEntry {
+        name: "overflow".into(),
+        source: SampleSource::File("samples/track0.wav".into()),
+        frames: 500,
+        rate: 44100.0,
+        bars: None,
+        gain: 1.0,
+        slice_table: vec![(0, 500)],
+    });
+
+    save_project_v3(
+        &tmp,
+        &conf,
+        make_metadata(),
+        empty_profiles(),
+        &[],
+        [None; 8],
+        &pool,
+    )
+    .expect("save should succeed");
+
+    let mut conf2 = NodeConfigurator::new(SR, BLOCK);
+    conf2.add_node(1, Box::new(InternalClock::new()));
+    let mut perform = PerformState::new();
+    let warnings = load_project_v3(&tmp, &mut conf2, &mut perform).expect("load should succeed");
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+
+    let entry = perform
+        .sample_pool
+        .get(129)
+        .expect("slot 129 must survive the round trip, not be truncated to the 128-slot floor");
+    assert_eq!(entry.name, "overflow");
 
     let _ = std::fs::remove_file(&tmp);
 }

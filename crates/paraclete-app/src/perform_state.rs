@@ -16,6 +16,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::kit::{Kit, KitEntry, KitStore};
+use crate::sample_pool::SamplePool;
 use log::info;
 use paraclete_node_api::app_op::{AppOp, KitId};
 use paraclete_node_api::{NodeCommand, StateBusHandle, StateBusValue, CMD_SET_PARAM};
@@ -28,6 +29,8 @@ pub struct PerformState {
     pub kit_store: KitStore,
     /// Pattern slot → kit binding. Index by active pattern index.
     pub kit_binding: [Option<KitId>; 8],
+    /// Project-level sample pool (AN0, ADR-040 decision 3).
+    pub sample_pool: SamplePool,
     pub perform_mode: bool,
     /// Volatile temp snapshot (RAM only, not persisted).
     pub temp_param_snapshot: Option<Vec<KitEntry>>,
@@ -42,6 +45,7 @@ impl PerformState {
         Self {
             kit_store: KitStore::default(),
             kit_binding: Default::default(),
+            sample_pool: SamplePool::default(),
             perform_mode: false,
             temp_param_snapshot: None,
             cached_active_patterns: HashMap::new(),

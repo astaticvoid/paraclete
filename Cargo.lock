@@ -1446,8 +1446,10 @@ dependencies = [
  "ratatui",
  "rhai",
  "ron",
+ "rubato",
  "serde",
  "serde_yml",
+ "symphonia",
 ]
 
 [[package]]

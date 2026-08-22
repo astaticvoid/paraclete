@@ -7,6 +7,7 @@ pub mod patch;
 pub mod perform_state;
 pub mod project;
 pub mod registry;
+pub mod sample_pool;
 
 pub use patch::{apply_patch, PatchError, TopologyChange};
 pub use registry::{build_registry, NodeRegistry};

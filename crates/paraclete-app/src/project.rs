@@ -30,6 +30,10 @@ pub struct Project {
     /// Pattern slot → kit id binding (slot index, not node id).
     #[serde(default)]
     pub kit_binding: [Option<u8>; 8],
+    /// Sample pool (AN0). `#[serde(default)]` keeps pre-AN0 files
+    /// deserialising with an empty pool.
+    #[serde(default)]
+    pub sample_pool: Vec<Option<crate::sample_pool::PoolEntry>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -152,6 +156,7 @@ pub fn save_project(
         profiles,
         kits: vec![],
         kit_binding: [None; 8],
+        sample_pool: vec![],
     };
 
     let ron_str = ron::ser::to_string_pretty(&project, ron::ser::PrettyConfig::default())
@@ -245,6 +250,7 @@ pub fn save_project_v2(
         profiles: ProfileBinding { active: vec![] },
         kits: vec![],
         kit_binding: [None; 8],
+        sample_pool: vec![],
     };
 
     let ron_str = ron::ser::to_string_pretty(&project, ron::ser::PrettyConfig::default())
@@ -351,6 +357,7 @@ pub fn save_project_v3(
     profiles: ProfileBinding,
     kits: &[Option<crate::kit::Kit>],
     kit_binding: [Option<u8>; 8],
+    sample_pool: &[Option<crate::sample_pool::PoolEntry>],
 ) -> Result<(), ProjectError> {
     let nodes: Vec<NodeSnapshot> = conf
         .all_nodes()
@@ -379,6 +386,7 @@ pub fn save_project_v3(
         profiles,
         kits: kits.to_vec(),
         kit_binding,
+        sample_pool: sample_pool.to_vec(),
     };
 
     let ron_str = ron::ser::to_string_pretty(&project, ron::ser::PrettyConfig::default())
@@ -424,6 +432,20 @@ pub fn load_project_v3(
                 kits.resize(64, None);
                 perform.kit_store.kits = kits;
                 perform.kit_binding = project.kit_binding.map(|slot| slot.map(KitId));
+            }
+            {
+                // Only grow to the nominal floor, never shrink — unlike
+                // `kits` (capped at 64 by `KitStore::set`, kit.rs:45-49),
+                // the sample pool has no such ceiling; `SamplePool::load_file`
+                // deliberately grows it past NOMINAL_POOL_SIZE when a slot
+                // beyond the nominal range is populated (D2), and a plain
+                // `resize(NOMINAL_POOL_SIZE, None)` here would truncate that
+                // data back off on every load.
+                let mut slots = project.sample_pool.clone();
+                if slots.len() < crate::sample_pool::NOMINAL_POOL_SIZE {
+                    slots.resize(crate::sample_pool::NOMINAL_POOL_SIZE, None);
+                }
+                perform.sample_pool.slots = slots;
             }
 
             for snap in &project.graph.nodes {

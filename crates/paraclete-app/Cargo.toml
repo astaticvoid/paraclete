@@ -37,6 +37,8 @@ crossterm = { workspace = true }
 ron        = { workspace = true }
 serde      = { workspace = true }
 serde_yml = { workspace = true }
+rubato     = { workspace = true }
+symphonia  = { workspace = true }
 include_dir = { workspace = true, optional = true }
 
 [features]
