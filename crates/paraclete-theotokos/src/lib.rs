@@ -9,7 +9,9 @@ use std::io::Stdout;
 use std::rc::Rc;
 use std::time::Instant;
 
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, ModifierKeyCode,
+};
 use crossterm::execute;
 use paraclete_node_api::{CapabilityDocument, NodeCommand, StateBusHandle, StateBusValue};
 use paraclete_view_assembly::CompositeView;
@@ -267,10 +269,16 @@ impl TheotokosApp {
             // every event in a multi-event batch as inside the guard
             // window, regardless of actual spacing).
             let event_now = Instant::now();
-            // C6: while cmdline is open, capture ALL keys to the line editor
+            // C6: while cmdline is open, capture ALL keys to the line
+            // editor. Gated to Press/Repeat like every other handler below
+            // — kitty delivers real release events (`REPORT_EVENT_TYPES`),
+            // and without this guard each keystroke inserted its character
+            // twice, once per press and once per release.
             if self.model.cmdline.is_some() {
-                self.handle_cmdline_key(ev);
-                dirty = true;
+                if matches!(ev.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                    self.handle_cmdline_key(ev);
+                    dirty = true;
+                }
                 continue;
             }
 
@@ -313,9 +321,32 @@ impl TheotokosApp {
             // chip reflect what is physically held. The sticky fallback has
             // no releases, so `func_held`/`ctrl_held` stay false there and
             // only the armed prefix shows (unchanged behaviour).
+            //
+            // Crossterm quirk (verified against crossterm 0.27's CSI-u
+            // parser): releasing the Shift/Ctrl key itself still arrives
+            // with that key's own modifier bit set in `ev.modifiers` — the
+            // parser sets the bit from the *keycode* (`Modifier(LeftShift)`
+            // etc.), not from `kind`, on both press and release. Mirroring
+            // `ev.modifiers` naively therefore never clears the chip on a
+            // bare Shift/Ctrl tap; it only clears on the next unrelated
+            // keypress. A release of the modifier key itself is treated as
+            // authoritative here, overriding that stuck bit.
             if self.held.kitty {
-                self.held.func_held = input::func_held(ev);
-                self.held.ctrl_held = ev.modifiers.contains(KeyModifiers::CONTROL);
+                let released_shift = ev.kind == KeyEventKind::Release
+                    && matches!(
+                        ev.code,
+                        KeyCode::Modifier(ModifierKeyCode::LeftShift | ModifierKeyCode::RightShift)
+                    );
+                let released_ctrl = ev.kind == KeyEventKind::Release
+                    && matches!(
+                        ev.code,
+                        KeyCode::Modifier(
+                            ModifierKeyCode::LeftControl | ModifierKeyCode::RightControl
+                        )
+                    );
+                self.held.func_held = !released_shift && input::func_held(ev);
+                self.held.ctrl_held =
+                    !released_ctrl && ev.modifiers.contains(KeyModifiers::CONTROL);
             }
 
             let action = match direct_action {
@@ -3353,6 +3384,37 @@ mod tests {
         );
     }
 
+    /// Reported live: with the `:` cmdline open on a kitty terminal, typing
+    /// doubled every character (`set` came out as `sseett`). Root cause:
+    /// `handle_cmdline_key` was invoked for every event kind, so kitty's
+    /// real release event (from `REPORT_EVENT_TYPES`) inserted the same
+    /// character a second time.
+    #[test]
+    fn cmdline_release_events_do_not_double_type_characters() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.held.kitty = true;
+
+        app.handle_keys(&bus, &[kc(':')]);
+        assert_eq!(app.model.cmdline.as_deref(), Some(""));
+
+        let press =
+            KeyEvent::new_with_kind(KeyCode::Char('t'), KeyModifiers::NONE, KeyEventKind::Press);
+        let release = KeyEvent::new_with_kind(
+            KeyCode::Char('t'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
+        app.handle_keys(&bus, &[press, release]);
+
+        assert_eq!(
+            app.model.cmdline.as_deref(),
+            Some("t"),
+            "a physical press+release on a kitty terminal must insert the \
+             character once, not twice"
+        );
+    }
+
     /// TK2.2 C1 (BUG-046): a held trig on a kitty terminal streams
     /// `KeyEventKind::Repeat` the same as REC (D5) — before this fix only
     /// REC's repeats were consumed, so holding a trig in Grid mode re-fired
@@ -4560,6 +4622,40 @@ mod tests {
         let held_off = HeldState::new(false);
         let data2 = render_data(&bus, render_model(), &held_off);
         assert!(data2.held_modifiers.is_empty());
+    }
+
+    /// Reported live: pressing and releasing bare Shift left the SHIFT chip
+    /// lit until the next unrelated keypress. Root cause is a crossterm
+    /// quirk verified against 0.27's CSI-u parser: it sets the SHIFT bit in
+    /// `ev.modifiers` whenever the *keycode* is `Modifier(LeftShift)`, on
+    /// both press and release, so the release event still carries
+    /// `modifiers = SHIFT`. The fix treats a release of the modifier key
+    /// itself as authoritative rather than trusting that bit.
+    #[test]
+    fn releasing_bare_shift_clears_the_func_chip() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        app.held.kitty = true;
+
+        let press = KeyEvent::new_with_kind(
+            KeyCode::Modifier(ModifierKeyCode::LeftShift),
+            KeyModifiers::SHIFT,
+            KeyEventKind::Press,
+        );
+        app.handle_keys(&bus, &[press]);
+        assert!(app.held.func_held, "pressing Shift must arm the chip");
+
+        let release = KeyEvent::new_with_kind(
+            KeyCode::Modifier(ModifierKeyCode::LeftShift),
+            KeyModifiers::SHIFT, // crossterm quirk: still set on release
+            KeyEventKind::Release,
+        );
+        app.handle_keys(&bus, &[release]);
+        assert!(
+            !app.held.func_held,
+            "releasing Shift must clear the chip even though crossterm's \
+             release event still carries the SHIFT modifier bit"
+        );
     }
 
     // ── TK3 C5 (OQ-T23b): dual-path tap tempo ───────────────────────────

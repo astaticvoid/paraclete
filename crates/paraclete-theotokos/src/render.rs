@@ -434,7 +434,7 @@ fn legend_chips_for_screen(screen: Screen, enc: bool) -> Vec<LegendChip> {
         return vec![
             Literal("trigs", "ENCODER ±"),
             Literal("Ctrl", "FINE"),
-            Literal("FUNC", "COARSE"),
+            Literal("Shift", "COARSE"),
             Dynamic(Enc, "ENC off"),
             Dynamic(Lock, "LOCK"),
             Dynamic(No, "BACK"),
@@ -452,6 +452,7 @@ fn legend_chips_for_screen(screen: Screen, enc: bool) -> Vec<LegendChip> {
             Literal("-/=", "WIN"),
             Dynamic(Song, "SONG"),
             Dynamic(Settings, "SET"),
+            Literal("Shift+8", "MIX"),
             Dynamic(Yes, "YES"),
             Dynamic(No, "NO"),
             Literal(":", "CMD"),
@@ -479,7 +480,7 @@ fn legend_chips_for_screen(screen: Screen, enc: bool) -> Vec<LegendChip> {
         Screen::Tempo => vec![
             Dynamic(Yes, "TAP"),
             Literal("↑/↓", "±1"),
-            Literal("FUNC+↑/↓", "±0.1"),
+            Literal("Shift+↑/↓", "±0.1"),
             Dynamic(No, "BACK"),
             Literal("?", "HELP"),
             Literal("^C", "QUIT"),
@@ -491,8 +492,8 @@ fn legend_chips_for_screen(screen: Screen, enc: bool) -> Vec<LegendChip> {
         ],
         Screen::Kit => vec![
             Dynamic(No, "BACK"),
-            Literal("FUNC", "PERF"),
-            Literal("FUNC+trig", "SCROLL"),
+            Literal("Shift", "PERF"),
+            Literal("Shift+trig", "SCROLL"),
             Literal("trig13-16", "LOAD/SAVE/CMIT/RLD"),
             Literal(":", "CMD"),
             Literal("?", "HELP"),
@@ -501,7 +502,7 @@ fn legend_chips_for_screen(screen: Screen, enc: bool) -> Vec<LegendChip> {
         Screen::Mix => vec![
             Dynamic(Enc, "ENC"),
             Dynamic(No, "BACK"),
-            Literal("FUNC+8", "RE-OPEN"),
+            Literal("Shift+8", "RE-OPEN"),
             Literal("trig N", "TRACK LEVEL"),
             Literal("?", "HELP"),
             Literal("^C", "QUIT"),
@@ -714,14 +715,18 @@ fn render_track_indicator(frame: &mut Frame, area: Rect, data: &RenderData) {
             // — a bare trig doesn't select a track in Grid mode. TK2.2 C3
             // (E2): a hidden chip still reserves its width — the same
             // label the pad mode would render, blanked — so no column
-            // shifts when RecMode changes (closes F3).
+            // shifts when RecMode changes (closes F3). Also shown while TRK
+            // is held regardless of RecMode: the trig row (below) hands its
+            // keys over to track-select for the duration of the hold, so
+            // the chip belongs here, on the row that's actually listening.
             let chip_would_be = data
                 .track_key_labels
                 .get(i)
                 .and_then(|o| o.as_deref())
                 .map(|k| format!("[{}]", chip_key_display(k)))
                 .unwrap_or_default();
-            let chip = if matches!(data.rec, RecMode::Off | RecMode::Live) {
+            let trk_held = data.armed_prefix.as_deref() == Some("TRK…");
+            let chip = if matches!(data.rec, RecMode::Off | RecMode::Live) || trk_held {
                 chip_would_be
             } else {
                 " ".repeat(chip_would_be.chars().count())
@@ -832,7 +837,12 @@ fn render_trig_row_pads(
 ) -> Vec<Line<'static>> {
     let st = data.step_states.get(track_idx).unwrap_or(&data.step_state);
     let window = data.page_window * PAGE_SIZE * 2 + row_off;
-    let show_keys = data.rec != RecMode::Off;
+    // Hidden in RecMode::Off (the trig grid isn't stepping there) and, the
+    // same way, while TRK is held: the keys are on loan to track-select for
+    // the duration of the hold, so the grid's own step-toggle chip has
+    // nothing to say for itself.
+    let trk_held = data.armed_prefix.as_deref() == Some("TRK…");
+    let show_keys = data.rec != RecMode::Off && !trk_held;
 
     const BLOCK_W: usize = 4;
     const KEY_W: usize = 3;
@@ -1173,9 +1183,9 @@ fn render_help(frame: &mut Frame, area: Rect, data: &RenderData) {
         ("z", "REC — Off<->Grid toggle (kitty); no-kitty: Grid if stopped, Live if playing"),
         ("z (hold)+x, kitty", "REC+PLAY — escalate to Live (record) + start transport"),
         ("x / c", "PLAY / STOP (Space = PLAY)"),
-        ("FUNC (Shift)", "coarse jog (ENC on) / secondary chords"),
+        ("Shift", "coarse jog (ENC on) / secondary chords"),
         ("n", "ENC — toggle encoder-jog mode (bare trig jogs, any screen)"),
-        ("FUNC+trig", "encoder jog, ENC off (top row up, bottom row down)"),
+        ("Shift+trig", "encoder jog, ENC off (top row up, bottom row down)"),
         ("m(hold)+trig, Grid", "LOCK — arm the trig's step as the p-lock target"),
         ("1-6", "page select (TRIG SRC FLTR AMP FX MOD)"),
         ("7 / 8 / 9 / 0", "KIT / SETTINGS / SAMPLING / TEMPO"),
@@ -1845,7 +1855,67 @@ mod tests {
         );
     }
 
+    /// Reported live: while TRK is held, its trig keys silently select a
+    /// track instead of toggling a step — but the trig grid still showed
+    /// its normal `[Q]` step-toggle chips and the track line, gated to
+    /// `RecMode::Off | Live`, showed none of its own. Mirrors the existing
+    /// pad-mode precedent (`trig_strip_hides_brackets_when_rec_off`): the
+    /// key chip belongs on whichever row is actually listening to it.
+    #[test]
+    fn track_line_shows_key_chips_while_trk_held_even_in_grid_mode() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 2);
+        data.rec = RecMode::Grid;
+        terminal.draw(|f| render(f, &data)).unwrap();
+        let row = find_row(&terminal, 40, 80, "PTN P");
+        let not_held_row = buffer_row_text(&terminal, row, 80);
 
+        data.armed_prefix = Some("TRK…".to_string());
+        terminal.draw(|f| render(f, &data)).unwrap();
+        let held_row = buffer_row_text(&terminal, row, 80);
+
+        assert!(
+            !not_held_row.contains("[Q]"),
+            "no key chip on the track line while TRK isn't held and REC is \
+             Grid; got: {not_held_row:?}"
+        );
+        assert!(
+            held_row.contains("[Q]"),
+            "TRK-hold must show the track-select key chip even in Grid REC \
+             mode; got: {held_row:?}"
+        );
+    }
+
+    /// Companion to the above: the trig grid's own `[Q]` chips must hide
+    /// while TRK is held — the exact same treatment `RecMode::Off` already
+    /// gets (`trig_strip_hides_brackets_when_rec_off`) — since the keys
+    /// aren't toggling steps for the duration of the hold.
+    #[test]
+    fn trig_strip_hides_key_chips_while_trk_held() {
+        let backend = ratatui::backend::TestBackend::new(80, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Grid, 1);
+        data.rec = RecMode::Grid;
+        terminal.draw(|f| render(f, &data)).unwrap();
+        let row = find_row(&terminal, 40, 80, "1-8");
+        let not_held_row = buffer_row_text(&terminal, row, 80);
+
+        data.armed_prefix = Some("TRK…".to_string());
+        terminal.draw(|f| render(f, &data)).unwrap();
+        let held_row = buffer_row_text(&terminal, row, 80);
+
+        assert!(
+            not_held_row.contains("[Q]"),
+            "grid key chip must show while genuinely stepping; \
+             got: {not_held_row:?}"
+        );
+        assert!(
+            !held_row.contains("[Q]"),
+            "grid key chip must hide while TRK is held (its keys are on \
+             loan to track-select), same as RecMode::Off; got: {held_row:?}"
+        );
+    }
 
 
 
@@ -2674,7 +2744,7 @@ mod tests {
         terminal.draw(|f| render(f, &data)).unwrap();
 
         let text = buffer_text(&terminal);
-        for token in ["TRK", "PTN", "REC", "FUNC", "Trig"] {
+        for token in ["TRK", "PTN", "REC", "Shift", "Trig"] {
             assert!(
                 text.contains(token),
                 "help overlay must list panel button/concept {token}; got: {text}"
