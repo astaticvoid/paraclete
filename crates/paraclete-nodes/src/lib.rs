@@ -2,6 +2,7 @@
 //! Paraclete L3 first-party nodes.
 
 pub mod analog_engine;
+pub mod audio_input;
 pub mod delay;
 pub mod distortion;
 pub mod engine_dsp;
@@ -23,6 +24,7 @@ pub mod sequencer;
 pub mod split;
 
 pub use analog_engine::{AnalogEngine, AnalogMachine};
+pub use audio_input::AudioInputNode;
 pub use delay::DelayNode;
 pub use distortion::DistortionNode;
 pub use envelope::EnvelopeNode;

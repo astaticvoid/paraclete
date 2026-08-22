@@ -19,10 +19,10 @@ use paraclete_app::perform_state::PerformState;
 use paraclete_app::project::{load_project_v3, save_project_v3, ProfileBinding, ProjectMetadata};
 use paraclete_clap_host::{scan_clap_paths, PluginLibrary};
 use paraclete_hal::{
-    query_sample_rate, AudioBackend, DigitaktMidiNode, KeystepNode, LaunchpadEmulator,
-    LaunchpadNode,
+    query_sample_rate, AudioBackend, DigitaktMidiNode, InputStreamHandle, KeystepNode,
+    LaunchpadEmulator, LaunchpadNode,
 };
-use paraclete_nodes::{ScriptEventConsumer, ScriptingGatewayNode};
+use paraclete_nodes::{AudioInputNode, ScriptEventConsumer, ScriptingGatewayNode};
 use paraclete_runtime::NodeConfigurator;
 use paraclete_scripting::ScriptingEngine;
 use paraclete_theotokos::{TheotokosApp, TheotokosConfig};
@@ -40,6 +40,12 @@ const ID_GW_LP: u32 = 110;
 const ID_GW_DT: u32 = 111;
 const ID_GW_KS: u32 = 112;
 const ID_GW_THEORIA: u32 = 113;
+/// AN1 D4: id 61, adjacent to `AudioOutput`'s 60 — both are HAL-facing
+/// endpoints. Not in `NodeRegistry`/YAML — see `try_open_audio_input`.
+const ID_AUDIO_INPUT: u32 = 61;
+/// AN1 §2.1: cross-thread ring headroom, in blocks, absorbing scheduling
+/// jitter between the independent input and output callback threads.
+const AUDIO_INPUT_RING_BLOCKS: usize = 4;
 
 fn main() {
     env_logger::init();
@@ -164,6 +170,9 @@ fn main() {
     let launchpad_id = try_open_launchpad(&mut conf, no_emulator);
     let digitakt_id = try_open_digitakt(&mut conf);
     let keystep_id = try_open_keystep(&mut conf);
+    // AN1: never fatal (D3) — kept alive here for the process lifetime,
+    // same convention as `_audio` below for the output stream.
+    let _audio_input = try_open_audio_input(&mut conf);
 
     let mut consumer_lp: Option<ScriptEventConsumer> = None;
     if let Some(lp_dev_id) = launchpad_id {
@@ -1245,6 +1254,39 @@ fn try_open_keystep(conf: &mut NodeConfigurator) -> Option<u32> {
             conf.add_surface(ID_KEYSTEP, Box::new(node));
             eprintln!("[paraclete] Keystep connected");
             Some(ID_KEYSTEP)
+        }
+        Err(_) => None,
+    }
+}
+
+/// AN1 D3/D4: audio input, same graceful-absence posture as the surfaces
+/// above — never fatal, silent on absence (no line-in/mic is the common
+/// case, not worth a log line every launch, matching `try_open_digitakt`/
+/// `try_open_keystep`'s quieter precedent over `try_open_launchpad`'s,
+/// which always has a fallback path to report). `AudioInputNode` isn't a
+/// `Surface` (it's an ordinary graph node, ADR-040 decision 1), so this
+/// uses `conf.add_node()`, not `conf.add_surface()`. The returned handle
+/// must be kept alive by the caller for the stream's lifetime.
+fn try_open_audio_input(conf: &mut NodeConfigurator) -> Option<InputStreamHandle> {
+    match InputStreamHandle::start(BLOCK_SIZE * AUDIO_INPUT_RING_BLOCKS) {
+        Ok((handle, consumer, channels, sample_rate)) => {
+            // AN1 does not resample input to the graph's rate (review
+            // finding, D4 addendum) — a mismatch means captured audio
+            // plays back pitch/time-shifted and the cross-thread ring
+            // will drift. Rare in practice (most interfaces run input
+            // and output at one shared hardware rate) but silent
+            // otherwise, so at minimum this is never unreported.
+            let graph_rate = conf.sample_rate();
+            if (sample_rate as f32 - graph_rate).abs() > 1.0 {
+                log::warn!(
+                    "audio input sample rate ({sample_rate} Hz) does not match \
+                     the graph's rate ({graph_rate} Hz) — captured audio will be \
+                     pitch/time-shifted; resampling is not yet implemented (AN1)"
+                );
+            }
+            conf.add_node(ID_AUDIO_INPUT, Box::new(AudioInputNode::new(consumer, channels)));
+            eprintln!("[paraclete] audio input connected");
+            Some(handle)
         }
         Err(_) => None,
     }
