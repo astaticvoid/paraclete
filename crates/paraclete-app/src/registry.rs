@@ -59,7 +59,7 @@ pub fn build_registry() -> NodeRegistry {
     use paraclete_nodes::{
         AnalogEngine, AudioOutputNode, DelayNode, DistortionNode, EnvelopeNode, FilterNode,
         FmEngine, InternalClock, LadderFilterNode, LfoNode, LoopBreakNode, MixNode, OscillatorNode,
-        ReverbNode, Sampler, Sequencer, SplitNode,
+        RecorderNode, ReverbNode, Sampler, Sequencer, SplitNode,
     };
 
     let mut r = NodeRegistry::new();
@@ -80,6 +80,7 @@ pub fn build_registry() -> NodeRegistry {
     r.register("mix", || Box::new(MixNode::new(8)));
     r.register("split", || Box::new(SplitNode::new()));
     r.register("audio_output", || Box::new(AudioOutputNode::new()));
+    r.register("recorder", || Box::new(RecorderNode::new()));
     r.register("analog_engine:kick", || Box::new(AnalogEngine::kick()));
     r.register("analog_engine:snare", || Box::new(AnalogEngine::snare()));
     r.register("analog_engine:hihat", || Box::new(AnalogEngine::hihat()));
