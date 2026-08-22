@@ -32,7 +32,12 @@ impl Algo {
         Algo::ParallelCarriers, Algo::FeedbackPair, Algo::AdditiveTwin, Algo::Bell,
     ];
 
-    pub fn value(self) -> u32 { Self::ALL.iter().position(|&a| a == self).unwrap() as u32 }
+    pub fn value(self) -> u32 {
+        Self::ALL
+            .iter()
+            .position(|&a| a == self)
+            .expect("Self::ALL is exhaustive over Algo's variants") as u32
+    }
 
     /// Out-of-range clamps to `Stack` rather than panicking — same convention
     /// as every other stepped selector in this crate (a malformed project
@@ -90,7 +95,12 @@ impl Machine {
         Machine::Perc, Machine::Pad, Machine::Pluck,
     ];
 
-    pub fn value(self) -> u32 { Self::ALL.iter().position(|&m| m == self).unwrap() as u32 }
+    pub fn value(self) -> u32 {
+        Self::ALL
+            .iter()
+            .position(|&m| m == self)
+            .expect("Self::ALL is exhaustive over Machine's variants") as u32
+    }
 
     /// Out-of-range clamps to `Full` rather than panicking — same convention
     /// as `Algo::from_value` (a malformed project can carry an out-of-range

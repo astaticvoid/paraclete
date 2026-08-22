@@ -2556,25 +2556,25 @@ impl<'a> ByteReader<'a> {
     fn u16(&mut self) -> Option<u16> {
         let b = self.data.get(self.cur..self.cur + 2)?;
         self.cur += 2;
-        Some(u16::from_le_bytes(b.try_into().unwrap()))
+        Some(u16::from_le_bytes(b.try_into().expect("slice is exactly 2 bytes")))
     }
 
     fn u32(&mut self) -> Option<u32> {
         let b = self.data.get(self.cur..self.cur + 4)?;
         self.cur += 4;
-        Some(u32::from_le_bytes(b.try_into().unwrap()))
+        Some(u32::from_le_bytes(b.try_into().expect("slice is exactly 4 bytes")))
     }
 
     fn f32(&mut self) -> Option<f32> {
         let b = self.data.get(self.cur..self.cur + 4)?;
         self.cur += 4;
-        Some(f32::from_le_bytes(b.try_into().unwrap()))
+        Some(f32::from_le_bytes(b.try_into().expect("slice is exactly 4 bytes")))
     }
 
     fn f64(&mut self) -> Option<f64> {
         let b = self.data.get(self.cur..self.cur + 8)?;
         self.cur += 8;
-        Some(f64::from_le_bytes(b.try_into().unwrap()))
+        Some(f64::from_le_bytes(b.try_into().expect("slice is exactly 8 bytes")))
     }
 }
 

@@ -566,7 +566,7 @@ impl NodeConfigurator {
                                 .get(ni)
                                 .is_some_and(|s| s.as_node_ref().is_loop_break())
                         })
-                        .unwrap();
+                        .expect("lb_count == 1 was just verified above the match");
                     let lb_user_id = self.graph[lb_ni].user_id;
 
                     // Collect LB's outgoing edges to cycle members BEFORE removing src→dst,
@@ -633,8 +633,16 @@ impl NodeConfigurator {
         let src_doc = self.cap_doc_cache[&src_id].clone();
         let dst_doc = self.cap_doc_cache[&dst_id].clone();
 
-        let src_agreement = self.nodes.get_mut(&src).unwrap().negotiate(&dst_doc);
-        let dst_agreement = self.nodes.get_mut(&dst).unwrap().negotiate(&src_doc);
+        let src_agreement = self
+            .nodes
+            .get_mut(&src)
+            .expect("src is a graph NodeIndex; self.nodes is populated 1:1 with graph nodes")
+            .negotiate(&dst_doc);
+        let dst_agreement = self
+            .nodes
+            .get_mut(&dst)
+            .expect("dst is a graph NodeIndex; self.nodes is populated 1:1 with graph nodes")
+            .negotiate(&src_doc);
 
         let reconciled = ConnectionAgreement {
             sample_rate: self.sample_rate,
@@ -654,7 +662,7 @@ impl NodeConfigurator {
 
         self.nodes
             .get_mut(&src)
-            .unwrap()
+            .expect("src is a graph NodeIndex; self.nodes is populated 1:1 with graph nodes")
             .set_connection_record(ConnectionRecord {
                 agreement: reconciled.clone(),
                 partner_id: dst_user_id,
@@ -662,7 +670,7 @@ impl NodeConfigurator {
             });
         self.nodes
             .get_mut(&dst)
-            .unwrap()
+            .expect("dst is a graph NodeIndex; self.nodes is populated 1:1 with graph nodes")
             .set_connection_record(ConnectionRecord {
                 agreement: reconciled,
                 partner_id: src_user_id,

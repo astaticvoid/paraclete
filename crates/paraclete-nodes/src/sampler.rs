@@ -872,13 +872,17 @@ impl Node for Sampler {
             // at its default (0, uncached), so an old project's sampler
             // plays silence rather than guessing at a pool slot.
             if cur + 2 > data.len() { return; }
-            let path_len = u16::from_le_bytes(data[cur..cur + 2].try_into().unwrap()) as usize;
+            let path_len = u16::from_le_bytes(
+                data[cur..cur + 2].try_into().expect("checked cur+2 <= data.len() above"),
+            ) as usize;
             cur += 2;
             if cur + path_len > data.len() { return; }
             cur += path_len;
         } else {
             if cur + 4 > data.len() { return; }
-            self.base_sample = u32::from_le_bytes(data[cur..cur + 4].try_into().unwrap());
+            self.base_sample = u32::from_le_bytes(
+                data[cur..cur + 4].try_into().expect("checked cur+4 <= data.len() above"),
+            );
             cur += 4;
         }
 

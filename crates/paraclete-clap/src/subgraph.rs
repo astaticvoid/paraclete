@@ -152,7 +152,8 @@ impl SubgraphPlugin {
         if data.len() < 4 {
             return;
         }
-        let seq_len = u32::from_le_bytes(data[0..4].try_into().unwrap()) as usize;
+        let seq_len =
+            u32::from_le_bytes(data[0..4].try_into().expect("checked data.len() >= 4 above")) as usize;
         if 4 + seq_len > data.len() {
             return;
         }

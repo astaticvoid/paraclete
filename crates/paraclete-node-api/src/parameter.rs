@@ -257,8 +257,12 @@ impl ParameterBank {
             let Some(chunk) = data.get(off..off + 12) else {
                 return;
             };
-            let param_id = u32::from_le_bytes(chunk[0..4].try_into().unwrap());
-            let value = f64::from_le_bytes(chunk[4..12].try_into().unwrap());
+            let param_id = u32::from_le_bytes(
+                chunk[0..4].try_into().expect("chunk is exactly 12 bytes, sliced 0..4"),
+            );
+            let value = f64::from_le_bytes(
+                chunk[4..12].try_into().expect("chunk is exactly 12 bytes, sliced 4..12"),
+            );
             // `set` drops unknown ids and non-finite values; see its doc.
             self.set(param_id, value);
         }
