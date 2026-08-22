@@ -387,6 +387,15 @@ caught at least one real issue — do not skip this).
 - **OQ-P14-3** — The six macro machines' SRC curations (D5) are anchors,
   not frozen slot-by-slot layouts; if a session later finds a curation
   unplayable, that's a defect against this phase, not a spec violation.
+- **OQ-P14-5** — D1's `ShortStack` and `YSplit` rows both reduce to the same
+  linear system with `FmOperator`'s single scalar `mod_in` (both compute
+  `pair = (b1+b2)*0.5` fed into `A`, differing only in which signal becomes
+  the Y tap) — at `mix=0.0` (the default), the two algorithms are audibly
+  identical, only diverging once `mix > 0` exposes the differing Y taps.
+  Found in the C2 review. Not fixed here (would mean giving Y-Split a
+  mechanism Short Stack doesn't have — a routing-table change, out of C2's
+  scope); if a later session finds these two indistinguishable in practice,
+  that's the defect this note predicts, not a surprise.
 - **OQ-P14-4** — D3's `harm` normalization is peak-safe (bounded by the
   triangle inequality) but not loudness-preserving: verified in the C1
   review that total output power falls from ~1.0 at `harm=0` to ~0.28 at
