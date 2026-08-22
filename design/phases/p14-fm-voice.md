@@ -284,6 +284,23 @@ caught at least one real issue — do not skip this).
 - **Tests:** `porta=0` reachability regression (must match C4's behavior
   exactly); glide reaches target within `porta` seconds ± one block.
 
+**As landed:** `env_reset` governs all three envelopes (`env_a`/`env_b`/
+`env_amp`), not just `env_amp` as C4's bullet above literally said
+("triggers/legatos the AMP `AdsrState` per `env_reset`") — closing C4's own
+punted "env_a/env_b reset policy" question inside this commit rather than
+leaving it dangling. Justification: ADR-043 decision 4 names `env_reset` as
+one engine-wide expression param ("retrig vs legato **envelopes**", plural),
+not an AMP-page-scoped one. Recorded here per house style (spec vs. reality
+divergence is recorded, not silently reconciled) since it's a real, if minor,
+tension between this spec's own C4 wording and what actually shipped.
+
+Also found and fixed in review: a second stack-pop arriving before an
+in-flight glide finished restarted from the outgoing note's *nominal*
+frequency rather than the pitch actually sounding mid-glide — an audible
+pitch-snap on the one mechanism that exists to avoid one, and reachable
+through Pad's own D5 recipe (chords released top-down faster than `porta`).
+Fixed by reading the live interpolated frequency when starting a new glide.
+
 ### P14-C6 — MOD page
 
 - `LfoBlock`/`LfoHost` integration per the established pattern
