@@ -5,7 +5,7 @@ use paraclete_node_api::{
     AffordanceHint, CapabilityDocument, EnvelopeGroup, Event, MachineVariant, Node, PageRef,
     ParamDescriptor, ParamOverlay, ParamUnit, ParameterBank, PortDescriptor, PortDirection,
     PortType, ProcessInput, ProcessOutput, Rule, StateBusValue, UmpMessage, ViewPlugin,
-    midi::ChannelVoice2,
+    midi::ChannelVoice2, CMD_TRIGGER,
 };
 
 use crate::engine_dsp::{
@@ -2063,6 +2063,23 @@ impl Node for FmVoice {
 
         self.locks_pending = false;
 
+        // CMD_TRIGGER: live-trigger a voice (pad "trigger mode"), the same
+        // universal contract AnalogEngine/FmEngine/Sampler all implement
+        // (paraclete_node_api::CMD_TRIGGER's doc comment) — missing here
+        // since C4 first added note-lifecycle handling; found while wiring
+        // P14-C9's baseline scenario, which drives every engine through this
+        // path, not raw MIDI2 events. Handled here, before the sample-offset
+        // event loop, matching AnalogEngine/FmEngine's own ordering exactly
+        // — a NodeCommand isn't sample-offset-scheduled, so it always takes
+        // effect at the top of the block, the same as a NoteOn at offset 0.
+        for cmd in input.commands {
+            if cmd.type_id == CMD_TRIGGER {
+                let note: u8 = if cmd.arg0 < 0 { self.last_note } else { cmd.arg0.clamp(0, 127) as u8 };
+                let velocity: f32 = if cmd.arg1 <= 0.0 { 0.79 } else { cmd.arg1.clamp(0.0, 1.0) as f32 };
+                self.retrigger(note, velocity);
+            }
+        }
+
         let mut cursor = 0usize;
         for timed in input.events {
             match timed.event {
@@ -2086,7 +2103,20 @@ impl Node for FmVoice {
                     }
                     let note = u8::from(n.note_number());
                     match self.note_stack.pop_matching(note) {
-                        Some(new_top) => self.legato_retarget(new_top),
+                        // Releasing an *inner* note of a held chord (not the
+                        // top) leaves the top unchanged — `pop_matching`
+                        // correctly reports it, but calling
+                        // `legato_retarget` on the note already sounding
+                        // would be a spurious re-trigger: `AdsrState::
+                        // trigger` unconditionally re-enters `Attack` (even
+                        // in legato mode, which only skips the snap-to-zero,
+                        // not the phase change), so the top note would
+                        // audibly re-attack every time an unrelated note
+                        // underneath it lifted. Found while wiring P14-C9's
+                        // baseline scenario — no earlier test held a 3+-note
+                        // chord and released a non-top note.
+                        Some(new_top) if new_top != self.current_note => self.legato_retarget(new_top),
+                        Some(_) => {}
                         None => self.env_amp.note_off(),
                     }
                 }
@@ -2122,8 +2152,8 @@ impl Node for FmVoice {
 mod tests {
     use super::*;
     use paraclete_node_api::{
-        AudioBuffer, Event, EventOutputBuffer, ExtendedEventSlab,
-        TimedEvent, TransportInfo,
+        AudioBuffer, Event, EventOutputBuffer, ExtendedEventSlab, NodeCommand,
+        TimedEvent, TransportInfo, CMD_TRIGGER,
         UmpMessage, midi::{ChannelVoice2, Channeled, Grouped, NoteOff, NoteOn, u4, u7},
     };
     use crate::engine_dsp::AdsrPhase;
@@ -2147,6 +2177,10 @@ mod tests {
     }
 
     fn run(eng: &mut FmVoice, events: &[TimedEvent]) -> Vec<f32> {
+        run_with_commands(eng, events, &[])
+    }
+
+    fn run_with_commands(eng: &mut FmVoice, events: &[TimedEvent], commands: &[NodeCommand]) -> Vec<f32> {
         let block = 512usize;
         let mut audio = AudioBuffer::new(2, block);
         let mut events_out = EventOutputBuffer::new(16);
@@ -2159,7 +2193,7 @@ mod tests {
         let input = ProcessInput {
             audio_inputs: &[], signal_inputs: &[], events,
             transport: &transport, sample_rate: 44100.0, block_size: block,
-            extended_events: &slab, commands: &[],
+            extended_events: &slab, commands,
         };
         let mut output = ProcessOutput::new(&mut outs, &mut [], &mut events_out);
         eng.process(&input, &mut output);
@@ -3219,5 +3253,100 @@ mod tests {
                 "{name}: expected {expected} after round-trip, got {got}"
             );
         }
+    }
+
+    // ── CMD_TRIGGER / inner-chord-note-release (P14-C9 prep) ─────────────
+
+    /// `CMD_TRIGGER` is documented as a universal contract every instrument
+    /// node implements identically (`paraclete_node_api::CMD_TRIGGER`'s doc
+    /// comment names `AnalogEngine`/`FmEngine`/`Sampler`) — `FmVoice` never
+    /// got it. Found while wiring P14-C9's baseline scenario, which drives
+    /// every engine through `test-driver`'s `trigger:` action (a
+    /// `NodeCommand`, not a raw MIDI2 event) — without this, the scenario
+    /// would have rendered pure silence, the exact "silent pass" failure
+    /// mode this phase's own `fm_machines.yaml` warns against, except the
+    /// cause would have been a missing engine feature, not a bad scenario.
+    #[test]
+    fn cmd_trigger_live_triggers_a_voice() {
+        let mut eng = new_engine();
+        let cmd = NodeCommand { target_id: 0, type_id: CMD_TRIGGER, arg0: 60, arg1: 0.8 };
+        let out = run_with_commands(&mut eng, &[], &[cmd]);
+        assert!(out.iter().any(|&s| s.abs() > 1e-3), "CMD_TRIGGER must produce audible output");
+        assert!(eng.is_sounding(), "CMD_TRIGGER must leave the voice sounding");
+    }
+
+    /// `arg0 < 0` falls back to the last-triggered note, matching
+    /// `AnalogEngine`/`FmEngine`'s own documented `CMD_TRIGGER` contract.
+    #[test]
+    fn cmd_trigger_negative_note_uses_last_note() {
+        let mut eng = new_engine();
+        run(&mut eng, &[make_note_on(72)]);
+        let cmd = NodeCommand { target_id: 0, type_id: CMD_TRIGGER, arg0: -1, arg1: 0.8 };
+        run_with_commands(&mut eng, &[], &[cmd]);
+        assert_eq!(eng.current_note, 72, "negative arg0 must retrigger the last note, not note 0");
+    }
+
+    /// The bug this guards against: releasing a non-top note of a 3+-note
+    /// held chord must be a silent no-op for the note still sounding —
+    /// `pop_matching` correctly reports the unchanged top, but a naive
+    /// dispatch that calls `legato_retarget` on every `NoteOff` (regardless
+    /// of whether the revealed top actually changed) would spuriously
+    /// re-enter `Attack` on `env_amp`/operators for a note that was never
+    /// released, an audible re-attack blip on every inner-chord-note
+    /// lift. Found while wiring P14-C9's baseline scenario — no earlier
+    /// test held a 3+-note chord and released a non-top note.
+    #[test]
+    fn releasing_a_non_top_chord_note_does_not_disturb_the_sounding_top() {
+        let mut eng = new_engine();
+        eng.bank.set(fp("attack"), 0.001);
+        eng.bank.set(fp("decay"), 0.05); // fast, so it settles within a handful of blocks
+        run(&mut eng, &[make_note_on(60)]);
+        run(&mut eng, &[make_note_on(64)]);
+        run(&mut eng, &[make_note_on(67)]); // stack: 60, 64, 67 (67 on top)
+        for _ in 0..20 {
+            run(&mut eng, &[]); // let env_amp settle into Sustain
+        }
+
+        assert!(matches!(eng.env_amp.phase, AdsrPhase::Sustain), "expected Sustain before the inner release");
+        let level_before = eng.env_amp.value;
+        assert_eq!(eng.current_note, 67);
+
+        run(&mut eng, &[make_note_off(60)]); // release the BOTTOM note, not the top
+
+        assert_eq!(eng.current_note, 67, "the sounding top note must not change");
+        assert_eq!(eng.env_amp.value, level_before, "the amp envelope must not move at all");
+        assert!(
+            matches!(eng.env_amp.phase, AdsrPhase::Sustain),
+            "must still be in Sustain — releasing an inner note must not re-enter Attack"
+        );
+    }
+
+    /// The `new_top != self.current_note` guard compares note *values*, not
+    /// stack *positions* — this pins that an overlapping press of the same
+    /// note (a real scenario: `retrigger()` unconditionally pushes on every
+    /// `NoteOn`, hard-resetting even while the same note is already held)
+    /// still resolves correctly: releasing one of the two duplicates must
+    /// be a no-op, since the value still on top is unchanged.
+    #[test]
+    fn releasing_one_of_two_duplicate_note_values_is_a_no_op() {
+        let mut eng = new_engine();
+        eng.bank.set(fp("attack"), 0.001);
+        eng.bank.set(fp("decay"), 0.05);
+        run(&mut eng, &[make_note_on(60)]);
+        run(&mut eng, &[make_note_on(60)]); // overlapping press of the same note
+        for _ in 0..20 {
+            run(&mut eng, &[]);
+        }
+        assert!(matches!(eng.env_amp.phase, AdsrPhase::Sustain), "expected Sustain before the release");
+        let level_before = eng.env_amp.value;
+
+        run(&mut eng, &[make_note_off(60)]); // releases one of the two 60s
+
+        assert_eq!(eng.current_note, 60, "the remaining held 60 must still be sounding");
+        assert_eq!(eng.env_amp.value, level_before, "must not disturb the envelope");
+        assert!(
+            matches!(eng.env_amp.phase, AdsrPhase::Sustain),
+            "must still be in Sustain — one 60 releasing must not re-attack the other"
+        );
     }
 }
