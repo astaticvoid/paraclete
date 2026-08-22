@@ -419,6 +419,20 @@ step) to forbid it.
   envelope confirms real energy per scenario segment (guard against the
   `fm_machines.yaml` silent-pass failure mode named in its own header).
 
+**Prerequisite fix, landed ahead of this commit's scenario work:** writing
+the scenario surfaced two real bugs in already-committed C4 code, fixed as
+a standalone commit before the scenario could proceed at all (a fix, not
+part of C9's own scope) — `FmVoice` had no `CMD_TRIGGER` handler (the
+universal live-trigger contract every sibling engine implements; without
+it, `test-driver`'s `trigger:` action reaches nothing and the scenario
+would have rendered pure silence — exactly the silent-pass failure mode
+this bullet's own test guards against, except the cause would have been a
+missing engine feature, not a bad scenario), and releasing a non-top note
+of a held chord was incorrectly re-attacking the envelope on the note
+still sounding. Both fixed and regression-tested; see the fix commit for
+detail. Two note-for-later items filed as #189 (no `VoiceTrigger`
+debug-event emission on any trigger path; no velocity-scaling test).
+
 ### P14-C10 — Docs
 
 - `CLAUDE.md` node-ID table: add `28 | FmVoice (id_for_name? no — plain
