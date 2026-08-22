@@ -398,6 +398,15 @@ ring.
 
 ### C2 — `Sampler`: pool-indexed sample selection
 
+> **Shipped as C2 — 2026-08-21 (`d9aefc6`).** C3 (serialize v4) and C4
+> (SRC reshape) folded in: removing `sample_path` forces a simultaneous
+> serialize/deserialize change (can't land C2 standalone otherwise, same
+> class of issue as C0's `load_wav` build note), and declaring `sample`
+> without placing it on a page fails the workspace-wide
+> `every_node_view_declaration_is_valid` invariant — so both had to move
+> with C2, not after it. #185 filed for a gap review surfaced (project
+> reload doesn't rehydrate `pool_cache`) — tracked in §6, not a C2 defect.
+
 **Files:**
 - `crates/paraclete-nodes/src/sampler.rs` — `pool_cache: HashMap<u32,
   Arc<SampleData>>`, `base_sample: usize`, `P_SAMPLE` const, `swap_sample()`
@@ -430,6 +439,9 @@ cached).
 
 ### C3 — `Sampler` serialize/deserialize v4
 
+> **Folded into C2** (`d9aefc6`) — see the note above C2. Everything
+> below describes what shipped; no separate commit exists.
+
 **Files:**
 - `crates/paraclete-nodes/src/sampler.rs` — bump node-serialize version
   to 4: write `base_sample: u32` instead of the length-prefixed
@@ -450,6 +462,14 @@ not a crash, not a lookup.
   C2's silence test).
 
 ### C4 — SRC page reshape
+
+> **Folded into C2** (`d9aefc6`) — see the note above C2. Shipped shape
+> differs slightly from what's described below: `play_mode` doesn't exist
+> yet (no param until AN1 needs it, so it's simply absent from SRC's
+> order rather than a gap — SRC landed as 7 slots, not 8), and AMP holds
+> `attack, release, root_note, loop` rather than shrinking to 2 (root_note/
+> loop needed a page since they're no longer on SRC). `play_mode` still
+> needs its own commit whenever AN1 adds it.
 
 **Files:**
 - `crates/paraclete-nodes/src/sampler.rs` — `to_rule()` (line 593-629):
@@ -560,7 +580,7 @@ evaluate (see header).
 | Default `instrument.yaml` gains a sample track | Scope/musical-content decision, not architecture | User schedules it |
 | Per-node "only cache referenced slots" (vs. AN0's broadcast-to-all) | Nothing in AN0 needs it; broadcast is simple and correct at current pool sizes | Pool sizes or Sampler-node counts grow enough that broadcast cost is measured, not assumed |
 | Pool browser / list command | AN1's SAMPLING screen is the real UI | AN1 spec, or a session asks for it sooner |
-| Project reload rehydrating `pool_cache` (#185, found in C2 review) | `load_project_v3` restores pool *metadata* but never calls `SamplePool::load_file`/delivers `SwapSample` — a reloaded project's Samplers play silence until C5's decode-and-broadcast plumbing (or equivalent) runs on load too | Close before AN0 exits — most naturally alongside C5 |
+| Project reload rehydrating `pool_cache` (#185, found in C2 review) | `load_project_v3` restores pool *metadata* but never calls `SamplePool::load_file`/delivers `SwapSample`. **Still open after C5** — C5 built the decode-and-broadcast plumbing (`PerformState::execute`'s `PoolLoadFile` handler) but `load_project_v3` doesn't call it; the two paths never got wired together. A reloaded project's Samplers play silence. | Close before AN0 exits — `load_project_v3` needs the same decode + `sampler_ids` broadcast C5 already built |
 
 ---
 
