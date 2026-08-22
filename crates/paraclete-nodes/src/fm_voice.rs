@@ -7,7 +7,10 @@ use paraclete_node_api::{
     ProcessOutput, Rule, StateBusValue, UmpMessage, ViewPlugin, midi::ChannelVoice2,
 };
 
-use crate::engine_dsp::{harmonic_sine, note_to_hz, soft_clip, sub_blocks, AdsrState, FmOperator, NoteStack};
+use crate::engine_dsp::{
+    harmonic_sine, lfo_params, note_to_hz, soft_clip, sub_blocks, AdsrState, FmOperator,
+    LfoDestLabels, LfoHost, LfoMode, LfoSettings, LfoShape, NoteStack, LFO_PAGE_ORDER,
+};
 
 fn fp(name: &str) -> u32 { ParamDescriptor::id_for_name(name) }
 
@@ -82,6 +85,102 @@ fn ratio_from_index(idx: f32) -> f32 {
 #[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Machine { Full, Keys, Bass, Bell, Perc, Pad, Pluck }
+
+// ── MOD page / LFO dest table (P14-C6, ADR-042) ──────────────────────────────
+
+// Reuses the ADR-042 `LfoHost`/`LfoBlock` machinery FmEngine already ships —
+// see fm_engine.rs's own dest tables/`get_param`/`update_lfo` for the pattern
+// this mirrors exactly.
+
+/// **APPEND ONLY** — `lfo_dest` persists a one-based index into this, so a
+/// reorder re-points every saved patch at a different destination. Every
+/// modulatable param declared so far (SYN1 minus `algo`, SYN2, AMP,
+/// expression minus `env_reset`) — `algo`/`env_reset` are topology/behavior
+/// selectors, not modulation targets, same reasoning as `FmEngine` excluding
+/// its own `machine` param from `LFO_DESTS`. `ratio_c`/`ratio_a`/`ratio_b`
+/// ARE included, deliberately: they're stepped (an LFO sweeps through
+/// `RATIO_TABLE`'s indices, rounding same as a p-lock would), but per the
+/// user's "keep it expressive" bias (P14 spec's framing) an LFO-driven ratio
+/// sweep is a real, usable FM effect, not a knob that should be walled off
+/// just because its underlying param happens to be stepped.
+///
+/// This is currently also `Full`'s own active table (only `Full` is
+/// behaviorally reachable — `dest_names`/`dest_ids`/`dest_ranges` below
+/// already dispatch per-`Machine` so P14-C7's six macros can each get their
+/// own narrower table without restructuring this one).
+static FM_VOICE_DEST_NAMES: &[&str] = &[
+    "ratio_c", "ratio_a", "ratio_b", "harm", "detune", "feedback", "mix",
+    "atk_a", "dec_a", "end_a", "lev_a", "atk_b", "dec_b", "end_b", "lev_b",
+    "attack", "decay", "sustain", "release", "volume", "pan", "drive", "tone",
+    "keytrack", "vel_mod", "porta",
+];
+
+/// Same table as compile-time ids — the audio thread reads these, never a
+/// name hash. APPEND ONLY, same contract as the names above.
+const FM_VOICE_DEST_IDS: &[u32] = &[
+    ParamDescriptor::id_for_name("ratio_c"),
+    ParamDescriptor::id_for_name("ratio_a"),
+    ParamDescriptor::id_for_name("ratio_b"),
+    ParamDescriptor::id_for_name("harm"),
+    ParamDescriptor::id_for_name("detune"),
+    ParamDescriptor::id_for_name("feedback"),
+    ParamDescriptor::id_for_name("mix"),
+    ParamDescriptor::id_for_name("atk_a"),
+    ParamDescriptor::id_for_name("dec_a"),
+    ParamDescriptor::id_for_name("end_a"),
+    ParamDescriptor::id_for_name("lev_a"),
+    ParamDescriptor::id_for_name("atk_b"),
+    ParamDescriptor::id_for_name("dec_b"),
+    ParamDescriptor::id_for_name("end_b"),
+    ParamDescriptor::id_for_name("lev_b"),
+    ParamDescriptor::id_for_name("attack"),
+    ParamDescriptor::id_for_name("decay"),
+    ParamDescriptor::id_for_name("sustain"),
+    ParamDescriptor::id_for_name("release"),
+    ParamDescriptor::id_for_name("volume"),
+    ParamDescriptor::id_for_name("pan"),
+    ParamDescriptor::id_for_name("drive"),
+    ParamDescriptor::id_for_name("tone"),
+    ParamDescriptor::id_for_name("keytrack"),
+    ParamDescriptor::id_for_name("vel_mod"),
+    ParamDescriptor::id_for_name("porta"),
+];
+
+/// Per-dest (id, min, max) — the LFO scales/clamps against each param's own
+/// declared range (BUG-069), not the bank's union (moot right now since
+/// `Full` IS the union, but keeping the mechanism matches `FmEngine`'s so
+/// C7's narrower macro tables need no new plumbing). Every tuple here is a
+/// direct copy of that param's `ParamDescriptor` range declared above.
+const FM_VOICE_DEST_RANGES: &[(u32, f32, f32)] = &[
+    (ParamDescriptor::id_for_name("ratio_c"), 0.0, (RATIO_TABLE.len() - 1) as f32),
+    (ParamDescriptor::id_for_name("ratio_a"), 0.0, (RATIO_TABLE.len() - 1) as f32),
+    (ParamDescriptor::id_for_name("ratio_b"), 0.0, (RATIO_TABLE.len() - 1) as f32),
+    (ParamDescriptor::id_for_name("harm"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("detune"), -50.0, 50.0),
+    (ParamDescriptor::id_for_name("feedback"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("mix"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("atk_a"), 0.001, 0.5),
+    (ParamDescriptor::id_for_name("dec_a"), 0.05, 4.0),
+    (ParamDescriptor::id_for_name("end_a"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("lev_a"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("atk_b"), 0.001, 0.5),
+    (ParamDescriptor::id_for_name("dec_b"), 0.05, 4.0),
+    (ParamDescriptor::id_for_name("end_b"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("lev_b"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("attack"), 0.001, 4.0),
+    (ParamDescriptor::id_for_name("decay"), 0.01, 8.0),
+    (ParamDescriptor::id_for_name("sustain"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("release"), 0.01, 8.0),
+    (ParamDescriptor::id_for_name("volume"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("pan"), -1.0, 1.0),
+    (ParamDescriptor::id_for_name("drive"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("tone"), -1.0, 1.0),
+    (ParamDescriptor::id_for_name("keytrack"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("vel_mod"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("porta"), 0.0, 2.0),
+];
+
+static FM_VOICE_DEST_LABELS: LfoDestLabels = LfoDestLabels(FM_VOICE_DEST_NAMES);
 
 /// P14 §2's C2 bullet: algo switch is its own audible discontinuity even
 /// within one machine, so it gets the same 5 ms fade-to-silence-then-swap
@@ -206,6 +305,21 @@ pub struct FmVoice {
     /// never glides.
     glide: Option<Glide>,
 
+    /// P14-C6, ADR-042: one shared LFO. Retriggered on a hard `retrigger()`
+    /// (a fresh keypress); **not** on `legato_retarget` — a note-stack pop's
+    /// whole point is continuity, and resetting the LFO's phase there would
+    /// be exactly the kind of modulation jump that path exists to avoid,
+    /// same reasoning as `legato_retarget` never resetting operator phase.
+    lfo: LfoHost,
+
+    /// Cached `/node/{id}/state/lfo_phase` path (BUG-007: no `format!` on
+    /// the audio thread after the first cycle) — same technique
+    /// `publish_bank_state`'s own `path_cache` uses, since this field isn't
+    /// covered by that helper (it's an extra, hand-published state entry,
+    /// not a bank param). Found in P14-C6 review: the first draft called
+    /// `format!` unconditionally in `published_state()`, run every cycle.
+    lfo_phase_path: std::sync::OnceLock<String>,
+
     current_note: u8,
     node_id: u32,
     last_note: u8,
@@ -229,6 +343,12 @@ impl FmVoice {
     pub const PORT_AUDIO_OUT_L: u32 = 1;
     pub const PORT_AUDIO_OUT_R: u32 = 2;
 
+    /// The union/`Full` dest table's width — see the module-level dest-table
+    /// comment. `lfo_dest`'s declared range is this, never a narrower
+    /// per-machine table's (ADR-041 union-bank invariant: the bank never
+    /// narrows for a macro).
+    const LFO_DESTS: &'static [u32] = FM_VOICE_DEST_IDS;
+
     pub fn new() -> Self {
         let doc = Self::build_doc();
         Self {
@@ -246,6 +366,8 @@ impl FmVoice {
             note_stack: NoteStack::new(),
             tone_lp_state: 0.0,
             glide: None,
+            lfo: LfoHost::new(),
+            lfo_phase_path: std::sync::OnceLock::new(),
             current_note: 60,
             node_id: 0,
             last_note: 60,
@@ -512,8 +634,13 @@ impl FmVoice {
             vendor: "Paraclete".into(),
             version: (0, 1, 0),
             ports: Self::default_ports().to_vec(),
+            // `Self::LFO_DESTS.len()` (26) is the union/`Full` dest-table
+            // width, same role `FmEngine::LFO_DESTS.len()` plays for its own
+            // `lfo_dest` range — see the dest-table comment above.
             params: Self::params().into_iter().chain(Self::syn2_params()).chain(Self::amp_params())
-                .chain(Self::expression_params()).collect(),
+                .chain(Self::expression_params())
+                .chain(lfo_params(Self::LFO_DESTS.len(), Some(&FM_VOICE_DEST_LABELS)))
+                .collect(),
             extensions: vec!["paraclete.instrument".into()],
             view: None,
         }
@@ -543,6 +670,100 @@ impl FmVoice {
             if id == param_id { return val as f32; }
         }
         self.bank.get(param_id) as f32
+    }
+
+    /// Parameter read honoring per-cycle `ParamLock` overrides (ADR-019)
+    /// **and** the LFO (ADR-042 amendment 1) — see `FmEngine::get_param`.
+    /// Every dest-table param this engine reads should go through this, not
+    /// `raw_param`, so the LFO's offset actually reaches whichever param
+    /// `lfo_dest` currently names — `apply` is a no-op for every other
+    /// param, so calling this unconditionally costs nothing when the LFO
+    /// targets something else (or is off).
+    fn get_param(&self, param_id: u32) -> f32 {
+        self.lfo.apply(param_id, self.raw_param(param_id))
+    }
+
+    fn lfo_settings(&self) -> LfoSettings {
+        LfoSettings {
+            shape: LfoShape::from_value(self.raw_param(fp("lfo_shape"))),
+            mode: LfoMode::from_value(self.raw_param(fp("lfo_mode"))),
+            speed_hz: self.raw_param(fp("lfo_speed")),
+            start_phase: self.raw_param(fp("lfo_start_phase")),
+            fade: self.raw_param(fp("lfo_fade")),
+        }
+    }
+
+    /// The destination names offered on `machine`, in index order (P14-C7's
+    /// six macros each narrow this — every arm returns the same `Full`/union
+    /// table for now, since `Full` is the only behaviorally reachable
+    /// `Machine` value until C7 builds `MachineVariant`s for the rest).
+    /// Only consumed by this file's own tests right now (a `cargo build`
+    /// doesn't see `#[cfg(test)]`) — C7's `dest_param_labels`-equivalent is
+    /// its real production consumer, matching `FmEngine::dest_names`.
+    #[allow(dead_code)]
+    fn dest_names(machine: Machine) -> &'static [&'static str] {
+        match machine {
+            Machine::Full | Machine::Keys | Machine::Bass | Machine::Bell
+            | Machine::Perc | Machine::Pad | Machine::Pluck => FM_VOICE_DEST_NAMES,
+        }
+    }
+
+    /// Same tables as [`Self::dest_names`], as compile-time ids — the audio
+    /// thread reads these, never a name hash.
+    fn dest_ids(machine: Machine) -> &'static [u32] {
+        match machine {
+            Machine::Full | Machine::Keys | Machine::Bass | Machine::Bell
+            | Machine::Perc | Machine::Pad | Machine::Pluck => FM_VOICE_DEST_IDS,
+        }
+    }
+
+    /// The active machine's declared (id, min, max) per destination
+    /// (BUG-069) — the LFO scales/clamps against these, not the bank's union.
+    fn dest_ranges(machine: Machine) -> &'static [(u32, f32, f32)] {
+        match machine {
+            Machine::Full | Machine::Keys | Machine::Bass | Machine::Bell
+            | Machine::Perc | Machine::Pad | Machine::Pluck => FM_VOICE_DEST_RANGES,
+        }
+    }
+
+    /// Only consumed by this file's own tests right now, same reason as
+    /// `dest_names` above — `build_doc` references `FM_VOICE_DEST_LABELS`
+    /// directly since it has no `machine` to dispatch on (it's a bare `fn`,
+    /// constructing the capability document before any instance exists).
+    #[allow(dead_code)]
+    fn dest_labels(machine: Machine) -> &'static LfoDestLabels {
+        match machine {
+            Machine::Full | Machine::Keys | Machine::Bass | Machine::Bell
+            | Machine::Perc | Machine::Pad | Machine::Pluck => &FM_VOICE_DEST_LABELS,
+        }
+    }
+
+    /// Resolve `lfo_dest` against the active machine's table (#179 pattern).
+    /// One-based; an index past the machine's list (or `0`) reads as off.
+    fn lfo_dest_id(&self) -> Option<u32> {
+        let v = self.raw_param(fp("lfo_dest"));
+        // Non-integral values read as off, not truncated — a p-lock bypasses
+        // the bank's clamp, so this path can carry a malformed value.
+        if !v.is_finite() || v < 1.0 || v.fract() != 0.0 {
+            return None;
+        }
+        Self::dest_ids(self.machine).get(v as usize - 1).copied()
+    }
+
+    fn update_lfo(&mut self, samples: usize) {
+        let dest = self.lfo_dest_id();
+        let range = dest
+            .and_then(|d| {
+                Self::dest_ranges(self.machine)
+                    .iter()
+                    .find(|(id, _, _)| *id == d)
+                    .map(|&(_, lo, hi)| (lo, hi))
+            })
+            .unwrap_or((0.0, 1.0));
+        let depth = self.raw_param(fp("lfo_depth"));
+        let settings = self.lfo_settings();
+        let sr = self.sample_rate;
+        self.lfo.update(settings, dest, range, depth, sr, samples);
     }
 
     /// The real gate on whether the voice should render at all (P14-C4).
@@ -673,6 +894,10 @@ impl FmVoice {
         self.consume_pending_locks();
         self.note_stack.push(note);
         self.trigger_note(note, Some(velocity), true, true);
+        // A fresh keypress restarts the LFO per its own trig mode (Trig/One/
+        // Half reset phase, Free doesn't) — `legato_retarget` deliberately
+        // does NOT do this (see the `lfo` field's doc comment).
+        self.lfo.trigger(self.lfo_settings());
     }
 
     /// A `NoteOff` that reveals a still-held note underneath (mono
@@ -694,7 +919,13 @@ impl FmVoice {
     /// this is out of scope here (OQ-P14-2 already flags the note stack as
     /// provisional pending P13's paraphonic allocator work).
     fn legato_retarget(&mut self, note: u8) {
-        let porta = self.raw_param(fp("porta"));
+        // `get_param`, not `raw_param`: P14-C6 makes `porta` a dest-table
+        // target — an occasional, note-triggered effect (glide sometimes
+        // faster/slower depending where the LFO's cycle happens to be at
+        // the instant of release) rather than a continuously-modulated one,
+        // but there's nothing unsound about it being read through the same
+        // chokepoint every other dest-table param uses.
+        let porta = self.get_param(fp("porta"));
         if porta > 0.0 {
             // NOT `note_to_hz(self.current_note, ...)` — if a glide from an
             // *earlier* stack-pop is still in flight (e.g. a 3-note chord
@@ -723,7 +954,21 @@ impl FmVoice {
     /// advances `elapsed_secs` via `process_algo`) before dispatching that
     /// event, so no additional bookkeeping is needed here, only a read.
     fn current_sounding_hz(&self) -> f32 {
-        let detune_cents = self.raw_param(fp("detune"));
+        // `get_param`, matching `process_algo`'s own `target_base_hz` read —
+        // NOT `raw_param`. P14-C6 review: an earlier draft read `detune` raw
+        // here on the (wrong) theory that it mirrors `FmEngine::retrigger`'s
+        // `#175` precedent. That precedent doesn't actually apply:
+        // `FmEngine` has no legato/note-stack path at all, only a hard
+        // `retrigger()` with no prior continuity to preserve. This
+        // function's whole job is the opposite — reporting the frequency an
+        // *already-sounding* voice is actually producing right now, so a new
+        // glide starts from where the pitch really is. If `detune` is
+        // LFO-modulated and this read used the unmodulated value instead,
+        // the captured start point would differ from what `process_algo`
+        // had just rendered by up to the LFO's full swing — an audible snap
+        // at the very first glide, not just the overlapping-glide case
+        // P14-C5 already fixed.
+        let detune_cents = self.get_param(fp("detune"));
         let target_hz = note_to_hz(self.current_note, detune_cents / 100.0);
         match self.glide {
             Some(g) => {
@@ -775,13 +1020,15 @@ impl FmVoice {
     }
 
     /// Render `[start, end)` with the current voice state. Chunked into
-    /// `LFO_SUB_BLOCK` pieces relative to `start` (MM-C7 pattern) even though
-    /// nothing modulates yet in C2 — C6's MOD page lands on this same loop.
+    /// `LFO_SUB_BLOCK` pieces relative to `start` (MM-C7 pattern) — P14-C6's
+    /// MOD page lands on exactly this loop, same cadence `FmEngine` updates
+    /// its own LFO at.
     fn render_span(&mut self, start: usize, end: usize) {
         if start >= end || !self.is_sounding() {
             return;
         }
         for (lo, hi) in sub_blocks(start, end) {
+            self.update_lfo(hi - lo);
             self.process_algo(lo, hi);
         }
         let v = self.velocity_level;
@@ -804,17 +1051,22 @@ impl FmVoice {
         const KEYTRACK_CENTER_NOTE: f32 = 60.0;
         const KEYTRACK_RANGE_SEMITONES: f32 = 48.0;
         const KEYTRACK_MAX_HARM_SHIFT: f32 = 0.5;
-        let keytrack = self.raw_param(fp("keytrack"));
+        // P14-C6: every dest-table param below reads through `get_param`
+        // (raw value + the LFO's offset, a no-op unless `lfo_dest` names
+        // that exact param) — `keytrack`/`env_reset` excluded, matching
+        // `algo`'s exclusion (topology/behavior selectors, not modulation
+        // targets, same reasoning `FmEngine` excludes its own `machine`).
+        let keytrack = self.get_param(fp("keytrack"));
         let keytrack_offset = keytrack
             * ((self.current_note as f32 - KEYTRACK_CENTER_NOTE) / KEYTRACK_RANGE_SEMITONES)
             * KEYTRACK_MAX_HARM_SHIFT;
-        let harm = (self.raw_param(fp("harm")) + keytrack_offset).clamp(0.0, 1.0);
-        let feedback = self.raw_param(fp("feedback"));
-        let mix = self.raw_param(fp("mix"));
-        let detune_cents = self.raw_param(fp("detune"));
-        let ratio_c = ratio_from_index(self.raw_param(fp("ratio_c")));
-        let ratio_a = ratio_from_index(self.raw_param(fp("ratio_a")));
-        let ratio_b1 = ratio_from_index(self.raw_param(fp("ratio_b")));
+        let harm = (self.get_param(fp("harm")) + keytrack_offset).clamp(0.0, 1.0);
+        let feedback = self.get_param(fp("feedback"));
+        let mix = self.get_param(fp("mix"));
+        let detune_cents = self.get_param(fp("detune"));
+        let ratio_c = ratio_from_index(self.get_param(fp("ratio_c")));
+        let ratio_a = ratio_from_index(self.get_param(fp("ratio_a")));
+        let ratio_b1 = ratio_from_index(self.get_param(fp("ratio_b")));
         let ratio_b2 = ratio_b1 + B_PAIR_SPREAD;
 
         // §0 D3/ADR-043 decision 3's two mod-index envelopes. Coefficients
@@ -826,14 +1078,14 @@ impl FmVoice {
         // called on these envelopes until C4 wires `NoteOff`, so `Release`
         // is unreachable here.
         let sr = self.sample_rate;
-        let atk_a_inc = 1.0 / (self.raw_param(fp("atk_a")) * sr).max(1.0);
-        let dec_a_coeff = 0.001f32.powf(1.0 / (self.raw_param(fp("dec_a")) * sr).max(1.0));
-        let end_a = self.raw_param(fp("end_a"));
-        let lev_a = self.raw_param(fp("lev_a"));
-        let atk_b_inc = 1.0 / (self.raw_param(fp("atk_b")) * sr).max(1.0);
-        let dec_b_coeff = 0.001f32.powf(1.0 / (self.raw_param(fp("dec_b")) * sr).max(1.0));
-        let end_b = self.raw_param(fp("end_b"));
-        let lev_b = self.raw_param(fp("lev_b"));
+        let atk_a_inc = 1.0 / (self.get_param(fp("atk_a")) * sr).max(1.0);
+        let dec_a_coeff = 0.001f32.powf(1.0 / (self.get_param(fp("dec_a")) * sr).max(1.0));
+        let end_a = self.get_param(fp("end_a"));
+        let lev_a = self.get_param(fp("lev_a"));
+        let atk_b_inc = 1.0 / (self.get_param(fp("atk_b")) * sr).max(1.0);
+        let dec_b_coeff = 0.001f32.powf(1.0 / (self.get_param(fp("dec_b")) * sr).max(1.0));
+        let end_b = self.get_param(fp("end_b"));
+        let lev_b = self.get_param(fp("lev_b"));
 
         // §0/ADR-043 decision 4's `vel_mod`: "velocity -> modulation level".
         // `vel_mod=0` is exactly today's flat gain (no velocity dependence,
@@ -841,21 +1093,21 @@ impl FmVoice {
         // regardless of `vel_mod` — this only ever *reduces* brightness at
         // softer playing, it never boosts past what lev_a/lev_b/the SYN2
         // envelopes already allow.
-        let vel_mod = self.raw_param(fp("vel_mod"));
+        let vel_mod = self.get_param(fp("vel_mod"));
         let vel_scale = 1.0 - vel_mod * (1.0 - self.velocity_level);
 
         // §0 D4's AMP page (P14-C4). Same sub-block-cached-coefficient
         // convention as SYN2 above; `env_amp` is the real gate on the
         // voice's audibility now (see `is_sounding()`), ticked per-sample
         // alongside `env_a`/`env_b`.
-        let attack_amp = self.raw_param(fp("attack"));
-        let decay_amp = self.raw_param(fp("decay"));
-        let sustain_amp = self.raw_param(fp("sustain"));
-        let release_amp = self.raw_param(fp("release"));
-        let volume = self.raw_param(fp("volume"));
-        let pan = self.raw_param(fp("pan"));
-        let drive = self.raw_param(fp("drive"));
-        let tone = self.raw_param(fp("tone"));
+        let attack_amp = self.get_param(fp("attack"));
+        let decay_amp = self.get_param(fp("decay"));
+        let sustain_amp = self.get_param(fp("sustain"));
+        let release_amp = self.get_param(fp("release"));
+        let volume = self.get_param(fp("volume"));
+        let pan = self.get_param(fp("pan"));
+        let drive = self.get_param(fp("drive"));
+        let tone = self.get_param(fp("tone"));
         let atk_amp_inc = 1.0 / (attack_amp * sr).max(1.0);
         let dec_amp_coeff = 0.001f32.powf(1.0 / (decay_amp * sr).max(1.0));
         let rel_amp_coeff = 0.001f32.powf(1.0 / (release_amp * sr).max(1.0));
@@ -1056,9 +1308,6 @@ impl ViewPlugin for FmVoice {
         let amp = |name: &str, slot: u8| (fp(name), PageRef { page: Cow::Borrowed(AMP), slot });
         Rule {
             name: Cow::Borrowed("FM Voice"),
-            // MOD is declared now, empty, so the page order is stable
-            // across commits — P14-C6 fills it in, it doesn't append a new
-            // group after the fact.
             page_groups: Cow::Owned(vec![Cow::Borrowed("SRC"), Cow::Borrowed("AMP"), Cow::Borrowed("MOD")]),
             // SYN2 (P14-C3) is SRC **sub-page 2** (slots 8-15); the P14-C5
             // expression params are AMP **sub-page 2** (slots 8-11) — same
@@ -1068,36 +1317,45 @@ impl ViewPlugin for FmVoice {
             // "FUNC+PG overflow chords" to "re-pressing the active PG key
             // to cycle sub-pages" — the expression page's "overflow" *is*
             // this same sub-page cycling, not a new page key.
-            param_pages: Cow::Owned(vec![
-                src("algo", 0),
-                src("ratio_c", 1),
-                src("ratio_a", 2),
-                src("ratio_b", 3),
-                src("harm", 4),
-                src("detune", 5),
-                src("feedback", 6),
-                src("mix", 7),
-                src("atk_a", 8),
-                src("dec_a", 9),
-                src("end_a", 10),
-                src("lev_a", 11),
-                src("atk_b", 12),
-                src("dec_b", 13),
-                src("end_b", 14),
-                src("lev_b", 15),
-                amp("attack", 0),
-                amp("decay", 1),
-                amp("sustain", 2),
-                amp("release", 3),
-                amp("volume", 4),
-                amp("pan", 5),
-                amp("drive", 6),
-                amp("tone", 7),
-                amp("keytrack", 8),
-                amp("vel_mod", 9),
-                amp("env_reset", 10),
-                amp("porta", 11),
-            ]),
+            param_pages: {
+                let mut pages = vec![
+                    src("algo", 0),
+                    src("ratio_c", 1),
+                    src("ratio_a", 2),
+                    src("ratio_b", 3),
+                    src("harm", 4),
+                    src("detune", 5),
+                    src("feedback", 6),
+                    src("mix", 7),
+                    src("atk_a", 8),
+                    src("dec_a", 9),
+                    src("end_a", 10),
+                    src("lev_a", 11),
+                    src("atk_b", 12),
+                    src("dec_b", 13),
+                    src("end_b", 14),
+                    src("lev_b", 15),
+                    amp("attack", 0),
+                    amp("decay", 1),
+                    amp("sustain", 2),
+                    amp("release", 3),
+                    amp("volume", 4),
+                    amp("pan", 5),
+                    amp("drive", 6),
+                    amp("tone", 7),
+                    amp("keytrack", 8),
+                    amp("vel_mod", 9),
+                    amp("env_reset", 10),
+                    amp("porta", 11),
+                ];
+                // P14-C6: MOD page, laid out identically to `FmEngine`'s own
+                // (`LFO_PAGE_ORDER`) so a performer's muscle memory carries
+                // across tracks.
+                for (i, id) in LFO_PAGE_ORDER.iter().enumerate() {
+                    pages.push((*id, PageRef { page: Cow::Borrowed("MOD"), slot: i as u8 }));
+                }
+                Cow::Owned(pages)
+            },
             macros: Cow::Borrowed(&[]),
             // Anchored on each group's `dec_*`/`decay` param, matching
             // FmEngine's/AnalogEngine's own EnvelopeCurve convention
@@ -1164,6 +1422,13 @@ impl Node for FmVoice {
 
     fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
+        // ADR-042 decision 7. Path built once and cached (BUG-007) — the
+        // residual `String::clone` per cycle is the same accepted cost
+        // `publish_bank_state`'s own `path_cache` pays, not a fresh `format!`.
+        let path = self
+            .lfo_phase_path
+            .get_or_init(|| format!("/node/{}/state/lfo_phase", self.node_id));
+        buf.push((path.clone(), StateBusValue::Float(self.lfo.phase() as f64)));
     }
 
     fn activate(&mut self, sample_rate: f32, block_size: usize) {
@@ -1189,6 +1454,7 @@ impl Node for FmVoice {
         self.note_stack = NoteStack::new();
         self.tone_lp_state = 0.0;
         self.glide = None;
+        self.lfo = LfoHost::new();
         self.current_note = 60;
         self.last_note = 60;
         self.velocity_level = 1.0;
@@ -1972,5 +2238,151 @@ mod tests {
         assert_ne!(bright, 0.8);
         assert_ne!(dark, 0.8);
         assert_ne!(bright, dark, "tone>0 and tone<0 must tilt in different directions");
+    }
+
+    // ── MOD page / LFO dest table (P14-C6) ──────────────────────────────
+
+    #[test]
+    fn dest_table_pins_its_head_append_only() {
+        assert_eq!(
+            &FM_VOICE_DEST_NAMES[..7],
+            &["ratio_c", "ratio_a", "ratio_b", "harm", "detune", "feedback", "mix"],
+            "dest table head is append-only — a reorder re-points every saved patch"
+        );
+    }
+
+    /// `algo`/`env_reset` are topology/behavior selectors, not modulation
+    /// targets (same reasoning `FmEngine` excludes its own `machine`); the
+    /// seven `lfo_*` params are the LFO's own controls, modulating one of
+    /// them would be circular.
+    #[test]
+    fn dest_table_excludes_algo_env_reset_and_lfo_params() {
+        for excluded in [
+            "algo", "env_reset", "lfo_dest", "lfo_depth", "lfo_shape",
+            "lfo_speed", "lfo_mode", "lfo_start_phase", "lfo_fade",
+        ] {
+            assert!(!FM_VOICE_DEST_NAMES.contains(&excluded), "{excluded} must not be a modulation dest");
+        }
+    }
+
+    #[test]
+    fn dest_names_ids_ranges_and_labels_stay_in_sync_for_full() {
+        assert_eq!(FmVoice::dest_names(Machine::Full), FM_VOICE_DEST_NAMES);
+        assert_eq!(FmVoice::dest_ids(Machine::Full), FM_VOICE_DEST_IDS);
+        assert_eq!(FmVoice::dest_labels(Machine::Full).0, FM_VOICE_DEST_NAMES);
+        assert_eq!(FM_VOICE_DEST_NAMES.len(), FM_VOICE_DEST_IDS.len());
+        assert_eq!(FM_VOICE_DEST_NAMES.len(), FM_VOICE_DEST_RANGES.len());
+
+        // The three checks above only confirm the *lengths* line up and that
+        // the accessor functions return the exact arrays they're hard-coded
+        // to return — neither can catch one of the three parallel tables
+        // being silently reordered relative to the other two (e.g. two
+        // adjacent `FM_VOICE_DEST_RANGES` entries swapped), which would
+        // apply the wrong destination's scale/clamp range while still
+        // looking internally consistent by length alone. Per-position
+        // correspondence, matching `FmEngine`'s own
+        // `the_dest_ids_and_names_correspond` test, is what actually pins
+        // the three tables together.
+        for (i, name) in FM_VOICE_DEST_NAMES.iter().enumerate() {
+            assert_eq!(fp(name), FM_VOICE_DEST_IDS[i], "name/id mismatch at position {i} ({name})");
+            assert_eq!(
+                FM_VOICE_DEST_RANGES[i].0, FM_VOICE_DEST_IDS[i],
+                "range/id mismatch at position {i} ({name})"
+            );
+        }
+    }
+
+    /// Every declared destination must be reachable — modulating it must
+    /// not panic or produce non-finite output. `Full` is the only machine
+    /// with real behavior yet (P14-C7 adds the six macros' own tables).
+    #[test]
+    fn every_dest_is_reachable_without_panicking_or_non_finite_output() {
+        for (idx, name) in FM_VOICE_DEST_NAMES.iter().enumerate() {
+            let mut eng = new_engine();
+            eng.bank.set(fp("lfo_dest"), (idx + 1) as f64); // one-based
+            eng.bank.set(fp("lfo_depth"), 1.0);
+            eng.bank.set(fp("lfo_speed"), 5.0);
+            let out = run(&mut eng, &[make_note_on(60)]);
+            assert!(out.iter().all(|s| s.is_finite()), "dest {idx} ({name}) produced a non-finite sample");
+        }
+    }
+
+    /// Depth/dest sanity (ADR-042 amendment 2 vs body, resolved the same way
+    /// MM-C9 resolved it for `FmEngine`: one-based index into the active
+    /// machine's table). Targeting `harm` must measurably shift `harm`'s
+    /// `get_param` reading away from its raw value, and must NOT leak into
+    /// any other param's reading.
+    #[test]
+    fn lfo_depth_and_dest_only_affect_the_named_param() {
+        let mut eng = new_engine();
+        let harm_index = FM_VOICE_DEST_NAMES.iter().position(|&n| n == "harm").unwrap() + 1;
+        eng.bank.set(fp("lfo_dest"), harm_index as f64);
+        eng.bank.set(fp("lfo_depth"), 1.0);
+        eng.bank.set(fp("lfo_speed"), 5.0);
+        run(&mut eng, &[make_note_on(60)]);
+
+        let harm_raw = eng.raw_param(fp("harm"));
+        let harm_mod = eng.get_param(fp("harm"));
+        assert!(
+            (harm_mod - harm_raw).abs() > 1e-3,
+            "expected the LFO to measurably shift harm, got raw={harm_raw} mod={harm_mod}"
+        );
+
+        for other in ["feedback", "mix", "attack", "volume"] {
+            let raw = eng.raw_param(fp(other));
+            let modulated = eng.get_param(fp(other));
+            assert_eq!(modulated, raw, "{other} must be unaffected when lfo_dest targets harm");
+        }
+    }
+
+    /// `current_sounding_hz` must reflect `detune`'s LFO-modulated value,
+    /// not the raw one — the P14-C6 review finding: an earlier draft read
+    /// `detune` via `raw_param` here (on the mistaken theory that it
+    /// mirrored `FmEngine::retrigger`'s unrelated `#175` precedent), which
+    /// would make a portamento glide's captured start point differ from
+    /// what `process_algo` had just actually rendered by up to the LFO's
+    /// full swing — an audible snap at glide onset whenever `detune` is an
+    /// LFO destination (Pad's own D5 recipe turns `porta` on, and `detune`
+    /// is one of the 26 declared destinations).
+    #[test]
+    fn current_sounding_hz_reflects_lfo_modulated_detune_not_raw() {
+        let mut eng = new_engine();
+        let detune_index = FM_VOICE_DEST_NAMES.iter().position(|&n| n == "detune").unwrap() + 1;
+        eng.bank.set(fp("lfo_dest"), detune_index as f64);
+        eng.bank.set(fp("lfo_depth"), 1.0);
+        eng.bank.set(fp("lfo_speed"), 5.0);
+        run(&mut eng, &[make_note_on(60)]);
+        run(&mut eng, &[]); // advance the LFO off its trigger-time reset point
+
+        let raw_detune = eng.raw_param(fp("detune"));
+        let modulated_detune = eng.get_param(fp("detune"));
+        assert!(
+            (modulated_detune - raw_detune).abs() > 1e-3,
+            "expected the LFO to actually be modulating detune by now, raw={raw_detune} mod={modulated_detune}"
+        );
+
+        let expected_hz = note_to_hz(eng.current_note, modulated_detune / 100.0);
+        assert!(
+            (eng.current_sounding_hz() - expected_hz).abs() < 1e-3,
+            "current_sounding_hz must reflect the LFO-modulated detune ({expected_hz} Hz), \
+             not the raw value, got {}",
+            eng.current_sounding_hz()
+        );
+    }
+
+    /// `lfo_dest=0` (off) must leave every param exactly at its raw value —
+    /// the default, and the regression `apply`'s own short-circuit exists
+    /// to guarantee.
+    #[test]
+    fn lfo_dest_off_is_a_no_op_on_every_param() {
+        let mut eng = new_engine();
+        eng.bank.set(fp("lfo_depth"), 1.0);
+        eng.bank.set(fp("lfo_speed"), 5.0);
+        run(&mut eng, &[make_note_on(60)]);
+        for name in FM_VOICE_DEST_NAMES {
+            let raw = eng.raw_param(fp(name));
+            let modulated = eng.get_param(fp(name));
+            assert_eq!(modulated, raw, "{name} must be untouched when lfo_dest is off");
+        }
     }
 }
