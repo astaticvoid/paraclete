@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::borrow::Cow;
 
 use paraclete_node_api::{
-    AffordanceHint, CapabilityDocument, EnvelopeGroup, Event, MachineVariant, Node, PageRef,
-    ParamDescriptor, ParamOverlay, ParamUnit, ParameterBank, PortDescriptor, PortDirection,
-    PortType, ProcessInput, ProcessOutput, Rule, StateBusValue, UmpMessage, ViewPlugin,
-    midi::ChannelVoice2, CMD_TRIGGER,
+    AffordanceHint, CapabilityDocument, DebugEventKind, EnvelopeGroup, Event, MachineVariant,
+    Node, PageRef, ParamDescriptor, ParamOverlay, ParamUnit, ParameterBank, PortDescriptor,
+    PortDirection, PortType, ProcessInput, ProcessOutput, Rule, StateBusValue, UmpMessage,
+    ViewPlugin, midi::ChannelVoice2, CMD_TRIGGER,
 };
 
 use crate::engine_dsp::{
@@ -2052,7 +2052,6 @@ impl Node for FmVoice {
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
-        let _ = output;
         self.bank.handle_commands(input.commands);
         self.poll_algo_param();
         self.poll_machine_param();
@@ -2077,6 +2076,9 @@ impl Node for FmVoice {
                 let note: u8 = if cmd.arg0 < 0 { self.last_note } else { cmd.arg0.clamp(0, 127) as u8 };
                 let velocity: f32 = if cmd.arg1 <= 0.0 { 0.79 } else { cmd.arg1.clamp(0.0, 1.0) as f32 };
                 self.retrigger(note, velocity);
+                // #189: parity with AnalogEngine/FmEngine, which both emit
+                // this on every trigger path.
+                output.emit_debug(0, DebugEventKind::VoiceTrigger, note as i64, velocity as f64);
             }
         }
 
@@ -2094,6 +2096,8 @@ impl Node for FmVoice {
                     }
                     let velocity = n.velocity() as f32 / 65535.0;
                     self.retrigger(u8::from(n.note_number()), velocity);
+                    // #189: parity with AnalogEngine/FmEngine.
+                    output.emit_debug(off as u32, DebugEventKind::VoiceTrigger, u8::from(n.note_number()) as i64, velocity as f64);
                 }
                 Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOff(n))) => {
                     let off = timed.sample_offset as usize;
@@ -3284,6 +3288,29 @@ mod tests {
         let cmd = NodeCommand { target_id: 0, type_id: CMD_TRIGGER, arg0: -1, arg1: 0.8 };
         run_with_commands(&mut eng, &[], &[cmd]);
         assert_eq!(eng.current_note, 72, "negative arg0 must retrigger the last note, not note 0");
+    }
+
+    /// #189: `AnalogEngine`/`FmEngine` both carry a
+    /// `velocity_scales_output_level` test; `FmVoice` never had the
+    /// equivalent, an untested asymmetry even though `velocity_level`
+    /// visibly reaches the signal path in `trigger_note`.
+    #[test]
+    fn velocity_scales_output_level() {
+        let mut eng_hi = new_engine();
+        let cmd_hi = NodeCommand { target_id: 0, type_id: CMD_TRIGGER, arg0: 60, arg1: 1.0 };
+        let out_hi = run_with_commands(&mut eng_hi, &[], &[cmd_hi]);
+        let peak_hi = out_hi.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+
+        let mut eng_lo = new_engine();
+        let cmd_lo = NodeCommand { target_id: 0, type_id: CMD_TRIGGER, arg0: 60, arg1: 0.25 };
+        let out_lo = run_with_commands(&mut eng_lo, &[], &[cmd_lo]);
+        let peak_lo = out_lo.iter().fold(0.0f32, |m, &x| m.max(x.abs()));
+
+        assert!(peak_hi > peak_lo,
+            "higher velocity should produce a louder peak: hi={peak_hi:.4} lo={peak_lo:.4}");
+        let ratio = peak_hi / peak_lo.max(1e-9);
+        assert!(ratio > 2.0,
+            "velocity ratio (1.0 vs 0.25) should roughly scale peak amplitude, got ratio={ratio:.2}");
     }
 
     /// The bug this guards against: releasing a non-top note of a 3+-note
