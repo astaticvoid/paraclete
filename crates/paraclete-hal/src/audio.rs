@@ -8,6 +8,7 @@ use paraclete_node_api::{AudioProcessor, RuntimeCounters};
 
 #[cfg(target_os = "linux")]
 mod lrt {
+    use std::cell::Cell;
     use std::sync::atomic::{AtomicBool, Ordering};
 
     #[repr(C)]
@@ -22,10 +23,17 @@ mod lrt {
         fn pthread_setschedparam(thread: usize, policy: i32, param: *const SchedParam) -> i32;
     }
 
-    static CB_ONCE: AtomicBool = AtomicBool::new(false);
+    thread_local! {
+        // INFRA-023: per-thread, not a process-global `AtomicBool` — a
+        // second audio-callback thread (e.g. AN1's input stream) must
+        // request SCHED_FIFO for itself, not have its call silently no-op
+        // (or steal the one-shot grant) because some other thread already
+        // called this once.
+        static CB_ONCE: Cell<bool> = const { Cell::new(false) };
+    }
 
     pub fn set_realtime_callback() {
-        if CB_ONCE.swap(true, Ordering::Relaxed) {
+        if CB_ONCE.with(|done| done.replace(true)) {
             return;
         }
         let param = SchedParam { sched_priority: 50 };
@@ -160,21 +168,14 @@ impl InputStreamHandle {
 
         let err_fn = |err| log::error!("audio input stream error: {err}");
 
-        // Deliberately not calling `lrt::set_realtime_callback()` here.
-        // That helper's `CB_ONCE` guard is a process-global one-shot flag,
-        // not per-thread — `pthread_setschedparam` sets priority for
-        // whichever thread calls it, but only the *first* caller across the
-        // whole process ever actually gets SCHED_FIFO; a second caller
-        // (this input callback) would silently no-op, and worse, if this
-        // stream's first callback happened to fire before the output
-        // stream's, it would steal the one-shot RT grant *from* output,
-        // which must never underrun. Filed as INFRA-023 rather than
-        // reworked here — fixing `lrt` to be per-thread touches the
-        // existing (working) output path, out of scope for C0's HAL-only
-        // plumbing. Input tolerates dropped frames far better than output
-        // tolerates underrun (a few lost samples degrade a capture's exact
-        // edge, not the whole session's audio), so running without RT
-        // priority is an acceptable interim posture, not a silent gap.
+        // Still deliberately not calling `lrt::set_realtime_callback()` here,
+        // even though INFRA-023 (#186) made `CB_ONCE` per-thread — so a call
+        // from this callback would no longer steal or lose the one-shot
+        // grant. Wiring the input stream up to request SCHED_FIFO is now
+        // unblocked but is a separate call-site decision (does input's
+        // wake-latency actually need it, given it already tolerates dropped
+        // frames far better than output tolerates underrun?), left for
+        // whoever picks that up rather than bundled into the `lrt` fix.
         let stream = match supported.sample_format() {
             SampleFormat::F32 => {
                 let mut producer = producer;
