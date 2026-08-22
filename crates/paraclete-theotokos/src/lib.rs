@@ -1727,6 +1727,14 @@ impl TheotokosApp {
                     )
                 });
             }
+            // AN0 C5: routed through pending_app_ops, same as every other
+            // AppOp-producing gesture (KIT screen chords, FUNC+Enter/Esc) —
+            // the app main loop's PerformState::execute() does the actual
+            // decode + broadcast (an0-anamnesis.md §2.5).
+            CmdlineVerb::PoolLoad { slot, path } => {
+                self.pending_app_ops
+                    .push(paraclete_node_api::app_op::AppOp::PoolLoadFile { slot, path });
+            }
         }
     }
 
@@ -6724,6 +6732,47 @@ mod tests {
                 "cmdline_status must report the skipped stale entry, got: {status:?}"
             );
         });
+    }
+
+    // ── AN0 C5: `:pool-load` ──
+
+    /// AN0 C5: `:pool-load <slot> <path>` parses and pushes
+    /// `AppOp::PoolLoadFile` — the app main loop (`PerformState::execute`)
+    /// does the actual decode + broadcast (an0-anamnesis.md §2.5).
+    #[test]
+    fn pool_load_cmdline_pushes_pool_load_file_app_op() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "pool-load 3 samples/kick.wav");
+        app.handle_keys(&bus, &[enter_key()]);
+
+        assert!(app.model.cmdline_error.is_none(), "valid command must not error");
+        let ops = &app.pending_app_ops;
+        assert!(
+            ops.iter().any(|op| matches!(
+                op,
+                AppOp::PoolLoadFile { slot: 3, path } if path == "samples/kick.wav"
+            )),
+            "pool-load must push PoolLoadFile{{slot:3, path}}, got {:?}",
+            ops
+        );
+    }
+
+    #[test]
+    fn pool_load_cmdline_rejects_a_non_numeric_slot() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "pool-load abc samples/kick.wav");
+        app.handle_keys(&bus, &[enter_key()]);
+
+        assert!(app.model.cmdline_error.is_some(), "non-numeric slot must error");
+        assert!(app.pending_app_ops.is_empty(), "no AppOp on a parse error");
     }
 
     // ── C7: flash ──

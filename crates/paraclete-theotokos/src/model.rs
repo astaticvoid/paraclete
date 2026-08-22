@@ -404,6 +404,9 @@ pub enum CmdlineVerb {
     /// TK2 C8 (D11): `:load-bindings` — re-runs the global→local startup
     /// load order.
     LoadBindings,
+    /// AN0 C5: `:pool-load <slot> <path>` — decode `path` into the sample
+    /// pool at `slot`, delivered to every live Sampler node.
+    PoolLoad { slot: u32, path: String },
 }
 
 impl Model {
@@ -1531,6 +1534,21 @@ impl Model {
             "reset-bindings" => Ok(CmdlineVerb::ResetBindings),
             "save-bindings" => Ok(CmdlineVerb::SaveBindings),
             "load-bindings" => Ok(CmdlineVerb::LoadBindings),
+            // AN0 C5: `:pool-load <slot> <path>` — the one runtime
+            // pool-population path this phase ships (an0-anamnesis.md §2.5).
+            "pool-load" => {
+                let (slot_str, path) = rest
+                    .split_once(char::is_whitespace)
+                    .ok_or_else(|| "pool-load <slot> <path>".to_string())?;
+                let slot: u32 = slot_str
+                    .parse()
+                    .map_err(|_| format!("invalid slot: {slot_str}"))?;
+                let path = path.trim();
+                if path.is_empty() {
+                    return Err("pool-load <slot> <path>".into());
+                }
+                Ok(CmdlineVerb::PoolLoad { slot, path: path.to_string() })
+            }
             _ => Err(format!("?{input}")),
         }
     }

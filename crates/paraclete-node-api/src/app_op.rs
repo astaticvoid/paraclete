@@ -34,4 +34,9 @@ pub enum AppOp {
     BindKit { slot: usize, kit: Option<KitId> },
     /// Toggle perform mode (kit-apply on pattern change).
     SetPerformMode(bool),
+    /// AN0 C5: decode `path` into the sample pool at `slot`, then deliver
+    /// the result to every live Sampler node's asset cache. The one
+    /// runtime pool-population path AN0 ships (no capture yet — this is
+    /// how a session populates a slot without editing the project file).
+    PoolLoadFile { slot: u32, path: String },
 }

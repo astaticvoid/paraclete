@@ -158,6 +158,7 @@ fn main() {
                 std::process::exit(1);
             }
         };
+    perform_state.sampler_ids = ids.samplers.clone();
 
     // ── 4. Hardware devices ───────────────────────────────────────────────────
     let launchpad_id = try_open_launchpad(&mut conf, no_emulator);

@@ -14,12 +14,13 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::kit::{Kit, KitEntry, KitStore};
 use crate::sample_pool::SamplePool;
-use log::info;
+use log::{info, warn};
 use paraclete_node_api::app_op::{AppOp, KitId};
-use paraclete_node_api::{NodeCommand, StateBusHandle, StateBusValue, CMD_SET_PARAM};
+use paraclete_node_api::{NodeCommand, SampleData, StateBusHandle, StateBusValue, SwapSample, CMD_SET_PARAM};
 use paraclete_runtime::NodeConfigurator;
 
 /// How many kit entries are pushed into the command ring per tick.
@@ -31,6 +32,10 @@ pub struct PerformState {
     pub kit_binding: [Option<KitId>; 8],
     /// Project-level sample pool (AN0, ADR-040 decision 3).
     pub sample_pool: SamplePool,
+    /// Every live Sampler node's id (AN0 C5) — `AppOp::PoolLoadFile`
+    /// broadcasts a `SwapSample` to each of these. Set once by `main.rs`
+    /// from `InstrumentIds::samplers` after the graph is built.
+    pub sampler_ids: Vec<u32>,
     pub perform_mode: bool,
     /// Volatile temp snapshot (RAM only, not persisted).
     pub temp_param_snapshot: Option<Vec<KitEntry>>,
@@ -46,6 +51,7 @@ impl PerformState {
             kit_store: KitStore::default(),
             kit_binding: Default::default(),
             sample_pool: SamplePool::default(),
+            sampler_ids: Vec::new(),
             perform_mode: false,
             temp_param_snapshot: None,
             cached_active_patterns: HashMap::new(),
@@ -161,6 +167,26 @@ impl PerformState {
                     self.apply_pending = entries;
                 }
                 info!("[temp_reload] snapshot reloaded");
+            }
+            AppOp::PoolLoadFile { slot, path } => {
+                let rate = conf.sample_rate();
+                match self.sample_pool.load_file(slot as usize, &path, rate) {
+                    Ok((entry, samples)) => {
+                        let data = Arc::new(SampleData {
+                            samples,
+                            rate: entry.rate,
+                            frames: entry.frames,
+                        });
+                        for &node_id in &self.sampler_ids {
+                            let msg = SwapSample { node_id, pool_slot: slot, data: data.clone() };
+                            if let Err(_msg) = conf.send_swap_sample(msg) {
+                                warn!("[pool_load] asset ring full delivering slot {slot} to node {node_id}");
+                            }
+                        }
+                        info!("[pool_load] slot {slot} <- {path} ({} frames)", entry.frames);
+                    }
+                    Err(e) => warn!("[pool_load] slot {slot}: failed to load {path:?}: {e}"),
+                }
             }
         }
     }
@@ -419,6 +445,121 @@ mod tests {
         // or an out-of-bounds index.
         perform.execute(AppOp::KitLoad(KitId(64)), &mut conf, &bus);
         assert!(perform.apply_pending.is_empty());
+    }
+
+    /// AN0 C5: `AppOp::PoolLoadFile` decodes the file into `sample_pool`
+    /// and does not panic when broadcasting to `sampler_ids` — the ring
+    /// push itself doesn't validate node existence (that's the executor's
+    /// job at delivery time, already covered by
+    /// paraclete-runtime's asset_plane_tests.rs); this test covers the
+    /// app-op handler's own logic, not end-to-end delivery.
+    #[test]
+    fn pool_load_file_populates_the_pool_and_does_not_panic_broadcasting() {
+        let mut conf = NodeConfigurator::new(44100.0, 512);
+        conf.add_node(23, Box::new(paraclete_nodes::Sampler::new()));
+        let bus = conf.state_bus_handle();
+        let mut perform = PerformState::new();
+        perform.sampler_ids = vec![23, 999]; // 999 is not in the graph — must not panic
+
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../samples/kick.wav");
+        perform.execute(
+            AppOp::PoolLoadFile { slot: 3, path: path.to_string_lossy().into_owned() },
+            &mut conf,
+            &bus,
+        );
+
+        let entry = perform.sample_pool.get(3).expect("slot 3 should be populated");
+        assert!(entry.frames > 0);
+        assert_eq!(entry.rate, 44100.0);
+    }
+
+    /// AN0 C5 (review finding): the previous version of this test only
+    /// checked pool metadata and could pass even if the broadcast loop
+    /// were deleted entirely. This one drives a real executor: two
+    /// Sampler nodes, each pre-pointed at pool slot 5 (`set_base_sample`),
+    /// both silent before the slot is delivered — `PoolLoadFile` must
+    /// reach *both* via the asset-delivery plane before either produces
+    /// audio on trigger. Mirrors `an0-anamnesis.md` §4's "construct a
+    /// small graph with 2 Sampler nodes... assert both nodes'
+    /// pool_cache... contain the new slot" via observable behavior
+    /// (there's no cross-crate `pool_cache` accessor, so "produces audio"
+    /// stands in for "the slot arrived") rather than a field peek.
+    #[test]
+    fn pool_load_file_delivers_to_every_live_sampler_node_via_the_asset_plane() {
+        let sr = 44100.0;
+        let block = 64usize;
+        let mut conf = NodeConfigurator::new(sr, block);
+
+        let mut s1 = paraclete_nodes::Sampler::new();
+        s1.set_base_sample(5);
+        conf.add_node(1, Box::new(s1));
+
+        let mut s2 = paraclete_nodes::Sampler::new();
+        s2.set_base_sample(5);
+        conf.add_node(2, Box::new(s2));
+
+        let bus = conf.state_bus_handle();
+        let mut perform = PerformState::new();
+        perform.sampler_ids = vec![1, 2];
+
+        let mut exec = conf.build_executor();
+        let mut out = vec![0.0f32; block * 2];
+
+        // Before delivery: pool slot 5 is uncached on both — silence.
+        for &id in &[1u32, 2u32] {
+            let _ = conf.send_command(NodeCommand {
+                target_id: id,
+                type_id: paraclete_node_api::CMD_TRIGGER,
+                arg0: -1,
+                arg1: 0.0,
+            });
+        }
+        exec.process(&mut out, 2);
+        assert!(out.iter().all(|&x| x == 0.0), "uncached slot must be silent before PoolLoadFile");
+
+        // Deliver: execute() sends SwapSample to both node ids; one
+        // process() cycle drains the asset-delivery ring into each node's
+        // pool_cache (see asset_plane_tests.rs — one cycle is sufficient).
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../samples/kick.wav");
+        perform.execute(
+            AppOp::PoolLoadFile { slot: 5, path: path.to_string_lossy().into_owned() },
+            &mut conf,
+            &bus,
+        );
+        exec.process(&mut out, 2); // drains the SwapSample ring, no trigger this cycle
+
+        // After delivery: trigger both again — both must now produce audio.
+        for &id in &[1u32, 2u32] {
+            let _ = conf.send_command(NodeCommand {
+                target_id: id,
+                type_id: paraclete_node_api::CMD_TRIGGER,
+                arg0: -1,
+                arg1: 0.0,
+            });
+        }
+        out.iter_mut().for_each(|x| *x = 0.0);
+        exec.process(&mut out, 2);
+        assert!(
+            out.iter().any(|&x| x != 0.0),
+            "both samplers should be playing slot 5's audio after PoolLoadFile delivers it"
+        );
+    }
+
+    #[test]
+    fn pool_load_file_missing_path_does_not_panic_or_populate() {
+        let mut conf = NodeConfigurator::new(44100.0, 512);
+        let bus = conf.state_bus_handle();
+        let mut perform = PerformState::new();
+
+        perform.execute(
+            AppOp::PoolLoadFile { slot: 3, path: "does/not/exist.wav".into() },
+            &mut conf,
+            &bus,
+        );
+
+        assert!(perform.sample_pool.get(3).is_none());
     }
 
     /// Build the default instrument graph (real sequencer + engines with
