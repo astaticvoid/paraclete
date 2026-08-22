@@ -140,20 +140,24 @@ fn main() {
     // ── 2. Pre-load CLAP plugins (one load per .clap file) ───────────────────
     let libraries: HashMap<String, Arc<PluginLibrary>> = load_plugin_libraries(&def);
 
-    // ── 3. Build node graph ───────────────────────────────────────────────────
-    let mut conf = NodeConfigurator::new(sample_rate, BLOCK_SIZE);
-    let ids = match build_from_instrument(&def, &mut conf, &libraries) {
-        Ok(ids) => ids,
-        Err(e) => {
-            eprintln!("[paraclete] graph build failed: {e}");
-            std::process::exit(1);
-        }
-    };
-
     // P11 C2: perform-state lives for the whole session so project load/save
     // (sections 5/6, before the executor) can restore/persist it alongside
     // node state, and the main loop (section 13) can tick it each iteration.
+    // Built before the graph (AN0) so build_from_instrument can populate
+    // sample_pool from any YAML-declared `sample:` paths as it constructs
+    // Sampler nodes.
     let mut perform_state = PerformState::new();
+
+    // ── 3. Build node graph ───────────────────────────────────────────────────
+    let mut conf = NodeConfigurator::new(sample_rate, BLOCK_SIZE);
+    let ids =
+        match build_from_instrument(&def, &mut conf, &libraries, &mut perform_state.sample_pool) {
+            Ok(ids) => ids,
+            Err(e) => {
+                eprintln!("[paraclete] graph build failed: {e}");
+                std::process::exit(1);
+            }
+        };
 
     // ── 4. Hardware devices ───────────────────────────────────────────────────
     let launchpad_id = try_open_launchpad(&mut conf, no_emulator);

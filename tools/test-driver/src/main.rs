@@ -507,7 +507,7 @@ fn build_context(
 
     let mut conf = NodeConfigurator::new(sample_rate, block_size);
     let libraries = HashMap::new();
-    let ids = build_from_instrument(def, &mut conf, &libraries)
+    let ids = build_from_instrument(def, &mut conf, &libraries, &mut Default::default())
         .map_err(|e| format!("failed to build graph: {}", e))?;
 
     let bus_handle = conf.state_bus_handle();
@@ -1507,7 +1507,7 @@ fn render_deterministic(scenario: &TestScenario) -> Result<Vec<f32>, String> {
 
     let mut conf = NodeConfigurator::new(sample_rate, block_size);
     let libraries = HashMap::new();
-    let ids = build_from_instrument(&def, &mut conf, &libraries)
+    let ids = build_from_instrument(&def, &mut conf, &libraries, &mut Default::default())
         .map_err(|e| format!("failed to build graph: {}", e))?;
     let executor = std::sync::Mutex::new(conf.build_executor());
     executor.lock().unwrap().set_debug_log_enabled(true);

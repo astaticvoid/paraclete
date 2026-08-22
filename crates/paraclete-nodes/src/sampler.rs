@@ -1,15 +1,11 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
-
-use rubato::{
-    Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType,
-    WindowFunction,
-};
+use std::sync::Arc;
 
 use paraclete_node_api::{
     CapabilityDocument, ConnectionAgreement, ConnectionRecord, Event, LockableParam,
     Negotiable, Node, PageRef, ParamDescriptor, ParamUnit,
-    ParameterBank,
+    ParameterBank, SampleData,
     PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, Rule, UmpMessage,
     ViewPlugin, midi::ChannelVoice2,
 };
@@ -46,6 +42,9 @@ static SAMPLER_DEST_LABELS: LfoDestLabels = LfoDestLabels(SAMPLER_DEST_NAMES);
 
 const P_LOOP:      u32 = ParamDescriptor::id_for_name("loop");
 const P_SLICE:     u32 = ParamDescriptor::id_for_name("slice");
+/// AN0: stepped index into the pool. Rides the existing CMD 33–35 lock
+/// family unmodified — same non-bank, node-owned pattern as P_LOOP/P_SLICE.
+const P_SAMPLE:    u32 = ParamDescriptor::id_for_name("sample");
 
 // ── ActiveParamLock ────────────────────────────────────────────────────────────
 
@@ -193,6 +192,14 @@ fn sampler_capability_document() -> CapabilityDocument {
             // loaded sample would need `ParamDisplayAdapter::Dynamic`, which
             // panics on clone along the cap-doc path (ADR-042 amendment 5).
             ParamDescriptor { id: param_hash("slice"),     name: "slice".into(),     min: 0.0,   max: 127.0, default: 0.0,   stepped: true,  in_kit: true,  unit: ParamUnit::Generic,   display: None },
+            // AN0: stepped index into the sample pool (ADR-040 decision 3).
+            // Lockable via CMD 33–35, no new lock machinery — a different
+            // pool slot per step is a "sample lock". 127 mirrors `slice`'s
+            // upper-bound reasoning: SamplePool::NOMINAL_POOL_SIZE (128) is
+            // a UI-range convenience, not a hard ceiling (the pool can grow
+            // past it; an out-of-range index just misses the cache and
+            // plays silence, same non-panicking fallback as `slice`).
+            ParamDescriptor { id: param_hash("sample"),    name: "sample".into(),    min: 0.0,   max: 127.0, default: 0.0,   stepped: true,  in_kit: true,  unit: ParamUnit::Generic,   display: None },
         ]
         .into_iter()
         // MM-C10: `Sampler` hosts an LFO (ADR-042 decision 6's rollout order).
@@ -211,24 +218,24 @@ pub struct Sampler {
     node_id: u32,
     ports: [PortDescriptor; 5],
 
-    // Sample data (loaded at activate).
-    sample_data: Vec<f32>,
-    /// Rate of the in-memory `sample_data` — the output rate after a
-    /// load-time resample; directly injected data may sit at any rate.
-    /// NOT the source file's native rate (load_wav resamples away from it).
-    sample_data_rate: f32,
-    sample_frames: usize,
-
-    // Slice table — one full-sample slice at P3: (start_frame, end_frame).
-    slices: Vec<(usize, usize)>,
+    /// AN0: cached decoded pool samples, keyed by pool slot. Populated by
+    /// `swap_sample()` — at graph-construction time (main thread, directly)
+    /// for a YAML-declared `sample:` path, or at runtime via the
+    /// asset-delivery plane. A slot referenced by `sample`/a step lock but
+    /// not (yet) present here plays silence rather than a stale buffer —
+    /// see `render_chunk` (`an0-anamnesis.md` §2.3).
+    pool_cache: HashMap<u32, Arc<SampleData>>,
 
     // Hardware-reachable base parameters managed by ParameterBank (CMD_SET_PARAM / CMD_BUMP_PARAM).
     // Initialised at new() time so values survive across activate() calls and deserialize().
     bank: ParameterBank,
 
-    // Loop and slice are lockable (is_known_param) but not hardware-reachable (not in bank).
+    // Loop, slice, and sample are lockable (is_known_param) but not
+    // hardware-reachable (not in bank) — mirrors base_loop/base_slice's
+    // existing pattern (AN0 D4).
     base_loop:  bool,
     base_slice: usize,
+    base_sample: u32,
 
     // Node-level active locks, snapshotted into a voice at trigger time.
     // Retired at the next trigger, not each cycle (#169).
@@ -245,7 +252,6 @@ pub struct Sampler {
 
     output_sample_rate: f32,
 
-    sample_path: Option<String>,
     pub(crate) connection_records: Vec<ConnectionRecord>,
 
     // Pre-allocated render buffers — no audio-thread allocation.
@@ -268,21 +274,15 @@ impl Sampler {
     /// Sent from scripts in trigger mode: send_cmd(samp_id, CMD_TRIGGER, 0, 0.0)
     pub const CMD_TRIGGER: u32 = paraclete_node_api::CMD_TRIGGER;
 
-    pub fn new() -> Self { Self::build(None) }
-
-    pub fn with_path(path: impl Into<String>) -> Self { Self::build(Some(path.into())) }
-
-    fn build(sample_path: Option<String>) -> Self {
+    pub fn new() -> Self {
         Self {
             node_id: 0,
             ports: sampler_ports(),
-            sample_data: vec![],
-            sample_data_rate: 44100.0,
-            sample_frames: 0,
-            slices: vec![],
+            pool_cache: HashMap::new(),
             bank: ParameterBank::from_capability_document(&sampler_capability_document()),
             base_loop: false,
             base_slice: 0,
+            base_sample: 0,
             node_locks: HashMap::new(),
             locks_pending: false,
             voices: [Voice::new(), Voice::new(), Voice::new(), Voice::new()],
@@ -290,7 +290,6 @@ impl Sampler {
             samp_trig_count: 0,
             last_triggered_note: 0,
             output_sample_rate: 44100.0,
-            sample_path,
             connection_records: Vec::new(),
             lfo: LfoHost::new(),
             render_l: Vec::new(),
@@ -299,10 +298,17 @@ impl Sampler {
         }
     }
 
+    /// AN0: set which pool slot this node plays by default (before any
+    /// step lock overrides it). Used by the instrument builder when a YAML
+    /// `sample:` path registers a pool entry at construction time.
+    pub fn set_base_sample(&mut self, slot: u32) {
+        self.base_sample = slot;
+    }
+
     fn is_known_param(param_id: u32) -> bool {
         matches!(param_id,
             P_PITCH | P_VOLUME | P_PAN | P_START | P_END
-            | P_ATTACK | P_RELEASE | P_ROOT_NOTE | P_LOOP | P_SLICE)
+            | P_ATTACK | P_RELEASE | P_ROOT_NOTE | P_LOOP | P_SLICE | P_SAMPLE)
     }
 
     fn base_for(&self, param_id: u32) -> f64 {
@@ -311,8 +317,9 @@ impl Sampler {
             P_PITCH | P_VOLUME | P_PAN | P_START | P_END
             | P_ATTACK | P_RELEASE | P_ROOT_NOTE => self.bank.get(param_id),
             // Non-bank params: read from dedicated fields.
-            P_LOOP  => if self.base_loop { 1.0 } else { 0.0 },
-            P_SLICE => self.base_slice as f64,
+            P_LOOP   => if self.base_loop { 1.0 } else { 0.0 },
+            P_SLICE  => self.base_slice as f64,
+            P_SAMPLE => self.base_sample as f64,
             _ => 0.0,
         }
     }
@@ -465,7 +472,7 @@ impl Sampler {
         let node_volume  = self.effective_node(P_VOLUME);
         let node_pan     = self.effective_node(P_PAN);
         let node_pitch   = self.effective_node(P_PITCH);
-        let node_slice   = self.effective_node(P_SLICE);
+        let node_sample  = self.effective_node(P_SAMPLE);
         let node_start   = self.effective_node(P_START);
         let node_end     = self.effective_node(P_END);
         let node_loop    = self.effective_node(P_LOOP);
@@ -473,17 +480,32 @@ impl Sampler {
         let node_release = self.effective_node(P_RELEASE);
 
         let output_sr = self.output_sample_rate;
-        // sample_data sits at sample_data_rate (the output rate after a
-        // load-time resample; possibly different for directly injected data).
-        let rate_scale = self.sample_data_rate as f64 / output_sr as f64;
         let root_note = self.bank.get(P_ROOT_NOTE);
-
-        // Take a shared slice of sample_data — coexists with the mutable
-        // borrow of voices below since they are different fields.
-        let sample_data = self.sample_data.as_slice();
 
         for voice in self.voices.iter_mut() {
             if !voice.active { continue; }
+
+            // AN0: each voice picks its own pool sample — a per-step
+            // `sample` lock plays a different buffer than the base, riding
+            // the same effective()/node_locks machinery every other
+            // lockable param already goes through (D4). A slot not (yet)
+            // cached plays silence for this voice this chunk rather than a
+            // stale buffer — the honest failure mode (an0-anamnesis.md §2.3).
+            // This `continue` skips `advance_envelope` too, so an uncached
+            // voice doesn't self-deactivate via the normal envelope-done
+            // path — it sits silent (not leaked: an explicit NoteOff or the
+            // 4-voice steal-oldest logic on a 5th trigger still reclaims it)
+            // until either it's stolen/released or a `SwapSample` populates
+            // the slot, at which point it resumes from a fresh envelope as
+            // though just triggered.
+            let slot = voice.effective(P_SAMPLE, node_sample) as u32;
+            let Some(data) = self.pool_cache.get(&slot) else { continue };
+            let sample_data = data.samples.as_slice();
+            // `data.rate` sits at whatever rate it was decoded/resampled to
+            // (SamplePool::decode_file targets the output rate at pool-load
+            // time, but a per-buffer scale is kept defensively rather than
+            // assumed equal — mirrors the pre-AN0 sample_data_rate field).
+            let rate_scale = data.rate as f64 / output_sr as f64;
 
             // Per-voice effective values: the p-lock snapshot taken at this
             // voice's trigger, falling back to the node base (which already
@@ -504,9 +526,12 @@ impl Sampler {
             let note_diff = if note_diff.is_finite() { note_diff.clamp(-48.0, 48.0) } else { 0.0 };
             let playback_rate = 2.0_f64.powf(note_diff / 12.0) * rate_scale;
 
-            let slice_idx = voice.effective(P_SLICE, node_slice) as usize;
-            let (slice_start, slice_end) = self.slices.get(slice_idx)
-                .copied().unwrap_or((0, self.sample_frames));
+            // AN0: slices are pool metadata (AN2, ADR-040 decision 5) that
+            // doesn't cross the asset plane yet — every pool sample is one
+            // trivial full-sample slice, matching the pre-AN0 default
+            // exactly (`slices` was always a single `(0, frames)` entry, so
+            // `slice` already had no effect on playback bounds beyond that).
+            let (slice_start, slice_end) = (0, data.frames);
             let range = slice_end.saturating_sub(slice_start);
             let start_frame = slice_start + (voice.effective(P_START, node_start) * range as f64) as usize;
             let end_frame   = slice_start + (voice.effective(P_END,   node_end)   * range as f64) as usize;
@@ -599,17 +624,33 @@ impl ViewPlugin for Sampler {
                 Cow::Borrowed("AMP"),
                 Cow::Borrowed("MOD"),
             ]),
+            // AN0: SRC reshaped toward the canonical `design/sampling/design.md`
+            // §7 shape (`sample · slice · pitch · play_mode · start · end ·
+            // volume · pan`) — `play_mode` isn't declared yet (no param
+            // exists until AN1 needs it), so it's simply absent from the
+            // order rather than a gap. `root_note`/`loop` aren't in that
+            // canonical list; they move to AMP alongside attack/release —
+            // AMP's width is unchanged (4 slots), just a different 4 params.
+            // Pulled forward from the original C4 plan. `every_node_view_
+            // declaration_is_valid` (lib.rs) only requires that a declared
+            // param reach *some* page — appending `sample` to SRC's existing
+            // slot 6 would have satisfied it too, without touching the other
+            // 10 refs. The full reorder is a deliberate choice, not a test
+            // requirement: this shape is what the spec already designed for
+            // C4, so placing `sample` minimally now just to move everything
+            // again next commit would be needless churn.
             param_pages: Cow::Owned(vec![
-                (P_PITCH,     PageRef { page: Cow::Borrowed("SRC"), slot: 0 }),
-                (P_START,     PageRef { page: Cow::Borrowed("SRC"), slot: 1 }),
-                (P_END,       PageRef { page: Cow::Borrowed("SRC"), slot: 2 }),
-                (P_ROOT_NOTE, PageRef { page: Cow::Borrowed("SRC"), slot: 3 }),
-                (P_LOOP,      PageRef { page: Cow::Borrowed("SRC"), slot: 4 }),
-                (P_SLICE,     PageRef { page: Cow::Borrowed("SRC"), slot: 5 }),
-                (P_VOLUME,    PageRef { page: Cow::Borrowed("AMP"), slot: 0 }),
-                (P_PAN,       PageRef { page: Cow::Borrowed("AMP"), slot: 1 }),
-                (P_ATTACK,    PageRef { page: Cow::Borrowed("AMP"), slot: 2 }),
-                (P_RELEASE,   PageRef { page: Cow::Borrowed("AMP"), slot: 3 }),
+                (P_SAMPLE,    PageRef { page: Cow::Borrowed("SRC"), slot: 0 }),
+                (P_SLICE,     PageRef { page: Cow::Borrowed("SRC"), slot: 1 }),
+                (P_PITCH,     PageRef { page: Cow::Borrowed("SRC"), slot: 2 }),
+                (P_START,     PageRef { page: Cow::Borrowed("SRC"), slot: 3 }),
+                (P_END,       PageRef { page: Cow::Borrowed("SRC"), slot: 4 }),
+                (P_VOLUME,    PageRef { page: Cow::Borrowed("SRC"), slot: 5 }),
+                (P_PAN,       PageRef { page: Cow::Borrowed("SRC"), slot: 6 }),
+                (P_ATTACK,    PageRef { page: Cow::Borrowed("AMP"), slot: 0 }),
+                (P_RELEASE,   PageRef { page: Cow::Borrowed("AMP"), slot: 1 }),
+                (P_ROOT_NOTE, PageRef { page: Cow::Borrowed("AMP"), slot: 2 }),
+                (P_LOOP,      PageRef { page: Cow::Borrowed("AMP"), slot: 3 }),
             ]
             .into_iter()
             .chain(LFO_PAGE_ORDER.iter().enumerate().map(|(i, id)| {
@@ -669,31 +710,13 @@ impl Node for Sampler {
             }
         }
 
-        if let Some(ref path) = self.sample_path.clone() {
-            match load_wav(path, sample_rate) {
-                Ok(data) => {
-                    self.sample_frames = data.len();
-                    self.sample_data = data;
-                    self.slices = vec![(0, self.sample_frames)];
-                    // load_wav resamples to the output rate, so the in-memory
-                    // data rate is the output rate regardless of the file's
-                    // native rate (a 48 kHz device plays a 44.1 kHz file at
-                    // the right speed).
-                    self.sample_data_rate = sample_rate;
-                }
-                Err(e) => {
-                    self.sample_data = vec![0.0; 1];
-                    self.sample_frames = 1;
-                    self.slices = vec![(0, 1)];
-                    self.sample_data_rate = sample_rate;
-                    eprintln!("Sampler: failed to load {:?}: {}", path, e);
-                }
-            }
-        } else {
-            // No path: sample_data was injected directly (tests, future
-            // in-memory loading) and sample_data_rate describes its rate.
-            self.slices = vec![(0, self.sample_frames.max(1))];
-        }
+        // AN0: no file loading here — a Sampler no longer decodes anything
+        // itself. `pool_cache` is populated by `swap_sample()`, either
+        // directly by the instrument builder at construction time (a
+        // YAML `sample:` path) or via the asset-delivery plane at runtime.
+        // `activate()`'s remaining job is resetting per-activation state
+        // (render buffers, locks) — `pool_cache` deliberately survives a
+        // re-activate (dynamic topology rebuild, P9 C4), same as the bank.
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
@@ -816,11 +839,10 @@ impl Node for Sampler {
     }
 
     fn serialize(&self) -> Vec<u8> {
-        let mut buf = vec![3u8]; // version 3: bank-based params including root_note
-        let path = self.sample_path.as_deref().unwrap_or("");
-        let path_bytes = path.as_bytes();
-        buf.extend_from_slice(&(path_bytes.len() as u16).to_le_bytes());
-        buf.extend_from_slice(path_bytes);
+        // Version 4 (AN0): the length-prefixed sample_path string is
+        // replaced by a base_sample pool-slot index (an0-anamnesis.md D9).
+        let mut buf = vec![4u8];
+        buf.extend_from_slice(&self.base_sample.to_le_bytes());
         for &val in &[
             self.bank.get(param_hash("pitch")),
             self.bank.get(param_hash("volume")),
@@ -841,17 +863,24 @@ impl Node for Sampler {
     fn deserialize(&mut self, data: &[u8]) {
         if data.is_empty() { return; }
         let version = data[0];
-        if version != 2 && version != 3 { return; }
+        if !(2..=4).contains(&version) { return; }
         let mut cur = 1usize;
 
-        if cur + 2 > data.len() { return; }
-        let path_len = u16::from_le_bytes(data[cur..cur + 2].try_into().unwrap()) as usize;
-        cur += 2;
-
-        if cur + path_len > data.len() { return; }
-        let path = std::str::from_utf8(&data[cur..cur + path_len]).unwrap_or("").to_string();
-        cur += path_len;
-        self.sample_path = if path.is_empty() { None } else { Some(path) };
+        if version < 4 {
+            // v2/v3: length-prefixed path string. AN0 D9 — deliberately
+            // discarded, not migrated to a pool lookup: base_sample stays
+            // at its default (0, uncached), so an old project's sampler
+            // plays silence rather than guessing at a pool slot.
+            if cur + 2 > data.len() { return; }
+            let path_len = u16::from_le_bytes(data[cur..cur + 2].try_into().unwrap()) as usize;
+            cur += 2;
+            if cur + path_len > data.len() { return; }
+            cur += path_len;
+        } else {
+            if cur + 4 > data.len() { return; }
+            self.base_sample = u32::from_le_bytes(data[cur..cur + 4].try_into().unwrap());
+            cur += 4;
+        }
 
         macro_rules! read_f64 {
             () => {{
@@ -876,7 +905,7 @@ impl Node for Sampler {
         self.bank.set(param_hash("attack"),  read_f64!());
         self.bank.set(param_hash("release"), read_f64!());
 
-        if version == 3 {
+        if version >= 3 {
             self.bank.set(param_hash("root_note"), read_f64!());
         }
 
@@ -886,114 +915,13 @@ impl Node for Sampler {
         if cur >= data.len() { return; }
         self.base_slice = data[cur] as usize;
     }
+
+    fn swap_sample(&mut self, pool_slot: u32, data: Arc<SampleData>) -> Option<Arc<SampleData>> {
+        self.pool_cache.insert(pool_slot, data)
+    }
 }
 
 impl Negotiable for Sampler {}
-
-// ── Audio file loading via symphonia ─────────────────────────────────────────
-// Supports WAV, FLAC, AIFF, OGG Vorbis, MP3 (via symphonia "all" feature).
-// Load-time resampling uses rubato SincFixedIn for high quality when
-// native_rate != target_rate, so in-memory data is always at the output
-// rate. Per-voice pitch playback interpolates it with hermite4 in
-// render_voices_span (BUG-013).
-
-fn load_wav(path: &str, target_rate: f32) -> Result<Vec<f32>, String> {
-    use symphonia::core::audio::SampleBuffer;
-    use symphonia::core::io::MediaSourceStream;
-    use symphonia::core::probe::Hint;
-
-    let file = std::fs::File::open(path).map_err(|e| format!("open: {e}"))?;
-    let mss  = MediaSourceStream::new(Box::new(file), Default::default());
-    let hint = Hint::new(); // probe by magic bytes, not extension
-    let probed = symphonia::default::get_probe()
-        .format(&hint, mss, &Default::default(), &Default::default())
-        .map_err(|e| format!("probe: {e}"))?;
-    let mut reader = probed.format;
-    let track = reader.default_track().ok_or_else(|| "no audio track".to_string())?;
-    let codec_params = track.codec_params.clone();
-    let mut decoder = symphonia::default::get_codecs()
-        .make(&codec_params, &Default::default())
-        .map_err(|e| format!("codec: {e}"))?;
-
-    let native_rate = codec_params.sample_rate
-        .ok_or_else(|| "audio file has no sample rate in codec metadata".to_string())? as f32;
-    let mut interleaved: Vec<f32> = Vec::new();
-    let mut channels = 1usize;
-
-    loop {
-        match reader.next_packet() {
-            Ok(packet) => {
-                let decoded = decoder.decode(&packet).map_err(|e| format!("decode: {e}"))?;
-                let spec = *decoded.spec();
-                channels = spec.channels.count();
-                let mut buf = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
-                buf.copy_interleaved_ref(decoded);
-                interleaved.extend_from_slice(buf.samples());
-            }
-            Err(symphonia::core::errors::Error::IoError(_)) => break,
-            Err(e) => return Err(format!("read: {e}")),
-        }
-    }
-
-    // Deinterleave to mono
-    let mono: Vec<f32> = if channels == 1 {
-        interleaved
-    } else {
-        interleaved.chunks(channels)
-            .map(|frame| frame.iter().sum::<f32>() / channels as f32)
-            .collect()
-    };
-
-    if (native_rate - target_rate).abs() < 1.0 {
-        Ok(mono)
-    } else {
-        resample_sinc(&mono, native_rate, target_rate)
-    }
-}
-
-fn resample_sinc(samples: &[f32], from_rate: f32, to_rate: f32) -> Result<Vec<f32>, String> {
-    if samples.is_empty() {
-        return Ok(vec![]);
-    }
-
-    let ratio = to_rate as f64 / from_rate as f64;
-    let chunk = 512usize;
-    let params = SincInterpolationParameters {
-        sinc_len: 64,
-        f_cutoff: 0.95,
-        interpolation: SincInterpolationType::Linear,
-        oversampling_factor: 64,
-        window: WindowFunction::BlackmanHarris2,
-    };
-    let mut resampler = SincFixedIn::<f32>::new(ratio, 2.0, params, chunk, 1)
-        .map_err(|e| format!("rubato init: {e}"))?;
-
-    let expected = (samples.len() as f64 * ratio) as usize;
-    let mut output = Vec::with_capacity(expected + chunk);
-    let mut pos = 0;
-
-    loop {
-        let end = (pos + chunk).min(samples.len());
-        let mut buf_in = samples[pos..end].to_vec();
-        buf_in.resize(chunk, 0.0);
-
-        // rubato 0.15: process() returns Result<Vec<Vec<T>>>, no output arg.
-        match resampler.process(&[buf_in], None) {
-            Ok(out_channels) => {
-                if let Some(ch) = out_channels.into_iter().next() {
-                    output.extend_from_slice(&ch);
-                }
-            }
-            Err(e) => return Err(format!("rubato process: {e}")),
-        }
-
-        if end >= samples.len() { break; }
-        pos += chunk;
-    }
-
-    output.truncate(expected);
-    Ok(output)
-}
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
@@ -1074,12 +1002,13 @@ mod tests {
         run_sampler_core(sampler, events, &[], block)
     }
 
+    fn test_sample_data(frames: usize) -> Arc<SampleData> {
+        Arc::new(SampleData { samples: vec![0.5; frames], rate: 44100.0, frames })
+    }
+
     fn load_test_sample_block(sampler: &mut Sampler, frames: usize, block: usize) {
-        sampler.sample_data = vec![0.5; frames];
-        sampler.sample_data_rate = 44100.0;
-        sampler.sample_frames = frames;
-        sampler.slices = vec![(0, frames)];
         sampler.activate(44100.0, block);
+        sampler.swap_sample(0, test_sample_data(frames));
     }
 
     fn load_test_sample(sampler: &mut Sampler, frames: usize) {
@@ -1113,7 +1042,7 @@ mod tests {
                 "lfo_depth", "lfo_dest", "lfo_fade", "lfo_mode", "lfo_shape",
                 "lfo_speed", "lfo_start_phase",
                 "loop", "pan", "pitch", "release", "root_note",
-                "slice", "start", "volume"
+                "sample", "slice", "start", "volume"
             ]
         );
     }
@@ -1132,10 +1061,11 @@ mod tests {
         let mut s = Sampler::new();
         let their_doc = CapabilityDocument::from_ports(&[]);
         let agreement = s.negotiate(&their_doc);
-        // 10 sampler params + the 7 `lfo_*` (MM-C10). The LFO params are
-        // deliberately lockable — ADR-042 decision 4 makes depth/speed/dest
-        // p-lockable per step, which is the point of them being bank params.
-        assert_eq!(agreement.lockable_params.len(), 17);
+        // 11 sampler params (AN0 adds `sample`) + the 7 `lfo_*` (MM-C10).
+        // The LFO params are deliberately lockable — ADR-042 decision 4
+        // makes depth/speed/dest p-lockable per step, which is the point of
+        // them being bank params.
+        assert_eq!(agreement.lockable_params.len(), 18);
         let names: Vec<&str> = agreement
             .lockable_params
             .iter()
@@ -1143,6 +1073,7 @@ mod tests {
             .collect();
         assert!(names.contains(&"loop"), "loop is lockable and now says so");
         assert!(names.contains(&"slice"), "slice is lockable and now says so");
+        assert!(names.contains(&"sample"), "sample is lockable (AN0 — a different pool slot per step)");
     }
 
     #[test]
@@ -1318,11 +1249,7 @@ mod tests {
         // Reset
         let mut s2 = Sampler::new();
         s2.set_node_id(1);
-        s2.sample_data = s.sample_data.clone();
-        s2.sample_data_rate = 44100.0;
-        s2.sample_frames = s.sample_frames;
-        s2.slices = s.slices.clone();
-        s2.activate(44100.0, 64);
+        load_test_sample(&mut s2, 4096);
 
         // With volume=0.0 lock
         let events = [make_param_lock(1, param_hash("volume"), 0.0), make_note_on(60)];
@@ -1331,6 +1258,106 @@ mod tests {
 
         assert!(sum_normal.abs() > 0.0, "normal output should be non-zero");
         assert_eq!(sum_locked, 0.0, "volume=0 lock should silence output");
+    }
+
+    // ── AN0: pool-indexed sample selection ────────────────────────────────
+
+    #[test]
+    fn swap_sample_inserts_and_returns_the_previous_value() {
+        let mut s = Sampler::new();
+        let data0 = Arc::new(SampleData { samples: vec![0.5], rate: 44100.0, frames: 1 });
+        assert!(s.swap_sample(3, data0.clone()).is_none(), "first swap at a slot displaces nothing");
+
+        let data1 = Arc::new(SampleData { samples: vec![0.25], rate: 44100.0, frames: 1 });
+        let displaced = s.swap_sample(3, data1);
+        assert!(displaced.is_some(), "second swap at the same slot displaces the first");
+        assert!(Arc::ptr_eq(&displaced.unwrap(), &data0), "the displaced value is exactly what was there before");
+    }
+
+    /// AN0: SRC/AMP reshape (pulled forward from the original C4 plan —
+    /// see `to_rule()`'s comment). Page membership and slot order, not just
+    /// "every param is somewhere" (already covered by the workspace-wide
+    /// `every_node_view_declaration_is_valid`).
+    #[test]
+    fn to_rule_places_sample_and_slice_on_src_ahead_of_pitch() {
+        let s = Sampler::new();
+        let rule = s.to_rule(0, &[]);
+        let page_of = |id: u32| -> Option<(&str, u8)> {
+            rule.param_pages.iter().find(|(pid, _)| *pid == id)
+                .map(|(_, r)| (r.page.as_ref(), r.slot))
+        };
+        assert_eq!(page_of(P_SAMPLE), Some(("SRC", 0)));
+        assert_eq!(page_of(P_SLICE), Some(("SRC", 1)));
+        assert_eq!(page_of(P_PITCH), Some(("SRC", 2)));
+        assert_eq!(page_of(P_VOLUME), Some(("SRC", 5)));
+        assert_eq!(page_of(P_PAN), Some(("SRC", 6)));
+        // root_note/loop moved off SRC — AN0 §2.4: not in the canonical
+        // sample·slice·pitch·play_mode·start·end·volume·pan shape.
+        assert_eq!(page_of(P_ATTACK), Some(("AMP", 0)));
+        assert_eq!(page_of(P_RELEASE), Some(("AMP", 1)));
+        assert_eq!(page_of(P_ROOT_NOTE), Some(("AMP", 2)));
+        assert_eq!(page_of(P_LOOP), Some(("AMP", 3)));
+    }
+
+    #[test]
+    fn is_known_param_accepts_sample() {
+        assert!(Sampler::is_known_param(P_SAMPLE), "sample must be lockable (AN0 D4)");
+    }
+
+    #[test]
+    fn triggering_an_uncached_sample_slot_plays_silence_not_a_stale_buffer() {
+        let mut s = Sampler::new();
+        s.set_node_id(1);
+        s.activate(44100.0, 64);
+        // base_sample defaults to 0; nothing has ever been swapped in.
+        let buf = run_sampler(&mut s, &[make_note_on(60)]);
+        assert!(buf.channel(0).iter().all(|&x| x == 0.0), "an uncached slot must play silence");
+    }
+
+    #[test]
+    fn triggering_plays_the_base_sample_slot_by_default() {
+        let mut s = Sampler::new();
+        s.set_node_id(1);
+        load_test_sample(&mut s, 4096); // swaps in at slot 0; base_sample defaults to 0
+        let buf = run_sampler(&mut s, &[make_note_on(60)]);
+        assert!(buf.channel(0).iter().any(|&x| x != 0.0), "the base slot's data should play");
+    }
+
+    /// The core AN0 claim (ADR-040 decision 3, D4): a per-step `sample` lock
+    /// plays a different pool slot than the base — "zero new lock
+    /// machinery" — mirrors `sampler_volume_param_lock_changes_output_level`'s
+    /// structure exactly, one param over.
+    #[test]
+    fn sample_lock_plays_a_different_pool_slot_than_the_base() {
+        let mut s = Sampler::new();
+        s.set_node_id(1);
+        s.activate(44100.0, 64);
+        s.swap_sample(0, Arc::new(SampleData { samples: vec![0.5; 4096], rate: 44100.0, frames: 4096 }));
+        s.swap_sample(1, Arc::new(SampleData { samples: vec![0.25; 4096], rate: 44100.0, frames: 4096 }));
+
+        // Without a lock: base_sample (0) plays.
+        let buf_base = run_sampler(&mut s, &[make_note_on(60)]);
+        let sum_base: f32 = buf_base.channel(0).iter().map(|x| x.abs()).sum();
+
+        // Reset
+        let mut s2 = Sampler::new();
+        s2.set_node_id(1);
+        s2.activate(44100.0, 64);
+        s2.swap_sample(0, Arc::new(SampleData { samples: vec![0.5; 4096], rate: 44100.0, frames: 4096 }));
+        s2.swap_sample(1, Arc::new(SampleData { samples: vec![0.25; 4096], rate: 44100.0, frames: 4096 }));
+
+        // With a sample=1 lock: slot 1 plays instead.
+        let events = [make_param_lock(1, param_hash("sample"), 1.0), make_note_on(60)];
+        let buf_locked = run_sampler(&mut s2, &events);
+        let sum_locked: f32 = buf_locked.channel(0).iter().map(|x| x.abs()).sum();
+
+        assert!(sum_base.abs() > 0.0 && sum_locked.abs() > 0.0, "both should produce audio");
+        // slot 0 is amplitude 0.5, slot 1 is amplitude 0.25 — a locked step
+        // plays measurably quieter audio, proving it read the locked slot's
+        // data, not the base slot's.
+        assert!(sum_locked < sum_base * 0.6,
+            "locked step should play slot 1's (quieter) data, not slot 0's: \
+             sum_base={sum_base}, sum_locked={sum_locked}");
     }
 
     #[test]
@@ -1374,7 +1401,7 @@ mod tests {
         s.bank.set(param_hash("root_note"), 69.0);
         s.base_loop = true;
         s.base_slice = 3;
-        s.sample_path = Some("samples/kick.wav".to_string());
+        s.base_sample = 5;
 
         let data = s.serialize();
         let mut t = Sampler::new();
@@ -1390,7 +1417,34 @@ mod tests {
         assert!((t.bank.get(param_hash("root_note")) - 69.0).abs() < 1e-9);
         assert!(t.base_loop);
         assert_eq!(t.base_slice, 3);
-        assert_eq!(t.sample_path.as_deref(), Some("samples/kick.wav"));
+        assert_eq!(t.base_sample, 5);
+    }
+
+    /// AN0 D9: a v2/v3 project (pre-AN0, path string instead of a pool
+    /// slot) must deserialize without error, leaving `base_sample` at its
+    /// default — not migrated, not a crash. Constructs a v3 blob by hand
+    /// (the old wire shape: version byte, length-prefixed path, 8 f64s,
+    /// base_loop, base_slice) since nothing in this codebase still writes
+    /// that format to round-trip through.
+    #[test]
+    fn sampler_deserialize_v3_pre_an0_project_leaves_base_sample_at_default() {
+        let mut buf = vec![3u8];
+        let path = b"samples/kick.wav";
+        buf.extend_from_slice(&(path.len() as u16).to_le_bytes());
+        buf.extend_from_slice(path);
+        for val in [2.0_f64, 0.5, -0.3, 0.1, 0.9, 0.05, 0.8, 69.0] {
+            buf.extend_from_slice(&val.to_le_bytes());
+        }
+        buf.push(1u8); // base_loop = true
+        buf.push(3u8); // base_slice = 3
+
+        let mut t = Sampler::new();
+        t.deserialize(&buf);
+
+        assert!((t.bank.get(param_hash("volume")) - 0.5).abs() < 1e-9);
+        assert!(t.base_loop);
+        assert_eq!(t.base_slice, 3);
+        assert_eq!(t.base_sample, 0, "no path→pool migration — base_sample stays at its default");
     }
 
     #[test]
@@ -1455,11 +1509,8 @@ mod tests {
         // Baseline: pitch=0
         let mut s0 = Sampler::new();
         s0.set_node_id(1);
-        s0.sample_data = vec![0.5; frames];
-        s0.sample_data_rate = 44100.0;
-        s0.sample_frames = frames;
-        s0.slices = vec![(0, frames)];
         s0.activate(44100.0, block);
+        s0.swap_sample(0, test_sample_data(frames));
         let buf0 = run_sampler(&mut s0, &[make_note_on(60)]);
         let nonzero0 = buf0.channel(0).iter().filter(|&&x| x != 0.0).count();
         assert!(nonzero0 > 0, "baseline: should produce non-zero output");
@@ -1467,11 +1518,8 @@ mod tests {
         // Pitched up: +12 semitones
         let mut s1 = Sampler::new();
         s1.set_node_id(1);
-        s1.sample_data = vec![0.5; frames];
-        s1.sample_data_rate = 44100.0;
-        s1.sample_frames = frames;
-        s1.slices = vec![(0, frames)];
         s1.activate(44100.0, block);
+        s1.swap_sample(0, test_sample_data(frames));
         let bump = NodeCommand { target_id: 1, type_id: CMD_BUMP_PARAM, arg0: param_hash("pitch") as i64, arg1: 12.0 };
         let _ = run_sampler_with_cmds(&mut s1, &[], &[bump]);
         let buf1 = run_sampler(&mut s1, &[make_note_on(60)]);
@@ -1611,22 +1659,16 @@ mod tests {
 
         let mut s_fast = Sampler::new();
         s_fast.set_node_id(1);
-        s_fast.sample_data = vec![0.5; frames];
-        s_fast.sample_data_rate = 44100.0;
-        s_fast.sample_frames = frames;
-        s_fast.slices = vec![(0, frames)];
         s_fast.activate(44100.0, 64);
+        s_fast.swap_sample(0, test_sample_data(frames));
         let _ = run_sampler(&mut s_fast, &[make_note_on(60)]);  // block 1
         let _ = run_sampler(&mut s_fast, &[]);                   // block 2
         let active_fast = s_fast.voices.iter().filter(|v| v.active).count();
 
         let mut s_slow = Sampler::new();
         s_slow.set_node_id(1);
-        s_slow.sample_data = vec![0.5; frames];
-        s_slow.sample_data_rate = 44100.0;
-        s_slow.sample_frames = frames;
-        s_slow.slices = vec![(0, frames)];
         s_slow.activate(44100.0, 64);
+        s_slow.swap_sample(0, test_sample_data(frames));
         let bump = NodeCommand { target_id: 1, type_id: CMD_BUMP_PARAM, arg0: param_hash("pitch") as i64, arg1: -12.0 };
         let _ = run_sampler_with_cmds(&mut s_slow, &[], &[bump]);
         let _ = run_sampler(&mut s_slow, &[make_note_on(60)]);  // block 1
@@ -1645,24 +1687,18 @@ mod tests {
 
         let mut s_unity = Sampler::new();
         s_unity.set_node_id(1);
-        s_unity.sample_data = vec![0.5; frames];
-        s_unity.sample_data_rate = 44100.0;
-        s_unity.sample_frames = frames;
-        s_unity.slices = vec![(0, frames)];
-        s_unity.bank.set(param_hash("root_note"), 60.0); // default
         s_unity.activate(44100.0, 64);
+        s_unity.swap_sample(0, test_sample_data(frames));
+        s_unity.bank.set(param_hash("root_note"), 60.0); // default
         let _ = run_sampler(&mut s_unity, &[make_note_on(60)]);
         let _ = run_sampler(&mut s_unity, &[]);
         let active_unity = s_unity.voices.iter().filter(|v| v.active).count();
 
         let mut s_slow = Sampler::new();
         s_slow.set_node_id(1);
-        s_slow.sample_data = vec![0.5; frames];
-        s_slow.sample_data_rate = 44100.0;
-        s_slow.sample_frames = frames;
-        s_slow.slices = vec![(0, frames)];
-        s_slow.bank.set(param_hash("root_note"), 72.0); // one octave higher root → note 60 plays slow
         s_slow.activate(44100.0, 64);
+        s_slow.swap_sample(0, test_sample_data(frames));
+        s_slow.bank.set(param_hash("root_note"), 72.0); // one octave higher root → note 60 plays slow
         let _ = run_sampler(&mut s_slow, &[make_note_on(60)]);
         let _ = run_sampler(&mut s_slow, &[]);
         let active_slow = s_slow.voices.iter().filter(|v| v.active).count();
@@ -1672,73 +1708,27 @@ mod tests {
     }
 
     #[test]
-    fn sampler_serialize_v3_root_note_round_trip() {
+    fn sampler_serialize_v4_root_note_and_base_sample_round_trip() {
         let mut s = Sampler::new();
         s.bank.set(param_hash("root_note"), 48.0); // C3
-        s.sample_path = Some("kick.wav".to_string());
+        s.base_sample = 5;
         let data = s.serialize();
-        assert_eq!(data[0], 3, "version byte should be 3");
+        assert_eq!(data[0], 4, "version byte should be 4 (AN0)");
 
         let mut t = Sampler::new();
         t.deserialize(&data);
         assert!((t.bank.get(param_hash("root_note")) - 48.0).abs() < 1e-9,
-            "v3 round-trip should preserve root_note");
-        assert_eq!(t.sample_path.as_deref(), Some("kick.wav"));
+            "v4 round-trip should preserve root_note");
+        assert_eq!(t.base_sample, 5);
     }
 
-    // ── P6: Symphonia loading test ────────────────────────────────────────────
-
-    #[test]
-    fn sampler_symphonia_wav_loads_and_plays() {
-        // Write a minimal WAV file with a 440 Hz tone, load it via symphonia,
-        // verify the sample frames are populated and audio plays on NoteOn.
-        let tmp_path = std::env::temp_dir().join("paraclete_test_sample.wav");
-        write_minimal_wav(&tmp_path, 44100, 512);
-
-        let mut s = Sampler::with_path(tmp_path.to_str().unwrap());
-        s.activate(44100.0, 64);
-
-        assert!(s.sample_frames > 0,
-            "symphonia should load WAV; sample_frames={}", s.sample_frames);
-
-        let buf = run_sampler(&mut s, &[make_note_on(60)]);
-        assert!(buf.channel(0).iter().any(|&x| x.abs() > 0.0),
-            "should produce audio from loaded WAV");
-
-        let _ = std::fs::remove_file(&tmp_path);
-    }
-
-    fn write_minimal_wav(path: &std::path::Path, sample_rate: u32, frames: usize) {
-        // Write a minimal 16-bit mono WAV file with a 440 Hz tone.
-        let data_bytes = (frames * 2) as u32;
-        let mut buf = Vec::with_capacity(44 + data_bytes as usize);
-
-        // RIFF header
-        buf.extend_from_slice(b"RIFF");
-        buf.extend_from_slice(&(36 + data_bytes).to_le_bytes());
-        buf.extend_from_slice(b"WAVE");
-
-        // fmt chunk
-        buf.extend_from_slice(b"fmt ");
-        buf.extend_from_slice(&16u32.to_le_bytes()); // chunk size
-        buf.extend_from_slice(&1u16.to_le_bytes());  // PCM
-        buf.extend_from_slice(&1u16.to_le_bytes());  // mono
-        buf.extend_from_slice(&sample_rate.to_le_bytes());
-        buf.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
-        buf.extend_from_slice(&2u16.to_le_bytes());  // block align
-        buf.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
-
-        // data chunk
-        buf.extend_from_slice(b"data");
-        buf.extend_from_slice(&data_bytes.to_le_bytes());
-        for i in 0..frames {
-            let v = (i as f32 * 440.0 / sample_rate as f32 * std::f32::consts::TAU).sin();
-            let s = (v * 16383.0) as i16;
-            buf.extend_from_slice(&s.to_le_bytes());
-        }
-
-        std::fs::write(path, buf).unwrap();
-    }
+    // AN0: `sampler_symphonia_wav_loads_and_plays` (P6) is removed here, not
+    // just rewritten — Sampler no longer decodes files itself (that moved to
+    // `SamplePool::decode_file`, `crates/paraclete-app/src/sample_pool.rs`),
+    // so "symphonia can decode a WAV and Sampler plays it" is no longer a
+    // claim this crate makes. The decode half is covered by
+    // `decode_file_reads_a_real_wav` in `sample_pool.rs`; the playback half
+    // is covered by every other test in this module using `test_sample_data`.
 
     #[test]
     fn sampler_set_initial_params_applied() {
@@ -1912,23 +1902,43 @@ mod tests {
         }
     }
 
+    /// AN0: `SamplePool::decode_file` resamples to the output rate at
+    /// pool-load time (tested in `sample_pool.rs`'s
+    /// `decode_file_resamples_to_target_rate`), so in practice
+    /// `data.rate == output_sample_rate` almost always. What's left on the
+    /// Sampler side is the defensive per-voice `rate_scale` in
+    /// `render_chunk` (an0-anamnesis.md §2.3 D5) for the case where a
+    /// cached buffer's rate doesn't match the device rate — this test
+    /// exercises that path directly, with no file I/O at all.
     #[test]
-    fn loaded_sample_rate_tracks_output_rate() {
-        // load_wav resamples to the output rate; sample_data_rate must
-        // record that so playback speed is right on a non-44.1k device.
-        let tmp_path = std::env::temp_dir().join("paraclete_test_sample_48k.wav");
-        write_minimal_wav(&tmp_path, 44100, 512);
+    fn a_buffer_rate_different_from_output_rate_scales_playback() {
+        let frames = 2000usize;
+        let block = 64usize;
 
-        let mut s = Sampler::with_path(tmp_path.to_str().unwrap());
-        s.activate(48000.0, 64);
+        let mut matched = Sampler::new();
+        matched.set_node_id(1);
+        matched.activate(44100.0, block);
+        matched.swap_sample(0, Arc::new(SampleData { samples: vec![0.5; frames], rate: 44100.0, frames }));
+        let _ = run_sampler_block(&mut matched, &[make_note_on(60)], block);
+        let matched_pos = matched.voices.iter().find(|v| v.active)
+            .map(|v| v.playback_pos).expect("voice should be active");
 
-        assert_eq!(s.sample_data_rate, 48000.0,
-            "in-memory data rate must track the output rate after load");
-        assert!(s.sample_frames > 512,
-            "44.1k→48k load-time resample should stretch the frame count, got {}",
-            s.sample_frames);
+        let mut mismatched = Sampler::new();
+        mismatched.set_node_id(1);
+        mismatched.activate(48000.0, block);
+        mismatched.swap_sample(0, Arc::new(SampleData { samples: vec![0.5; frames], rate: 44100.0, frames }));
+        let _ = run_sampler_block(&mut mismatched, &[make_note_on(60)], block);
+        let mismatched_pos = mismatched.voices.iter().find(|v| v.active)
+            .map(|v| v.playback_pos).expect("voice should be active");
 
-        let _ = std::fs::remove_file(&tmp_path);
+        // rate_scale = data.rate / output_sr: a 44.1k-native buffer on a
+        // 48k device advances through its data proportionally slower per
+        // output frame than a matched-rate buffer.
+        let expected_ratio = 44100.0_f64 / 48000.0;
+        let actual_ratio = mismatched_pos / matched_pos;
+        assert!((actual_ratio - expected_ratio).abs() < 0.01,
+            "expected playback_pos ratio ~{expected_ratio:.4} (data.rate/output_sr), \
+             got {actual_ratio:.4} (matched={matched_pos}, mismatched={mismatched_pos})");
     }
 
     // ── Multi-block integration tests ───────────────────────────────────────
@@ -2013,11 +2023,8 @@ mod tests {
         let mut s = Sampler::new();
         s.set_node_id(1);
         let frames = 4096usize;
-        s.sample_data = vec![0.5; frames];
-        s.sample_data_rate = 44100.0;
-        s.sample_frames = frames;
-        s.slices = vec![(0, frames)];
         s.activate(44100.0, block);
+        s.swap_sample(0, test_sample_data(frames));
 
         let out = run_sampler_block(&mut s, &[note_on_at(60, 65535, 0)], block);
         let first = out.channel(0)[0].abs();
@@ -2027,17 +2034,23 @@ mod tests {
     }
 
     #[test]
-    fn hermite_preserves_tone_with_real_wav() {
-        // Load a 440 Hz sine WAV, pitch it to unity, and verify the output
-        // has roughly the right period (samples between upward zero
-        // crossings ~100 at 44100 Hz).
+    fn hermite_preserves_tone_with_a_sine_buffer() {
+        // A 440 Hz sine buffer, pitched to unity: verify the output has
+        // roughly the right period (samples between upward zero crossings
+        // ~100 at 44100 Hz). AN0: constructed directly in memory (the same
+        // formula the old file-backed version used) rather than round-
+        // tripped through a WAV file — Hermite interpolation quality is a
+        // Sampler-side DSP claim independent of how the data got loaded.
         let block = 512usize;
-        let tmp_path = std::env::temp_dir()
-            .join("paraclete_hermite_test.wav");
-        write_minimal_wav(&tmp_path, 44100, 2048);
+        let sample_rate = 44100u32;
+        let frames = 2048usize;
+        let samples: Vec<f32> = (0..frames)
+            .map(|i| (i as f32 * 440.0 / sample_rate as f32 * std::f32::consts::TAU).sin())
+            .collect();
 
-        let mut s = Sampler::with_path(tmp_path.to_str().unwrap());
+        let mut s = Sampler::new();
         s.activate(44100.0, block);
+        s.swap_sample(0, Arc::new(SampleData { samples, rate: 44100.0, frames }));
         let out = run_sampler_block(&mut s, &[note_on_at(60, 65535, 0)], block);
 
         // Count upward zero crossings: samples where x <= 0 and next x > 0.
@@ -2064,8 +2077,6 @@ mod tests {
             assert!(avg_gap > 80.0 && avg_gap < 120.0,
                 "period interval ~100 samples, got avg={avg_gap:.1}");
         }
-
-        let _ = std::fs::remove_file(&tmp_path);
     }
 
     #[test]

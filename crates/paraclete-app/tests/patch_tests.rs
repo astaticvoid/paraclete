@@ -400,7 +400,7 @@ fn loadtest_topology_churn_under_live_audio() {
     // BUG-012 (rate + buffer assumed, not negotiated); this test surfaced it.
     const DEVICE_BLOCK: usize = 512;
     let mut conf = NodeConfigurator::new(SR, DEVICE_BLOCK);
-    let ids = build_from_instrument(&def, &mut conf, &HashMap::new()).expect("build graph");
+    let ids = build_from_instrument(&def, &mut conf, &HashMap::new(), &mut Default::default()).expect("build graph");
 
     // 2. Build the executor and start REAL audio. Headless CI without an output
     //    device skips cleanly — this is an opt-in hardware-ish measurement.

@@ -11,6 +11,7 @@ use paraclete_nodes::{
 use paraclete_runtime::NodeConfigurator;
 
 use crate::instrument::{InstrumentDefinition, InstrumentError, NodeDef};
+use crate::sample_pool::SamplePool;
 
 #[derive(Debug)]
 pub struct InstrumentIds {
@@ -50,6 +51,7 @@ pub fn build_from_instrument(
     def: &InstrumentDefinition,
     conf: &mut NodeConfigurator,
     libraries: &HashMap<String, Arc<PluginLibrary>>,
+    sample_pool: &mut SamplePool,
 ) -> Result<InstrumentIds, InstrumentError> {
     let sr = conf.sample_rate();
     let block = conf.block_size();
@@ -75,7 +77,7 @@ pub fn build_from_instrument(
         if !seen_ids.insert(node_def.id) {
             return Err(InstrumentError::DuplicateNodeId(node_def.id));
         }
-        let mut node = construct_node(node_def, def.bpm, sr, block, libraries)?;
+        let mut node = construct_node(node_def, def.bpm, sr, block, libraries, sample_pool)?;
         if !node_def.initial_params.is_empty() {
             node.set_initial_params(&node_def.initial_params);
         }
@@ -126,6 +128,7 @@ fn construct_node(
     sample_rate: f32,
     block_size: usize,
     libraries: &HashMap<String, Arc<PluginLibrary>>,
+    sample_pool: &mut SamplePool,
 ) -> Result<Box<dyn Node>, InstrumentError> {
     let tag = node_def.type_tag.as_str();
     let node: Box<dyn Node> = match tag {
@@ -140,13 +143,39 @@ fn construct_node(
                 None => Box::new(seq),
             }
         }
-        // #159: an instrument file may name the sample. `Sampler::with_path`
-        // has always existed; only the route from the instrument file did not,
-        // which is why no fixture could give a sampler anything to play.
-        "sampler" => match node_def.sample.as_deref() {
-            Some(path) => Box::new(Sampler::with_path(path)),
-            None => Box::new(Sampler::new()),
-        },
+        // #159: an instrument file may name the sample. AN0 (D10): the path
+        // now registers into the pool at construction time — main thread,
+        // pre-audio-thread-start, so no asset-plane traffic is needed for
+        // this initial load — instead of the node loading its own file.
+        // The node's own id doubles as its initial pool slot: node ids are
+        // already unique within an instrument, so this needs no separate
+        // slot-allocation state threaded through the builder. Diverges from
+        // the `sample` param's declared 0-127 range (`ParamDescriptor` in
+        // sampler.rs) if a Sampler's node id is ever >= 128 — harmless today
+        // (only fixture in use is id 23), but worth revisiting if node ids
+        // and pool slots need to diverge (e.g. a dynamic-topology feature
+        // assigning large ids, `sampler.rs`'s `activate()` comment on P9 C4).
+        "sampler" => {
+            let mut s = Sampler::new();
+            if let Some(path) = node_def.sample.as_deref() {
+                match sample_pool.load_file(node_def.id as usize, path, sample_rate) {
+                    Ok((entry, samples)) => {
+                        let data = Arc::new(paraclete_node_api::SampleData {
+                            samples,
+                            rate: entry.rate,
+                            frames: entry.frames,
+                        });
+                        s.swap_sample(node_def.id, data);
+                        s.set_base_sample(node_def.id);
+                    }
+                    Err(e) => eprintln!(
+                        "[paraclete] sampler {}: failed to load {path:?}: {e}",
+                        node_def.id
+                    ),
+                }
+            }
+            Box::new(s)
+        }
         "analog_engine:kick" => Box::new(AnalogEngine::kick()),
         "analog_engine:snare" => Box::new(AnalogEngine::snare()),
         "analog_engine:hihat" => Box::new(AnalogEngine::hihat()),

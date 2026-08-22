@@ -25,7 +25,7 @@ fn app_wiring_load_instrument_and_build_no_panic() {
     let def = parse_instrument_definition(MINIMAL_YAML).expect("should parse");
     let mut conf = NodeConfigurator::new(SR, BLOCK);
     let ids =
-        build_from_instrument(&def, &mut conf, &Default::default()).expect("build should succeed");
+        build_from_instrument(&def, &mut conf, &Default::default(), &mut Default::default()).expect("build should succeed");
     assert_ne!(ids.clock, 0, "clock id must be set");
     assert_eq!(ids.clock, 1);
 }
@@ -37,7 +37,7 @@ fn app_wiring_macro_publish_context_populates_state_bus() {
 
     let def = parse_instrument_definition(MINIMAL_YAML).expect("parse");
     let mut conf = NodeConfigurator::new(SR, BLOCK);
-    build_from_instrument(&def, &mut conf, &Default::default()).expect("build");
+    build_from_instrument(&def, &mut conf, &Default::default(), &mut Default::default()).expect("build");
 
     let bus_handle = conf.state_bus_handle();
     let mut scripting = ScriptingEngine::new();
@@ -75,7 +75,7 @@ fn app_wiring_no_tui_flag_skips_terminal_init() {
 fn app_wiring_project_save_load_roundtrip() {
     let def = parse_instrument_definition(MINIMAL_YAML).expect("parse");
     let mut conf = NodeConfigurator::new(SR, BLOCK);
-    build_from_instrument(&def, &mut conf, &Default::default()).expect("build");
+    build_from_instrument(&def, &mut conf, &Default::default(), &mut Default::default()).expect("build");
 
     let tmp = std::env::temp_dir().join("paraclete_p8_roundtrip_test.ron");
     let meta = ProjectMetadata {

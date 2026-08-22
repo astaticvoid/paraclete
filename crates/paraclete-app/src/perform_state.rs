@@ -435,7 +435,7 @@ mod tests {
         let def =
             crate::builder::load_instrument_definition(&instrument).expect("load instrument.yaml");
         let mut conf = NodeConfigurator::new(44100.0, 512);
-        let ids = crate::builder::build_from_instrument(&def, &mut conf, &HashMap::new())
+        let ids = crate::builder::build_from_instrument(&def, &mut conf, &HashMap::new(), &mut Default::default())
             .expect("build graph");
         let seq_id = ids.sequencers[0];
         let bus = conf.state_bus_handle();

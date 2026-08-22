@@ -12,5 +12,3 @@ paraclete-node-api = { workspace = true }
 log      = { workspace = true }
 rtrb     = { workspace = true }
 fastrand = { workspace = true }
-rubato   = { workspace = true }
-symphonia = { workspace = true }
