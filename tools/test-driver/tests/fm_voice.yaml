@@ -1,0 +1,236 @@
+# P14-C9 — regression coverage for `FmVoice` (node 28, ADR-043), the four-op
+# melodic FM engine. Follows `fm_machines.yaml`'s template and convention:
+# one file, one node, sequential timeline segments — `FmVoice` (like
+# `fm_engine:bass`) is a single type_tag with runtime `machine`/`algo`
+# switching, not a per-machine node, so there is only one target to drive
+# throughout: "fm_voice" (node 28 in `instrument-fm.yaml`, whose own header
+# comment already notes its sequencer boots with no active steps, so nothing
+# but this scenario's direct triggers sounds).
+#
+# Exercises: all 8 algorithms (§0 D1) on machine Full; a mid-note machine
+# switch (catches a `MachineSwitchFade` regression, P14-C7) into each of the
+# six macros, each with its D5 recipe (`algo` + key params) explicitly set
+# alongside `machine` — a bare machine switch does NOT auto-apply a macro's
+# recipe (P14-C7's own "as landed" note), so without also setting `algo`/the
+# recipe params here, six of these windows would just be the same tone under
+# a relabeled page, not proof the macros are audibly distinct; a MOD dest
+# sweep (`harm`, one-based dest 4 in Full's table).
+#
+# KNOWN LIMITATION — no portamento coverage here. `test-driver`'s timeline
+# vocabulary has a `trigger:` action (CMD_TRIGGER) but no NoteOff-equivalent
+# action at all (checked `scenario.rs`'s `TimelineAction` enum) — every
+# `trigger:` call reaches `FmVoice::retrigger()`, which is *always* a hard
+# reset that unconditionally clears any in-flight glide (P14-C5). There is
+# no way to drive a genuine note-stack-pop (`legato_retarget`) from this
+# tool's current event vocabulary, so `porta`'s actual glide mechanism has
+# no representation in this scenario — it is already covered by
+# `fm_voice.rs`'s own unit tests
+# (`nonzero_porta_glides_to_target_within_porta_seconds`,
+# `overlapping_glide_restarts_from_the_live_interpolated_pitch_not_the_nominal_target`).
+# Adding a NoteOff-capable timeline action would be a `tools/test-driver`
+# source change, out of this commit's config/fixture-only scope.
+#
+# No assertions: as with `fm_machines.yaml`/`plock_authoring`, the
+# fingerprint is the evidence; baseline mode does not evaluate artifact
+# assertions. Guard against the silent-pass trap the same way
+# `fm_machines.yaml` documents — every window below carries real energy in
+# the recorded envelope (50 ms resolution), measured when this baseline was
+# written:
+#   pre-trigger     0.00-0.30 s  all-zero (nothing sounds before the first trigger)
+#   Stack           0.30-1.00 s  real energy, no zero window
+#   Short Stack     1.00-1.70 s  real energy, no zero window
+#   Y-Split         1.70-2.40 s  real energy, no zero window
+#   Branch          2.40-3.10 s  real energy, no zero window
+#   Parallel Carr.  3.10-3.80 s  real energy, no zero window
+#   Feedback Pair   3.80-4.50 s  real energy, no zero window
+#   Additive Twin   4.50-5.20 s  real energy, no zero window
+#   Bell (algo)     5.20-5.90 s  real energy, no zero window
+#   Keys (macro)    5.90-6.90 s  real energy, no zero window — mid-note
+#                                machine switch lands here (MachineSwitchFade)
+#   Bass (macro)    6.90-7.90 s  real energy, no zero window
+#   Bell (macro)    7.90-8.90 s  real energy, no zero window
+#   Perc (macro)    8.90-9.60 s  real energy, no zero window
+#   Pad (macro)     9.60-11.10 s real energy, no zero window (slow attack)
+#   Pluck (macro)   11.10-11.80 s real energy, no zero window
+#   MOD dest sweep  11.80-13.30 s real energy, no zero window (harm swept by LFO)
+# Exact per-window RMS values live in the committed `.baseline.json`, not
+# duplicated here — this comment names which windows must never go to zero,
+# not the precise numbers `--check-baseline` verifies.
+#
+# Peak may exceed unity (no master-bus limiter) — same as `fm_machines.yaml`
+# and `kick_reverb_clean`; not a scenario defect.
+format_version: 1
+instrument: instrument-fm.yaml
+duration_secs: 13.3
+output: /tmp/fm_voice.wav
+play: false
+
+timeline:
+  # ── Machine Full: all 8 algorithms (§0 D1), in enum order ──────────────
+  # ratio_c/a/b left at their default index (3 = ratio 1.0) throughout this
+  # block; harm/feedback/mix set to values that make every algorithm's own
+  # character audible (harm brightens, feedback/mix expose each algo's
+  # designated feedback op and Y tap per D1's table).
+  - at: 0.05
+    set_param: { target: "fm_voice", param: harm, value: 0.4 }
+  - at: 0.05
+    set_param: { target: "fm_voice", param: feedback, value: 0.5 }
+  - at: 0.05
+    set_param: { target: "fm_voice", param: mix, value: 0.3 }
+  - at: 0.05
+    set_param: { target: "fm_voice", param: attack, value: 0.01 }
+  - at: 0.05
+    set_param: { target: "fm_voice", param: decay, value: 0.3 }
+  - at: 0.05
+    set_param: { target: "fm_voice", param: sustain, value: 0.6 }
+  - at: 0.05
+    set_param: { target: "fm_voice", param: release, value: 0.2 }
+
+  - at: 0.10
+    set_param: { target: "fm_voice", param: algo, value: 0.0 }  # Stack
+  - at: 0.30
+    trigger: { target: "fm_voice", velocity: 1.0 }
+
+  - at: 1.00
+    set_param: { target: "fm_voice", param: algo, value: 1.0 }  # Short Stack
+  - at: 1.00
+    trigger: { target: "fm_voice", velocity: 0.9 }
+
+  - at: 1.70
+    set_param: { target: "fm_voice", param: algo, value: 2.0 }  # Y-Split
+  - at: 1.70
+    trigger: { target: "fm_voice", velocity: 0.9 }
+
+  - at: 2.40
+    set_param: { target: "fm_voice", param: algo, value: 3.0 }  # Branch
+  - at: 2.40
+    trigger: { target: "fm_voice", velocity: 0.9 }
+
+  - at: 3.10
+    set_param: { target: "fm_voice", param: algo, value: 4.0 }  # Parallel Carriers
+  - at: 3.10
+    trigger: { target: "fm_voice", velocity: 0.9 }
+
+  - at: 3.80
+    set_param: { target: "fm_voice", param: algo, value: 5.0 }  # Feedback Pair
+  - at: 3.80
+    trigger: { target: "fm_voice", velocity: 0.9 }
+
+  - at: 4.50
+    set_param: { target: "fm_voice", param: algo, value: 6.0 }  # Additive Twin
+  - at: 4.50
+    trigger: { target: "fm_voice", velocity: 0.9 }
+
+  - at: 5.20
+    set_param: { target: "fm_voice", param: algo, value: 7.0 }  # Bell (algo, not the Bell macro)
+  - at: 5.20
+    trigger: { target: "fm_voice", velocity: 0.9 }
+
+  # ── Six macro machines, each with its D5 recipe explicitly set ─────────
+  # Every switch below lands on `machine` at or before the trigger; the
+  # first one (Keys, at 5.9 s) lands while the Bell-algo note above is
+  # still decaying, exercising MachineSwitchFade's mid-note declick.
+
+  # Keys — machine 1, algo 0 (Stack), ratio_c=1 (index 3), ratio_a=2
+  # (index 5), harm~0.3.
+  - at: 5.90
+    set_param: { target: "fm_voice", param: machine, value: 1.0 }
+  - at: 5.90
+    set_param: { target: "fm_voice", param: algo, value: 0.0 }
+  - at: 5.90
+    set_param: { target: "fm_voice", param: ratio_c, value: 3.0 }
+  - at: 5.90
+    set_param: { target: "fm_voice", param: ratio_a, value: 5.0 }
+  - at: 5.90
+    set_param: { target: "fm_voice", param: harm, value: 0.3 }
+  - at: 6.00
+    trigger: { target: "fm_voice", velocity: 0.9 }
+
+  # Bass — machine 2, algo 1 (Short Stack), ratio_c=0.75 (index 2, "0.5-1"
+  # anchor), keytrack biased low (0 here — the low-note bias itself is a
+  # performance-time note-position effect, not a static recipe value).
+  - at: 6.90
+    set_param: { target: "fm_voice", param: machine, value: 2.0 }
+  - at: 6.90
+    set_param: { target: "fm_voice", param: algo, value: 1.0 }
+  - at: 6.90
+    set_param: { target: "fm_voice", param: ratio_c, value: 2.0 }
+  - at: 6.90
+    set_param: { target: "fm_voice", param: keytrack, value: 0.0 }
+  - at: 6.90
+    set_param: { target: "fm_voice", param: drive, value: 0.4 }
+  - at: 7.00
+    trigger: { target: "fm_voice", velocity: 0.9 }
+
+  # Bell (macro) — machine 3, algo 7 (Bell), ratio_b high (index 16 = 11.0,
+  # inside the "8-14" anchor).
+  - at: 7.90
+    set_param: { target: "fm_voice", param: machine, value: 3.0 }
+  - at: 7.90
+    set_param: { target: "fm_voice", param: algo, value: 7.0 }
+  - at: 7.90
+    set_param: { target: "fm_voice", param: ratio_b, value: 16.0 }
+  - at: 7.90
+    set_param: { target: "fm_voice", param: feedback, value: 0.6 }
+  - at: 8.00
+    trigger: { target: "fm_voice", velocity: 0.9 }
+
+  # Perc — machine 4, algo 3 (Branch), short amp decay, env_reset=retrig (1).
+  - at: 8.90
+    set_param: { target: "fm_voice", param: machine, value: 4.0 }
+  - at: 8.90
+    set_param: { target: "fm_voice", param: algo, value: 3.0 }
+  - at: 8.90
+    set_param: { target: "fm_voice", param: decay, value: 0.05 }
+  - at: 8.90
+    set_param: { target: "fm_voice", param: env_reset, value: 1.0 }
+  - at: 9.00
+    trigger: { target: "fm_voice", velocity: 0.9 }
+
+  # Pad — machine 5, algo 4 (Parallel Carriers), slow attack, porta on
+  # (porta itself has no glide representation here, see the header note —
+  # set anyway so the param is at least exercised as non-destructive).
+  - at: 9.60
+    set_param: { target: "fm_voice", param: machine, value: 5.0 }
+  - at: 9.60
+    set_param: { target: "fm_voice", param: algo, value: 4.0 }
+  - at: 9.60
+    set_param: { target: "fm_voice", param: attack, value: 0.8 }
+  - at: 9.60
+    set_param: { target: "fm_voice", param: porta, value: 0.3 }
+  - at: 9.70
+    trigger: { target: "fm_voice", velocity: 0.9 }
+
+  # Pluck — machine 6, algo 5 (Feedback Pair), fast decay, moderate feedback.
+  - at: 11.10
+    set_param: { target: "fm_voice", param: machine, value: 6.0 }
+  - at: 11.10
+    set_param: { target: "fm_voice", param: algo, value: 5.0 }
+  - at: 11.10
+    set_param: { target: "fm_voice", param: attack, value: 0.005 }
+  - at: 11.10
+    set_param: { target: "fm_voice", param: decay, value: 0.15 }
+  - at: 11.10
+    set_param: { target: "fm_voice", param: feedback, value: 0.4 }
+  - at: 11.20
+    trigger: { target: "fm_voice", velocity: 0.9 }
+
+  # ── MOD dest sweep — back to Full, harm as the LFO destination ─────────
+  # dest 4 = one-based index of "harm" in Full's dest table (0-based
+  # position 3: ratio_c, ratio_a, ratio_b, harm).
+  - at: 11.80
+    set_param: { target: "fm_voice", param: machine, value: 0.0 }
+  - at: 11.80
+    set_param: { target: "fm_voice", param: algo, value: 0.0 }
+  - at: 11.80
+    set_param: { target: "fm_voice", param: decay, value: 1.2 }
+  - at: 11.80
+    set_param: { target: "fm_voice", param: sustain, value: 0.8 }
+  - at: 11.80
+    set_param: { target: "fm_voice", param: lfo_dest, value: 4.0 }
+  - at: 11.80
+    set_param: { target: "fm_voice", param: lfo_depth, value: 1.0 }
+  - at: 11.80
+    set_param: { target: "fm_voice", param: lfo_speed, value: 4.0 }
+  - at: 11.90
+    trigger: { target: "fm_voice", velocity: 0.9 }
