@@ -93,6 +93,153 @@ impl AdState {
     pub fn is_idle(&self) -> bool { matches!(self.phase, AdPhase::Idle) }
 }
 
+// ── AdsrState (P14-C0) ────────────────────────────────────────────────────────
+
+// `AdState` above is attack→decay only — every existing engine's amp/mod
+// envelopes are drum-style "hit and die". A melodic voice must sustain under
+// a held key and release cleanly on `NoteOff` (ADR-043 post-ratification
+// note 3: NoteOff is received and discarded everywhere today). `AdsrState` is
+// the missing fifth phase, not a replacement — `AdState` stays as-is for the
+// engines that only ever need a hit.
+//
+// P14-C0 lands `AdsrState`/`NoteStack` **unhosted**, same rationale as
+// MM-C8's `LfoBlock`: pin the primitive and its tests before anything
+// depends on it. P14-C4 is the first consumer and these `allow`s come off
+// then; if they are still here after C4, something did not get wired.
+
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub(crate) enum AdsrPhase { Idle, Attack, Decay, Sustain, Release }
+
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub(crate) struct AdsrState {
+    pub phase: AdsrPhase,
+    pub value: f32,
+}
+
+#[allow(dead_code)]
+impl AdsrState {
+    pub fn new() -> Self { AdsrState { phase: AdsrPhase::Idle, value: 0.0 } }
+
+    /// `reset = true` (retrig, `env_reset` on): restart from zero, the same
+    /// snap `AdState::trigger` accepts. `reset = false` (legato): re-enter
+    /// `Attack` from the *current* value — a note-stack pop must not click.
+    pub fn trigger(&mut self, reset: bool) {
+        if reset {
+            self.value = 0.0;
+        }
+        self.phase = AdsrPhase::Attack;
+    }
+
+    /// `NoteOff` (or the note stack going empty): move to `Release` from
+    /// wherever the envelope currently sits, using `value` as the release
+    /// start level — never snap to the sustain level first.
+    pub fn note_off(&mut self) {
+        if !matches!(self.phase, AdsrPhase::Idle | AdsrPhase::Release) {
+            self.phase = AdsrPhase::Release;
+        }
+    }
+
+    /// `decay_coeff`/`release_coeff` are exponential approach coefficients
+    /// (same convention as `AdState::tick`'s `decay_coeff`), computed by the
+    /// caller once per sub-block from the page's time-constant params.
+    /// `sustain_level` is read every tick, so `sustain` can itself be
+    /// p-locked or LFO-modulated without a phase change.
+    pub fn tick(&mut self, attack_inc: f32, decay_coeff: f32, sustain_level: f32, release_coeff: f32) -> f32 {
+        match self.phase {
+            AdsrPhase::Idle => 0.0,
+            AdsrPhase::Attack => {
+                self.value += attack_inc;
+                if self.value >= 1.0 {
+                    self.value = 1.0;
+                    self.phase = AdsrPhase::Decay;
+                }
+                self.value
+            }
+            AdsrPhase::Decay => {
+                self.value = sustain_level + (self.value - sustain_level) * decay_coeff;
+                if (self.value - sustain_level).abs() < 1.0e-4 {
+                    self.value = sustain_level;
+                    self.phase = AdsrPhase::Sustain;
+                }
+                self.value
+            }
+            AdsrPhase::Sustain => {
+                self.value = sustain_level;
+                self.value
+            }
+            AdsrPhase::Release => {
+                self.value *= release_coeff;
+                if self.value < 1.0e-5 {
+                    self.value = 0.0;
+                    self.phase = AdsrPhase::Idle;
+                }
+                self.value
+            }
+        }
+    }
+
+    pub fn is_idle(&self) -> bool { matches!(self.phase, AdsrPhase::Idle) }
+}
+
+// ── NoteStack (P14-C0) ────────────────────────────────────────────────────────
+
+/// Fixed capacity — `process()` may not allocate, so this cannot be a `Vec`.
+/// Eight held notes is far beyond anything a monophonic voice's last-note
+/// priority needs in practice; it exists so `push` has a defined (not a
+/// panicking) behavior at the ceiling.
+#[allow(dead_code)]
+pub(crate) const NOTE_STACK_CAPACITY: usize = 8;
+
+/// Mono note stack — last-note priority, no heap. The foundation `FmVoice`
+/// needs to make `NoteOff` mean anything: without it, a released note has no
+/// way to say "resume the note still held under it" (ADR-043 post-
+/// ratification note 3).
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub(crate) struct NoteStack {
+    notes: [Option<u8>; NOTE_STACK_CAPACITY],
+    len: usize,
+}
+
+#[allow(dead_code)]
+impl NoteStack {
+    pub fn new() -> Self { NoteStack { notes: [None; NOTE_STACK_CAPACITY], len: 0 } }
+
+    /// New top. If full, drops the oldest held note rather than growing or
+    /// panicking — dropping-the-oldest is inaudible in practice (8 notes held
+    /// on one monophonic track is not a real playing style) and is strictly
+    /// safer than either alternative.
+    pub fn push(&mut self, note: u8) {
+        if self.len == NOTE_STACK_CAPACITY {
+            self.notes.copy_within(1.., 0);
+            self.len -= 1;
+        }
+        self.notes[self.len] = Some(note);
+        self.len += 1;
+    }
+
+    /// Removes `note`'s most recent occurrence and returns the new top, if
+    /// any — the top the voice should now be sounding.
+    pub fn pop_matching(&mut self, note: u8) -> Option<u8> {
+        if let Some(idx) = self.notes[..self.len].iter().rposition(|n| *n == Some(note)) {
+            for i in idx..self.len - 1 {
+                self.notes[i] = self.notes[i + 1];
+            }
+            self.len -= 1;
+            self.notes[self.len] = None;
+        }
+        self.top()
+    }
+
+    pub fn top(&self) -> Option<u8> {
+        if self.len == 0 { None } else { self.notes[self.len - 1] }
+    }
+
+    pub fn is_empty(&self) -> bool { self.len == 0 }
+}
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 /// XOR-shift 32 LFSR white noise generator. Period = 2^32 - 1.
@@ -986,5 +1133,180 @@ mod tests {
             }
             assert!(cs.iter().all(|(a, b)| b > a && b - a <= LFO_SUB_BLOCK));
         }
+    }
+
+    // ── AdsrState (P14-C0) ───────────────────────────────────────────────
+
+    /// Tuned so each phase resolves in a handful of ticks — these tests
+    /// assert on phase transitions and level continuity, not on real timing.
+    const ATK: f32 = 0.5;
+    const DEC: f32 = 0.5;
+    const REL: f32 = 0.5;
+
+    #[test]
+    fn adsr_walks_attack_decay_sustain_in_order() {
+        let mut e = AdsrState::new();
+        e.trigger(true);
+        assert!(matches!(e.phase, AdsrPhase::Attack));
+        for _ in 0..10 {
+            e.tick(ATK, DEC, 0.3, REL);
+        }
+        assert!(
+            matches!(e.phase, AdsrPhase::Decay | AdsrPhase::Sustain),
+            "expected decay or sustain after enough ticks"
+        );
+        for _ in 0..40 {
+            e.tick(ATK, DEC, 0.3, REL);
+        }
+        assert!(matches!(e.phase, AdsrPhase::Sustain));
+        assert!((e.value - 0.3).abs() < 1e-3, "sustain must hold at sustain_level, got {}", e.value);
+    }
+
+    /// A held note must never decay on its own — only `note_off` may leave
+    /// `Sustain`. This is the regression #169-style bug (a p-lock surviving
+    /// only one block) would look like on this engine: silence under a held
+    /// key.
+    #[test]
+    fn sustain_holds_forever_without_note_off() {
+        let mut e = AdsrState::new();
+        e.trigger(true);
+        for _ in 0..200 {
+            e.tick(ATK, DEC, 0.4, REL);
+        }
+        assert!(matches!(e.phase, AdsrPhase::Sustain));
+        assert!((e.value - 0.4).abs() < 1e-3);
+    }
+
+    #[test]
+    fn note_off_releases_from_sustain_to_idle() {
+        let mut e = AdsrState::new();
+        e.trigger(true);
+        for _ in 0..200 {
+            e.tick(ATK, DEC, 0.5, REL);
+        }
+        e.note_off();
+        assert!(matches!(e.phase, AdsrPhase::Release));
+        for _ in 0..200 {
+            e.tick(ATK, DEC, 0.5, REL);
+        }
+        assert!(matches!(e.phase, AdsrPhase::Idle));
+        assert_eq!(e.value, 0.0);
+    }
+
+    /// Early release — from Attack or Decay, not just Sustain — must not
+    /// snap the level; it starts the release ramp from wherever the voice
+    /// currently sits.
+    #[test]
+    fn note_off_during_attack_releases_from_current_level_no_snap() {
+        let mut e = AdsrState::new();
+        e.trigger(true);
+        e.tick(ATK, DEC, 0.5, REL); // partway into Attack
+        let level_at_release = e.value;
+        assert!(level_at_release > 0.0 && level_at_release < 1.0);
+        e.note_off();
+        assert!(matches!(e.phase, AdsrPhase::Release));
+        assert_eq!(e.value, level_at_release, "release must not snap the level");
+    }
+
+    /// Same as the Attack case, but from Decay — the two early-release paths
+    /// share one guard in `note_off`, and a mutant excluding just one of them
+    /// (e.g. `Idle | Release | Decay`) would pass every other test here.
+    #[test]
+    fn note_off_during_decay_releases_from_current_level_no_snap() {
+        let mut e = AdsrState::new();
+        e.trigger(true);
+        e.tick(ATK, DEC, 0.3, REL); // reaches Attack's ceiling, enters Decay
+        e.tick(ATK, DEC, 0.3, REL); // partway into Decay
+        assert!(matches!(e.phase, AdsrPhase::Decay), "expected to still be decaying");
+        let level_at_release = e.value;
+        assert!(level_at_release > 0.3, "expected to still be above sustain_level");
+        e.note_off();
+        assert!(matches!(e.phase, AdsrPhase::Release));
+        assert_eq!(e.value, level_at_release, "release must not snap the level");
+    }
+
+    /// Legato (`reset = false`) must not snap the level back to zero — that
+    /// is exactly the click a note-stack pop must avoid.
+    #[test]
+    fn legato_retrigger_preserves_level_retrig_does_not() {
+        let mut e = AdsrState::new();
+        e.trigger(true);
+        for _ in 0..3 {
+            e.tick(ATK, DEC, 0.5, REL);
+        }
+        let level = e.value;
+        assert!(level > 0.0);
+
+        let mut legato = e;
+        legato.trigger(false);
+        assert_eq!(legato.value, level, "legato must carry the current level into Attack");
+
+        let mut retrig = e;
+        retrig.trigger(true);
+        assert_eq!(retrig.value, 0.0, "retrig must snap to zero");
+    }
+
+    #[test]
+    fn idle_envelope_ticks_silent_and_is_idle() {
+        let e = AdsrState::new();
+        assert!(e.is_idle());
+        let mut e = e;
+        assert_eq!(e.tick(ATK, DEC, 0.5, REL), 0.0);
+    }
+
+    // ── NoteStack (P14-C0) ───────────────────────────────────────────────
+
+    #[test]
+    fn note_stack_last_note_priority() {
+        let mut s = NoteStack::new();
+        s.push(60);
+        s.push(64);
+        s.push(67);
+        assert_eq!(s.top(), Some(67));
+    }
+
+    #[test]
+    fn pop_matching_top_reveals_previous_note() {
+        let mut s = NoteStack::new();
+        s.push(60);
+        s.push(64);
+        s.push(67);
+        assert_eq!(s.pop_matching(67), Some(64));
+        assert_eq!(s.top(), Some(64));
+    }
+
+    /// Releasing a note that is *not* the current top (a held chord letting
+    /// go of an inner note) must not disturb the top.
+    #[test]
+    fn pop_matching_non_top_note_leaves_top_unchanged() {
+        let mut s = NoteStack::new();
+        s.push(60);
+        s.push(64);
+        s.push(67);
+        assert_eq!(s.pop_matching(64), Some(67));
+        assert_eq!(s.top(), Some(67));
+    }
+
+    #[test]
+    fn pop_matching_last_note_empties_the_stack() {
+        let mut s = NoteStack::new();
+        s.push(60);
+        assert_eq!(s.pop_matching(60), None);
+        assert!(s.is_empty());
+    }
+
+    /// A push past capacity must not panic or allocate — it drops the
+    /// oldest held note and keeps going.
+    #[test]
+    fn push_past_capacity_drops_oldest_not_panics() {
+        let mut s = NoteStack::new();
+        for n in 0..(NOTE_STACK_CAPACITY as u8 + 3) {
+            s.push(60 + n);
+        }
+        let expected_top = 60 + NOTE_STACK_CAPACITY as u8 + 2;
+        assert_eq!(s.top(), Some(expected_top));
+        // The very first note pushed (60) must have been evicted already —
+        // popping it finds nothing and leaves the top untouched.
+        assert_eq!(s.pop_matching(60), Some(expected_top), "note 60 should have been evicted, top unchanged");
     }
 }
