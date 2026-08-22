@@ -4,8 +4,9 @@ use std::sync::Arc;
 
 use paraclete_node_api::{
     AudioBuffer, AudioProcessor, DebugEvent, Event, EventOutputBuffer, ExtendedEventSlab,
-    NodeCommand, ProcessInput, ProcessOutput, SignalInputSlot, SignalOutputSlot, SignalPortKind,
-    StateBusValue, SurfaceOutput, TimedEvent, TransportEvent, TransportInfo,
+    NodeCommand, ProcessInput, ProcessOutput, SampleData, SignalInputSlot, SignalOutputSlot,
+    SignalPortKind, StateBusValue, SurfaceOutput, SwapSample, TimedEvent, TransportEvent,
+    TransportInfo,
 };
 
 use crate::configurator::{LoopBackEdge, NodeOrDevice};
@@ -141,6 +142,19 @@ pub struct NodeExecutor {
     /// The configurator drains entries and pushes the emptied Vec back;
     /// the executor pops it before state collection and reuses the allocation.
     state_buf_return_consumer: rtrb::Consumer<Vec<(String, StateBusValue)>>,
+
+    /// Asset-delivery plane (AN0, ADR-040 decision 4). Forward: configurator
+    /// → executor, delivers a decoded sample to a node's `swap_sample()`.
+    asset_swap_consumer: rtrb::Consumer<SwapSample>,
+    /// Return: executor → configurator, hands back a displaced `Arc<SampleData>`
+    /// for the main thread to drop (never dropped on the audio thread).
+    asset_return_producer: rtrb::Producer<Arc<SampleData>>,
+    /// Displaced buffers that didn't fit on `asset_return_producer` this
+    /// cycle. Pre-allocated at `ASSET_RETURN_RING_CAPACITY` and never grown
+    /// (D7): new swaps are only drained from `asset_swap_consumer` while
+    /// this has spare capacity, so it can never exceed that bound —
+    /// backpressure, not an unbounded queue.
+    pending_sample_drops: Vec<Arc<SampleData>>,
 }
 
 struct NodeSlot {
@@ -197,6 +211,9 @@ impl NodeExecutor {
         counters: Arc<RuntimeCounters>,
         debug_event_producer: rtrb::Producer<DebugEvent>,
         state_buf_return_consumer: rtrb::Consumer<Vec<(String, StateBusValue)>>,
+        asset_swap_consumer: rtrb::Consumer<SwapSample>,
+        asset_return_producer: rtrb::Producer<Arc<SampleData>>,
+        asset_return_capacity: usize,
     ) -> Self {
         let node_id_to_slot: HashMap<u32, usize> = nodes
             .iter()
@@ -296,6 +313,9 @@ impl NodeExecutor {
             debug_bufs: (0..n).map(|_| Vec::with_capacity(64)).collect(),
             agg_debug_buf: Vec::with_capacity(256),
             state_buf_return_consumer,
+            asset_swap_consumer,
+            asset_return_producer,
+            pending_sample_drops: Vec::with_capacity(asset_return_capacity),
         }
     }
 
@@ -418,6 +438,67 @@ impl NodeExecutor {
         }
     }
 
+    /// Try to flush `pending_sample_drops` onto the return ring, oldest
+    /// leftover first. Pops from the end (O(1), no shift — order among
+    /// displaced buffers doesn't matter, they're only headed for a main-
+    /// thread drop) and pushes back immediately if the ring is full, so the
+    /// vec's length never exceeds what it held on entry — no growth either
+    /// way.
+    fn flush_pending_sample_drops(&mut self) {
+        while let Some(arc) = self.pending_sample_drops.pop() {
+            if let Err(rtrb::PushError::Full(returned)) = self.asset_return_producer.push(arc) {
+                self.pending_sample_drops.push(returned);
+                break;
+            }
+        }
+    }
+
+    /// Deliver queued `SwapSample`s to their target nodes (AN0 §2.2).
+    ///
+    /// Backpressure, not an unbounded queue (D7): a new swap is only popped
+    /// from `asset_swap_consumer` while `pending_sample_drops` has spare
+    /// capacity, so there's always room to hold on to a buffer this cycle
+    /// couldn't place. Undelivered `SwapSample`s simply stay queued in the
+    /// (bounded) forward ring until next cycle.
+    ///
+    /// Whatever happens to a popped `SwapSample`, its `data: Arc<SampleData>`
+    /// must never drop on this (the audio) thread — an unknown `node_id`
+    /// (a live `rebuild_executor()` can remove nodes) or a `Device` target
+    /// (no `swap_sample` method) is *not* license to let it fall out of
+    /// scope, the same way a `NodeCommand` with an unresolved target is
+    /// (found in review — `NodeCommand` carries no heap data, so dropping
+    /// one is free; `SwapSample` does, so the same shrug is a hard-
+    /// constraint violation). Every path funnels through the same
+    /// return-or-hold-for-retry handling as an actually-displaced buffer.
+    fn drain_asset_swaps(&mut self) {
+        self.flush_pending_sample_drops();
+
+        while self.pending_sample_drops.len() < self.pending_sample_drops.capacity() {
+            let Ok(msg) = self.asset_swap_consumer.pop() else {
+                break;
+            };
+            let to_return = match self.node_id_to_slot.get(&msg.node_id) {
+                Some(&slot_idx) => match &mut self.nodes[slot_idx].kind {
+                    NodeOrDevice::Node(node) => node.swap_sample(msg.pool_slot, msg.data),
+                    NodeOrDevice::Device(_) => Some(msg.data),
+                },
+                None => Some(msg.data),
+            };
+            if let Some(arc) = to_return {
+                if let Err(rtrb::PushError::Full(returned)) = self.asset_return_producer.push(arc)
+                {
+                    debug_assert!(
+                        self.pending_sample_drops.len() < self.pending_sample_drops.capacity(),
+                        "pending_sample_drops at capacity ({}); next push will allocate \
+                         on the audio thread",
+                        self.pending_sample_drops.capacity(),
+                    );
+                    self.pending_sample_drops.push(returned);
+                }
+            }
+        }
+    }
+
     fn build_hardware_output(&self) -> SurfaceOutput {
         // LED output is now owned by the scripting layer via deliver_script_output().
         // The executor no longer auto-generates step indicators.
@@ -433,6 +514,7 @@ impl NodeExecutor {
 
         self.apply_messages();
         self.drain_commands();
+        self.drain_asset_swaps();
 
         let sample_rate = self.sample_rate;
         let block_size = self.block_size;

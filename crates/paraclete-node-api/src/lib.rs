@@ -8,6 +8,7 @@
 
 pub mod agreement;
 pub mod app_op;
+pub mod asset;
 pub mod audio_processor;
 pub mod buffer;
 pub mod capability;
@@ -80,5 +81,7 @@ pub use node::{GraphNode, Negotiable, Node};
 pub use templates::{ControllerNode, InstrumentNode, SequencerNode, SignalNode};
 
 pub use command::{NodeCommand, CMD_BUMP_PARAM, CMD_SET_PARAM, CMD_TRIGGER};
+
+pub use asset::{SampleData, SwapSample};
 
 pub use parameter::{publish_bank_state, ParameterBank};

@@ -8,8 +8,8 @@ use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 
 use paraclete_node_api::{
     CapabilityDocument, ConnectionAgreement, ConnectionRecord, DebugEvent, Node, NodeCommand,
-    PortDescriptor, PortDirection, PortType, SignalPortKind, StateBusHandle, StateBusSubscription,
-    StateBusValue, Surface, SurfaceOutputHandle,
+    PortDescriptor, PortDirection, PortType, SampleData, SignalPortKind, StateBusHandle,
+    StateBusSubscription, StateBusValue, Surface, SurfaceOutputHandle, SwapSample,
 };
 
 use crate::executor::NodeExecutor;
@@ -24,6 +24,11 @@ const STATE_BUS_RING_CAPACITY: usize = 256;
 const NODE_CMD_RING_CAPACITY: usize = 512;
 const DEBUG_EVENT_RING_CAPACITY: usize = 1024;
 const STATE_BUF_RETURN_CAPACITY: usize = 4;
+/// AN0 asset-delivery plane (ADR-040 decision 4). Generous relative to
+/// actual traffic — pool loads are not a per-block event
+/// (`design/phases/an0-anamnesis.md` §2.2).
+const ASSET_SWAP_RING_CAPACITY: usize = 32;
+const ASSET_RETURN_RING_CAPACITY: usize = 32;
 
 /// Error returned by `NodeConfigurator::connect()`.
 #[derive(Debug)]
@@ -179,6 +184,15 @@ pub struct NodeConfigurator {
     node_cmd_producer: rtrb::Producer<NodeCommand>,
     node_cmd_consumer_pending: Option<rtrb::Consumer<NodeCommand>>,
 
+    /// Asset-delivery plane (AN0, ADR-040 decision 4). Forward: this →
+    /// executor, delivers a decoded sample to a node's `swap_sample()`.
+    asset_swap_producer: rtrb::Producer<SwapSample>,
+    asset_swap_consumer_pending: Option<rtrb::Consumer<SwapSample>>,
+    /// Return: executor → this, hands back a displaced `Arc<SampleData>` for
+    /// the main thread to drop.
+    asset_return_consumer: rtrb::Consumer<Arc<SampleData>>,
+    asset_return_producer_pending: Option<rtrb::Producer<Arc<SampleData>>>,
+
     /// Debug event SPSC (ADR-035 Part B). Executor pushes structured debug
     /// events per-cycle; configurator drains them in `process_main_thread()`.
     debug_event_consumer: rtrb::Consumer<DebugEvent>,
@@ -222,6 +236,10 @@ impl NodeConfigurator {
             rtrb::RingBuffer::<DebugEvent>::new(DEBUG_EVENT_RING_CAPACITY);
         let (return_prod, return_cons) =
             rtrb::RingBuffer::<Vec<(String, StateBusValue)>>::new(STATE_BUF_RETURN_CAPACITY);
+        let (asset_swap_prod, asset_swap_cons) =
+            rtrb::RingBuffer::<SwapSample>::new(ASSET_SWAP_RING_CAPACITY);
+        let (asset_return_prod, asset_return_cons) =
+            rtrb::RingBuffer::<Arc<SampleData>>::new(ASSET_RETURN_RING_CAPACITY);
         Self {
             graph: RuntimeGraph::new(),
             id_to_index: HashMap::new(),
@@ -237,6 +255,10 @@ impl NodeConfigurator {
             state_buf_return_consumer_pending: Some(return_cons),
             node_cmd_producer: cmd_prod,
             node_cmd_consumer_pending: Some(cmd_cons),
+            asset_swap_producer: asset_swap_prod,
+            asset_swap_consumer_pending: Some(asset_swap_cons),
+            asset_return_consumer: asset_return_cons,
+            asset_return_producer_pending: Some(asset_return_prod),
             debug_event_consumer: debug_cons,
             debug_event_producer_pending: Some(debug_prod),
             debug_event_buf: Vec::with_capacity(256),
@@ -635,6 +657,16 @@ impl NodeConfigurator {
         }
     }
 
+    /// Send a `SwapSample` to a graph node's asset cache (AN0). Delivered on
+    /// the next audio cycle. Returns `Err` if the ring buffer is full —
+    /// caller should retry next tick.
+    pub fn send_swap_sample(&mut self, msg: SwapSample) -> Result<(), SwapSample> {
+        match self.asset_swap_producer.push(msg) {
+            Ok(()) => Ok(()),
+            Err(rtrb::PushError::Full(msg)) => Err(msg),
+        }
+    }
+
     pub fn state_bus_read(&self, path: &str) -> Option<StateBusValue> {
         self.state_bus.borrow().read(path).cloned()
     }
@@ -673,6 +705,10 @@ impl NodeConfigurator {
         while let Ok(ev) = self.debug_event_consumer.pop() {
             self.debug_event_buf.push(ev);
         }
+        // Drain displaced sample buffers and let them drop here — main
+        // thread only, per the hard constraint that process() (and, by
+        // extension, anything the audio thread touches) must never dealloc.
+        while self.asset_return_consumer.pop().is_ok() {}
         for (_, handle) in &mut self.output_handles {
             handle.tick();
         }
@@ -804,6 +840,10 @@ impl NodeConfigurator {
             rtrb::RingBuffer::<DebugEvent>::new(DEBUG_EVENT_RING_CAPACITY);
         let (new_return_prod, new_return_cons) =
             rtrb::RingBuffer::<Vec<(String, StateBusValue)>>::new(STATE_BUF_RETURN_CAPACITY);
+        let (new_asset_swap_prod, new_asset_swap_cons) =
+            rtrb::RingBuffer::<SwapSample>::new(ASSET_SWAP_RING_CAPACITY);
+        let (new_asset_return_prod, new_asset_return_cons) =
+            rtrb::RingBuffer::<Arc<SampleData>>::new(ASSET_RETURN_RING_CAPACITY);
 
         // Replace configurator-side handles so `send()` and `send_command()` stay live.
         self.sender = new_sender;
@@ -811,6 +851,8 @@ impl NodeConfigurator {
         self.state_bus_consumer = new_sb_cons;
         self.debug_event_consumer = new_debug_cons;
         self.state_buf_return_producer = new_return_prod;
+        self.asset_swap_producer = new_asset_swap_prod;
+        self.asset_return_consumer = new_asset_return_cons;
 
         // Install executor-side ends as pending so `build_executor()` can take them.
         self.pending_receiver = Some(new_receiver);
@@ -818,6 +860,8 @@ impl NodeConfigurator {
         self.node_cmd_consumer_pending = Some(new_cmd_cons);
         self.debug_event_producer_pending = Some(new_debug_prod);
         self.state_buf_return_consumer_pending = Some(new_return_cons);
+        self.asset_swap_consumer_pending = Some(new_asset_swap_cons);
+        self.asset_return_producer_pending = Some(new_asset_return_prod);
 
         self.build_executor()
     }
@@ -853,6 +897,14 @@ impl NodeConfigurator {
             .expect("build_executor called twice");
         let state_buf_return_consumer = self
             .state_buf_return_consumer_pending
+            .take()
+            .expect("build_executor called twice");
+        let asset_swap_consumer = self
+            .asset_swap_consumer_pending
+            .take()
+            .expect("build_executor called twice");
+        let asset_return_producer = self
+            .asset_return_producer_pending
             .take()
             .expect("build_executor called twice");
 
@@ -959,6 +1011,9 @@ impl NodeConfigurator {
             counters,
             debug_event_producer,
             state_buf_return_consumer,
+            asset_swap_consumer,
+            asset_return_producer,
+            ASSET_RETURN_RING_CAPACITY,
         )
     }
 }

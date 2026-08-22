@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use crate::agreement::{ConnectionAgreement, ConnectionRecord};
+use crate::asset::SampleData;
 use crate::capability::CapabilityDocument;
 use crate::context::{ProcessInput, ProcessOutput};
 use crate::port::PortDescriptor;
@@ -102,6 +105,25 @@ pub trait Node: Send {
     /// Nodes with ParameterBank should store the values and apply them
     /// in activate() before returning (after bank construction).
     fn set_initial_params(&mut self, _params: &std::collections::HashMap<String, f64>) {}
+
+    /// Receive (or replace) a cached sample buffer for `pool_slot` (AN0,
+    /// ADR-040 decisions 3–4). Returns the previously cached buffer at this
+    /// slot, if any — the caller (the executor) is responsible for
+    /// returning a `Some` result to the main thread via the asset-return
+    /// ring. Implementations must never drop a displaced `Arc<SampleData>`
+    /// themselves; audio-thread dealloc of a multi-MB buffer is a hard-
+    /// constraint violation (`process()` must never allocate, block, or
+    /// take a lock — a `free()` syscall breaks that the same way an alloc
+    /// does).
+    ///
+    /// Called by the executor on the audio thread, once per delivered
+    /// `SwapSample`, before `process()` runs that cycle — not from within
+    /// `process()` itself.
+    ///
+    /// Default: no-op, always returns `None`. Only `Sampler` overrides this.
+    fn swap_sample(&mut self, _pool_slot: u32, _data: Arc<SampleData>) -> Option<Arc<SampleData>> {
+        None
+    }
 
     /// Publish runtime state to the state bus.
     ///
