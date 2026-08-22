@@ -10,7 +10,10 @@
 //! the app's `--save=`/`--load=` path uses `save_project_v3`/`load_project_v3`
 //! so kits and kit bindings survive a project round-trip.
 
+use std::sync::Arc;
+
 use paraclete_node_api::app_op::KitId;
+use paraclete_node_api::SampleData;
 use paraclete_runtime::NodeConfigurator;
 use serde::{Deserialize, Serialize};
 
@@ -446,6 +449,46 @@ pub fn load_project_v3(
                     slots.resize(crate::sample_pool::NOMINAL_POOL_SIZE, None);
                 }
                 perform.sample_pool.slots = slots;
+            }
+
+            // #185: rehydrate every live Sampler node's pool_cache — restoring
+            // sample_pool above is metadata only (name/rate/frames/path), no
+            // audio. Called before build_executor() (same constraint as the
+            // node.deserialize() loop below), so nodes are still live in
+            // `conf` and this delivers synchronously via Node::swap_sample(),
+            // the same direct-injection path builder.rs uses for a YAML
+            // `sample:` path — no asset-plane ring involved, no executor
+            // needed yet. Broadcast-to-every-sampler, mirroring C5's
+            // PoolLoadFile (an0-anamnesis.md §2.5) — one decode per slot,
+            // `Arc` cloned per node, not re-decoded.
+            let rate = conf.sample_rate();
+            for (slot_idx, entry) in perform.sample_pool.slots.iter().enumerate() {
+                let Some(entry) = entry else { continue };
+                let crate::sample_pool::SampleSource::File(path) = &entry.source else {
+                    continue; // Ram sources: AN1 scope, no capture exists yet.
+                };
+                match crate::sample_pool::decode_file(path, rate) {
+                    Ok((samples, frames, decoded_rate)) => {
+                        let data = Arc::new(SampleData { samples, rate: decoded_rate, frames });
+                        for &node_id in &perform.sampler_ids {
+                            // Silent no-op if `node_id` isn't live — unlike
+                            // the deserialize() loop below (which warns on
+                            // an unresolvable id), this is currently
+                            // unreachable in the shipped app: `sampler_ids`
+                            // is set from the same graph build `conf` owns,
+                            // right before this call (main.rs). Left
+                            // silent rather than warning per-(node,slot) —
+                            // if `sampler_ids` ever legitimately diverges
+                            // from live graph ids, revisit (review, #185).
+                            if let Some(node) = conf.node_mut(node_id) {
+                                node.swap_sample(slot_idx as u32, data.clone());
+                            }
+                        }
+                    }
+                    Err(e) => warnings.push(format!(
+                        "pool slot {slot_idx}: failed to reload {path:?}: {e}"
+                    )),
+                }
             }
 
             for snap in &project.graph.nodes {

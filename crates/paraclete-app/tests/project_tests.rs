@@ -6,7 +6,8 @@ use paraclete_app::project::{
 use paraclete_app::sample_pool::{PoolEntry, SampleSource};
 use paraclete_node_api::{Node, ParamDescriptor};
 use paraclete_nodes::{
-    AnalogEngine, DistortionNode, FilterNode, FmEngine, InternalClock, ReverbNode, Sequencer,
+    AnalogEngine, DistortionNode, FilterNode, FmEngine, InternalClock, ReverbNode, Sampler,
+    Sequencer,
 };
 use paraclete_runtime::NodeConfigurator;
 
@@ -299,6 +300,13 @@ fn project_load_v3_without_sample_pool_key_defaults_to_empty_pool() {
 #[test]
 fn project_v3_save_then_load_restores_sample_pool() {
     let tmp = std::env::temp_dir().join("paraclete_v3_pool_roundtrip_test.ron");
+    // A real, resolvable path — #185's rehydration pass (load_project_v3)
+    // now attempts to decode every File-backed entry on load, so a
+    // placeholder path would surface as an unexpected warning here.
+    let kick = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../samples/kick.wav")
+        .to_string_lossy()
+        .into_owned();
 
     let mut conf = NodeConfigurator::new(SR, BLOCK);
     conf.add_node(1, Box::new(InternalClock::new()));
@@ -306,7 +314,7 @@ fn project_v3_save_then_load_restores_sample_pool() {
     let mut pool: Vec<Option<PoolEntry>> = vec![None; 4];
     pool[1] = Some(PoolEntry {
         name: "kick".into(),
-        source: SampleSource::File("samples/kick.wav".into()),
+        source: SampleSource::File(kick.clone()),
         frames: 1000,
         rate: 44100.0,
         bars: None,
@@ -333,7 +341,7 @@ fn project_v3_save_then_load_restores_sample_pool() {
 
     let entry = perform.sample_pool.get(1).expect("slot 1 should be restored");
     assert_eq!(entry.name, "kick");
-    assert!(matches!(&entry.source, SampleSource::File(p) if p == "samples/kick.wav"));
+    assert!(matches!(&entry.source, SampleSource::File(p) if *p == kick));
     assert_eq!(entry.frames, 1000);
     assert!(perform.sample_pool.get(0).is_none());
 
@@ -346,6 +354,10 @@ fn project_v3_save_then_load_restores_sample_pool() {
 #[test]
 fn project_v3_round_trip_preserves_a_pool_grown_past_nominal_size() {
     let tmp = std::env::temp_dir().join("paraclete_v3_pool_overflow_test.ron");
+    let track0 = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../samples/track0.wav")
+        .to_string_lossy()
+        .into_owned();
 
     let mut conf = NodeConfigurator::new(SR, BLOCK);
     conf.add_node(1, Box::new(InternalClock::new()));
@@ -353,7 +365,7 @@ fn project_v3_round_trip_preserves_a_pool_grown_past_nominal_size() {
     let mut pool: Vec<Option<PoolEntry>> = vec![None; 130];
     pool[129] = Some(PoolEntry {
         name: "overflow".into(),
-        source: SampleSource::File("samples/track0.wav".into()),
+        source: SampleSource::File(track0),
         frames: 500,
         rate: 44100.0,
         bars: None,
@@ -383,6 +395,109 @@ fn project_v3_round_trip_preserves_a_pool_grown_past_nominal_size() {
         .get(129)
         .expect("slot 129 must survive the round trip, not be truncated to the 128-slot floor");
     assert_eq!(entry.name, "overflow");
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+/// #185: `load_project_v3` must not just restore pool *metadata* — it must
+/// re-decode and deliver the audio to every live Sampler node, the same
+/// way `AppOp::PoolLoadFile` (C5) does at runtime. Proven the same way
+/// C5's own delivery test is (`perform_state.rs`'s
+/// `pool_load_file_delivers_to_every_live_sampler_node_via_the_asset_plane`):
+/// through observable playback, not a field peek — `Sampler::pool_cache`
+/// has no cross-crate test accessor.
+#[test]
+fn project_v3_load_rehydrates_a_samplers_pool_cache_from_a_file_backed_slot() {
+    let tmp = std::env::temp_dir().join("paraclete_v3_pool_rehydrate_test.ron");
+    let kick = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../samples/kick.wav");
+
+    // Save: a project whose sample_pool has a File-backed entry at slot 7
+    // (no live Sampler needed for the save side — only the pool metadata
+    // and the node's own base_sample matter).
+    let mut conf = NodeConfigurator::new(SR, BLOCK);
+    conf.add_node(1, Box::new(InternalClock::new()));
+    let mut pool: Vec<Option<PoolEntry>> = vec![None; 8];
+    pool[7] = Some(PoolEntry {
+        name: "kick".into(),
+        source: SampleSource::File(kick.to_string_lossy().into_owned()),
+        frames: 1,   // deliberately wrong — load must re-decode, not trust this
+        rate: SR,
+        bars: None,
+        gain: 1.0,
+        slice_table: vec![],
+    });
+    save_project_v3(&tmp, &conf, make_metadata(), empty_profiles(), &[], [None; 8], &pool)
+        .expect("save should succeed");
+
+    // Load: a fresh graph with a Sampler pointed at base_sample=7 (as a
+    // real project would have saved it — set here directly since C2's
+    // serialize/deserialize round-trips base_sample independently of this
+    // test's node-snapshot list, which only carries the clock).
+    let mut conf2 = NodeConfigurator::new(SR, BLOCK);
+    conf2.add_node(1, Box::new(InternalClock::new()));
+    let mut sampler = Sampler::new();
+    sampler.set_base_sample(7);
+    conf2.add_node(23, Box::new(sampler));
+
+    let mut perform = PerformState::new();
+    perform.sampler_ids = vec![23];
+    let warnings = load_project_v3(&tmp, &mut conf2, &mut perform).expect("load should succeed");
+    assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+
+    // Trigger and check for audio — pool_cache must have slot 7 populated,
+    // not just perform.sample_pool's metadata.
+    let mut exec = conf2.build_executor();
+    let mut out = vec![0.0f32; BLOCK * 2];
+    let _ = conf2.send_command(paraclete_node_api::NodeCommand {
+        target_id: 23,
+        type_id: paraclete_node_api::CMD_TRIGGER,
+        arg0: -1,
+        arg1: 0.0,
+    });
+    exec.process(&mut out, 2);
+    assert!(
+        out.iter().any(|&x| x != 0.0),
+        "sampler should play slot 7's audio after project load rehydrates pool_cache"
+    );
+
+    let _ = std::fs::remove_file(&tmp);
+}
+
+/// #185 review: the decode-failure branch of the rehydration pass had no
+/// direct test — a `File`-sourced pool entry pointing at a missing path
+/// must surface a warning (not silently vanish, not panic) and must not
+/// stop the rest of load (the node-state restore still succeeds).
+#[test]
+fn project_v3_load_warns_on_a_pool_slot_that_fails_to_decode() {
+    let tmp = std::env::temp_dir().join("paraclete_v3_pool_decode_failure_test.ron");
+
+    let mut conf = NodeConfigurator::new(SR, BLOCK);
+    conf.add_node(1, Box::new(InternalClock::new()));
+    let mut pool: Vec<Option<PoolEntry>> = vec![None; 4];
+    pool[2] = Some(PoolEntry {
+        name: "missing".into(),
+        source: SampleSource::File("does/not/exist.wav".into()),
+        frames: 1,
+        rate: SR,
+        bars: None,
+        gain: 1.0,
+        slice_table: vec![],
+    });
+    save_project_v3(&tmp, &conf, make_metadata(), empty_profiles(), &[], [None; 8], &pool)
+        .expect("save should succeed");
+
+    let mut conf2 = NodeConfigurator::new(SR, BLOCK);
+    conf2.add_node(1, Box::new(InternalClock::new()));
+    let mut perform = PerformState::new();
+    let warnings = load_project_v3(&tmp, &mut conf2, &mut perform).expect("load should succeed");
+
+    assert!(
+        warnings.iter().any(|w| w.contains("pool slot 2") && w.contains("does/not/exist.wav")),
+        "a decode failure must surface as a warning, got: {warnings:?}"
+    );
+    // Metadata still restores even though decode failed — only delivery
+    // to a node's pool_cache is affected, not the pool's own record.
+    assert!(perform.sample_pool.get(2).is_some());
 
     let _ = std::fs::remove_file(&tmp);
 }
