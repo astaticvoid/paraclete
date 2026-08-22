@@ -7,7 +7,7 @@ use paraclete_node_api::{
     UmpMessage, ViewPlugin, midi::ChannelVoice2,
 };
 
-use crate::engine_dsp::{harmonic_sine, note_to_hz, sub_blocks, FmOperator};
+use crate::engine_dsp::{harmonic_sine, note_to_hz, sub_blocks, AdsrState, FmOperator};
 
 fn fp(name: &str) -> u32 { ParamDescriptor::id_for_name(name) }
 
@@ -120,6 +120,15 @@ pub struct FmVoice {
     op_b1: FmOperator,
     op_b2: FmOperator,
 
+    /// §0 D3/ADR-043 decision 3's two modulation-index envelopes — shape how
+    /// much of A's/the B-pair's output reaches whatever it modulates over
+    /// the note, not gated amplitude (that's C4's AMP-page `AdsrState`).
+    /// Not reset on an algo switch (`apply_algo_switch`) — brightness "over
+    /// the note" is a property of the *note*, not the topology currently
+    /// shaping it.
+    env_a: AdsrState,
+    env_b: AdsrState,
+
     current_note: u8,
     active: bool,
     node_id: u32,
@@ -155,6 +164,8 @@ impl FmVoice {
             op_a: FmOperator::new(),
             op_b1: FmOperator::new(),
             op_b2: FmOperator::new(),
+            env_a: AdsrState::new(),
+            env_b: AdsrState::new(),
             current_note: 60,
             active: false,
             node_id: 0,
@@ -223,6 +234,64 @@ impl FmVoice {
         ]
     }
 
+    /// §0 D3/ADR-043 decision 3's SYN2: two modulation-index envelope
+    /// groups, A and B — "end level" not "sustain" (`AdsrState`'s `sustain`
+    /// arg *is* `end_a`/`end_b`; there is no release stage here, C4's AMP
+    /// page owns `NoteOff`). Ranges/units mirror `FmEngine`'s existing
+    /// attack/decay convention (`ParamUnit::Seconds`, same order of
+    /// magnitude) rather than inventing a new one.
+    ///
+    /// `end_a`/`end_b` default to 0.0 — a classic FM shape, bright at the
+    /// attack and decaying to a plainer sustained tone, not a knob a
+    /// performer has to reach for to hear the envelope do anything.
+    /// `lev_a`/`lev_b` default to 1.0 (full depth) rather than 0.0 — a
+    /// fresh voice should sound characterful out of the box, not silent-of-
+    /// modulation until a performer discovers the depth knobs.
+    fn syn2_params() -> Vec<ParamDescriptor> {
+        vec![
+            ParamDescriptor {
+                id: fp("atk_a"), name: "atk_a".into(),
+                min: 0.001, max: 0.5, default: 0.01,
+                stepped: false, in_kit: true, unit: ParamUnit::Seconds, display: None,
+            },
+            ParamDescriptor {
+                id: fp("dec_a"), name: "dec_a".into(),
+                min: 0.05, max: 4.0, default: 0.3,
+                stepped: false, in_kit: true, unit: ParamUnit::Seconds, display: None,
+            },
+            ParamDescriptor {
+                id: fp("end_a"), name: "end_a".into(),
+                min: 0.0, max: 1.0, default: 0.0,
+                stepped: false, in_kit: true, unit: ParamUnit::Generic, display: None,
+            },
+            ParamDescriptor {
+                id: fp("lev_a"), name: "lev_a".into(),
+                min: 0.0, max: 1.0, default: 1.0,
+                stepped: false, in_kit: true, unit: ParamUnit::Generic, display: None,
+            },
+            ParamDescriptor {
+                id: fp("atk_b"), name: "atk_b".into(),
+                min: 0.001, max: 0.5, default: 0.01,
+                stepped: false, in_kit: true, unit: ParamUnit::Seconds, display: None,
+            },
+            ParamDescriptor {
+                id: fp("dec_b"), name: "dec_b".into(),
+                min: 0.05, max: 4.0, default: 0.3,
+                stepped: false, in_kit: true, unit: ParamUnit::Seconds, display: None,
+            },
+            ParamDescriptor {
+                id: fp("end_b"), name: "end_b".into(),
+                min: 0.0, max: 1.0, default: 0.0,
+                stepped: false, in_kit: true, unit: ParamUnit::Generic, display: None,
+            },
+            ParamDescriptor {
+                id: fp("lev_b"), name: "lev_b".into(),
+                min: 0.0, max: 1.0, default: 1.0,
+                stepped: false, in_kit: true, unit: ParamUnit::Generic, display: None,
+            },
+        ]
+    }
+
     fn default_ports() -> [PortDescriptor; 3] {
         [
             PortDescriptor { id: Self::PORT_EVENTS_IN, name: "events_in".into(), direction: PortDirection::Input, port_type: PortType::Event },
@@ -237,7 +306,7 @@ impl FmVoice {
             vendor: "Paraclete".into(),
             version: (0, 1, 0),
             ports: Self::default_ports().to_vec(),
-            params: Self::params(),
+            params: Self::params().into_iter().chain(Self::syn2_params()).collect(),
             extensions: vec!["paraclete.instrument".into()],
             view: None,
         }
@@ -369,6 +438,10 @@ impl FmVoice {
         self.op_a.reset();
         self.op_b1.reset();
         self.op_b2.reset();
+        // `true` (retrig): C4 will decide whether a legato note-stack pop
+        // should pass `false` instead — this commit only ever retriggers.
+        self.env_a.trigger(true);
+        self.env_b.trigger(true);
         self.active = true;
     }
 
@@ -399,7 +472,24 @@ impl FmVoice {
         let ratio_b1 = ratio_from_index(self.raw_param(fp("ratio_b")));
         let ratio_b2 = ratio_b1 + B_PAIR_SPREAD;
 
+        // §0 D3/ADR-043 decision 3's two mod-index envelopes. Coefficients
+        // derived the same way `FmEngine`'s `AdState`-driven envelopes are
+        // (attack: linear ramp reaching 1.0 in `atk_*` seconds; decay: an
+        // exponential coefficient reaching ~0.1% of the gap to `end_*` in
+        // `dec_*` seconds) — see e.g. `fm_engine.rs`'s `pitch_decay_coeff`.
+        // `release_coeff` is an unused placeholder: `note_off()` is never
+        // called on these envelopes until C4 wires `NoteOff`, so `Release`
+        // is unreachable here.
         let sr = self.sample_rate;
+        let atk_a_inc = 1.0 / (self.raw_param(fp("atk_a")) * sr).max(1.0);
+        let dec_a_coeff = 0.001f32.powf(1.0 / (self.raw_param(fp("dec_a")) * sr).max(1.0));
+        let end_a = self.raw_param(fp("end_a"));
+        let lev_a = self.raw_param(fp("lev_a"));
+        let atk_b_inc = 1.0 / (self.raw_param(fp("atk_b")) * sr).max(1.0);
+        let dec_b_coeff = 0.001f32.powf(1.0 / (self.raw_param(fp("dec_b")) * sr).max(1.0));
+        let end_b = self.raw_param(fp("end_b"));
+        let lev_b = self.raw_param(fp("lev_b"));
+
         let base_hz = note_to_hz(self.current_note, detune_cents / 100.0);
         let c_freq = base_hz * ratio_c;
         let a_freq = base_hz * ratio_a;
@@ -409,35 +499,52 @@ impl FmVoice {
 
         let algo = self.algo;
         for i in start..end {
+            // Ticked per-sample (not per-sub-block) for correct time
+            // resolution, matching `AdState`'s usage elsewhere in this
+            // crate — only the coefficients above are sub-block-cached.
+            //
+            // `gain_a`/`gain_b`: §0's "modulation-depth multipliers feeding
+            // the A/B operator's effective mod_in gain" — applied ONLY at
+            // the point A's (resp. the B-pair's) output crosses into
+            // *another* operator as `mod_in`. An X/Y tap that listens to A
+            // or the B-pair directly (not as modulation) hears its raw,
+            // unscaled output — the envelope shapes how much of it *drives
+            // something else*, not its own character as a monitored tap.
+            // Intra-group hops (B2 feeding B1) and the self/cross feedback
+            // terms already routed through `feedback` are unaffected by
+            // either gain; those are the `feedback` knob's job, not SYN2's.
+            let gain_a = self.env_a.tick(atk_a_inc, dec_a_coeff, end_a, 0.0) * lev_a;
+            let gain_b = self.env_b.tick(atk_b_inc, dec_b_coeff, end_b, 0.0) * lev_b;
+
             let (x, y) = match algo {
                 // §0 D1 #1 — Stack: B2->B1->A->C serial. Feedback: B2.
-                // X = C, Y = A (pre-carrier).
+                // X = C, Y = A (pre-carrier, raw/unscaled).
                 Algo::Stack => {
                     let b2 = self.op_b2.tick(b2_freq, 0.0, feedback, 0.0, sr);
                     let b1 = self.op_b1.tick(b1_freq, b2, 0.0, 0.0, sr);
-                    let a = self.op_a.tick(a_freq, b1, 0.0, harm, sr);
-                    let c = self.op_c.tick(c_freq, a, 0.0, harm, sr);
+                    let a = self.op_a.tick(a_freq, b1 * gain_b, 0.0, harm, sr);
+                    let c = self.op_c.tick(c_freq, a * gain_a, 0.0, harm, sr);
                     (c, a)
                 }
                 // §0 D1 #2 — Short Stack: B1->A->C serial; B2 sums with B1
                 // into A as a fixed-offset unison pair. Feedback: A.
-                // X = C, Y = B1+B2 raw pair (pre-A).
+                // X = C, Y = B1+B2 raw pair (pre-A, raw/unscaled).
                 Algo::ShortStack => {
                     let b1 = self.op_b1.tick(b1_freq, 0.0, 0.0, 0.0, sr);
                     let b2 = self.op_b2.tick(b2_freq, 0.0, 0.0, 0.0, sr);
                     let pair = (b1 + b2) * 0.5;
-                    let a = self.op_a.tick(a_freq, pair, feedback, harm, sr);
-                    let c = self.op_c.tick(c_freq, a, 0.0, harm, sr);
+                    let a = self.op_a.tick(a_freq, pair * gain_b, feedback, harm, sr);
+                    let c = self.op_c.tick(c_freq, a * gain_a, 0.0, harm, sr);
                     (c, pair)
                 }
                 // §0 D1 #3 — Y-Split: B1->A and B2->A in parallel, A->C.
-                // Feedback: A. X = C, Y = A alone.
+                // Feedback: A. X = C, Y = A alone (raw/unscaled).
                 Algo::YSplit => {
                     let b1 = self.op_b1.tick(b1_freq, 0.0, 0.0, 0.0, sr);
                     let b2 = self.op_b2.tick(b2_freq, 0.0, 0.0, 0.0, sr);
                     let combined = (b1 + b2) * 0.5;
-                    let a = self.op_a.tick(a_freq, combined, feedback, harm, sr);
-                    let c = self.op_c.tick(c_freq, a, 0.0, harm, sr);
+                    let a = self.op_a.tick(a_freq, combined * gain_b, feedback, harm, sr);
+                    let c = self.op_c.tick(c_freq, a * gain_a, 0.0, harm, sr);
                     (c, a)
                 }
                 // §0 D1 #4 — Branch: B1->C direct, B2->A->C deep, sum into
@@ -447,27 +554,35 @@ impl FmVoice {
                 // the operator's already-advanced `phase` directly through
                 // the free `harmonic_sine` function rather than calling
                 // `tick()` a second time, which would double-advance it.
+                // Both B1's direct hop into C and B2's hop into A cross the
+                // B-group boundary, so both get `gain_b`; A's hop into C
+                // gets `gain_a`.
                 Algo::Branch => {
                     let b1 = self.op_b1.tick(b1_freq, 0.0, 0.0, 0.0, sr);
                     let b2 = self.op_b2.tick(b2_freq, 0.0, feedback, 0.0, sr);
-                    let a = self.op_a.tick(a_freq, b2, 0.0, harm, sr);
-                    let full_mod = b1 + a;
+                    let a = self.op_a.tick(a_freq, b2 * gain_b, 0.0, harm, sr);
+                    let a_mod = a * gain_a;
+                    let full_mod = b1 * gain_b + a_mod;
                     let c_full = self.op_c.tick(c_freq, full_mod, 0.0, harm, sr);
-                    let y = harmonic_sine(self.op_c.phase + a / tau, harm);
+                    let y = harmonic_sine(self.op_c.phase + a_mod / tau, harm);
                     (c_full, y)
                 }
                 // §0 D1 #5 — Parallel Carriers: B1->C, B2->A; C and A both
                 // output directly and sum. Feedback: B1<->B2 mutual (cross
                 // only — each reads the OTHER's previous sample, snapshotted
                 // before either ticks so the order of the two calls below
-                // cannot matter). X = C branch alone, Y = A branch alone.
+                // cannot matter; unaffected by `gain_b`, which governs
+                // group-B *output* crossing out, not the pair's own mutual
+                // coupling). X = C branch alone, Y = A branch alone
+                // (raw/unscaled — A never modulates anything else here, so
+                // `gain_a` has no crossing point to apply at in this algo).
                 Algo::ParallelCarriers => {
                     let b1_prev = self.op_b1.prev_out;
                     let b2_prev = self.op_b2.prev_out;
                     let b1 = self.op_b1.tick(b1_freq, feedback * b2_prev, 0.0, 0.0, sr);
                     let b2 = self.op_b2.tick(b2_freq, feedback * b1_prev, 0.0, 0.0, sr);
-                    let c = self.op_c.tick(c_freq, b1, 0.0, harm, sr);
-                    let a = self.op_a.tick(a_freq, b2, 0.0, harm, sr);
+                    let c = self.op_c.tick(c_freq, b1 * gain_b, 0.0, harm, sr);
+                    let a = self.op_a.tick(a_freq, b2 * gain_b, 0.0, harm, sr);
                     (c, a)
                 }
                 // §0 D1 #6 — Feedback Pair: B1<->B2 mutual feedback pair ->
@@ -475,41 +590,50 @@ impl FmVoice {
                 // gets its OWN self-feedback (via `tick`'s `feedback` arg)
                 // *and* the other's previous sample (via `mod_in`), which is
                 // what distinguishes this from Parallel Carriers' cross-only
-                // pair. X = C, Y = A.
+                // pair; neither is scaled by `gain_b` (feedback's own knob).
+                // The pair's combined hop into A gets `gain_b`; A's hop into
+                // C gets `gain_a`. X = C, Y = A (raw/unscaled).
                 Algo::FeedbackPair => {
                     let b1_prev = self.op_b1.prev_out;
                     let b2_prev = self.op_b2.prev_out;
                     let b1 = self.op_b1.tick(b1_freq, feedback * b2_prev, feedback, 0.0, sr);
                     let b2 = self.op_b2.tick(b2_freq, feedback * b1_prev, feedback, 0.0, sr);
                     let pair = (b1 + b2) * 0.5;
-                    let a = self.op_a.tick(a_freq, pair, 0.0, harm, sr);
-                    let c = self.op_c.tick(c_freq, a, 0.0, harm, sr);
+                    let a = self.op_a.tick(a_freq, pair * gain_b, 0.0, harm, sr);
+                    let c = self.op_c.tick(c_freq, a * gain_a, 0.0, harm, sr);
                     (c, a)
                 }
                 // §0 D1 #7 — Additive Twin: C (unmodulated pure tone) and
                 // A<-B1<-B2 (a full 3-op stack, A itself the second output
                 // tap) sum, independently leveled via `mix`. Feedback: B2.
-                // X = C alone, Y = stack (A) alone.
+                // B2's hop into B1 is intra-group (unscaled); B1's hop into
+                // A crosses the boundary, so it gets `gain_b`. `gain_a` has
+                // no crossing point here — A is itself the Y tap, it never
+                // modulates C (`c` is fed 0.0, matching D1's "unmodulated
+                // pure tone"). X = C alone, Y = stack (A, raw/unscaled).
                 Algo::AdditiveTwin => {
                     let b2 = self.op_b2.tick(b2_freq, 0.0, feedback, 0.0, sr);
                     let b1 = self.op_b1.tick(b1_freq, b2, 0.0, 0.0, sr);
-                    let a = self.op_a.tick(a_freq, b1, 0.0, harm, sr);
+                    let a = self.op_a.tick(a_freq, b1 * gain_b, 0.0, harm, sr);
                     let c = self.op_c.tick(c_freq, 0.0, 0.0, harm, sr);
                     (c, a)
                 }
                 // §0 D1 #8 — Bell: A->C (feedback-heavy) and B1+B2 (fixed
                 // unison pair) -> C directly, both into carrier. Feedback: A
-                // (deep). X = full sum, Y = B-pair contribution alone (A
-                // muted) — same single-phase-advance-then-peek technique as
-                // Branch above.
+                // (deep, self-only — unaffected by `gain_a`). Both A's and
+                // the B-pair's hops into C cross their respective group
+                // boundaries, so `gain_a`/`gain_b` apply to each. Same
+                // single-phase-advance-then-peek technique as Branch above
+                // for the muted-A Y tap.
                 Algo::Bell => {
                     let a = self.op_a.tick(a_freq, 0.0, feedback, harm, sr);
+                    let a_mod = a * gain_a;
                     let b1 = self.op_b1.tick(b1_freq, 0.0, 0.0, 0.0, sr);
                     let b2 = self.op_b2.tick(b2_freq, 0.0, 0.0, 0.0, sr);
-                    let b_pair = (b1 + b2) * 0.5;
-                    let full_mod = a + b_pair;
+                    let b_pair_mod = (b1 + b2) * 0.5 * gain_b;
+                    let full_mod = a_mod + b_pair_mod;
                     let c_full = self.op_c.tick(c_freq, full_mod, 0.0, harm, sr);
-                    let y = harmonic_sine(self.op_c.phase + b_pair / tau, harm);
+                    let y = harmonic_sine(self.op_c.phase + b_pair_mod / tau, harm);
                     (c_full, y)
                 }
             };
@@ -534,6 +658,9 @@ impl ViewPlugin for FmVoice {
             // across commits — P14-C3/C4/C6 fill them in, they don't append
             // a new group after the fact.
             page_groups: Cow::Owned(vec![Cow::Borrowed("SRC"), Cow::Borrowed("AMP"), Cow::Borrowed("MOD")]),
+            // SYN2 (P14-C3) is SRC **sub-page 2** (slots 8-15), not a
+            // separate page_groups entry — ADR-043's post-ratification
+            // amendment 1 is explicit: "SYN1/SYN2 are SRC sub-pages 1/2."
             param_pages: Cow::Owned(vec![
                 src("algo", 0),
                 src("ratio_c", 1),
@@ -543,6 +670,14 @@ impl ViewPlugin for FmVoice {
                 src("detune", 5),
                 src("feedback", 6),
                 src("mix", 7),
+                src("atk_a", 8),
+                src("dec_a", 9),
+                src("end_a", 10),
+                src("lev_a", 11),
+                src("atk_b", 12),
+                src("dec_b", 13),
+                src("end_b", 14),
+                src("lev_b", 15),
             ]),
             macros: Cow::Borrowed(&[]),
             affordances: Cow::Borrowed(&[]),
@@ -598,6 +733,8 @@ impl Node for FmVoice {
         self.op_a.reset();
         self.op_b1.reset();
         self.op_b2.reset();
+        self.env_a = AdsrState::new();
+        self.env_b = AdsrState::new();
         self.current_note = 60;
         self.active = false;
         self.last_note = 60;
@@ -668,6 +805,7 @@ mod tests {
         TimedEvent, TransportInfo,
         UmpMessage, midi::{ChannelVoice2, Channeled, Grouped, NoteOn, u4, u7},
     };
+    use crate::engine_dsp::AdsrPhase;
 
     fn make_note_on(note: u8) -> TimedEvent {
         let mut msg = NoteOn::<[u32; 4]>::new();
@@ -829,5 +967,90 @@ mod tests {
         let out = run(&mut eng, &[]);
         assert!(eng.switch_fade.is_none(), "same-value switch must not start a fade");
         assert!(out.iter().any(|&s| s.abs() > 1e-3), "must keep sounding, no silence inserted");
+    }
+
+    /// Group A's mod envelope must actually reach `end_a` and hold there —
+    /// the P14-C3 spec's explicit test requirement. Reads the private
+    /// `env_a` field directly (same file, same crate) rather than inferring
+    /// convergence from audio output, since that's the actual state this
+    /// commit's SYN2 wiring is responsible for.
+    #[test]
+    fn syn2_group_a_envelope_reaches_end_level_and_holds() {
+        let mut eng = new_engine();
+        eng.bank.set(fp("atk_a"), 0.001);
+        eng.bank.set(fp("dec_a"), 0.05); // the declared minimum
+        eng.bank.set(fp("end_a"), 0.4);
+        run(&mut eng, &[make_note_on(60)]);
+        // 20 blocks * 512 samples ≈ 232 ms — comfortably past a 50 ms decay
+        // reaching AdsrState's 1e-4 Decay->Sustain convergence threshold.
+        for _ in 0..20 {
+            run(&mut eng, &[]);
+        }
+        assert!(
+            matches!(eng.env_a.phase, AdsrPhase::Sustain),
+            "expected group A envelope to reach Sustain"
+        );
+        assert!(
+            (eng.env_a.value - 0.4).abs() < 1e-2,
+            "expected envelope to hold at end_a=0.4, got {}",
+            eng.env_a.value
+        );
+    }
+
+    /// Mirror of the group A test above — without it, a copy-paste defect
+    /// (e.g. `dec_b` silently reading `dec_a`'s param, or `env_b` never
+    /// reaching Sustain) would slip past every other test in this file: the
+    /// `lev=0` test below only exercises `env_b` through `gain_b` being
+    /// multiplied by `lev_b=0`, which hides `env_b`'s own value entirely.
+    #[test]
+    fn syn2_group_b_envelope_reaches_end_level_and_holds() {
+        let mut eng = new_engine();
+        eng.bank.set(fp("atk_b"), 0.001);
+        eng.bank.set(fp("dec_b"), 0.05); // the declared minimum
+        eng.bank.set(fp("end_b"), 0.6);
+        run(&mut eng, &[make_note_on(60)]);
+        for _ in 0..20 {
+            run(&mut eng, &[]);
+        }
+        assert!(
+            matches!(eng.env_b.phase, AdsrPhase::Sustain),
+            "expected group B envelope to reach Sustain"
+        );
+        assert!(
+            (eng.env_b.value - 0.6).abs() < 1e-2,
+            "expected envelope to hold at end_b=0.6, got {}",
+            eng.env_b.value
+        );
+    }
+
+    /// `lev_a = lev_b = 0.0` must degenerate to a bare, unmodulated carrier
+    /// tone at `ratio_c`'s frequency — on **every** algorithm, not just one.
+    /// The gain-mapping rule (§0 D3) was applied by hand, separately, across
+    /// all 8 `Algo::` match arms — a single-algorithm test provides zero
+    /// regression protection for the other 7 (a missing or misplaced
+    /// `* gain_a`/`* gain_b` in, say, `Bell`'s arm would not be caught by a
+    /// `Stack`-only check). `op_c`'s own `feedback` argument is always 0.0
+    /// in every algorithm (D1's Feedback column never names C), so this
+    /// same reference carrier is valid for all 8.
+    #[test]
+    fn lev_zero_degenerates_to_pure_carrier_tone_on_every_algorithm() {
+        for algo in Algo::ALL {
+            let mut eng = new_engine();
+            set_algo(&mut eng, algo);
+            eng.bank.set(fp("harm"), 0.0);
+            run(&mut eng, &[]); // resolve the initial (instant, inactive) switch
+            eng.bank.set(fp("lev_a"), 0.0);
+            eng.bank.set(fp("lev_b"), 0.0);
+            let out = run(&mut eng, &[make_note_on(60)]);
+
+            let mut op_c_ref = FmOperator::new();
+            let base_hz = note_to_hz(60, 0.0);
+            let c_freq = base_hz * RATIO_TABLE[RATIO_DEFAULT_INDEX as usize]; // ratio_c default = 1.0
+            let velocity_scale = 32768.0_f32 / 65535.0; // matches make_note_on's fixed velocity
+            for (i, &got) in out.iter().enumerate() {
+                let want = op_c_ref.tick(c_freq, 0.0, 0.0, 0.0, 44100.0) * velocity_scale;
+                assert!((got - want).abs() < 1e-4, "{algo:?} sample {i}: got {got}, expected {want}");
+            }
+        }
     }
 }
