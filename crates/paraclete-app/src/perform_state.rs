@@ -116,6 +116,27 @@ impl PerformState {
             StateBusValue::Float(if self.perform_mode { 1.0 } else { 0.0 }),
         );
 
+        // 3.5. AN1 D11: the SAMPLING capability, derived from graph
+        // presence — gated on a live "recorder" node existing (a bare
+        // AudioInputNode with no recorder can't capture anything, so its
+        // presence alone doesn't make the screen useful; simplified from
+        // D11's original "input OR recorder" OR-check during C5
+        // implementation — see an1-anamnesis.md). Also publishes which
+        // node id the recorder is, since it's registry-constructed
+        // (unlike AudioInputNode's fixed id) and Theotokos has no other
+        // way to discover it.
+        let recorder_id = conf
+            .all_nodes()
+            .find(|(id, _)| conf.type_tag_for(*id) == Some("recorder"))
+            .map(|(id, _)| id);
+        conf.state_bus_write(
+            "/context/sampling_available",
+            StateBusValue::Float(if recorder_id.is_some() { 1.0 } else { 0.0 }),
+        );
+        if let Some(id) = recorder_id {
+            conf.state_bus_write("/context/recorder_id", StateBusValue::Int(id as i64));
+        }
+
         // 4. Publish /context/kits — the KIT screen's list source (P11 C6a):
         //    `idx:name` per non-empty slot, semicolon-separated, in slot
         //    order. Empty slots are omitted; the Theotokos resolves which

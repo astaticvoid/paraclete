@@ -196,6 +196,16 @@ pub struct RenderData {
     /// (`/context/kit_binding` + `/node/{seq}/state/active_pattern`) — the
     /// list's `◄ loaded` marker.
     pub kit_loaded_slot: Option<usize>,
+    /// AN1 C5: the live recorder's node id (`/context/recorder_id`, D11) —
+    /// `None` when `Screen::Sampling` is unreachable anyway (D12), so the
+    /// screen's own render code can assume `Some` once it's actually open.
+    pub recorder_id: Option<u32>,
+    /// AN1 C5: `/node/{recorder_id}/state/armed` — the threshold-arm
+    /// fired-edge (`recorder.rs`'s `published_state`), not a live "is
+    /// currently listening" toggle.
+    pub recorder_armed: bool,
+    /// AN1 C5: `/node/{recorder_id}/state/peak_db` — the live input meter.
+    pub recorder_peak_db: f64,
     /// P11 C6b: perform mode on (`/context/perform` ≥ 0.5) — the status
     /// bar's `⚡` indicator.
     pub perform_mode: bool,
@@ -239,6 +249,7 @@ pub fn render(frame: &mut Frame, data: &RenderData) {
             Screen::Chain => render_chain_screen(frame, chunks[1], data),
             Screen::Kit => render_kit_screen(frame, chunks[1], data),
             Screen::Mix => render_mix_screen(frame, chunks[1], data),
+            Screen::Sampling => render_sampling_screen(frame, chunks[1], data),
         }
     }
     render_track_indicator(frame, chunks[2], data);
@@ -391,6 +402,56 @@ fn render_kit_screen(frame: &mut Frame, area: Rect, data: &RenderData) {
     );
 }
 
+/// AN1 C5 (design.md §4): the SAMPLING screen. Scoped MVP — shows the
+/// live recorder's armed/peak state and a single "capture now" gesture
+/// (YES, 2 bars into the pool, no auto-assign — the `FUNC+9` transition
+/// trick is the assign-and-deliver composite, dispatched globally, not
+/// specific to this screen). Source selection, arm-mode toggling, a
+/// bar-count selector, and post-capture preview/trim/assign are design.md
+/// §4's fuller feature set — not built here; not implemented is not the
+/// same as not decided, see the AN1 report's deferred-items list.
+fn render_sampling_screen(frame: &mut Frame, area: Rect, data: &RenderData) {
+    let chunks = Layout::vertical([
+        Constraint::Length(1), // recorder id
+        Constraint::Length(1), // armed/peak meter
+        Constraint::Min(0),    // spacer
+        Constraint::Length(1), // gesture hint
+    ])
+    .split(area);
+
+    let id_text = match data.recorder_id {
+        Some(id) => format!(" recorder {id}"),
+        None => " (no recorder)".to_string(),
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(id_text, Style::default().fg(Color::Gray)))),
+        chunks[0],
+    );
+
+    let armed_text = if data.recorder_armed { "ARMED" } else { "idle" };
+    let armed_color = if data.recorder_armed { Color::Yellow } else { Color::Gray };
+    let peak_text = if data.recorder_peak_db.is_finite() {
+        format!("{:.1} dB", data.recorder_peak_db)
+    } else {
+        "-inf dB".to_string()
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(format!(" {armed_text}  "), Style::default().fg(armed_color)),
+            Span::styled(peak_text, Style::default().fg(Color::White)),
+        ])),
+        chunks[1],
+    );
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            " [YES] capture last 2 bars",
+            Style::default().fg(Color::White),
+        ))),
+        chunks[3],
+    );
+}
+
 fn screen_name(screen: Screen) -> &'static str {
     match screen {
         Screen::Grid => "GRID",
@@ -400,6 +461,7 @@ fn screen_name(screen: Screen) -> &'static str {
         Screen::Settings => "SETTINGS",
         Screen::Kit => "KIT",
         Screen::Mix => "MIX",
+        Screen::Sampling => "SAMPLING",
     }
 }
 
@@ -504,6 +566,19 @@ fn legend_chips_for_screen(screen: Screen, enc: bool) -> Vec<LegendChip> {
             Dynamic(No, "BACK"),
             Literal("Shift+8", "RE-OPEN"),
             Literal("trig N", "TRACK LEVEL"),
+            Literal("?", "HELP"),
+            Literal("^C", "QUIT"),
+        ],
+        Screen::Sampling => vec![
+            Dynamic(Yes, "CAPTURE"),
+            Dynamic(No, "BACK"),
+            // Review finding: `Dynamic` resolves only the bare key bound
+            // to the button (`9`) and renders `[9] <label>` — a `Dynamic`
+            // here would show `[9] FUNC = TRANSITION TRICK`, the bracket
+            // (this file's "press this key" convention everywhere else)
+            // paired with a label naming a *different* key. `Literal`
+            // spells the real chord directly instead.
+            Literal("FUNC+9", "TRANSITION TRICK"),
             Literal("?", "HELP"),
             Literal("^C", "QUIT"),
         ],
@@ -1431,7 +1506,7 @@ fn render_status_line(frame: &mut Frame, area: Rect, data: &RenderData) {
         // TK2 C6 builds these screens; until then, no stale slot A/B info
         // next to the "not yet implemented" placeholder (review finding,
         // post-C3 hostile review).
-        Screen::Tempo | Screen::Chain | Screen::Settings | Screen::Kit | Screen::Mix => {}
+        Screen::Tempo | Screen::Chain | Screen::Settings | Screen::Kit | Screen::Mix | Screen::Sampling => {}
     }
 
     let line = Line::from(spans);
@@ -1524,6 +1599,9 @@ impl RenderData {
             kit_cursor: 0,
             kit_list: vec![],
             kit_loaded_slot: None,
+            recorder_id: None,
+            recorder_armed: false,
+            recorder_peak_db: f64::NEG_INFINITY,
             perform_mode: false,
             pattern_muted_states: vec![false; track_count],
             mix_gains: vec![0.0; track_count],
@@ -1606,6 +1684,9 @@ mod tests {
             kit_cursor: 0,
             kit_list: vec![],
             kit_loaded_slot: None,
+            recorder_id: None,
+            recorder_armed: false,
+            recorder_peak_db: f64::NEG_INFINITY,
             perform_mode: false,
             pattern_muted_states: vec![false; 2],
             mix_gains: vec![0.0; 2],
@@ -1700,6 +1781,9 @@ mod tests {
             kit_cursor: 0,
             kit_list: vec![],
             kit_loaded_slot: None,
+            recorder_id: None,
+            recorder_armed: false,
+            recorder_peak_db: f64::NEG_INFINITY,
             perform_mode: false,
             pattern_muted_states: vec![false; 1],
             mix_gains: vec![0.0; 1],
@@ -2102,6 +2186,42 @@ mod tests {
             2,
             row
         );
+    }
+
+    /// AN1 C5: the SAMPLING screen renders the recorder's armed/peak
+    /// state and the capture-gesture hint.
+    #[test]
+    fn sampling_screen_renders_recorder_state_and_capture_hint() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Sampling, 1);
+        data.recorder_id = Some(210);
+        data.recorder_armed = true;
+        data.recorder_peak_db = -6.5;
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(text.contains("210"), "must show the recorder's node id; got: {text}");
+        assert!(text.contains("ARMED"), "armed state must render; got: {text}");
+        assert!(text.contains("-6.5"), "peak dB must render; got: {text}");
+        assert!(
+            text.contains("capture last 2 bars"),
+            "the capture gesture hint must render; got: {text}"
+        );
+    }
+
+    /// A never-armed, silent recorder must not claim to be armed or show
+    /// a bogus finite dB reading.
+    #[test]
+    fn sampling_screen_shows_idle_and_negative_infinity_before_any_signal() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let data = RenderData::for_test(Screen::Sampling, 1);
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let text = buffer_text(&terminal);
+        assert!(text.contains("idle"), "must show idle, not ARMED, by default; got: {text}");
+        assert!(text.contains("-inf"), "silence must show -inf dB, not a bogus finite value; got: {text}");
     }
 
     /// P11 C6a: the selected slot's name feeds the read-only encoder-bank

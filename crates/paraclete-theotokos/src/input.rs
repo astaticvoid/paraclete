@@ -719,6 +719,10 @@ pub struct ScreenState {
     /// active track**, and if so which step — pre-resolved by the caller
     /// (`lib.rs`) so this stays pure/testable without a `Model` reference.
     pub lock_target_step: Option<usize>,
+    /// AN1 D11: the SAMPLING capability, derived from graph presence
+    /// (`/context/sampling_available`, D11) and pre-resolved by the
+    /// caller — same "stays pure/testable" reasoning as `lock_target_step`.
+    pub sampling_available: bool,
 }
 
 /// FUNC (fixed Shift modifier, §0 A15 — not a `PanelButton`) and Ctrl
@@ -939,6 +943,16 @@ pub fn button_to_action(
         // TK2 C6 (D12): Tempo screen — YES taps, UP/DOWN nudge bpm (FUNC
         // = fine, ±0.1; bare = ±1).
         PanelButton::Yes if matches!(screen.screen, Screen::Tempo) => Action::TapTempo,
+        // AN1 C5: SAMPLING screen — bare YES captures (pool-only, no
+        // auto-assign). Review finding: capability passing to *open* the
+        // screen doesn't guarantee it still holds *now* — the recorder
+        // could have been removed by a live rebuild while the screen sat
+        // open (§2.3's staleness case) — so this re-checks
+        // `sampling_available` rather than trusting screen reachability
+        // alone.
+        PanelButton::Yes if matches!(screen.screen, Screen::Sampling) && screen.sampling_available => {
+            Action::SamplingScreenCapture
+        }
         PanelButton::Up if matches!(screen.screen, Screen::Tempo) => {
             Action::NudgeBpm(if mods.func { 0.1 } else { 1.0 })
         }
@@ -961,9 +975,20 @@ pub fn button_to_action(
         // perform mode (AppOp::SetPerformMode).
         PanelButton::Kit if mods.func => Action::TogglePerformMode,
         PanelButton::Kit => Action::OpenScreen(Screen::Kit),
-        // D12: SAMPLING is hidden entirely unless some capability
-        // declares it (none does today) — a plain no-op, not even an
-        // echo (unlike KIT).
+        // AN1 C5 (D11/D12): SAMPLING is capability-gated, derived from
+        // graph presence — `screen.sampling_available` is pre-resolved by
+        // the caller from `/context/sampling_available`. FUNC+SAMPLING is
+        // R2's frozen transition-trick chord, checked and ordered before
+        // the bare arm exactly like FUNC+KIT above. Without the
+        // capability this is still a plain no-op, not even an echo,
+        // regardless of FUNC — matching D12's original "hidden entirely"
+        // contract for an instrument with no recorder.
+        PanelButton::Sampling if mods.func && screen.sampling_available => {
+            Action::CaptureTransition
+        }
+        PanelButton::Sampling if screen.sampling_available => {
+            Action::OpenScreen(Screen::Sampling)
+        }
         PanelButton::Sampling => Action::Noop,
         // §2/D12 name no "return to Grid" gesture anywhere — found live in
         // the TK2 C7 agent smoke pass: Settings/Tempo/Param were dead
@@ -997,6 +1022,7 @@ mod tests {
             rec: RecMode::Grid,
             enc: false,
             lock_target_step: None,
+            sampling_available: false,
         }
     }
 
@@ -1157,6 +1183,7 @@ mod tests {
             rec: RecMode::Off,
             enc: false,
             lock_target_step: None,
+            sampling_available: false,
         };
         let held = HeldState::new(false);
         let no_mods = Mods::default();
@@ -1187,6 +1214,7 @@ mod tests {
             rec: RecMode::Off,
             enc: false,
             lock_target_step: None,
+            sampling_available: false,
         };
         let held = HeldState::new(false);
         let func = Mods {
@@ -1197,6 +1225,48 @@ mod tests {
         assert!(matches!(up, Action::KitListScroll(Dir::Prev)));
         let down = button_to_action(&held, &screen, PanelButton::Trig9, func);
         assert!(matches!(down, Action::KitListScroll(Dir::Next)));
+    }
+
+    /// AN1 C5: bare/FUNC SAMPLING opens the screen / fires the transition
+    /// trick only while the capability holds; matches KIT's ordering.
+    #[test]
+    fn sampling_capability_gates_both_bare_and_func_arms() {
+        let held = HeldState::new(false);
+        let func = Mods { func: true, ctrl: false };
+        let available = ScreenState { sampling_available: true, ..default_grid() };
+        let unavailable = default_grid(); // sampling_available: false
+
+        assert!(matches!(
+            button_to_action(&held, &available, PanelButton::Sampling, Mods::default()),
+            Action::OpenScreen(Screen::Sampling)
+        ));
+        assert!(matches!(
+            button_to_action(&held, &available, PanelButton::Sampling, func),
+            Action::CaptureTransition
+        ));
+        assert!(matches!(
+            button_to_action(&held, &unavailable, PanelButton::Sampling, Mods::default()),
+            Action::Noop
+        ));
+        assert!(matches!(
+            button_to_action(&held, &unavailable, PanelButton::Sampling, func),
+            Action::Noop
+        ));
+    }
+
+    /// Review finding: a stale `sampling_available` (the recorder removed
+    /// while the SAMPLING screen sat open — §2.3's staleness case) must
+    /// not let bare YES fire a capture anyway. Screen reachability alone
+    /// (`screen.screen == Sampling`) is not the same guarantee as the
+    /// capability holding *right now*.
+    #[test]
+    fn sampling_screen_yes_is_a_noop_once_capability_goes_stale() {
+        let held = HeldState::new(false);
+        let stale = ScreenState { screen: Screen::Sampling, sampling_available: false, ..default_grid() };
+        assert!(matches!(
+            button_to_action(&held, &stale, PanelButton::Yes, Mods::default()),
+            Action::Noop
+        ));
     }
 
     /// P11 C6a/C6b: bare KIT opens the KIT screen; FUNC+KIT toggles
@@ -1233,6 +1303,7 @@ mod tests {
             rec: RecMode::Off,
             enc: false,
             lock_target_step: None,
+            sampling_available: false,
         };
         let reload_chain = button_to_action(&held, &chain_screen, PanelButton::No, func);
         assert!(matches!(reload_chain, Action::TempReload));
@@ -1435,6 +1506,7 @@ mod tests {
             rec: RecMode::Off,
             enc: true,
             lock_target_step: None,
+            sampling_available: false,
         };
         let action = button_to_action(&held, &screen, PanelButton::Trig3, Mods::default());
         assert!(
@@ -1452,6 +1524,7 @@ mod tests {
             rec: RecMode::Off,
             enc: false,
             lock_target_step: None,
+            sampling_available: false,
         };
         let action = button_to_action(&held, &screen, PanelButton::Trig1, Mods::default());
         assert!(
@@ -1477,6 +1550,7 @@ mod tests {
             rec: RecMode::Off,
             enc: true,
             lock_target_step: None,
+            sampling_available: false,
         };
         let action = button_to_action(&held, &screen, PanelButton::Trig5, Mods::default());
         assert!(
@@ -1493,6 +1567,7 @@ mod tests {
             rec: RecMode::Off,
             enc: true,
             lock_target_step: None,
+            sampling_available: false,
         };
         let coarse = button_to_action(
             &held,
@@ -1525,6 +1600,7 @@ mod tests {
             rec: RecMode::Off,
             enc: true,
             lock_target_step: None,
+            sampling_available: false,
         };
         // Top row (Trig1, col 0 < 8) = +1.
         let up = button_to_action(
@@ -1556,6 +1632,7 @@ mod tests {
                 rec: RecMode::Off,
                 enc: false,
                 lock_target_step: None,
+                sampling_available: false,
             },
             PanelButton::Trig1,
             Mods { func: true, ctrl: true },
@@ -1624,6 +1701,7 @@ mod tests {
             rec: RecMode::Off,
             enc: false,
             lock_target_step: None,
+            sampling_available: false,
         };
         let action = button_to_action(&held, &screen, PanelButton::Trig5, Mods::default());
         assert!(matches!(action, Action::LockTargetRefused(4)));
@@ -1638,6 +1716,7 @@ mod tests {
             rec: RecMode::Grid,
             enc: false,
             lock_target_step: Some(4),
+            sampling_available: false,
         };
         let action = button_to_action(&held, &screen, PanelButton::Trig5, Mods::default());
         assert!(matches!(action, Action::ClearLockTarget));
@@ -1666,6 +1745,7 @@ mod tests {
             rec: RecMode::Off,
             enc: false,
             lock_target_step: None,
+            sampling_available: false,
         };
         let action = button_to_action(&held, &screen, PanelButton::Trig3, Mods::default());
         assert!(matches!(action, Action::LiveTrig { col: 2 }));
@@ -1675,6 +1755,7 @@ mod tests {
             rec: RecMode::Live,
             enc: false,
             lock_target_step: None,
+            sampling_available: false,
         };
         let action = button_to_action(&held, &live_screen, PanelButton::Trig3, Mods::default());
         assert!(
@@ -1719,6 +1800,7 @@ mod tests {
             rec: RecMode::Off,
             enc: false,
             lock_target_step: None,
+            sampling_available: false,
         };
         let action = button_to_action(&held, &screen, PanelButton::Trig5, Mods::default());
         assert!(matches!(action, Action::SelectTrack(4)));

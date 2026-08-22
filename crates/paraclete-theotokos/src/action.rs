@@ -158,6 +158,17 @@ pub enum Action {
     TempSave,
     /// C6c: FUNC+NO — `AppOp::TempReload`.
     TempReload,
+    /// AN1 C5, R2's frozen requirement: FUNC+SAMPLING — the one-gesture
+    /// transition trick (`AppOp::CaptureTransition`). Dispatched directly
+    /// in `lib.rs` — needs the selected track's recorder/sampler ids,
+    /// which this enum has no way to carry. Bare SAMPLING reuses the
+    /// existing `Action::OpenScreen(Screen::Sampling)`, same as KIT.
+    CaptureTransition,
+    /// AN1 C5: bare YES on the SAMPLING screen — a plain capture (pool
+    /// only, no auto-assign; design.md §4's Retro row, scoped MVP: a
+    /// fixed 2-bar span, not yet a selectable bar count). Dispatched
+    /// directly in `lib.rs` for the same reason as `CaptureTransition`.
+    SamplingScreenCapture,
 }
 
 #[derive(Debug)]
@@ -220,7 +231,9 @@ impl Action {
             | Action::KitReload
             | Action::TogglePerformMode
             | Action::TempSave
-            | Action::TempReload => Outcome::StateOnly,
+            | Action::TempReload
+            | Action::CaptureTransition
+            | Action::SamplingScreenCapture => Outcome::StateOnly,
             Action::PlayToggle => {
                 if playing {
                     Outcome::Command(NodeCommand {

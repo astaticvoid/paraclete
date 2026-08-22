@@ -514,11 +514,17 @@ impl TheotokosApp {
 
                     let mut held_for_resolution = HeldState::new(self.held.kitty);
                     held_for_resolution.armed = armed_before;
+                    // AN1 D11: derived from graph presence, published by
+                    // the app main loop alongside /context/perform.
+                    let sampling_available = state
+                        .read("/context/sampling_available")
+                        .is_some_and(|v| matches!(v, StateBusValue::Float(f) if *f >= 0.5));
                     let screen_state = input::ScreenState {
                         screen: self.model.screen,
                         rec: self.model.rec,
                         enc: self.model.enc,
                         lock_target_step: lock_target_step_before,
+                        sampling_available,
                     };
                     // P11 C6 (OQ-T25, user decision 2026-08-02): a bare NO
                     // press while the transport plays arms live erase on
@@ -1473,6 +1479,69 @@ impl TheotokosApp {
                         .push(paraclete_node_api::app_op::AppOp::TempReload);
                     dirty = true;
                 }
+                // AN1 C5, R2's frozen requirement: FUNC+SAMPLING.
+                // recorder_id comes from /context/recorder_id (D11 — the
+                // dispatch match already gated this on
+                // sampling_available, so a live recorder is expected to
+                // exist); sampler_id is the selected track's engine node.
+                // A missing recorder_id (a race with the capability
+                // flipping off between dispatch and here) or a selected
+                // track with no tracks at all is a silent no-op, not a
+                // panic — the same tolerance every other id-resolution
+                // path in this file already takes.
+                // Review finding: the selected track's engine is not
+                // necessarily a Sampler (the default instrument.yaml
+                // wires all four tracks to AnalogEngine/FmEngine voices),
+                // and neither SwapSample's default no-op nor
+                // CMD_SET_PARAM's unknown-param-id tolerance would ever
+                // surface that — silence, with no state change to notice
+                // (dirty was only ever set on the success path). `track.
+                // name` is the cap-doc name (`"Sampler"` for a real one,
+                // TrackInfo's own doc comment) — checked before dispatch,
+                // with a visible cmdline_error on mismatch instead of a
+                // silent no-op.
+                Action::CaptureTransition => {
+                    self.model.cmdline_error = None;
+                    if let (Some(recorder_id), Some(track)) = (
+                        state.read("/context/recorder_id").and_then(|v| match v {
+                            paraclete_node_api::StateBusValue::Int(id) => Some(*id as u32),
+                            _ => None,
+                        }),
+                        self.model.tracks.get(self.model.active_track),
+                    ) {
+                        if track.name == "Sampler" {
+                            self.pending_app_ops.push(
+                                paraclete_node_api::app_op::AppOp::CaptureTransition {
+                                    recorder_id,
+                                    sampler_id: track.generator_id,
+                                },
+                            );
+                        } else {
+                            self.model.cmdline_error =
+                                Some(format!("transition trick needs a Sampler track (this is {})", track.name));
+                        }
+                        dirty = true;
+                    }
+                }
+                // AN1 C5: bare YES on the SAMPLING screen — a plain
+                // capture (design.md §4's Retro row, scoped MVP: fixed 2
+                // bars, no bar-count selector or auto-assign yet).
+                Action::SamplingScreenCapture => {
+                    if let Some(recorder_id) =
+                        state.read("/context/recorder_id").and_then(|v| match v {
+                            paraclete_node_api::StateBusValue::Int(id) => Some(*id as u32),
+                            _ => None,
+                        })
+                    {
+                        self.pending_app_ops.push(
+                            paraclete_node_api::app_op::AppOp::RecorderCapture {
+                                recorder_id,
+                                bars: 2.0,
+                            },
+                        );
+                        dirty = true;
+                    }
+                }
             }
         }
         drop(bus_ref);
@@ -2117,6 +2186,38 @@ pub fn build_render_data(
         let perform_mode = bus
             .read("/context/perform")
             .is_some_and(|v| matches!(v, StateBusValue::Float(f) if *f >= 0.5));
+        // AN1 C5: SAMPLING screen state — `/context/recorder_id` (D11)
+        // names the live recorder; its own published state is read once
+        // that id is known. Review finding: `/context/recorder_id` is
+        // only ever rewritten while a recorder actually exists
+        // (perform_state.rs), so it goes stale — not cleared — the
+        // moment one is removed mid-session (a live rebuild). Gating on
+        // `sampling_available` (rewritten unconditionally every tick)
+        // rather than trusting a merely-present `recorder_id` means a
+        // removed recorder reads back as the documented idle/-inf state
+        // instead of whatever it last published.
+        let sampling_available = bus
+            .read("/context/sampling_available")
+            .is_some_and(|v| matches!(v, StateBusValue::Float(f) if *f >= 0.5));
+        let recorder_id = if sampling_available {
+            bus.read("/context/recorder_id").and_then(|v| match v {
+                StateBusValue::Int(id) => Some(*id as u32),
+                _ => None,
+            })
+        } else {
+            None
+        };
+        let recorder_armed = recorder_id.is_some_and(|id| {
+            bus.read(&format!("/node/{id}/state/armed"))
+                .is_some_and(|v| matches!(v, StateBusValue::Float(f) if *f >= 0.5))
+        });
+        let recorder_peak_db = recorder_id
+            .and_then(|id| bus.read(&format!("/node/{id}/state/peak_db")))
+            .and_then(|v| match v {
+                StateBusValue::Float(db) => Some(*db),
+                _ => None,
+            })
+            .unwrap_or(f64::NEG_INFINITY);
         // P11 C6e: per-track pattern-mute state for the track indicator.
         let pattern_muted_states: Vec<bool> = model
             .tracks
@@ -2342,6 +2443,9 @@ pub fn build_render_data(
             kit_cursor: model.kit_cursor,
             kit_list,
             kit_loaded_slot,
+            recorder_id,
+            recorder_armed,
+            recorder_peak_db,
             perform_mode,
             pattern_muted_states,
             mix_gains,
@@ -5483,6 +5587,11 @@ mod tests {
         assert_eq!(app.model.screen, Screen::Kit);
     }
 
+    /// D12's original contract, still true for an instrument that
+    /// declares no recorder (a Digitone/Syntakt-alike) — AN1 C5 changes
+    /// what happens when a capability *is* declared (see
+    /// `sampling_opens_when_capability_is_declared`, below), not this
+    /// unarmed baseline.
     #[test]
     fn sampling_hidden_without_capability() {
         let bus = test_bus();
@@ -5501,6 +5610,92 @@ mod tests {
         assert_eq!(
             app.model.screen, screen_before,
             "SAMPLING must not navigate anywhere"
+        );
+    }
+
+    /// AN1 C5 (D11/D12): the complement of `sampling_hidden_without_
+    /// capability` — once the app publishes `/context/sampling_available`
+    /// (a live recorder exists), bare SAMPLING opens the screen exactly
+    /// like KIT does, and NO returns to Grid via the same generic
+    /// back-gesture every other screen already gets.
+    #[test]
+    fn sampling_opens_when_capability_is_declared() {
+        let bus = test_bus();
+        bus.borrow_mut().write(
+            "/context/sampling_available",
+            paraclete_node_api::StateBusValue::Float(1.0),
+        );
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+
+        app.handle_keys(&bus, &[kc('9')]);
+        assert_eq!(app.model.screen, Screen::Sampling);
+
+        app.handle_keys(&bus, &[KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)]);
+        assert_eq!(app.model.screen, Screen::Grid, "NO/Esc must still return to Grid");
+    }
+
+    /// AN1 C5, R2's frozen requirement: FUNC+SAMPLING pushes
+    /// `AppOp::CaptureTransition` with the selected track's own
+    /// generator_id as the target — from *any* screen, not just while on
+    /// SAMPLING (design.md's "one chord while the pattern plays"). Fires
+    /// it from `Screen::Kit`, not the default `Screen::Grid`, so the
+    /// claim is actually exercised, not just true of code that happens
+    /// not to have a screen guard yet.
+    #[test]
+    fn func_sampling_pushes_capture_transition_for_the_selected_track() {
+        let bus = test_bus();
+        {
+            let mut b = bus.borrow_mut();
+            b.write(
+                "/context/sampling_available",
+                paraclete_node_api::StateBusValue::Float(1.0),
+            );
+            b.write("/context/recorder_id", paraclete_node_api::StateBusValue::Int(210));
+        }
+        // `track.name` must be the cap-doc name "Sampler" — CaptureTransition
+        // refuses to target a non-Sampler engine (review finding).
+        let mut app = test_app(1, vec![200], vec![100], vec!["Sampler".into()]);
+        app.model.screen = Screen::Kit;
+
+        app.handle_keys(&bus, &[func_key('9')]);
+        assert_eq!(app.pending_app_ops.len(), 1);
+        match &app.pending_app_ops[0] {
+            paraclete_node_api::app_op::AppOp::CaptureTransition { recorder_id, sampler_id } => {
+                assert_eq!(*recorder_id, 210);
+                assert_eq!(*sampler_id, 100, "must target the selected track's generator_id");
+            }
+            other => panic!("expected CaptureTransition, got {other:?}"),
+        }
+        assert!(app.model.cmdline_error.is_none());
+    }
+
+    /// Review finding: the selected track's engine might not be a
+    /// Sampler at all (the default `instrument.yaml` wires every track
+    /// to AnalogEngine/FmEngine voices) — SwapSample's default no-op and
+    /// CMD_SET_PARAM's unknown-param-id tolerance would otherwise let
+    /// this fail completely silently. Must refuse with a visible
+    /// cmdline_error instead of pushing a doomed AppOp.
+    #[test]
+    fn func_sampling_refuses_a_non_sampler_track_with_a_visible_error() {
+        let bus = test_bus();
+        {
+            let mut b = bus.borrow_mut();
+            b.write(
+                "/context/sampling_available",
+                paraclete_node_api::StateBusValue::Float(1.0),
+            );
+            b.write("/context/recorder_id", paraclete_node_api::StateBusValue::Int(210));
+        }
+        let mut app = test_app(1, vec![200], vec![100], vec!["AnalogKick".into()]);
+
+        app.handle_keys(&bus, &[func_key('9')]);
+        assert!(
+            app.pending_app_ops.is_empty(),
+            "must not push CaptureTransition for a non-Sampler track"
+        );
+        assert!(
+            app.model.cmdline_error.is_some(),
+            "must surface a visible error, not fail silently"
         );
     }
 

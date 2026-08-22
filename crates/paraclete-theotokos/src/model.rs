@@ -77,6 +77,12 @@ pub enum Screen {
     /// track `input_gain_{n}` on MixNode, column 8 jogs `master_gain`.
     /// Opened by FUNC+8 (Settings is on bare 8).
     Mix,
+    /// AN1 C5: the SAMPLING screen — Source row, Arm row (manual/
+    /// threshold), Monitor toggle, Retro row, post-capture preview/assign
+    /// (design.md §4). Capability-gated (D11/D12) — opened by the
+    /// SAMPLING button (9), only reachable when a recorder/input node is
+    /// live; ESC returns to Grid.
+    Sampling,
 }
 
 /// TK2.1 C1 (D5): replaces `grid_rec: bool`. `Off` (default) and `Live`
