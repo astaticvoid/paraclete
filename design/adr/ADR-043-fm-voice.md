@@ -129,9 +129,51 @@ family; `FmVoice` is the melodic instrument.
    crossfades X/Y. All eight algorithms follow this description format
    in the P14 spec.
 
-## Implementation note (to be added when implemented)
+## Implementation note
 
 ```text
-ADR-043 implemented across P14 (YYYY-MM-DD).
-See design/phases/p14-*.md for the commit plans.
+ADR-043 implemented across P14 (2026-08-22), commits P14-C0 through P14-C9.
+See design/phases/p14-fm-voice.md for the commit plans and §0 for the
+musical tables (algorithm routing, ratio set, harm formula, macro
+recipes) the user delegated to the agent rather than freezing by ear.
 ```
+
+**Where each decision landed.** The operator model (decision 1) is
+`FmOperator` (`engine_dsp.rs`, P14-C1) — four operators (C/A/B1/B2)
+composed per algorithm in `FmVoice::process_algo` (P14-C2), the eight
+algorithms exactly as named in the spec's §0 D1 table (a superset of the
+one normative example this ADR's amendment 4 required). SYN1/SYN2 (decisions
+2-3) are SRC sub-pages 1/2 as amendment 1 requires (P14-C2/C3); the gated
+voice model amendment 3 named as a foundational work-package is `AdsrState`
++ `NoteStack` (P14-C0, unhosted per MM-C8's precedent) plus `NoteOff`
+consumption and the retrig/legato split (P14-C4/C5). Macro tier (decision
+5) is ADR-041 `MachineVariant`s over the same union bank, six macros plus
+Full (P14-C7) — machine-select sits on TRIG per amendment 2. MOD page
+(decision 6) is `LfoBlock`/`LfoHost` from P14-C6, a 26-entry dest table
+excluding `algo`/`env_reset` as topology/behavior selectors. DSP ground
+rules (decision 7): no allocation anywhere in the render path; `harm`'s
+additive-harmonic formula (not a fixed waveform crossfade — the spec's own
+§0 D3 ruling, made in the user's stead per their delegation) is peak-safe
+by the triangle inequality but not loudness-preserving (OQ-P14-4, unfixed,
+named for a future gain-compensation decision); anti-click on algo/machine
+switch via two independent `SwitchFade`-style mechanisms (P14-C2/C7).
+
+Two real bugs surfaced and fixed during implementation are worth recording
+here since they bear on the "gated voice model" this ADR named as risky:
+self-feedback folded into a *running* phase accumulator converges to a
+fixed point and goes silent (P14-C1, fixed by keeping the phase clock
+purely frequency-driven); `FmVoice` shipped through P14-C4/C8 with no
+`CMD_TRIGGER` handler and a NoteOff dispatch bug that re-attacked a
+still-sounding chord note when an *inner* note released (both found while
+wiring P14-C9's baseline scenario, fixed as a standalone prerequisite —
+see that commit). Node id **28**, single type_tag `"fm_voice"` — a
+deliberate deviation from this engine family's own `fm_engine:kick|bell|
+bass` per-machine-tag convention, named and justified in the P14 spec's
+C8 bullet.
+
+**Outstanding, by design:** a live `machine` switch does not auto-apply a
+macro's recipe (matches `FmEngine`'s own precedent exactly) — the six
+macros only sound distinct via P14-C9's reference-patch timelines, not a
+bare switch; the roadmap's "baseline patches + session" gate is a
+playability/UI session, not a tuning-by-ear one, since the user delegated
+the musical judgment outright rather than freezing it by ear.

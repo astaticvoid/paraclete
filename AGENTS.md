@@ -86,6 +86,7 @@ Platform crates (all GPL3): `paraclete-antiphon`, `paraclete-clap`, `paraclete-c
 | 20–22 | `AnalogEngine` (kick/snare/hihat) |
 | 23–26 | `Sampler[3–6]` |
 | 27 | `FmEngine::bass()` |
+| 28 | `FmVoice` (ADR-043, `machine`-switchable Full + 6 macros) |
 | 30–37 | `DistortionNode[0–7]` |
 | 40–47 | `FilterNode[0–7]` |
 | 60 | `AudioOutput` (also Sampler's default `root_note`) |
