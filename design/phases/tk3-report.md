@@ -1,6 +1,9 @@
 # TK3 — Theotokos Phase Report
 
-> **Status: code-complete, awaiting session #6.**
+> **Status: code-complete. Sessions #6 and #7 held — T1–T6 and §6.2
+> resolved; T7 (does the feature set as a whole improve playability) is
+> still outstanding.** See `design/sessions/theotokos-6.md` and
+> `design/sessions/theotokos-7.md`.
 >
 > **Baseline:** P11 closed, MM closed, TK2.2 closed. `cargo test --workspace`
 > green at baseline.
@@ -209,7 +212,7 @@ tracked milestone, not a silent skip.
 | 3 | Each commit carries unit tests for the new logic | ✅ |
 | 4 | C0's step-detail bus path verified by unit test | ✅ |
 | 5 | Code review (Flash) on each commit or logical batch | ✅ full-round review completed |
-| 6 | **Usability session #6** | ⏳ pending (needs user) |
+| 6 | **Usability session #6** | ✅ held 2026-08-06; T6/T7/§6.2 deferred to user — see session #7 |
 
 ---
 
@@ -228,13 +231,27 @@ tracked milestone, not a silent skip.
 
 ---
 
-## Session #6 gate
+## Session #6 and #7 results
 
-The phase closes with usability session #6
-(`design/sessions/theotokos-6.md`). The user plays the instrument with
-the MIX screen, modifier highlight, step-size scaling, and global tap
-tempo. Findings recorded in the session notes. The MIX screen key
-binding (`FUNC+8`) is tunable — session #6 may reassign.
+Session #6 (`design/sessions/theotokos-6.md`, 2026-08-06) verified T1–T5
+PASS and found/fixed one blocker (the TRIG page virtual-params bug), then
+left T6 (MIX key binding), T7 (overall playability), and §6.2 (params
+across a machine round-trip) for user verdict.
 
-After session #6 concludes and the phase is signed off, close milestone
-18 (`TK3 — Theotokos session track`).
+Session #7 (`design/sessions/theotokos-7.md`, 2026-08-21) resolved two of
+those three: **T6 accepted** (with two follow-on fixes — `FUNC` hints
+renamed to the literal `Shift`, and `Shift+8` made discoverable from
+Grid's own hint bar) and **§6.2 verified PASS**. It also found and fixed
+five live bugs that weren't on either session's original agenda (stuck
+SHIFT/CTRL chip, hidden-vs-dimmed TRK-hold key hints, and the `:` cmdline
+double-typing every character on kitty, among them). **T7 was not
+reached** — the session ended before that round.
+
+## Gate
+
+The phase closes once T7 is resolved: does the TK3 feature set as a whole
+improve playability? That needs a live session of just playing the
+instrument, not a targeted check like T6/§6.2 were.
+
+After T7 is resolved and the phase is signed off, close milestone 18
+(`TK3 — Theotokos session track`).
