@@ -3,10 +3,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use paraclete_node_api::{
-    AudioBuffer, AudioProcessor, DebugEvent, Event, EventOutputBuffer, ExtendedEventSlab,
-    NodeCommand, ProcessInput, ProcessOutput, SampleData, SignalInputSlot, SignalOutputSlot,
-    SignalPortKind, StateBusValue, SurfaceOutput, SwapSample, TimedEvent, TransportEvent,
-    TransportInfo,
+    AudioBuffer, AudioProcessor, CaptureBufferReturn, DebugEvent, Event, EventOutputBuffer,
+    ExtendedEventSlab, NodeCommand, ProcessInput, ProcessOutput, RecorderCapture, SampleData,
+    SignalInputSlot, SignalOutputSlot, SignalPortKind, StateBusValue, SurfaceOutput, SwapSample,
+    TimedEvent, TransportEvent, TransportInfo,
 };
 
 use crate::configurator::{LoopBackEdge, NodeOrDevice};
@@ -155,6 +155,27 @@ pub struct NodeExecutor {
     /// this has spare capacity, so it can never exceed that bound —
     /// backpressure, not an unbounded queue.
     pending_sample_drops: Vec<Arc<SampleData>>,
+
+    /// Capture-transfer plane (AN1, `an1-anamnesis.md` D9). Forward: this
+    /// → configurator, a `RecorderNode`'s fulfilled capture request.
+    capture_producer: rtrb::Producer<RecorderCapture>,
+    /// Return: configurator → this, hands a drained capture buffer back
+    /// to its originating `RecorderNode`.
+    capture_return_consumer: rtrb::Consumer<CaptureBufferReturn>,
+    /// Same backpressure idiom as `pending_sample_drops` (D7), applied to
+    /// the capture-forward leg: a `RecorderCapture` that didn't fit on
+    /// `capture_producer` this cycle, held for retry next cycle.
+    /// Pre-allocated, never grown.
+    pending_capture_backlog: Vec<RecorderCapture>,
+    /// A `CaptureBufferReturn` whose `node_id` didn't resolve to a live
+    /// `Node` (removed by a `rebuild_executor()` racing an in-flight
+    /// capture — see `drain_capture_returns`). Held here, never touched
+    /// again, rather than dropped in place on the audio thread. Distinct
+    /// from `pending_capture_backlog`: that queue is forward-direction
+    /// (destined for `capture_producer`, main-thread-bound) and must never
+    /// carry a placeholder — a fabricated zero-frame `RecorderCapture`
+    /// would look like a genuine completed capture to whoever drains it.
+    orphaned_capture_buffers: Vec<Box<[f32]>>,
 }
 
 struct NodeSlot {
@@ -214,6 +235,9 @@ impl NodeExecutor {
         asset_swap_consumer: rtrb::Consumer<SwapSample>,
         asset_return_producer: rtrb::Producer<Arc<SampleData>>,
         asset_return_capacity: usize,
+        capture_producer: rtrb::Producer<RecorderCapture>,
+        capture_return_consumer: rtrb::Consumer<CaptureBufferReturn>,
+        capture_forward_capacity: usize,
     ) -> Self {
         let node_id_to_slot: HashMap<u32, usize> = nodes
             .iter()
@@ -316,6 +340,22 @@ impl NodeExecutor {
             asset_swap_consumer,
             asset_return_producer,
             pending_sample_drops: Vec::with_capacity(asset_return_capacity),
+            capture_producer,
+            capture_return_consumer,
+            pending_capture_backlog: Vec::with_capacity(capture_forward_capacity),
+            // Review finding: this must be pre-allocated like its siblings
+            // (pending_sample_drops, pending_capture_backlog) — an orphan
+            // is rare but not impossible (D6's single RecorderNode being
+            // removed by a rebuild_executor() racing an in-flight
+            // capture), and `Vec::new()` here would mean the *first* such
+            // push allocates on the audio thread, the exact hazard this
+            // whole return-leg mechanism exists to avoid. Reusing
+            // capture_forward_capacity as the bound — orphans can only
+            // ever originate from returns of captures this same executor
+            // generation produced, so it's the same order of magnitude as
+            // the forward-leg backlog, not a scenario needing its own
+            // dedicated constant.
+            orphaned_capture_buffers: Vec::with_capacity(capture_forward_capacity),
         }
     }
 
@@ -499,6 +539,79 @@ impl NodeExecutor {
         }
     }
 
+    /// Deliver queued `CaptureBufferReturn`s to their originating
+    /// `RecorderNode`s (AN1 D9's return leg). Unbounded pop — this ring is
+    /// small (`CAPTURE_RETURN_RING_CAPACITY`) and gesture-rate, not a
+    /// per-block flow, so there's no backpressure concern symmetric to
+    /// `drain_asset_swaps`'s. An unresolved `node_id` (the recorder was
+    /// removed by a `rebuild_executor()` since the buffer was sent) holds
+    /// the orphaned buffer in `orphaned_capture_buffers` (pre-allocated,
+    /// review finding — see its own field doc) rather than dropping it in
+    /// place — the same hard-constraint reasoning `drain_asset_swaps`
+    /// documents: an audio-thread `free()` is exactly as unsafe as an
+    /// audio-thread `alloc()`, so there is no node to route it to is not
+    /// license to let it fall out of scope. This is a
+    /// genuinely rare path (AN1 ships exactly one `RecorderNode`, D6; it
+    /// would take a topology edit racing an in-flight capture to trigger).
+    /// `orphaned_capture_buffers` is pre-allocated at
+    /// `capture_forward_capacity`, generous relative to the true worst
+    /// case: at most `SCRATCH_POOL_SIZE` (2, `recorder.rs`) captures can
+    /// ever be outstanding from one recorder at once, so at most that many
+    /// orphans can ever accumulate across one executor generation's
+    /// lifetime, well under this bound. Revisit the bound if D6 is ever
+    /// relaxed to more than one simultaneous recorder.
+    fn drain_capture_returns(&mut self) {
+        while let Ok(msg) = self.capture_return_consumer.pop() {
+            let slot_idx = self.node_id_to_slot.get(&msg.node_id).copied();
+            match slot_idx.map(|i| &mut self.nodes[i].kind) {
+                Some(NodeOrDevice::Node(node)) => node.return_capture_buffer(msg.buf),
+                _ => self.orphaned_capture_buffers.push(msg.buf),
+            }
+        }
+    }
+
+    /// Try to flush `pending_capture_backlog` onto `capture_producer`,
+    /// oldest leftover first — same shape as `flush_pending_sample_drops`.
+    fn flush_pending_capture_backlog(&mut self) {
+        while let Some(capture) = self.pending_capture_backlog.pop() {
+            if let Err(rtrb::PushError::Full(returned)) = self.capture_producer.push(capture) {
+                self.pending_capture_backlog.push(returned);
+                break;
+            }
+        }
+    }
+
+    /// Collect any node's completed capture (`Node::drain_pending_capture`)
+    /// and forward it to the configurator (AN1 D8-D9's forward leg).
+    /// Called once per cycle, after every node's `process()` has run, so a
+    /// `RecorderNode` that just fulfilled a `CMD_RECORDER_CAPTURE` this
+    /// cycle is collected the same cycle. Backpressure mirrors
+    /// `drain_asset_swaps`'s D7 idiom exactly: a capture that doesn't fit
+    /// on `capture_producer` is held in `pending_capture_backlog`
+    /// (pre-allocated, retried next cycle) rather than blocking or
+    /// dropping.
+    fn deliver_pending_captures(&mut self) {
+        self.flush_pending_capture_backlog();
+        for slot in &mut self.nodes {
+            if let NodeOrDevice::Node(node) = &mut slot.kind {
+                if let Some(capture) = node.drain_pending_capture() {
+                    if let Err(rtrb::PushError::Full(returned)) =
+                        self.capture_producer.push(capture)
+                    {
+                        debug_assert!(
+                            self.pending_capture_backlog.len()
+                                < self.pending_capture_backlog.capacity(),
+                            "pending_capture_backlog at capacity ({}); next push will \
+                             allocate on the audio thread",
+                            self.pending_capture_backlog.capacity(),
+                        );
+                        self.pending_capture_backlog.push(returned);
+                    }
+                }
+            }
+        }
+    }
+
     fn build_hardware_output(&self) -> SurfaceOutput {
         // LED output is now owned by the scripting layer via deliver_script_output().
         // The executor no longer auto-generates step indicators.
@@ -515,6 +628,11 @@ impl NodeExecutor {
         self.apply_messages();
         self.drain_commands();
         self.drain_asset_swaps();
+        // AN1 D9: deliver any returned capture buffers before this cycle's
+        // nodes run, so a buffer returned last cycle is already back in a
+        // RecorderNode's scratch pool if this cycle's CMD_RECORDER_CAPTURE
+        // needs one.
+        self.drain_capture_returns();
 
         let sample_rate = self.sample_rate;
         let block_size = self.block_size;
@@ -813,6 +931,10 @@ impl NodeExecutor {
                 let _ = self.debug_event_producer.push(ev);
             }
         }
+
+        // AN1 D8-D9: collect any capture a RecorderNode just finished
+        // during this cycle's process() calls above and forward it.
+        self.deliver_pending_captures();
 
         let frames = self.block_size;
         debug_assert_eq!(out_interleaved.len(), frames * channels);

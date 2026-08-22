@@ -125,6 +125,45 @@ pub trait Node: Send {
         None
     }
 
+    /// AN1 capture-transfer plane (`an1-anamnesis.md` D8-D9): take this
+    /// node's currently-ready `RecorderCapture`, if it has one, handing
+    /// ownership to the caller (the executor, which forwards it to the
+    /// main thread over a dedicated ring). A node returns `Some` at most
+    /// once per completed capture — after this call, the node no longer
+    /// holds the buffer and must not touch it again until (if ever) it
+    /// comes back via `return_capture_buffer`.
+    ///
+    /// Called by the executor on the audio thread, once per cycle, on
+    /// every node — default is a no-op zero-cost `None` for every node
+    /// that isn't a `RecorderNode`, so this scan costs nothing on the
+    /// common path (mirrors `is_loop_break`'s always-scanned marker
+    /// pattern rather than adding a separate node-kind registry).
+    ///
+    /// Default: no-op, always returns `None`. Only `RecorderNode` overrides
+    /// this.
+    fn drain_pending_capture(&mut self) -> Option<crate::asset::RecorderCapture> {
+        None
+    }
+
+    /// AN1 capture-transfer plane: receive back a drained capture buffer
+    /// for reuse (the return leg of D9) — the main thread has finished
+    /// reading it and hands the allocation back rather than letting the
+    /// audio thread free it later. Implementations must never allocate in
+    /// response to this call; it exists specifically so they don't have
+    /// to.
+    ///
+    /// Called by the executor on the audio thread, once per delivered
+    /// `CaptureBufferReturn`, before `process()` runs that cycle.
+    ///
+    /// Default: no-op. Only `RecorderNode` overrides this.
+    // clippy::boxed_local is a false positive here: the `Box<[f32]>` is
+    // part of the trait's fixed signature (every implementor must accept
+    // ownership of the heap allocation itself, not borrow its contents —
+    // `RecorderNode`'s override pushes it straight into a reuse pool), the
+    // default just happens not to need it.
+    #[allow(clippy::boxed_local)]
+    fn return_capture_buffer(&mut self, _buf: Box<[f32]>) {}
+
     /// Publish runtime state to the state bus.
     ///
     /// Called by the executor at the end of each audio process cycle (audio

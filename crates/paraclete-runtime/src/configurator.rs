@@ -7,9 +7,10 @@ use petgraph::stable_graph::NodeIndex;
 use petgraph::visit::{EdgeRef, IntoEdgeReferences};
 
 use paraclete_node_api::{
-    CapabilityDocument, ConnectionAgreement, ConnectionRecord, DebugEvent, Node, NodeCommand,
-    PortDescriptor, PortDirection, PortType, SampleData, SignalPortKind, StateBusHandle,
-    StateBusSubscription, StateBusValue, Surface, SurfaceOutputHandle, SwapSample,
+    CaptureBufferReturn, CapabilityDocument, ConnectionAgreement, ConnectionRecord, DebugEvent,
+    Node, NodeCommand, PortDescriptor, PortDirection, PortType, RecorderCapture, SampleData,
+    SignalPortKind, StateBusHandle, StateBusSubscription, StateBusValue, Surface,
+    SurfaceOutputHandle, SwapSample,
 };
 
 use crate::executor::NodeExecutor;
@@ -29,6 +30,12 @@ const STATE_BUF_RETURN_CAPACITY: usize = 4;
 /// (`design/phases/an0-anamnesis.md` §2.2).
 const ASSET_SWAP_RING_CAPACITY: usize = 32;
 const ASSET_RETURN_RING_CAPACITY: usize = 32;
+/// AN1 capture-transfer plane (`an1-anamnesis.md` D9). Small — captures
+/// are a rare, user-gesture-rate event (one `FUNC+9` press, an occasional
+/// threshold arm), not a per-block one; this only needs to absorb a
+/// handful in flight, not sustained throughput.
+const CAPTURE_FORWARD_RING_CAPACITY: usize = 8;
+const CAPTURE_RETURN_RING_CAPACITY: usize = 8;
 
 /// Error returned by `NodeConfigurator::connect()`.
 #[derive(Debug)]
@@ -193,6 +200,15 @@ pub struct NodeConfigurator {
     asset_return_consumer: rtrb::Consumer<Arc<SampleData>>,
     asset_return_producer_pending: Option<rtrb::Producer<Arc<SampleData>>>,
 
+    /// Capture-transfer plane (AN1, `an1-anamnesis.md` D9). Forward:
+    /// executor → this, a `RecorderNode`'s fulfilled capture request.
+    capture_consumer: rtrb::Consumer<RecorderCapture>,
+    capture_producer_pending: Option<rtrb::Producer<RecorderCapture>>,
+    /// Return: this → executor, hands a drained capture buffer back to
+    /// its originating `RecorderNode` for reuse.
+    capture_return_producer: rtrb::Producer<CaptureBufferReturn>,
+    capture_return_consumer_pending: Option<rtrb::Consumer<CaptureBufferReturn>>,
+
     /// Debug event SPSC (ADR-035 Part B). Executor pushes structured debug
     /// events per-cycle; configurator drains them in `process_main_thread()`.
     debug_event_consumer: rtrb::Consumer<DebugEvent>,
@@ -240,6 +256,10 @@ impl NodeConfigurator {
             rtrb::RingBuffer::<SwapSample>::new(ASSET_SWAP_RING_CAPACITY);
         let (asset_return_prod, asset_return_cons) =
             rtrb::RingBuffer::<Arc<SampleData>>::new(ASSET_RETURN_RING_CAPACITY);
+        let (capture_prod, capture_cons) =
+            rtrb::RingBuffer::<RecorderCapture>::new(CAPTURE_FORWARD_RING_CAPACITY);
+        let (capture_return_prod, capture_return_cons) =
+            rtrb::RingBuffer::<CaptureBufferReturn>::new(CAPTURE_RETURN_RING_CAPACITY);
         Self {
             graph: RuntimeGraph::new(),
             id_to_index: HashMap::new(),
@@ -259,6 +279,10 @@ impl NodeConfigurator {
             asset_swap_consumer_pending: Some(asset_swap_cons),
             asset_return_consumer: asset_return_cons,
             asset_return_producer_pending: Some(asset_return_prod),
+            capture_consumer: capture_cons,
+            capture_producer_pending: Some(capture_prod),
+            capture_return_producer: capture_return_prod,
+            capture_return_consumer_pending: Some(capture_return_cons),
             debug_event_consumer: debug_cons,
             debug_event_producer_pending: Some(debug_prod),
             debug_event_buf: Vec::with_capacity(256),
@@ -667,6 +691,30 @@ impl NodeConfigurator {
         }
     }
 
+    /// Pop one fulfilled capture, if any, from the capture-transfer plane
+    /// (AN1 D9). Call from the main loop; `perform_state.rs`'s assembly
+    /// (AN1 C4) matches `RecorderCapture::request_id` against its own
+    /// pending-request table.
+    pub fn poll_recorder_capture(&mut self) -> Option<RecorderCapture> {
+        self.capture_consumer.pop().ok()
+    }
+
+    /// Hand a drained capture buffer back to its originating `RecorderNode`
+    /// for reuse (D9's return leg) — call once the main thread is done
+    /// reading `RecorderCapture::buf`. Delivered on the next audio cycle.
+    /// Returns `Err` if the ring is full — caller should retry (this is
+    /// not expected in practice at `CAPTURE_RETURN_RING_CAPACITY`, since
+    /// captures are gesture-rate, not per-block).
+    pub fn return_capture_buffer(
+        &mut self,
+        msg: CaptureBufferReturn,
+    ) -> Result<(), CaptureBufferReturn> {
+        match self.capture_return_producer.push(msg) {
+            Ok(()) => Ok(()),
+            Err(rtrb::PushError::Full(msg)) => Err(msg),
+        }
+    }
+
     pub fn state_bus_read(&self, path: &str) -> Option<StateBusValue> {
         self.state_bus.borrow().read(path).cloned()
     }
@@ -844,6 +892,10 @@ impl NodeConfigurator {
             rtrb::RingBuffer::<SwapSample>::new(ASSET_SWAP_RING_CAPACITY);
         let (new_asset_return_prod, new_asset_return_cons) =
             rtrb::RingBuffer::<Arc<SampleData>>::new(ASSET_RETURN_RING_CAPACITY);
+        let (new_capture_prod, new_capture_cons) =
+            rtrb::RingBuffer::<RecorderCapture>::new(CAPTURE_FORWARD_RING_CAPACITY);
+        let (new_capture_return_prod, new_capture_return_cons) =
+            rtrb::RingBuffer::<CaptureBufferReturn>::new(CAPTURE_RETURN_RING_CAPACITY);
 
         // Replace configurator-side handles so `send()` and `send_command()` stay live.
         self.sender = new_sender;
@@ -853,6 +905,8 @@ impl NodeConfigurator {
         self.state_buf_return_producer = new_return_prod;
         self.asset_swap_producer = new_asset_swap_prod;
         self.asset_return_consumer = new_asset_return_cons;
+        self.capture_consumer = new_capture_cons;
+        self.capture_return_producer = new_capture_return_prod;
 
         // Install executor-side ends as pending so `build_executor()` can take them.
         self.pending_receiver = Some(new_receiver);
@@ -862,6 +916,8 @@ impl NodeConfigurator {
         self.state_buf_return_consumer_pending = Some(new_return_cons);
         self.asset_swap_consumer_pending = Some(new_asset_swap_cons);
         self.asset_return_producer_pending = Some(new_asset_return_prod);
+        self.capture_producer_pending = Some(new_capture_prod);
+        self.capture_return_consumer_pending = Some(new_capture_return_cons);
 
         self.build_executor()
     }
@@ -905,6 +961,14 @@ impl NodeConfigurator {
             .expect("build_executor called twice");
         let asset_return_producer = self
             .asset_return_producer_pending
+            .take()
+            .expect("build_executor called twice");
+        let capture_producer = self
+            .capture_producer_pending
+            .take()
+            .expect("build_executor called twice");
+        let capture_return_consumer = self
+            .capture_return_consumer_pending
             .take()
             .expect("build_executor called twice");
 
@@ -1014,6 +1078,9 @@ impl NodeConfigurator {
             asset_swap_consumer,
             asset_return_producer,
             ASSET_RETURN_RING_CAPACITY,
+            capture_producer,
+            capture_return_consumer,
+            CAPTURE_FORWARD_RING_CAPACITY,
         )
     }
 }

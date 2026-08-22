@@ -16,7 +16,7 @@
 
 use paraclete_node_api::{
     Node, PortDescriptor, PortDirection, PortName, PortType, ProcessInput, ProcessOutput,
-    StateBusValue,
+    RecorderCapture, StateBusValue,
 };
 
 /// New node-specific `NodeCommand::type_id`s. `command.rs` reserves 0-15
@@ -26,6 +26,9 @@ use paraclete_node_api::{
 /// not a shared global table.
 pub const CMD_RECORDER_ARM_THRESHOLD: u32 = 16;
 pub const CMD_RECORDER_DISARM: u32 = 17;
+/// `arg0` = `request_id` (cast from `i64`), `arg1` = requested frame count
+/// (cast from `f64`, clamped to ring capacity) — D10.
+pub const CMD_RECORDER_CAPTURE: u32 = 18;
 
 /// D7: fixed duration, not bars — a bar's frame length depends on live
 /// tempo, which can change mid-session; the ring's byte budget is fixed
@@ -33,6 +36,16 @@ pub const CMD_RECORDER_DISARM: u32 = 17;
 /// afterward. 60s covers design.md's largest listed Retro option (8
 /// bars) at any tempo >= 32 BPM.
 const DEFAULT_CAPACITY_SECONDS: f32 = 60.0;
+
+/// D9: a small pool, not one buffer — a second capture request arriving
+/// before the first's buffer has been returned (e.g. two quick `FUNC+9`
+/// presses) must still have somewhere to land rather than being dropped
+/// outright. Each buffer is sized to the ring's own capacity (D8's
+/// ceiling — a single capture could in principle request the whole
+/// ring), so this genuinely multiplies memory footprint; 2 keeps that
+/// cost bounded while still covering the realistic "one in flight, one
+/// just requested" case.
+const SCRATCH_POOL_SIZE: usize = 2;
 
 /// One-pole peak-follower time constant for threshold-arm detection.
 /// Not user-tunable in AN1 — a conventional fast-attack default.
@@ -66,6 +79,21 @@ pub struct RecorderNode {
     node_id: u32,
     ports: [PortDescriptor; 1],
     state_path_cache: std::sync::OnceLock<[String; 2]>,
+    /// Free-list stack of reusable capture scratch buffers — `pop()` to
+    /// acquire one for a new capture, `push()` when a drained one comes
+    /// back via `return_capture_buffer` (D9). Allocated once in
+    /// `activate()`; `process()` only ever moves buffers in and out, never
+    /// allocates or drops one.
+    scratch_pool: Vec<Box<[f32]>>,
+    /// A completed capture waiting for the executor to collect via
+    /// `drain_pending_capture` — at most one in flight at a time (a second
+    /// `CMD_RECORDER_CAPTURE` arriving before this is drained is dropped,
+    /// see `dropped_capture_requests`).
+    pending_capture: Option<RecorderCapture>,
+    /// Requests dropped because a capture was already pending or no
+    /// scratch buffer was free — not currently published; a counter to
+    /// inspect/test against rather than a silent no-op.
+    dropped_capture_requests: u64,
 }
 
 impl RecorderNode {
@@ -89,6 +117,9 @@ impl RecorderNode {
                 port_type: PortType::Audio,
             }],
             state_path_cache: std::sync::OnceLock::new(),
+            scratch_pool: Vec::new(),
+            pending_capture: None,
+            dropped_capture_requests: 0,
         }
     }
 
@@ -118,6 +149,10 @@ impl Node for RecorderNode {
         self.write_pos = 0;
         self.envelope_coeff =
             1.0 - (-1.0 / (ENVELOPE_TIME_CONSTANT_SECONDS * sample_rate)).exp();
+        self.scratch_pool = (0..SCRATCH_POOL_SIZE)
+            .map(|_| vec![0.0; frames].into_boxed_slice())
+            .collect();
+        self.pending_capture = None;
     }
 
     fn set_node_id(&mut self, id: u32) {
@@ -150,6 +185,35 @@ impl Node for RecorderNode {
                 CMD_RECORDER_DISARM => {
                     self.armed = false;
                     self.fired = false;
+                }
+                CMD_RECORDER_CAPTURE => {
+                    let request_id = cmd.arg0 as u32;
+                    let requested_frames = (cmd.arg1 as usize).min(cap);
+                    if self.pending_capture.is_some() {
+                        self.dropped_capture_requests += 1;
+                    } else if let Some(mut buf) = self.scratch_pool.pop() {
+                        // Copy the last `requested_frames` frames out of
+                        // the ring in chronological order, ending exactly
+                        // at the most recently written sample
+                        // (write_pos - 1) — wraparound-aware, the same
+                        // shape as `OutputRing::drain` (D8). A ring that
+                        // hasn't yet recorded `requested_frames` worth of
+                        // real audio simply reads back its still-zeroed
+                        // tail — silence, not garbage (the ring is
+                        // zero-initialized at `activate()`).
+                        let start = (self.write_pos + cap - requested_frames) % cap;
+                        for i in 0..requested_frames {
+                            buf[i] = self.ring[(start + i) % cap];
+                        }
+                        self.pending_capture = Some(RecorderCapture {
+                            node_id: self.node_id,
+                            request_id,
+                            frames: requested_frames,
+                            buf,
+                        });
+                    } else {
+                        self.dropped_capture_requests += 1;
+                    }
                 }
                 _ => {}
             }
@@ -203,6 +267,14 @@ impl Node for RecorderNode {
         ));
         let peak_db = 20.0 * self.envelope.max(MIN_LINEAR).log10();
         buf.push((paths[1].clone(), StateBusValue::Float(peak_db as f64)));
+    }
+
+    fn drain_pending_capture(&mut self) -> Option<RecorderCapture> {
+        self.pending_capture.take()
+    }
+
+    fn return_capture_buffer(&mut self, buf: Box<[f32]>) {
+        self.scratch_pool.push(buf);
     }
 
     fn type_name(&self) -> &'static str {
@@ -427,5 +499,98 @@ mod tests {
             StateBusValue::Float(db) => assert!(db > -6.0, "a full-scale signal must read above -6dB"),
             _ => panic!("expected Float"),
         }
+    }
+
+    // ── C3: CMD_RECORDER_CAPTURE ────────────────────────────────────────
+
+    #[test]
+    fn capture_returns_the_last_n_frames_in_chronological_order() {
+        let mut node = RecorderNode::new();
+        node.activate(10.0, 700); // 600-frame ring
+        let samples: Vec<f32> = (0..100).map(|i| i as f32).collect();
+        run(&mut node, 100, &samples, &[]);
+        // process()'s command loop runs BEFORE this cycle's per-frame ring
+        // write (§2.2), so the capture sees write_pos as it stood *before*
+        // this call's own [0.0] sample is written — the last 10 frames
+        // already in the ring are values 90.0..99.0, oldest-first, not
+        // shifted by this call's own sample.
+        run(&mut node, 1, &[0.0], &[cmd(CMD_RECORDER_CAPTURE, 42, 10.0)]);
+        let capture = node.drain_pending_capture().expect("capture must be ready");
+        assert_eq!(capture.request_id, 42);
+        assert_eq!(capture.frames, 10);
+        assert_eq!(&capture.buf[..10], &[90.0, 91.0, 92.0, 93.0, 94.0, 95.0, 96.0, 97.0, 98.0, 99.0]);
+    }
+
+    #[test]
+    fn capture_of_the_full_ring_wraps_correctly() {
+        let mut node = RecorderNode::new();
+        node.activate(10.0, 700); // 600-frame ring
+        let samples: Vec<f32> = (0..650).map(|i| i as f32).collect();
+        run(&mut node, 650, &samples, &[]); // wraps once, write_pos ends at 50
+        // As above: the command loop sees write_pos=50 from the prior
+        // call, before this call's own [999.0] sample is written — the
+        // 999.0 sample is not part of the captured window.
+        run(&mut node, 1, &[999.0], &[cmd(CMD_RECORDER_CAPTURE, 1, 600.0)]);
+        let capture = node.drain_pending_capture().expect("capture must be ready");
+        assert_eq!(capture.frames, 600, "a full-ring request must be clamped to, not exceed, capacity");
+        // Chronological order over the whole ring: oldest-surviving sample
+        // first (ring[write_pos] == ring[50] == sample value 50.0, since
+        // samples 0..50 were overwritten by the wrap) through the newest
+        // (ring[49] == sample value 649.0, the last one written).
+        assert_eq!(capture.buf[0], 50.0);
+        assert_eq!(capture.buf[598], 648.0);
+        assert_eq!(capture.buf[599], 649.0);
+    }
+
+    #[test]
+    fn capture_before_the_ring_has_filled_reads_back_silence_not_garbage() {
+        let mut node = RecorderNode::new();
+        node.activate(10.0, 700); // 600-frame ring, zero-initialized
+        run(&mut node, 5, &[1.0, 2.0, 3.0, 4.0, 5.0], &[]); // write_pos == 5
+        // Only 5 real frames exist; request 20 — the command loop sees
+        // write_pos=5 (before this call's own [0.0] sample), so the
+        // window is the 15 never-written (zero) frames immediately
+        // preceding index 5, wrapping around, followed by the 5 real
+        // samples — filling the requested 20 exactly.
+        run(&mut node, 1, &[0.0], &[cmd(CMD_RECORDER_CAPTURE, 1, 20.0)]);
+        let capture = node.drain_pending_capture().expect("capture must be ready");
+        assert_eq!(capture.frames, 20);
+        assert!(capture.buf[..15].iter().all(|&s| s == 0.0), "never-written tail must be silence");
+        assert_eq!(&capture.buf[15..20], &[1.0, 2.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn a_second_capture_before_the_first_is_drained_is_dropped_not_overwritten() {
+        let mut node = RecorderNode::new();
+        node.activate(1000.0, 64);
+        run(&mut node, 4, &[1.0, 1.0, 1.0, 1.0], &[cmd(CMD_RECORDER_CAPTURE, 1, 4.0)]);
+        assert_eq!(node.dropped_capture_requests, 0);
+        // A second request arrives before the first was drained.
+        run(&mut node, 4, &[2.0, 2.0, 2.0, 2.0], &[cmd(CMD_RECORDER_CAPTURE, 2, 4.0)]);
+        assert_eq!(node.dropped_capture_requests, 1, "the second request must be dropped, not silently ignored");
+        let capture = node.drain_pending_capture().expect("the first capture must still be pending");
+        assert_eq!(capture.request_id, 1, "the first request must survive untouched");
+    }
+
+    #[test]
+    fn capture_requests_beyond_the_scratch_pool_are_dropped() {
+        let mut node = RecorderNode::new();
+        node.activate(1000.0, 64);
+        // Exhaust SCRATCH_POOL_SIZE (2) without ever draining.
+        run(&mut node, 1, &[0.0], &[cmd(CMD_RECORDER_CAPTURE, 1, 1.0)]);
+        let c1 = node.drain_pending_capture().unwrap();
+        run(&mut node, 1, &[0.0], &[cmd(CMD_RECORDER_CAPTURE, 2, 1.0)]);
+        let c2 = node.drain_pending_capture().unwrap();
+        // Both scratch buffers are now checked out (neither returned yet).
+        run(&mut node, 1, &[0.0], &[cmd(CMD_RECORDER_CAPTURE, 3, 1.0)]);
+        assert!(node.drain_pending_capture().is_none(), "no scratch buffer was free");
+        assert_eq!(node.dropped_capture_requests, 1);
+        // Returning one frees it up for a subsequent request.
+        node.return_capture_buffer(c1.buf);
+        run(&mut node, 1, &[0.0], &[cmd(CMD_RECORDER_CAPTURE, 4, 1.0)]);
+        let c4 = node.drain_pending_capture().expect("a returned buffer must be reusable");
+        assert_eq!(c4.request_id, 4);
+        node.return_capture_buffer(c2.buf);
+        node.return_capture_buffer(c4.buf);
     }
 }
