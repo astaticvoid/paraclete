@@ -240,6 +240,95 @@ impl NoteStack {
     pub fn is_empty(&self) -> bool { self.len == 0 }
 }
 
+// ── FmOperator (P14-C1) ───────────────────────────────────────────────────────
+
+// Landed unhosted, same MM-C8 rationale as `AdsrState`/`NoteStack` above —
+// `FmVoice` (P14-C2) is the first consumer.
+//
+// `FmEngine`'s two-op `process_kick`/`process_bell`/`process_bass` each
+// hand-roll a phase accumulator + self-feedback + `sin()` inline (see
+// `fm_engine.rs`'s `carrier_phase`/`modulator_phase`/`prev_mod_out` triad).
+// `FmVoice` needs four of these composed per ADR-043's eight algorithms
+// (P14 spec §0 D1), so this pulls the shape out as a primitive rather than
+// hand-rolling it a fourth time. `FmEngine` is untouched (ADR-043 decision
+// 1) — this does not refactor it to share this type.
+
+/// One phase-modulation operator: a phase accumulator with self-feedback and
+/// P14 spec §0 D3's additive-harmonic sine core (`harm`). `Copy`, no
+/// allocation — a caller composes four of these per `FmVoice`'s active
+/// algorithm.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub(crate) struct FmOperator {
+    pub phase: f32,
+    pub prev_out: f32,
+}
+
+#[allow(dead_code)]
+impl FmOperator {
+    pub fn new() -> Self { FmOperator { phase: 0.0, prev_out: 0.0 } }
+
+    pub fn reset(&mut self) {
+        self.phase = 0.0;
+        self.prev_out = 0.0;
+    }
+
+    /// Advances one sample and returns this operator's output.
+    ///
+    /// - `freq_hz` — this operator's own carrier frequency (ratio × note Hz,
+    ///   or a fixed Hz for a non-tracking use — the caller's choice).
+    /// - `mod_in` — the upstream operator's previous `tick()` output
+    ///   (−1..1), already scaled by the caller's modulation index; 0.0 for
+    ///   an operator with no upstream modulator in the active algorithm.
+    /// - `feedback` — this operator's own self-feedback depth; 0.0 unless
+    ///   this is the algorithm's designated feedback operator (P14 §0 D1's
+    ///   routing table names exactly one per algorithm).
+    /// - `harm` — §0 D3's additive-harmonic blend. Caller-guaranteed
+    ///   `0.0..=1.0` — nothing here clamps it (a `ParamDescriptor` range
+    ///   does that at the engine layer, P14-C2+). Callers for B1/B2 always
+    ///   pass 0.0 (D3: "B1/B2 stay pure sine").
+    ///
+    /// `self.phase` advances by `freq_hz` alone and never depends on
+    /// `feedback`/`prev_out` — folding self-feedback into the *running*
+    /// phase accumulator turns it into a self-referential discrete map that
+    /// can converge to a fixed point and go silent (found in P14-C1 review:
+    /// it locks to DC within a few samples at ordinary carrier frequencies
+    /// and feedback values well inside 0.0..1.0). `mod_in`/`feedback` are
+    /// applied only to the transient angle passed into `harmonic_sine` for
+    /// this one sample — the textbook phase-modulation shape (`sin(phase +
+    /// modulation)`, not `phase += modulation`) — so the oscillator's own
+    /// clock stays independent of whatever's feeding back or modulating it.
+    pub fn tick(&mut self, freq_hz: f32, mod_in: f32, feedback: f32, harm: f32, sample_rate: f32) -> f32 {
+        self.phase = (self.phase + freq_hz / sample_rate).fract();
+        let modulated_phase = self.phase + (mod_in + feedback * self.prev_out) / std::f32::consts::TAU;
+        let out = harmonic_sine(modulated_phase, harm);
+        self.prev_out = out;
+        out
+    }
+}
+
+/// §0 D3's additive-harmonic sine: `sin(θ) + Σ_{n=2..5} harm^(n-1)·k_n·sin(nθ)`,
+/// normalized so the peak doesn't grow with `harm`. `harm=0` is a bare sine
+/// (unity gain, matching every other engine's default op); `harm=1` is the
+/// fixed 5-partial stack. The `harm^(n-1)` shaping fades higher partials in
+/// later as the knob turns up, not all at once.
+#[allow(dead_code)]
+fn harmonic_sine(phase: f32, harm: f32) -> f32 {
+    const K: [f32; 4] = [0.60, 0.40, 0.25, 0.15]; // n = 2, 3, 4, 5
+    let theta = phase * std::f32::consts::TAU;
+    let mut sum = theta.sin();
+    let mut weight_total = 1.0;
+    let mut hn = harm;
+    for (i, k) in K.iter().enumerate() {
+        let n = (i + 2) as f32;
+        let w = hn * k;
+        sum += w * (theta * n).sin();
+        weight_total += w;
+        hn *= harm;
+    }
+    sum / weight_total
+}
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 /// XOR-shift 32 LFSR white noise generator. Period = 2^32 - 1.
@@ -1308,5 +1397,169 @@ mod tests {
         // The very first note pushed (60) must have been evicted already —
         // popping it finds nothing and leaves the top untouched.
         assert_eq!(s.pop_matching(60), Some(expected_top), "note 60 should have been evicted, top unchanged");
+    }
+
+    // ── FmOperator / harmonic_sine (P14-C1) ─────────────────────────────
+
+    #[test]
+    fn harm_zero_is_a_bare_unity_gain_sine() {
+        const SR: f32 = 48000.0;
+        const FREQ: f32 = SR / 100.0; // exactly 100 samples per period
+        let mut op = FmOperator::new();
+        for i in 0..100 {
+            let out = op.tick(FREQ, 0.0, 0.0, 0.0, SR);
+            let expected = ((i + 1) as f32 / 100.0 * std::f32::consts::TAU).sin();
+            assert!(
+                (out - expected).abs() < 1e-4,
+                "harm=0 must match a bare sine at step {i}: got {out}, expected {expected}"
+            );
+        }
+    }
+
+    /// `harm=1`'s fixed 5-partial stack must stay within the operator's
+    /// -1..1 output contract regardless of the input's own bound.
+    #[test]
+    fn harm_one_stays_within_unit_range() {
+        for i in 0..256 {
+            let phase = i as f32 / 256.0;
+            let out = harmonic_sine(phase, 1.0);
+            assert!((-1.0..=1.0).contains(&out), "harm=1 left -1..1 at phase {phase}: {out}");
+        }
+    }
+
+    /// Higher `harm` must add harmonic content *relative to the
+    /// fundamental*, not just rescale the same shape — checked by
+    /// projecting the actual output samples onto each `sin(n*theta)` basis
+    /// (a discrete Fourier projection, not a reimplementation of
+    /// `harmonic_sine`'s own weight formula) and comparing the harmonics'
+    /// combined power to the fundamental's. Normalization shrinks *both* as
+    /// `harm` rises (total output power actually falls — see the
+    /// `k_n`/`weight_total` shape), so a plain amplitude or "curvature"
+    /// proxy is not monotonic here even though the design is correct; the
+    /// ratio to the fundamental is the invariant the formula actually
+    /// guarantees.
+    #[test]
+    fn harm_sweep_increases_harmonic_to_fundamental_ratio() {
+        fn harmonic_to_fundamental_ratio(harm: f32) -> f32 {
+            const N: usize = 720; // divisible by 2, 3, 4, 5
+            let samples: Vec<f32> = (0..N).map(|i| harmonic_sine(i as f32 / N as f32, harm)).collect();
+            let project = |n: usize| -> f32 {
+                let sum: f32 = samples
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &y)| y * (std::f32::consts::TAU * n as f32 * i as f32 / N as f32).sin())
+                    .sum();
+                2.0 * sum / N as f32
+            };
+            let fundamental = project(1);
+            let harmonics: f32 = (2..=5).map(|n| project(n).powi(2)).sum();
+            harmonics / (fundamental * fundamental)
+        }
+
+        let ratios: Vec<f32> = [0.0, 0.25, 0.5, 0.75, 1.0]
+            .iter()
+            .map(|&h| harmonic_to_fundamental_ratio(h))
+            .collect();
+        assert!(ratios[0] < 1e-4, "harm=0 must be a bare sine (ratio ~0): {}", ratios[0]);
+        for w in ratios.windows(2) {
+            assert!(w[1] > w[0] + 1e-6, "harmonic/fundamental ratio must increase with harm: {ratios:?}");
+        }
+    }
+
+    /// `feedback=0.0` must reduce to plain phase modulation, and the
+    /// carrier's own phase clock must never depend on `mod_in` — only the
+    /// transient angle passed to `harmonic_sine` does.
+    #[test]
+    fn zero_feedback_matches_hand_tracked_phase_modulation() {
+        const SR: f32 = 48000.0;
+        const FREQ: f32 = 220.0;
+        let mut op = FmOperator::new();
+        let mut phase_ref = 0.0f32;
+        for step in 0..50 {
+            let mod_in = (step as f32 * 0.1).sin() * 0.3; // arbitrary but deterministic
+            let out = op.tick(FREQ, mod_in, 0.0, 0.0, SR);
+            phase_ref = (phase_ref + FREQ / SR).fract();
+            let expected = harmonic_sine(phase_ref + mod_in / std::f32::consts::TAU, 0.0);
+            assert!((out - expected).abs() < 1e-5, "step {step}: got {out}, expected {expected}");
+        }
+    }
+
+    /// The bug this guards against: folding self-feedback into the
+    /// *running* phase accumulator turns it into a self-referential map
+    /// that can converge to a fixed point and go silent. At a typical
+    /// carrier frequency and a feedback depth well inside the algorithm
+    /// table's range, the operator must keep oscillating indefinitely, not
+    /// settle onto a constant output.
+    #[test]
+    fn feedback_does_not_lock_the_oscillator_to_a_fixed_point() {
+        const SR: f32 = 48000.0;
+        const FREQ: f32 = 220.0;
+        const FEEDBACK: f32 = 0.3;
+        let mut op = FmOperator::new();
+        let samples: Vec<f32> = (0..2000).map(|_| op.tick(FREQ, 0.0, FEEDBACK, 0.0, SR)).collect();
+        let tail = &samples[1000..];
+        let max = tail.iter().cloned().fold(f32::MIN, f32::max);
+        let min = tail.iter().cloned().fold(f32::MAX, f32::min);
+        assert!(
+            max - min > 0.5,
+            "operator locked to a near-constant output under sustained feedback: min={min}, max={max}"
+        );
+    }
+
+    /// `mod_in` and `harm` must compose — neither path silently overrides
+    /// the other when both are nonzero at once.
+    #[test]
+    fn mod_in_and_harm_compose() {
+        const SR: f32 = 48000.0;
+        const FREQ: f32 = 220.0;
+        let mut op_both = FmOperator::new();
+        let mut op_mod_only = FmOperator::new();
+        let mut op_harm_only = FmOperator::new();
+        let mut op_neither = FmOperator::new();
+        let mut saw_difference_from_each = (false, false);
+        for step in 0..20 {
+            let mod_in = (step as f32 * 0.2).sin() * 0.4;
+            let both = op_both.tick(FREQ, mod_in, 0.0, 0.5, SR);
+            let mod_only = op_mod_only.tick(FREQ, mod_in, 0.0, 0.0, SR);
+            let harm_only = op_harm_only.tick(FREQ, 0.0, 0.0, 0.5, SR);
+            let neither = op_neither.tick(FREQ, 0.0, 0.0, 0.0, SR);
+            if (both - mod_only).abs() > 1e-4 {
+                saw_difference_from_each.0 = true;
+            }
+            if (both - harm_only).abs() > 1e-4 {
+                saw_difference_from_each.1 = true;
+            }
+            assert_ne!(both, neither, "combining mod_in and harm must not reduce to the bare carrier");
+        }
+        assert!(saw_difference_from_each.0, "harm's contribution must survive when mod_in is also nonzero");
+        assert!(saw_difference_from_each.1, "mod_in's contribution must survive when harm is also nonzero");
+    }
+
+    /// Every harmonic term is a pure sine over an integer number of its own
+    /// periods when driven at a rate that divides evenly — the sum of pure
+    /// sines over their shared period must average to zero. A DC offset
+    /// bug (e.g. a missing `-1` on a squared term) would show up here.
+    #[test]
+    fn one_full_cycle_has_no_dc_offset_at_any_harm() {
+        const SR: f32 = 48000.0;
+        const FREQ: f32 = SR / 240.0; // 240 samples per period, divisible by 2,3,4,5
+        for harm in [0.0, 0.3, 0.6, 1.0] {
+            let mut op = FmOperator::new();
+            let sum: f32 = (0..240).map(|_| op.tick(FREQ, 0.0, 0.0, harm, SR)).sum();
+            let mean = sum / 240.0;
+            assert!(mean.abs() < 1e-3, "harm={harm} left a DC offset of {mean}");
+        }
+    }
+
+    #[test]
+    fn fresh_operator_starts_at_zero_phase_and_reset_returns_to_it() {
+        let mut op = FmOperator::new();
+        assert_eq!(op.phase, 0.0);
+        assert_eq!(op.prev_out, 0.0);
+        op.tick(440.0, 0.0, 0.0, 0.5, 48000.0);
+        assert_ne!(op.phase, 0.0);
+        op.reset();
+        assert_eq!(op.phase, 0.0);
+        assert_eq!(op.prev_out, 0.0);
     }
 }
