@@ -315,6 +315,31 @@ Fixed by reading the live interpolated frequency when starting a new glide.
   resolved it for `FmEngine` — one-based index into the *active* machine's
   table).
 
+**As landed:** dest table is 26, not up to 28 — `algo` and `env_reset` are
+excluded as topology/behavior selectors, same reasoning `FmEngine` excludes
+`machine`. Review caught two real issues fixed before landing: an
+uncached `format!` in `published_state()`'s `lfo_phase` publish (BUG-007's
+pattern, allocating on the audio thread every cycle — fixed with a
+per-node `OnceLock<String>`; the same pre-existing pattern in `FmEngine`/
+`AnalogEngine` filed as #188, not fixed here) and `current_sounding_hz()`
+reading `detune` unmodulated while `process_algo` reads it LFO-modulated —
+an audible pitch-snap at the very first glide whenever `detune` is an LFO
+destination, not just the overlapping-glide case P14-C5 fixed. Both fixed;
+`current_sounding_hz()` now reads `detune` via `get_param`, matching
+`process_algo`.
+
+**OQ-P14-6** — `legato_retarget` never calls `self.lfo.trigger(...)`
+(operator-phase-reset-avoidance's reasoning, extended to the LFO — a
+note-stack pop's whole point is continuity). Confirmed correct and the
+only defensible call, but it has a real, deliberate consequence: with
+`lfo_mode = One`/`Half`, once the LFO's one-shot run completes after the
+initial `NoteOn`, it never fires again on any note revealed by a later
+stack-pop under the same mono voice — only a hard retrigger of a fully-idle
+voice restarts it. A performer expecting each stack-revealed note to get a
+fresh sweep under `One`/`Half` will not hear one. Not fixed — a genuine
+trade-off, not a bug — but named so a later session's surprise isn't a
+rediscovery.
+
 ### P14-C7 — Machine variants (the six macros)
 
 - `MachineVariant` per macro (D5): `page_groups`, curated SRC `PageRef` +
