@@ -560,6 +560,7 @@ evaluate (see header).
 | Default `instrument.yaml` gains a sample track | Scope/musical-content decision, not architecture | User schedules it |
 | Per-node "only cache referenced slots" (vs. AN0's broadcast-to-all) | Nothing in AN0 needs it; broadcast is simple and correct at current pool sizes | Pool sizes or Sampler-node counts grow enough that broadcast cost is measured, not assumed |
 | Pool browser / list command | AN1's SAMPLING screen is the real UI | AN1 spec, or a session asks for it sooner |
+| Project reload rehydrating `pool_cache` (#185, found in C2 review) | `load_project_v3` restores pool *metadata* but never calls `SamplePool::load_file`/delivers `SwapSample` — a reloaded project's Samplers play silence until C5's decode-and-broadcast plumbing (or equivalent) runs on load too | Close before AN0 exits — most naturally alongside C5 |
 
 ---
 
