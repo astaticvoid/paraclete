@@ -3149,4 +3149,75 @@ mod tests {
         let defects = paraclete_node_api::validate_view(&doc);
         assert!(defects.is_empty(), "view defects: {defects:?}");
     }
+
+    /// P14-C8's own regression class (#154: "engine/effect params were lost
+    /// on every project save"): a project's `serialize()`/`deserialize()`
+    /// round trip must not lose a single declared param, across every page
+    /// this engine has (SYN1, SYN2, AMP, expression, MOD, plus `machine`
+    /// itself) — not just the ones a smoke test happens to touch.
+    #[test]
+    fn serialize_deserialize_round_trips_every_page_with_no_loss() {
+        let mut eng = new_engine();
+        let set_values: &[(&str, f64)] = &[
+            // SYN1
+            ("algo", Algo::Bell.value() as f64),
+            ("ratio_c", 7.0),
+            ("ratio_a", 12.0),
+            ("ratio_b", 2.0),
+            ("harm", 0.62),
+            ("detune", -17.0),
+            ("feedback", 0.71),
+            ("mix", 0.33),
+            // SYN2
+            ("atk_a", 0.05),
+            ("dec_a", 1.2),
+            ("end_a", 0.4),
+            ("lev_a", 0.8),
+            ("atk_b", 0.02),
+            ("dec_b", 0.9),
+            ("end_b", 0.15),
+            ("lev_b", 0.6),
+            // AMP
+            ("attack", 0.03),
+            ("decay", 0.8),
+            ("sustain", 0.55),
+            ("release", 1.1),
+            ("volume", 0.77),
+            ("pan", -0.4),
+            ("drive", 0.25),
+            ("tone", 0.5),
+            // Expression
+            ("keytrack", 0.6),
+            ("vel_mod", 0.4),
+            ("env_reset", 1.0),
+            ("porta", 0.3),
+            // MOD (all 7 of LFO_PAGE_ORDER)
+            ("lfo_shape", 2.0),
+            ("lfo_mode", 1.0),
+            ("lfo_speed", 3.5),
+            ("lfo_dest", 4.0),
+            ("lfo_depth", 0.9),
+            ("lfo_start_phase", 0.25),
+            ("lfo_fade", -0.6),
+            // Machine select (ADR-041's identity param)
+            ("machine", Machine::Bass.value() as f64),
+        ];
+        for &(name, value) in set_values {
+            eng.bank.set(fp(name), value);
+        }
+
+        let bytes = Node::serialize(&eng);
+
+        let mut restored = FmVoice::new();
+        restored.activate(44100.0, 512);
+        Node::deserialize(&mut restored, &bytes);
+
+        for &(name, expected) in set_values {
+            let got = restored.bank.get(fp(name));
+            assert!(
+                (got - expected).abs() < 1e-9,
+                "{name}: expected {expected} after round-trip, got {got}"
+            );
+        }
+    }
 }

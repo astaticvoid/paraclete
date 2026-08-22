@@ -5,8 +5,8 @@ use std::sync::Arc;
 use paraclete_clap_host::PluginLibrary;
 use paraclete_node_api::Node;
 use paraclete_nodes::{
-    AnalogEngine, AudioOutputNode, DistortionNode, FilterNode, FmEngine, InternalClock, MixNode,
-    ReverbNode, Sampler, Sequencer,
+    AnalogEngine, AudioOutputNode, DistortionNode, FilterNode, FmEngine, FmVoice, InternalClock,
+    MixNode, ReverbNode, Sampler, Sequencer,
 };
 use paraclete_runtime::NodeConfigurator;
 
@@ -182,6 +182,7 @@ fn construct_node(
         "fm_engine:kick" => Box::new(FmEngine::kick()),
         "fm_engine:bell" => Box::new(FmEngine::bell()),
         "fm_engine:bass" => Box::new(FmEngine::bass()),
+        "fm_voice" => Box::new(FmVoice::new()),
         "distortion" => Box::new(DistortionNode::new()),
         "filter" => Box::new(FilterNode::new()),
         "mix" => {
@@ -239,6 +240,7 @@ fn classify_node(node_def: &NodeDef, ids: &mut InstrumentIds) {
         | "fm_engine:kick"
         | "fm_engine:bell"
         | "fm_engine:bass"
+        | "fm_voice"
         | "clap_plugin" => ids.generators.push(node_def.id),
         "distortion" | "filter" | "reverb" => ids.effects.push(node_def.id),
         _ => {}

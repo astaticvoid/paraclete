@@ -71,6 +71,21 @@ fn app_wiring_no_tui_flag_skips_terminal_init() {
     assert!(tui_enabled(false), "no --no-tui flag should enable TUI");
 }
 
+/// P14-C8: `instrument-fm.yaml` is the fixture that gives `FmVoice` (node
+/// 28) a graph to live in — proves the actual shipped file parses and
+/// builds, not a copy pasted into the test.
+#[test]
+fn app_wiring_loads_the_fm_voice_fixture() {
+    use paraclete_app::builder::load_instrument_definition;
+
+    let instrument = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instrument-fm.yaml");
+    let def = load_instrument_definition(&instrument).expect("load instrument-fm.yaml");
+    let mut conf = NodeConfigurator::new(SR, BLOCK);
+    let ids = build_from_instrument(&def, &mut conf, &Default::default(), &mut Default::default())
+        .expect("build should succeed");
+    assert!(ids.generators.contains(&28), "expected node 28 (FmVoice) classified as a generator");
+}
+
 #[test]
 fn app_wiring_project_save_load_roundtrip() {
     let def = parse_instrument_definition(MINIMAL_YAML).expect("parse");

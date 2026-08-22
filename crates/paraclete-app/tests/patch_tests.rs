@@ -58,6 +58,22 @@ fn registry_known_type_tags_contains_inner_graph() {
     );
 }
 
+// ── P14-C8: FmVoice registration ────────────────────────────────────────────
+
+#[test]
+fn registry_contains_fm_voice() {
+    let registry = build_registry();
+    let node = registry.build("fm_voice");
+    assert!(node.is_some(), "expected fm_voice in registry");
+}
+
+#[test]
+fn registry_known_type_tags_contains_fm_voice() {
+    let registry = build_registry();
+    let tags = registry.known_type_tags();
+    assert!(tags.contains(&"fm_voice"), "expected fm_voice in {:?}", tags);
+}
+
 // ── apply_patch tests ──────────────────────────────────────────────────────
 
 #[test]

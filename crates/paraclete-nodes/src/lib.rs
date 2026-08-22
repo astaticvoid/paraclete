@@ -32,6 +32,7 @@ pub use distortion::DistortionNode;
 pub use envelope::EnvelopeNode;
 pub use filter::FilterNode;
 pub use fm_engine::{FmEngine, FmMachine};
+pub use fm_voice::{Algo as FmVoiceAlgo, FmVoice, Machine as FmVoiceMachine};
 pub use gateway::{ScriptingGatewayNode, ScriptEventConsumer};
 pub use internal_clock::InternalClock;
 pub use ladder::LadderFilterNode;
@@ -203,6 +204,12 @@ mod view_validation {
         for m in fm_engine::FmMachine::ALL {
             docs.push(fm_engine::FmEngine::new(m).capability_document());
         }
+        // P14-C8 review: FmVoice was registered in the app but never added
+        // here, so its ~36 params and 7 machine variants got none of this
+        // file's shared cross-node regression coverage (in_kit assignment,
+        // ports/cap-doc agreement) — the exact "new ViewPlugin never joined
+        // the widened net" gap #160/BUG-057 itself was.
+        docs.push(fm_voice::FmVoice::new().capability_document());
         docs.push(sampler::Sampler::new().capability_document());
         docs.push(filter::FilterNode::new().capability_document());
         docs.push(distortion::DistortionNode::new().capability_document());

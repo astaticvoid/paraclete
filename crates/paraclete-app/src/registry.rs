@@ -58,8 +58,8 @@ pub fn build_registry() -> NodeRegistry {
     use paraclete_graph_nodes::InnerGraphNode;
     use paraclete_nodes::{
         AnalogEngine, AudioOutputNode, DelayNode, DistortionNode, EnvelopeNode, FilterNode,
-        FmEngine, InternalClock, LadderFilterNode, LfoNode, LoopBreakNode, MixNode, OscillatorNode,
-        RecorderNode, ReverbNode, Sampler, Sequencer, SplitNode,
+        FmEngine, FmVoice, InternalClock, LadderFilterNode, LfoNode, LoopBreakNode, MixNode,
+        OscillatorNode, RecorderNode, ReverbNode, Sampler, Sequencer, SplitNode,
     };
 
     let mut r = NodeRegistry::new();
@@ -87,6 +87,11 @@ pub fn build_registry() -> NodeRegistry {
     r.register("fm_engine:kick", || Box::new(FmEngine::kick()));
     r.register("fm_engine:bell", || Box::new(FmEngine::bell()));
     r.register("fm_engine:bass", || Box::new(FmEngine::bass()));
+    // Single tag, not per-machine like FmEngine (ADR-043/P14-C8): FmVoice is
+    // one melodic voice per track, and its 7 machines (Full + 6 macros) are
+    // already runtime-switchable via ADR-041's `machine` param — a fixture
+    // just needs one starting point (Full), not a proliferated tag per macro.
+    r.register("fm_voice", || Box::new(FmVoice::new()));
     r.register("inner_graph", || Box::new(InnerGraphNode::new()));
 
     r

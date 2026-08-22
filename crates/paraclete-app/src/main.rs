@@ -1043,6 +1043,7 @@ fn build_view_registry(
         "fm_engine:kick",
         "fm_engine:bell",
         "fm_engine:bass",
+        "fm_voice",
         "sampler",
         "clap_plugin",
     ];

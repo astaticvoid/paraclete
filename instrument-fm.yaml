@@ -1,0 +1,60 @@
+# Fixture for P14-C8 — gives FmVoice (node 28, ADR-043) a graph to live in.
+#
+# FmVoice is not one-instance-per-drum-type like AnalogEngine/FmEngine's
+# `fm_engine:kick|bell|bass` — it's one melodic voice per track, single
+# type_tag `fm_voice`, defaulting to machine Full. The six macro machines
+# (Keys/Bass/Bell/Perc/Pad/Pluck) are runtime-switchable via the `machine`
+# param (ADR-041), not separate type_tags, so one track is enough to reach
+# all seven.
+#
+# Node ids follow the documented convention (AGENTS.md "App graph node
+# IDs"): 28 is the first free slot after 27 (FmEngine::bass), well short of
+# 30-37 (distortion). Only port 1 (audio_out_l) is wired to the mix, same as
+# every other engine fixture here — port 2 (audio_out_r) goes unconnected,
+# matching instrument.yaml's own treatment of AnalogEngine/FmEngine's L/R
+# port pair.
+#
+# This fixture proves FmVoice loads, builds, and round-trips through
+# registration/classification/save-load — it does NOT itself produce audio:
+# the default pattern's steps are all inactive (same Step::empty()/pattern-0
+# mechanism instrument.yaml's own tracks start from), so nothing sounds until
+# a project file or live editing activates steps. P14-C9's baseline scenario
+# is what actually exercises the audio path.
+format_version: 1
+name: "paraclete-fm-fixture"
+bpm: 140.0
+
+nodes:
+  - id: 1
+    type: internal_clock
+
+  - id: 10
+    type: sequencer
+    display_name: "FM"
+    default_note: 60
+
+  - id: 28
+    type: fm_voice
+
+  - id: 2
+    type: mix
+    channel_count: 8
+  - id: 200
+    type: reverb
+  - id: 60
+    type: audio_output
+
+edges:
+  - from: [1, "clock_out"]
+    to:   [10, "clock_in"]
+
+  - from: [10, "events_out"]
+    to:   [28, 0]
+
+  - from: [28, 1]
+    to:   [2, 0]
+
+  - from: [2, 8]
+    to:   [200, 0]
+  - from: [200, 1]
+    to:   [60, 0]
