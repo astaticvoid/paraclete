@@ -2,9 +2,10 @@ use std::collections::HashMap;
 use std::borrow::Cow;
 
 use paraclete_node_api::{
-    AffordanceHint, CapabilityDocument, EnvelopeGroup, Event, Node, PageRef, ParamDescriptor,
-    ParamUnit, ParameterBank, PortDescriptor, PortDirection, PortType, ProcessInput,
-    ProcessOutput, Rule, StateBusValue, UmpMessage, ViewPlugin, midi::ChannelVoice2,
+    AffordanceHint, CapabilityDocument, EnvelopeGroup, Event, MachineVariant, Node, PageRef,
+    ParamDescriptor, ParamOverlay, ParamUnit, ParameterBank, PortDescriptor, PortDirection,
+    PortType, ProcessInput, ProcessOutput, Rule, StateBusValue, UmpMessage, ViewPlugin,
+    midi::ChannelVoice2,
 };
 
 use crate::engine_dsp::{
@@ -75,16 +76,42 @@ fn ratio_from_index(idx: f32) -> f32 {
     RATIO_TABLE[i]
 }
 
-// ── Machine (P14 §0 D5) ───────────────────────────────────────────────────────
+// ── Machine (P14 §0 D5, P14-C7) ───────────────────────────────────────────────
 
-/// Stubbed now so P14-C7 (the six macros) does not need to restructure this
-/// commit — only `Full` has behavior; the rest are declared but unreachable
-/// until C7 builds their `MachineVariant`s. No bank param yet (deliberately —
-/// that plumbing is ADR-041's `MachineVariant`/`Rule::variants` machinery,
-/// C7's job, not invented early).
-#[allow(dead_code)]
+/// Full (the union bank, nothing hidden) plus six curated macros (§0 D5).
+/// **Append-only** — `machine`'s stored value is this order's index, same
+/// contract as `Algo::ALL`/`FmMachine::ALL`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Machine { Full, Keys, Bass, Bell, Perc, Pad, Pluck }
+
+impl Machine {
+    pub const ALL: [Machine; 7] = [
+        Machine::Full, Machine::Keys, Machine::Bass, Machine::Bell,
+        Machine::Perc, Machine::Pad, Machine::Pluck,
+    ];
+
+    pub fn value(self) -> u32 { Self::ALL.iter().position(|&m| m == self).unwrap() as u32 }
+
+    /// Out-of-range clamps to `Full` rather than panicking — same convention
+    /// as `Algo::from_value` (a malformed project can carry an out-of-range
+    /// `f64` bank slot). `Full` (not the last entry) is the safe fallback
+    /// here specifically: it's the one machine that can never hide a param,
+    /// so a corrupt `machine` value degrades to "show everything" rather
+    /// than to an arbitrary curated view.
+    pub fn from_value(v: u32) -> Self { *Self::ALL.get(v as usize).unwrap_or(&Machine::Full) }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Machine::Full => "Full",
+            Machine::Keys => "Keys",
+            Machine::Bass => "Bass",
+            Machine::Bell => "Bell",
+            Machine::Perc => "Perc",
+            Machine::Pad => "Pad",
+            Machine::Pluck => "Pluck",
+        }
+    }
+}
 
 // ── MOD page / LFO dest table (P14-C6, ADR-042) ──────────────────────────────
 
@@ -182,6 +209,211 @@ const FM_VOICE_DEST_RANGES: &[(u32, f32, f32)] = &[
 
 static FM_VOICE_DEST_LABELS: LfoDestLabels = LfoDestLabels(FM_VOICE_DEST_NAMES);
 
+// ── Per-macro dest tables (P14-C7, #179's "PER-MACHINE table" pattern) ───────
+
+// Each macro's table = its own curated SRC params (minus `algo`, a topology
+// selector, not a destination) plus the full AMP page (8) plus the "always-
+// safe set" the P14-C6 spec bullet names explicitly (harm, feedback, mix) —
+// whichever of those aren't already in the macro's own curation. `Full`'s
+// table above is the union of all seven; narrowing here changes what a
+// given one-based `lfo_dest` index MEANS on that machine (matches how
+// `FmEngine`'s own per-machine tables already work — this is expected,
+// established behavior, not a new hazard).
+
+static FM_VOICE_KEYS_DEST_NAMES: &[&str] = &[
+    "ratio_a", "harm", "feedback", "mix", "atk_a", "dec_a", "end_a", "lev_a",
+    "attack", "decay", "sustain", "release", "volume", "pan", "drive", "tone",
+];
+const FM_VOICE_KEYS_DEST_IDS: &[u32] = &[
+    ParamDescriptor::id_for_name("ratio_a"), ParamDescriptor::id_for_name("harm"),
+    ParamDescriptor::id_for_name("feedback"), ParamDescriptor::id_for_name("mix"),
+    ParamDescriptor::id_for_name("atk_a"), ParamDescriptor::id_for_name("dec_a"),
+    ParamDescriptor::id_for_name("end_a"), ParamDescriptor::id_for_name("lev_a"),
+    ParamDescriptor::id_for_name("attack"), ParamDescriptor::id_for_name("decay"),
+    ParamDescriptor::id_for_name("sustain"), ParamDescriptor::id_for_name("release"),
+    ParamDescriptor::id_for_name("volume"), ParamDescriptor::id_for_name("pan"),
+    ParamDescriptor::id_for_name("drive"), ParamDescriptor::id_for_name("tone"),
+];
+const FM_VOICE_KEYS_DEST_RANGES: &[(u32, f32, f32)] = &[
+    (ParamDescriptor::id_for_name("ratio_a"), 0.0, (RATIO_TABLE.len() - 1) as f32),
+    (ParamDescriptor::id_for_name("harm"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("feedback"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("mix"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("atk_a"), 0.001, 0.5),
+    (ParamDescriptor::id_for_name("dec_a"), 0.05, 4.0),
+    (ParamDescriptor::id_for_name("end_a"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("lev_a"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("attack"), 0.001, 4.0),
+    (ParamDescriptor::id_for_name("decay"), 0.01, 8.0),
+    (ParamDescriptor::id_for_name("sustain"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("release"), 0.01, 8.0),
+    (ParamDescriptor::id_for_name("volume"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("pan"), -1.0, 1.0),
+    (ParamDescriptor::id_for_name("drive"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("tone"), -1.0, 1.0),
+];
+static FM_VOICE_KEYS_DEST_LABELS: LfoDestLabels = LfoDestLabels(FM_VOICE_KEYS_DEST_NAMES);
+
+static FM_VOICE_BASS_DEST_NAMES: &[&str] = &[
+    "ratio_c", "ratio_a", "harm", "feedback", "mix", "drive", "attack", "decay",
+    "keytrack", "sustain", "release", "volume", "pan", "tone",
+];
+const FM_VOICE_BASS_DEST_IDS: &[u32] = &[
+    ParamDescriptor::id_for_name("ratio_c"), ParamDescriptor::id_for_name("ratio_a"),
+    ParamDescriptor::id_for_name("harm"), ParamDescriptor::id_for_name("feedback"),
+    ParamDescriptor::id_for_name("mix"), ParamDescriptor::id_for_name("drive"),
+    ParamDescriptor::id_for_name("attack"), ParamDescriptor::id_for_name("decay"),
+    ParamDescriptor::id_for_name("keytrack"), ParamDescriptor::id_for_name("sustain"),
+    ParamDescriptor::id_for_name("release"), ParamDescriptor::id_for_name("volume"),
+    ParamDescriptor::id_for_name("pan"), ParamDescriptor::id_for_name("tone"),
+];
+const FM_VOICE_BASS_DEST_RANGES: &[(u32, f32, f32)] = &[
+    (ParamDescriptor::id_for_name("ratio_c"), 0.0, (RATIO_TABLE.len() - 1) as f32),
+    (ParamDescriptor::id_for_name("ratio_a"), 0.0, (RATIO_TABLE.len() - 1) as f32),
+    (ParamDescriptor::id_for_name("harm"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("feedback"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("mix"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("drive"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("attack"), 0.001, 4.0),
+    (ParamDescriptor::id_for_name("decay"), 0.01, 8.0),
+    (ParamDescriptor::id_for_name("keytrack"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("sustain"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("release"), 0.01, 8.0),
+    (ParamDescriptor::id_for_name("volume"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("pan"), -1.0, 1.0),
+    (ParamDescriptor::id_for_name("tone"), -1.0, 1.0),
+];
+static FM_VOICE_BASS_DEST_LABELS: LfoDestLabels = LfoDestLabels(FM_VOICE_BASS_DEST_NAMES);
+
+static FM_VOICE_BELL_DEST_NAMES: &[&str] = &[
+    "ratio_b", "harm", "feedback", "mix", "dec_a", "lev_a", "dec_b", "lev_b",
+    "attack", "decay", "sustain", "release", "volume", "pan", "drive", "tone",
+];
+const FM_VOICE_BELL_DEST_IDS: &[u32] = &[
+    ParamDescriptor::id_for_name("ratio_b"), ParamDescriptor::id_for_name("harm"),
+    ParamDescriptor::id_for_name("feedback"), ParamDescriptor::id_for_name("mix"),
+    ParamDescriptor::id_for_name("dec_a"), ParamDescriptor::id_for_name("lev_a"),
+    ParamDescriptor::id_for_name("dec_b"), ParamDescriptor::id_for_name("lev_b"),
+    ParamDescriptor::id_for_name("attack"), ParamDescriptor::id_for_name("decay"),
+    ParamDescriptor::id_for_name("sustain"), ParamDescriptor::id_for_name("release"),
+    ParamDescriptor::id_for_name("volume"), ParamDescriptor::id_for_name("pan"),
+    ParamDescriptor::id_for_name("drive"), ParamDescriptor::id_for_name("tone"),
+];
+const FM_VOICE_BELL_DEST_RANGES: &[(u32, f32, f32)] = &[
+    (ParamDescriptor::id_for_name("ratio_b"), 0.0, (RATIO_TABLE.len() - 1) as f32),
+    (ParamDescriptor::id_for_name("harm"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("feedback"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("mix"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("dec_a"), 0.05, 4.0),
+    (ParamDescriptor::id_for_name("lev_a"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("dec_b"), 0.05, 4.0),
+    (ParamDescriptor::id_for_name("lev_b"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("attack"), 0.001, 4.0),
+    (ParamDescriptor::id_for_name("decay"), 0.01, 8.0),
+    (ParamDescriptor::id_for_name("sustain"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("release"), 0.01, 8.0),
+    (ParamDescriptor::id_for_name("volume"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("pan"), -1.0, 1.0),
+    (ParamDescriptor::id_for_name("drive"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("tone"), -1.0, 1.0),
+];
+static FM_VOICE_BELL_DEST_LABELS: LfoDestLabels = LfoDestLabels(FM_VOICE_BELL_DEST_NAMES);
+
+static FM_VOICE_PERC_DEST_NAMES: &[&str] = &[
+    "feedback", "mix", "harm", "decay", "ratio_a", "ratio_b", "dec_b",
+    "attack", "sustain", "release", "volume", "pan", "drive", "tone",
+];
+const FM_VOICE_PERC_DEST_IDS: &[u32] = &[
+    ParamDescriptor::id_for_name("feedback"), ParamDescriptor::id_for_name("mix"),
+    ParamDescriptor::id_for_name("harm"), ParamDescriptor::id_for_name("decay"),
+    ParamDescriptor::id_for_name("ratio_a"), ParamDescriptor::id_for_name("ratio_b"),
+    ParamDescriptor::id_for_name("dec_b"), ParamDescriptor::id_for_name("attack"),
+    ParamDescriptor::id_for_name("sustain"), ParamDescriptor::id_for_name("release"),
+    ParamDescriptor::id_for_name("volume"), ParamDescriptor::id_for_name("pan"),
+    ParamDescriptor::id_for_name("drive"), ParamDescriptor::id_for_name("tone"),
+];
+const FM_VOICE_PERC_DEST_RANGES: &[(u32, f32, f32)] = &[
+    (ParamDescriptor::id_for_name("feedback"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("mix"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("harm"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("decay"), 0.01, 8.0),
+    (ParamDescriptor::id_for_name("ratio_a"), 0.0, (RATIO_TABLE.len() - 1) as f32),
+    (ParamDescriptor::id_for_name("ratio_b"), 0.0, (RATIO_TABLE.len() - 1) as f32),
+    (ParamDescriptor::id_for_name("dec_b"), 0.05, 4.0),
+    (ParamDescriptor::id_for_name("attack"), 0.001, 4.0),
+    (ParamDescriptor::id_for_name("sustain"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("release"), 0.01, 8.0),
+    (ParamDescriptor::id_for_name("volume"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("pan"), -1.0, 1.0),
+    (ParamDescriptor::id_for_name("drive"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("tone"), -1.0, 1.0),
+];
+static FM_VOICE_PERC_DEST_LABELS: LfoDestLabels = LfoDestLabels(FM_VOICE_PERC_DEST_NAMES);
+
+static FM_VOICE_PAD_DEST_NAMES: &[&str] = &[
+    "mix", "harm", "feedback", "attack", "release", "detune", "ratio_a", "ratio_c",
+    "porta", "decay", "sustain", "volume", "pan", "drive", "tone",
+];
+const FM_VOICE_PAD_DEST_IDS: &[u32] = &[
+    ParamDescriptor::id_for_name("mix"), ParamDescriptor::id_for_name("harm"),
+    ParamDescriptor::id_for_name("feedback"), ParamDescriptor::id_for_name("attack"),
+    ParamDescriptor::id_for_name("release"), ParamDescriptor::id_for_name("detune"),
+    ParamDescriptor::id_for_name("ratio_a"), ParamDescriptor::id_for_name("ratio_c"),
+    ParamDescriptor::id_for_name("porta"), ParamDescriptor::id_for_name("decay"),
+    ParamDescriptor::id_for_name("sustain"), ParamDescriptor::id_for_name("volume"),
+    ParamDescriptor::id_for_name("pan"), ParamDescriptor::id_for_name("drive"),
+    ParamDescriptor::id_for_name("tone"),
+];
+const FM_VOICE_PAD_DEST_RANGES: &[(u32, f32, f32)] = &[
+    (ParamDescriptor::id_for_name("mix"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("harm"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("feedback"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("attack"), 0.001, 4.0),
+    (ParamDescriptor::id_for_name("release"), 0.01, 8.0),
+    (ParamDescriptor::id_for_name("detune"), -50.0, 50.0),
+    (ParamDescriptor::id_for_name("ratio_a"), 0.0, (RATIO_TABLE.len() - 1) as f32),
+    (ParamDescriptor::id_for_name("ratio_c"), 0.0, (RATIO_TABLE.len() - 1) as f32),
+    (ParamDescriptor::id_for_name("porta"), 0.0, 2.0),
+    (ParamDescriptor::id_for_name("decay"), 0.01, 8.0),
+    (ParamDescriptor::id_for_name("sustain"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("volume"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("pan"), -1.0, 1.0),
+    (ParamDescriptor::id_for_name("drive"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("tone"), -1.0, 1.0),
+];
+static FM_VOICE_PAD_DEST_LABELS: LfoDestLabels = LfoDestLabels(FM_VOICE_PAD_DEST_NAMES);
+
+static FM_VOICE_PLUCK_DEST_NAMES: &[&str] = &[
+    "feedback", "decay", "harm", "mix", "ratio_b", "dec_b", "lev_b",
+    "attack", "sustain", "release", "volume", "pan", "drive", "tone",
+];
+const FM_VOICE_PLUCK_DEST_IDS: &[u32] = &[
+    ParamDescriptor::id_for_name("feedback"), ParamDescriptor::id_for_name("decay"),
+    ParamDescriptor::id_for_name("harm"), ParamDescriptor::id_for_name("mix"),
+    ParamDescriptor::id_for_name("ratio_b"), ParamDescriptor::id_for_name("dec_b"),
+    ParamDescriptor::id_for_name("lev_b"), ParamDescriptor::id_for_name("attack"),
+    ParamDescriptor::id_for_name("sustain"), ParamDescriptor::id_for_name("release"),
+    ParamDescriptor::id_for_name("volume"), ParamDescriptor::id_for_name("pan"),
+    ParamDescriptor::id_for_name("drive"), ParamDescriptor::id_for_name("tone"),
+];
+const FM_VOICE_PLUCK_DEST_RANGES: &[(u32, f32, f32)] = &[
+    (ParamDescriptor::id_for_name("feedback"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("decay"), 0.01, 8.0),
+    (ParamDescriptor::id_for_name("harm"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("mix"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("ratio_b"), 0.0, (RATIO_TABLE.len() - 1) as f32),
+    (ParamDescriptor::id_for_name("dec_b"), 0.05, 4.0),
+    (ParamDescriptor::id_for_name("lev_b"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("attack"), 0.001, 4.0),
+    (ParamDescriptor::id_for_name("sustain"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("release"), 0.01, 8.0),
+    (ParamDescriptor::id_for_name("volume"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("pan"), -1.0, 1.0),
+    (ParamDescriptor::id_for_name("drive"), 0.0, 1.0),
+    (ParamDescriptor::id_for_name("tone"), -1.0, 1.0),
+];
+static FM_VOICE_PLUCK_DEST_LABELS: LfoDestLabels = LfoDestLabels(FM_VOICE_PLUCK_DEST_NAMES);
+
 /// P14 §2's C2 bullet: algo switch is its own audible discontinuity even
 /// within one machine, so it gets the same 5 ms fade-to-silence-then-swap
 /// FmEngine/AnalogEngine use for machine switching (ADR-041 decision 4).
@@ -193,6 +425,37 @@ struct AlgoSwitchFade {
     /// `Some` = fading out toward this algo; `None` = a cancelled switch
     /// ramping back to unity, which swaps nothing.
     target: Option<Algo>,
+}
+
+/// ADR-041 decision 4's own declick constant, same value as the algo-switch
+/// fade above — nothing about a `machine` change needs a different timbre of
+/// fade, and one shared constant means one thing to tune if that changes.
+const MACHINE_SWITCH_FADE_SECS: f32 = 0.005;
+
+/// A fully separate, parallel fade to `AlgoSwitchFade` — **not** unified into
+/// one struct. Judgment call (P14-C7): FmVoice has two independently
+/// switchable things (`algo`, `machine`), unlike `FmEngine` (machine only) or
+/// this file's own C2-era algo-switch (algo only, one machine). Keeping them
+/// as two separate fades, each ramping the same `render_l`/`render_r` buffer
+/// in sequence (see `process()`), is safe here specifically because neither
+/// swap function depends on the other's fade *state* — `apply_machine_switch`
+/// (below) does not rewrite `algo`'s bank value or any other param (see its
+/// own doc comment for why: ADR-041's own `FmEngine::apply_machine_switch`
+/// never rewrites bank values either, only resets DSP state — a macro
+/// switch here is a page-curation event, not a "load preset" action), so a
+/// machine switch completing can never retroactively make `poll_algo_param`
+/// see a bank-vs-field mismatch and start a spurious second fade. Two fades
+/// compounding their gain ramps in the rare case both are in flight at once
+/// (a performer nudging both `algo` and `machine` within the same ~5ms
+/// window) is harmless — it just produces a marginally faster combined
+/// fade-out, not a correctness bug, since each ramp is a plain multiply on
+/// the same buffer.
+#[derive(Clone, Copy, Debug)]
+struct MachineSwitchFade {
+    remaining: u32,
+    /// `Some` = fading out toward this machine; `None` = a cancelled switch
+    /// ramping back to unity, which swaps nothing.
+    target: Option<Machine>,
 }
 
 // ── Portamento (P14-C5) ───────────────────────────────────────────────────────
@@ -330,6 +593,11 @@ pub struct FmVoice {
     /// In-flight gain ramp for an algo switch (§2 C2).
     switch_fade: Option<AlgoSwitchFade>,
 
+    /// In-flight gain ramp for a `machine` switch (P14-C7) — a separate,
+    /// parallel fade from `switch_fade` above; see `MachineSwitchFade`'s own
+    /// doc comment for why the two aren't unified.
+    machine_switch_fade: Option<MachineSwitchFade>,
+
     render_l: Vec<f32>,
     render_r: Vec<f32>,
 
@@ -375,6 +643,7 @@ impl FmVoice {
             node_locks: Vec::new(),
             locks_pending: false,
             switch_fade: None,
+            machine_switch_fade: None,
             render_l: Vec::new(),
             render_r: Vec::new(),
             pending_initial_params: HashMap::new(),
@@ -628,6 +897,23 @@ impl FmVoice {
         ]
     }
 
+    /// ADR-041 decision 1/§0 A1: `machine` itself, a declared stepped bank
+    /// param — `in_kit: false`, matching `FmEngine`'s own `machine` param
+    /// (this is the node's identity, not a captured setting; ADR-041
+    /// decision 5 excludes it from kit application for the same reason).
+    /// `default: 0.0` (`Machine::Full`) — every `FmVoice` starts on Full
+    /// regardless of macro, since (unlike `FmEngine`) there is only one
+    /// constructor (P14-C8: single `"fm_voice"` type_tag) — see
+    /// `apply_machine_switch`'s doc comment for why a macro's recipe isn't
+    /// baked into this default either.
+    fn machine_param() -> ParamDescriptor {
+        ParamDescriptor {
+            id: fp("machine"), name: "machine".into(),
+            min: 0.0, max: (Machine::ALL.len() - 1) as f64, default: 0.0,
+            stepped: true, in_kit: false, unit: ParamUnit::Generic, display: None,
+        }
+    }
+
     fn build_doc() -> CapabilityDocument {
         CapabilityDocument {
             name: "FmVoice".into(),
@@ -637,7 +923,8 @@ impl FmVoice {
             // `Self::LFO_DESTS.len()` (26) is the union/`Full` dest-table
             // width, same role `FmEngine::LFO_DESTS.len()` plays for its own
             // `lfo_dest` range — see the dest-table comment above.
-            params: Self::params().into_iter().chain(Self::syn2_params()).chain(Self::amp_params())
+            params: std::iter::once(Self::machine_param())
+                .chain(Self::params()).chain(Self::syn2_params()).chain(Self::amp_params())
                 .chain(Self::expression_params())
                 .chain(lfo_params(Self::LFO_DESTS.len(), Some(&FM_VOICE_DEST_LABELS)))
                 .collect(),
@@ -693,18 +980,20 @@ impl FmVoice {
         }
     }
 
-    /// The destination names offered on `machine`, in index order (P14-C7's
-    /// six macros each narrow this — every arm returns the same `Full`/union
-    /// table for now, since `Full` is the only behaviorally reachable
-    /// `Machine` value until C7 builds `MachineVariant`s for the rest).
-    /// Only consumed by this file's own tests right now (a `cargo build`
-    /// doesn't see `#[cfg(test)]`) — C7's `dest_param_labels`-equivalent is
-    /// its real production consumer, matching `FmEngine::dest_names`.
-    #[allow(dead_code)]
+    /// The destination names offered on `machine`, in index order — each of
+    /// the six macros (P14-C7) narrows this to its curated SRC params plus
+    /// the always-safe set (harm, feedback, mix, all of AMP); `Full` keeps
+    /// the union. Real production consumer is `dest_param_labels`/
+    /// `machine_variants`, matching `FmEngine::dest_names`.
     fn dest_names(machine: Machine) -> &'static [&'static str] {
         match machine {
-            Machine::Full | Machine::Keys | Machine::Bass | Machine::Bell
-            | Machine::Perc | Machine::Pad | Machine::Pluck => FM_VOICE_DEST_NAMES,
+            Machine::Full => FM_VOICE_DEST_NAMES,
+            Machine::Keys => FM_VOICE_KEYS_DEST_NAMES,
+            Machine::Bass => FM_VOICE_BASS_DEST_NAMES,
+            Machine::Bell => FM_VOICE_BELL_DEST_NAMES,
+            Machine::Perc => FM_VOICE_PERC_DEST_NAMES,
+            Machine::Pad => FM_VOICE_PAD_DEST_NAMES,
+            Machine::Pluck => FM_VOICE_PLUCK_DEST_NAMES,
         }
     }
 
@@ -712,8 +1001,13 @@ impl FmVoice {
     /// thread reads these, never a name hash.
     fn dest_ids(machine: Machine) -> &'static [u32] {
         match machine {
-            Machine::Full | Machine::Keys | Machine::Bass | Machine::Bell
-            | Machine::Perc | Machine::Pad | Machine::Pluck => FM_VOICE_DEST_IDS,
+            Machine::Full => FM_VOICE_DEST_IDS,
+            Machine::Keys => FM_VOICE_KEYS_DEST_IDS,
+            Machine::Bass => FM_VOICE_BASS_DEST_IDS,
+            Machine::Bell => FM_VOICE_BELL_DEST_IDS,
+            Machine::Perc => FM_VOICE_PERC_DEST_IDS,
+            Machine::Pad => FM_VOICE_PAD_DEST_IDS,
+            Machine::Pluck => FM_VOICE_PLUCK_DEST_IDS,
         }
     }
 
@@ -721,21 +1015,248 @@ impl FmVoice {
     /// (BUG-069) — the LFO scales/clamps against these, not the bank's union.
     fn dest_ranges(machine: Machine) -> &'static [(u32, f32, f32)] {
         match machine {
-            Machine::Full | Machine::Keys | Machine::Bass | Machine::Bell
-            | Machine::Perc | Machine::Pad | Machine::Pluck => FM_VOICE_DEST_RANGES,
+            Machine::Full => FM_VOICE_DEST_RANGES,
+            Machine::Keys => FM_VOICE_KEYS_DEST_RANGES,
+            Machine::Bass => FM_VOICE_BASS_DEST_RANGES,
+            Machine::Bell => FM_VOICE_BELL_DEST_RANGES,
+            Machine::Perc => FM_VOICE_PERC_DEST_RANGES,
+            Machine::Pad => FM_VOICE_PAD_DEST_RANGES,
+            Machine::Pluck => FM_VOICE_PLUCK_DEST_RANGES,
         }
     }
 
-    /// Only consumed by this file's own tests right now, same reason as
-    /// `dest_names` above — `build_doc` references `FM_VOICE_DEST_LABELS`
-    /// directly since it has no `machine` to dispatch on (it's a bare `fn`,
-    /// constructing the capability document before any instance exists).
+    /// Only consumed by this file's own tests right now — `build_doc` (no
+    /// `machine` to dispatch on, a bare `fn`) and `machine_variants`/
+    /// `dest_param_labels` both go through `dest_names` directly instead of
+    /// wrapping it in `LfoDestLabels` first. Same status quo the original
+    /// (pre-C7) code had for this function.
     #[allow(dead_code)]
     fn dest_labels(machine: Machine) -> &'static LfoDestLabels {
         match machine {
-            Machine::Full | Machine::Keys | Machine::Bass | Machine::Bell
-            | Machine::Perc | Machine::Pad | Machine::Pluck => &FM_VOICE_DEST_LABELS,
+            Machine::Full => &FM_VOICE_DEST_LABELS,
+            Machine::Keys => &FM_VOICE_KEYS_DEST_LABELS,
+            Machine::Bass => &FM_VOICE_BASS_DEST_LABELS,
+            Machine::Bell => &FM_VOICE_BELL_DEST_LABELS,
+            Machine::Perc => &FM_VOICE_PERC_DEST_LABELS,
+            Machine::Pad => &FM_VOICE_PAD_DEST_LABELS,
+            Machine::Pluck => &FM_VOICE_PLUCK_DEST_LABELS,
         }
+    }
+
+    /// `MachineVariant::param_labels` for `lfo_dest` — see
+    /// `FmEngine::dest_param_labels` for the contract: index 0 is "off",
+    /// then this machine's own dest names in order, then `None` padding out
+    /// to the union width (so a saved `lfo_dest` value past this machine's
+    /// own list — valid on a wider machine — reads as a gap, not a panic).
+    fn dest_param_labels(machine: Machine) -> Vec<Option<Cow<'static, str>>> {
+        let names = Self::dest_names(machine);
+        let mut out: Vec<Option<Cow<'static, str>>> = Vec::with_capacity(Self::LFO_DESTS.len() + 1);
+        out.push(Some(Cow::Borrowed("off")));
+        out.extend(names.iter().map(|n| Some(Cow::Borrowed(*n))));
+        while out.len() <= Self::LFO_DESTS.len() {
+            out.push(None);
+        }
+        out
+    }
+
+    /// `MachineVariant::param_labels` for `algo` — machine-invariant (every
+    /// machine offers the same eight algorithms), unlike `lfo_dest`'s
+    /// labels. Still carried per-variant, not just declared once: `Rule`
+    /// itself has no `param_labels` field (only `MachineVariant` does,
+    /// `rule.rs`) — once `variants` is non-empty, assembly resolves a
+    /// stepped param's labels from the *active* variant, `Full` included,
+    /// so every one of the seven needs its own entry even though the
+    /// content is identical across all of them. §2 C7's own bullet names
+    /// this: "so Theotokos/Theoria render algorithm names, not raw indices"
+    /// (#176's lesson from the MM LFO-dest review).
+    fn algo_param_labels() -> Vec<Option<Cow<'static, str>>> {
+        Algo::ALL.iter().map(|&a| Some(Cow::Borrowed(a.name()))).collect()
+    }
+
+    /// Full's own SRC sub-page 1 — SYN1 in its natural declaration order
+    /// (P14-C2's original placement, unchanged).
+    fn full_src_page1() -> [&'static str; 8] {
+        ["algo", "ratio_c", "ratio_a", "ratio_b", "harm", "detune", "feedback", "mix"]
+    }
+
+    /// Each macro's curated SRC sub-page 1 (§0 D5's bias table — a bias, not
+    /// a frozen slot list per D5's own wording: "chosen during
+    /// implementation against these anchors"). `algo` is slot 0 on every
+    /// machine, matching `FmEngine::machine_page_refs`'s "a shared param
+    /// never moves" convention — even on a macro, a performer can see/
+    /// change the algorithm without switching to `Full`. Bias items that
+    /// don't fit in the remaining 7 slots (e.g. Keys' "amp ADSR") stay one
+    /// page-flip away on their own dedicated page (AMP), not duplicated
+    /// here — SRC's job is the character's *signature* controls, not
+    /// everything the bias table names.
+    fn macro_src_page1(machine: Machine) -> [&'static str; 8] {
+        match machine {
+            Machine::Full => Self::full_src_page1(),
+            // Keys (Stack): brightness/feedback + the full group-A mod
+            // envelope (bias: "harm, feedback, SYN2 A-group").
+            Machine::Keys => ["algo", "ratio_a", "harm", "feedback", "atk_a", "dec_a", "end_a", "lev_a"],
+            // Bass (Short Stack): sub-leaning ratios + drive/harm + the amp
+            // attack/decay shape + keytrack (bias: "biased low").
+            Machine::Bass => ["algo", "ratio_c", "ratio_a", "harm", "drive", "attack", "decay", "keytrack"],
+            // Bell: the high ratio_b that makes the B-pair inharmonic, plus
+            // both SYN2 groups' decay/level — Bell's algorithm feeds BOTH
+            // A's and the B-pair's contributions into C (§0 D1 #8).
+            Machine::Bell => ["algo", "ratio_b", "feedback", "mix", "dec_a", "lev_a", "dec_b", "lev_b"],
+            // Perc (Branch): the short/deep branch blend plus its ratios.
+            Machine::Perc => ["algo", "feedback", "mix", "harm", "decay", "ratio_a", "ratio_b", "dec_b"],
+            // Pad (Parallel Carriers): NO group-A SYN2 param — architecturally
+            // inert on this algorithm (§0 D5's own caution note, a C3
+            // finding: A is a final tap here, never a modulator). `porta`
+            // is surfaced directly since Pad's own recipe turns it on.
+            Machine::Pad => ["algo", "mix", "attack", "release", "detune", "ratio_a", "ratio_c", "porta"],
+            // Pluck (Feedback Pair): fast decay + group B's own decay/level,
+            // since B is the feedback pair driving A in this algorithm.
+            Machine::Pluck => ["algo", "feedback", "decay", "harm", "mix", "ratio_b", "dec_b", "lev_b"],
+        }
+    }
+
+    /// One machine's full page placement: `machine` at TRIG slot 0 (ADR-041
+    /// amendment 2), its own curated SRC sub-page 1, then SRC sub-page 2
+    /// (SYN2), AMP's full 8, AMP sub-page 2 (expression), and MOD —
+    /// **identical across every machine** except the curated SRC 8 (§0 D5:
+    /// "every macro's non-SRC pages stay fully live").
+    fn machine_page_refs(machine: Machine) -> Vec<(u32, PageRef)> {
+        const SRC: &str = "SRC";
+        const AMP: &str = "AMP";
+        let src = |name: &str, slot: u8| (fp(name), PageRef { page: Cow::Borrowed(SRC), slot });
+        let amp = |name: &str, slot: u8| (fp(name), PageRef { page: Cow::Borrowed(AMP), slot });
+
+        let mut pages = vec![(fp("machine"), PageRef { page: Cow::Borrowed("TRIG"), slot: 0 })];
+        for (i, name) in Self::macro_src_page1(machine).iter().enumerate() {
+            pages.push(src(name, i as u8));
+        }
+        for (i, name) in ["atk_a", "dec_a", "end_a", "lev_a", "atk_b", "dec_b", "end_b", "lev_b"].iter().enumerate() {
+            pages.push(src(name, 8 + i as u8));
+        }
+        for (i, name) in ["attack", "decay", "sustain", "release", "volume", "pan", "drive", "tone"].iter().enumerate() {
+            pages.push(amp(name, i as u8));
+        }
+        for (i, name) in ["keytrack", "vel_mod", "env_reset", "porta"].iter().enumerate() {
+            pages.push(amp(name, 8 + i as u8));
+        }
+        for (i, id) in LFO_PAGE_ORDER.iter().enumerate() {
+            pages.push((*id, PageRef { page: Cow::Borrowed("MOD"), slot: i as u8 }));
+        }
+        pages
+    }
+
+    /// Per-macro overlay defaults (§0 D5's recipe anchors) — `min`/`max`
+    /// always equal the param's own full declared range (never narrowed:
+    /// D5's explicit "nothing clamped or hidden from the underlying bank"
+    /// rule — a deliberate divergence from `FmEngine::machine_overlays`,
+    /// whose per-machine ranges genuinely narrow, since its machines have
+    /// real distinct legitimate ranges). Only `default` differs from
+    /// `Full`'s. **Informational, not auto-applied** — see
+    /// `apply_machine_switch`'s doc comment for why a live `machine` switch
+    /// never force-writes these into the bank; a fresh instrument/fixture
+    /// wanting a macro's tuned starting point sets both `machine` and the
+    /// underlying values explicitly (P14-C9's reference patches do this).
+    fn machine_overlays(machine: Machine) -> Vec<(u32, ParamOverlay)> {
+        let algo_overlay = |algo: Algo| ParamOverlay {
+            min: 0.0, max: (Algo::ALL.len() - 1) as f64, default: algo.value() as f64,
+            // NOT identity, unlike `machine` — ruled in P14-C7 review per
+            // the phase's own delegated mandate ("keep it expressive...
+            // enable human interface level detail potential", P14 spec
+            // preamble). ADR-041 decision 6 marks `machine` identity
+            // specifically because it's a "select a different instrument"
+            // gesture; `algo` is a within-instrument topology choice a
+            // performer may legitimately want to p-lock per step for
+            // rhythmic/textural variation, or scene-morph, same as any
+            // other deep param. `AlgoSwitchFade` already exists to declick
+            // whatever drives an algo change — a p-lock included — so
+            // there's no technical reason to forbid it the way there is
+            // for `machine` (ADR-041 amendment 4's "cannot declick inside a
+            // step" concern doesn't apply here: the fade already handles
+            // mid-note changes regardless of what triggered them).
+            identity: false,
+        };
+        let ratio_overlay = |ratio: f32| ParamOverlay {
+            min: 0.0, max: (RATIO_TABLE.len() - 1) as f64,
+            default: RATIO_TABLE.iter().position(|&r| r == ratio).unwrap_or(RATIO_DEFAULT_INDEX as usize) as f64,
+            identity: false,
+        };
+        let generic = |default: f64| ParamOverlay { min: 0.0, max: 1.0, default, identity: false };
+        let seconds = |min: f64, max: f64, default: f64| ParamOverlay { min, max, default, identity: false };
+
+        let mut out = vec![
+            (fp("machine"), ParamOverlay {
+                min: 0.0, max: (Machine::ALL.len() - 1) as f64, default: machine.value() as f64, identity: true,
+            }),
+            // #179: the dest encoder reaches only this machine's destinations.
+            (fp("lfo_dest"), ParamOverlay {
+                min: 0.0, max: Self::dest_names(machine).len() as f64, default: 0.0, identity: false,
+            }),
+        ];
+
+        match machine {
+            // `identity` is stored per-overlay (ADR-041's own named hazard:
+            // "miss one and p-lock rejection stops working for that machine
+            // alone") — `Full` needs its own `algo` overlay entry too, not
+            // just the six macros, or `validate_view` correctly flags the
+            // inconsistency (caught by this file's own
+            // `capability_document_has_no_view_defects` test). `Full`'s
+            // default matches `algo`'s own base `ParamDescriptor` default
+            // (`Algo::Stack`, value 0.0) — nothing changes for Full itself.
+            Machine::Full => out.push((fp("algo"), algo_overlay(Algo::Stack))),
+            Machine::Keys => {
+                out.push((fp("algo"), algo_overlay(Algo::Stack)));
+                out.push((fp("ratio_c"), ratio_overlay(1.0)));
+                out.push((fp("ratio_a"), ratio_overlay(2.0)));
+                out.push((fp("harm"), generic(0.3)));
+            }
+            Machine::Bass => {
+                out.push((fp("algo"), algo_overlay(Algo::ShortStack)));
+                out.push((fp("ratio_c"), ratio_overlay(0.75)));
+                out.push((fp("ratio_a"), ratio_overlay(1.5)));
+                out.push((fp("keytrack"), generic(0.3)));
+            }
+            Machine::Bell => {
+                out.push((fp("algo"), algo_overlay(Algo::Bell)));
+                out.push((fp("ratio_b"), ratio_overlay(10.0)));
+            }
+            Machine::Perc => {
+                out.push((fp("algo"), algo_overlay(Algo::Branch)));
+                out.push((fp("decay"), seconds(0.01, 8.0, 0.15)));
+            }
+            Machine::Pad => {
+                out.push((fp("algo"), algo_overlay(Algo::ParallelCarriers)));
+                out.push((fp("attack"), seconds(0.001, 4.0, 1.5)));
+                out.push((fp("porta"), seconds(0.0, 2.0, 0.3)));
+            }
+            Machine::Pluck => {
+                out.push((fp("algo"), algo_overlay(Algo::FeedbackPair)));
+                out.push((fp("decay"), seconds(0.01, 8.0, 0.15)));
+                out.push((fp("feedback"), generic(0.4)));
+            }
+        }
+        out
+    }
+
+    fn machine_variants() -> Vec<MachineVariant> {
+        Machine::ALL
+            .iter()
+            .map(|&m| MachineVariant {
+                value: m.value(),
+                name: Cow::Borrowed(m.name()),
+                page_groups: Cow::Owned(vec![
+                    Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP"), Cow::Borrowed("MOD"),
+                ]),
+                pages: Cow::Owned(Self::machine_page_refs(m)),
+                overlays: Cow::Owned(Self::machine_overlays(m)),
+                // ADR-041 amendment 2026-08-02: labels are the active
+                // machine's — see `FmEngine::machine_variants` for the
+                // identical pattern.
+                param_labels: Cow::Owned(vec![
+                    (fp("algo"), Self::algo_param_labels().into()),
+                    (fp("lfo_dest"), Self::dest_param_labels(m).into()),
+                ]),
+            })
+            .collect()
     }
 
     /// Resolve `lfo_dest` against the active machine's table (#179 pattern).
@@ -879,6 +1400,115 @@ impl FmVoice {
     /// keep sounding under the new algorithm, not require a fresh trigger.
     fn apply_algo_switch(&mut self, target: Algo) {
         self.algo = target;
+        self.op_c.reset();
+        self.op_a.reset();
+        self.op_b1.reset();
+        self.op_b2.reset();
+    }
+
+    /// Has `machine` moved? Identical shape to `poll_algo_param` — see that
+    /// function's comment for the cancel/retarget-continuity logic, which is
+    /// the same here. Reads the **bank**, not `get_param` — a `ParamLock` on
+    /// `machine` must never switch machines mid-step (ADR-041 decision 6),
+    /// same reasoning `FmEngine::poll_machine_param` gives for its own read.
+    fn poll_machine_param(&mut self) {
+        let target = Machine::from_value(self.bank.get(fp("machine")).max(0.0) as u32);
+        let total = self.machine_fade_len();
+
+        if target == self.machine {
+            if let Some(f) = self.machine_switch_fade {
+                if f.target.is_some() {
+                    self.machine_switch_fade = Some(MachineSwitchFade {
+                        remaining: total.saturating_sub(f.remaining).max(1),
+                        target: None,
+                    });
+                }
+            }
+            return;
+        }
+
+        if self.machine_switch_fade.map(|f| f.target) == Some(Some(target)) {
+            return;
+        }
+        if !self.is_sounding() {
+            self.apply_machine_switch(target);
+            self.machine_switch_fade = None;
+            return;
+        }
+
+        let remaining = match self.machine_switch_fade {
+            Some(f) if f.target.is_some() => f.remaining.min(total),
+            Some(f) => total.saturating_sub(f.remaining).max(1),
+            None => total,
+        };
+        self.machine_switch_fade = Some(MachineSwitchFade { remaining, target: Some(target) });
+    }
+
+    fn machine_fade_len(&self) -> u32 {
+        (MACHINE_SWITCH_FADE_SECS * self.sample_rate).max(1.0) as u32
+    }
+
+    /// Identical ramp shape to `apply_switch_fade`, driving `machine_switch_fade`
+    /// instead of `switch_fade`. Both are called back-to-back in `process()` —
+    /// see `MachineSwitchFade`'s doc comment for why two independent ramps on
+    /// the same buffer is safe.
+    fn apply_machine_switch_fade(&mut self, block_size: usize) {
+        let Some(fade) = self.machine_switch_fade else {
+            return;
+        };
+        let total = self.machine_fade_len() as f32;
+        let fading_out = fade.target.is_some();
+        let mut left = fade.remaining;
+
+        for i in 0..block_size.min(self.render_l.len()) {
+            if left == 0 {
+                if fading_out {
+                    self.render_l[i] = 0.0;
+                    self.render_r[i] = 0.0;
+                }
+                continue;
+            }
+            let g = if fading_out {
+                left as f32 / total
+            } else {
+                1.0 - (left as f32 / total)
+            };
+            self.render_l[i] *= g;
+            self.render_r[i] *= g;
+            left -= 1;
+        }
+
+        if left == 0 {
+            if let Some(target) = fade.target {
+                self.apply_machine_switch(target);
+            }
+            self.machine_switch_fade = None;
+        } else {
+            self.machine_switch_fade = Some(MachineSwitchFade { remaining: left, target: fade.target });
+        }
+    }
+
+    /// ADR-041 decision 4: voice state resets on switch. **Does not rewrite
+    /// any bank param value** — matching `FmEngine::apply_machine_switch`
+    /// exactly (it only resets DSP state, never bank values either). This
+    /// was a real judgment call (P14-C7): D5's six macro "recipes" (fixed
+    /// algo + ratio-table anchors) are NOT auto-applied by this function —
+    /// doing so would mean a `machine` switch overwrites whatever a
+    /// performer has already dialed in, which is exactly what ADR-041
+    /// decision 2 forbids ("switching away and back loses nothing"). Unlike
+    /// `FmEngine` (whose three machines have disjoint param sets, so
+    /// "switching away and back" naturally preserves each machine's own
+    /// untouched values), every `FmVoice` macro shares the *same* param
+    /// space — there is no clean notion of "this macro's own values sitting
+    /// inert," so a force-write-on-switch would silently discard a
+    /// performer's edits the moment they revisit a machine, a strictly worse
+    /// violation of decision 2's spirit than not writing at all. The
+    /// recipe's tuned values are still real — declared as each macro's
+    /// `ParamOverlay::default` (`machine_overlays`) and as the values C9's
+    /// reference-patch scenarios explicitly `set_param` — they just aren't
+    /// force-applied by the engine on a live switch.
+    fn apply_machine_switch(&mut self, target: Machine) {
+        self.machine = target;
         self.op_c.reset();
         self.op_a.reset();
         self.op_b1.reset();
@@ -1302,60 +1932,15 @@ impl Default for FmVoice {
 
 impl ViewPlugin for FmVoice {
     fn to_rule(&self, _node_id: u64, _sub_nodes: &[(u64, &dyn ViewPlugin)]) -> Rule {
-        const SRC: &str = "SRC";
-        const AMP: &str = "AMP";
-        let src = |name: &str, slot: u8| (fp(name), PageRef { page: Cow::Borrowed(SRC), slot });
-        let amp = |name: &str, slot: u8| (fp(name), PageRef { page: Cow::Borrowed(AMP), slot });
         Rule {
             name: Cow::Borrowed("FM Voice"),
-            page_groups: Cow::Owned(vec![Cow::Borrowed("SRC"), Cow::Borrowed("AMP"), Cow::Borrowed("MOD")]),
-            // SYN2 (P14-C3) is SRC **sub-page 2** (slots 8-15); the P14-C5
-            // expression params are AMP **sub-page 2** (slots 8-11) — same
-            // sub-page mechanism, not a separate page_groups entry.
-            // ADR-043's post-ratification amendment 1 is explicit about
-            // SYN1/SYN2; ADR-038's own post-ratification amendment revises
-            // "FUNC+PG overflow chords" to "re-pressing the active PG key
-            // to cycle sub-pages" — the expression page's "overflow" *is*
-            // this same sub-page cycling, not a new page key.
-            param_pages: {
-                let mut pages = vec![
-                    src("algo", 0),
-                    src("ratio_c", 1),
-                    src("ratio_a", 2),
-                    src("ratio_b", 3),
-                    src("harm", 4),
-                    src("detune", 5),
-                    src("feedback", 6),
-                    src("mix", 7),
-                    src("atk_a", 8),
-                    src("dec_a", 9),
-                    src("end_a", 10),
-                    src("lev_a", 11),
-                    src("atk_b", 12),
-                    src("dec_b", 13),
-                    src("end_b", 14),
-                    src("lev_b", 15),
-                    amp("attack", 0),
-                    amp("decay", 1),
-                    amp("sustain", 2),
-                    amp("release", 3),
-                    amp("volume", 4),
-                    amp("pan", 5),
-                    amp("drive", 6),
-                    amp("tone", 7),
-                    amp("keytrack", 8),
-                    amp("vel_mod", 9),
-                    amp("env_reset", 10),
-                    amp("porta", 11),
-                ];
-                // P14-C6: MOD page, laid out identically to `FmEngine`'s own
-                // (`LFO_PAGE_ORDER`) so a performer's muscle memory carries
-                // across tracks.
-                for (i, id) in LFO_PAGE_ORDER.iter().enumerate() {
-                    pages.push((*id, PageRef { page: Cow::Borrowed("MOD"), slot: i as u8 }));
-                }
-                Cow::Owned(pages)
-            },
+            page_groups: Cow::Owned(vec![
+                Cow::Borrowed("TRIG"), Cow::Borrowed("SRC"), Cow::Borrowed("AMP"), Cow::Borrowed("MOD"),
+            ]),
+            // Base fields stay the ACTIVE machine's, so a consumer that
+            // ignores `variants` renders what it did before (ADR-041
+            // decision 3) — same convention as `FmEngine::to_rule`.
+            param_pages: Cow::Owned(Self::machine_page_refs(self.machine)),
             macros: Cow::Borrowed(&[]),
             // Anchored on each group's `dec_*`/`decay` param, matching
             // FmEngine's/AnalogEngine's own EnvelopeCurve convention
@@ -1393,7 +1978,9 @@ impl ViewPlugin for FmVoice {
             routing: Cow::Borrowed(&[]),
             diagram: None,
             view_overrides: Cow::Borrowed(&[]),
-            variants: Cow::Borrowed(&[]),
+            // P14-C7: Full + six macros. Previously empty (`Cow::Borrowed(&[])`)
+            // — every consumer used the base fields above unconditionally.
+            variants: Cow::Owned(Self::machine_variants()),
         }
     }
 }
@@ -1459,6 +2046,7 @@ impl Node for FmVoice {
         self.last_note = 60;
         self.velocity_level = 1.0;
         self.switch_fade = None;
+        self.machine_switch_fade = None;
         self.node_locks.clear();
         self.locks_pending = false;
     }
@@ -1467,6 +2055,7 @@ impl Node for FmVoice {
         let _ = output;
         self.bank.handle_commands(input.commands);
         self.poll_algo_param();
+        self.poll_machine_param();
 
         let block_size = input.block_size;
         for s in &mut self.render_l { *s = 0.0; }
@@ -1506,6 +2095,7 @@ impl Node for FmVoice {
         }
         self.render_span(cursor, block_size);
         self.apply_switch_fade(block_size);
+        self.apply_machine_switch_fade(block_size);
 
         if let Some(buf) = output.audio_outputs.first_mut() {
             if buf.channels() >= 2 {
@@ -1584,6 +2174,10 @@ mod tests {
         let mut eng = FmVoice::new();
         eng.activate(44100.0, 512);
         eng
+    }
+
+    fn set_machine(eng: &mut FmVoice, machine: Machine) {
+        eng.bank.set(fp("machine"), machine.value() as f64);
     }
 
     /// Every algorithm must produce non-silent, finite output for a plain
@@ -2384,5 +2978,175 @@ mod tests {
             let modulated = eng.get_param(fp(name));
             assert_eq!(modulated, raw, "{name} must be untouched when lfo_dest is off");
         }
+    }
+
+    // ── Machine variants (P14-C7) ────────────────────────────────────────
+
+    /// ADR-041's union-bank invariant (§3 point 2), the MM-C3 hazard
+    /// recurring in a new engine — explicitly named in this phase's own C7
+    /// bullet as something to test directly, not assume transfers. Set
+    /// every declared param (except `machine` itself) to a distinct
+    /// non-default value, cycle through every macro and back to `Full`,
+    /// and confirm every single value survived untouched — `Full` must
+    /// never lose or narrow what the bank holds, regardless of which
+    /// macro was last active. `apply_machine_switch` never writes bank
+    /// values today (see its own doc comment for why), so this test's real
+    /// job is as a regression guard: if a future change reintroduces a
+    /// per-machine value write, this is what catches it.
+    #[test]
+    fn full_exposes_every_param_regardless_of_last_active_macro() {
+        let mut eng = new_engine();
+        let doc = FmVoice::build_doc();
+        let mut expected = HashMap::new();
+        for (i, p) in doc.params.iter().enumerate() {
+            if p.name.as_str() == "machine" {
+                continue; // identity, not under test here
+            }
+            let value = p.min + (p.max - p.min) * ((i % 7) as f64 / 7.0);
+            eng.bank.set(p.id, value);
+            expected.insert(p.id, value);
+        }
+
+        for &m in &[
+            Machine::Keys, Machine::Bass, Machine::Bell,
+            Machine::Perc, Machine::Pad, Machine::Pluck, Machine::Full,
+        ] {
+            set_machine(&mut eng, m);
+            run(&mut eng, &[]); // resolve the (instant, inactive) switch
+        }
+
+        for p in &doc.params {
+            if p.name.as_str() == "machine" {
+                continue;
+            }
+            let want = expected[&p.id];
+            let got = eng.bank.get(p.id);
+            assert_eq!(got, want, "{} lost/changed after cycling through every machine", p.name);
+        }
+    }
+
+    /// Mirrors `mid_note_algo_switch_fades_out_then_swaps_without_clicking`
+    /// (P14-C2) exactly, for `machine` instead of `algo` — the spec's own
+    /// C7 bullet: "switch between any two machines mid-note declicks
+    /// cleanly (reuses C2's SwitchFade)".
+    #[test]
+    fn mid_note_machine_switch_fades_out_then_swaps_without_clicking() {
+        let mut eng = new_engine();
+        set_machine(&mut eng, Machine::Keys);
+        run(&mut eng, &[]); // resolve the initial (instant, inactive) switch
+        let out = run(&mut eng, &[make_note_on(60)]);
+        assert!(out.iter().any(|&s| s.abs() > 1e-3), "must be sounding before the switch");
+
+        set_machine(&mut eng, Machine::Bell);
+        assert_eq!(eng.machine, Machine::Keys, "must not swap immediately while sounding");
+        let fade_len = eng.machine_fade_len() as usize;
+        let out = run(&mut eng, &[]);
+
+        let fade_region = &out[..fade_len];
+        let early_peak = fade_region[..20].iter().cloned().fold(0.0f32, |m, s| m.max(s.abs()));
+        let late_peak = fade_region[fade_len - 20..].iter().cloned().fold(0.0f32, |m, s| m.max(s.abs()));
+        assert!(early_peak > late_peak, "fade must decay: early {early_peak}, late {late_peak}");
+        assert!(late_peak < 0.05, "fade must reach near-silence by its end, got {late_peak}");
+
+        assert!(
+            out[fade_len..].iter().all(|&s| s.abs() < 1e-6),
+            "must stay silent after the fade window until the swap, not resume the old machine"
+        );
+        assert_eq!(eng.machine, Machine::Bell, "swap must complete by the end of the block containing the fade");
+
+        let out = run(&mut eng, &[]);
+        assert!(out.iter().any(|&s| s.abs() > 1e-3), "must resume sounding under the new machine after the swap");
+    }
+
+    /// Spec's own C7 bullet: "each macro's tuned default renders non-silent
+    /// output." Note the scope this test can actually cover: since
+    /// `apply_machine_switch` never rewrites bank values (see its doc
+    /// comment), a bare `machine` switch with nothing else touched sounds
+    /// identical to `Full`'s own current param values, not each macro's D5
+    /// recipe — this test is a structural reachability guard (no panic, no
+    /// silence, no NaN across every macro's own narrower dest table and
+    /// page layout), not a proof the six macros sound distinct from one
+    /// another. That's C9's reference-patch scenarios' job, which
+    /// explicitly `set_param` the recipe values alongside `machine`.
+    #[test]
+    fn every_macro_is_reachable_and_non_silent_at_full_s_current_values() {
+        for &m in &[
+            Machine::Keys, Machine::Bass, Machine::Bell,
+            Machine::Perc, Machine::Pad, Machine::Pluck,
+        ] {
+            let mut eng = new_engine();
+            set_machine(&mut eng, m);
+            run(&mut eng, &[]); // resolve the initial (instant, inactive) switch
+            let out = run(&mut eng, &[make_note_on(60)]);
+            assert!(out.iter().all(|s| s.is_finite()), "{m:?} produced a non-finite sample");
+            let rms = (out.iter().map(|&x| x * x).sum::<f32>() / out.len() as f32).sqrt();
+            assert!(rms > 1e-4, "{m:?} was effectively silent (rms {rms})");
+        }
+    }
+
+    /// Each macro's dest table must be a genuinely narrower, internally
+    /// consistent subset of `Full`'s — the same per-position name/id/range
+    /// correspondence check the P14-C6 review added for `Full` alone,
+    /// generalized to all six macros so a silently reordered or malformed
+    /// per-macro table doesn't slip past (the C6 finding was specifically
+    /// that length-only checks miss this).
+    #[test]
+    fn dest_tables_stay_in_sync_and_narrower_for_every_macro() {
+        for &m in &[
+            Machine::Keys, Machine::Bass, Machine::Bell,
+            Machine::Perc, Machine::Pad, Machine::Pluck,
+        ] {
+            let names = FmVoice::dest_names(m);
+            let ids = FmVoice::dest_ids(m);
+            let ranges = FmVoice::dest_ranges(m);
+            assert_eq!(names.len(), ids.len(), "{m:?}: names/ids length mismatch");
+            assert_eq!(names.len(), ranges.len(), "{m:?}: names/ranges length mismatch");
+            assert!(
+                names.len() < FM_VOICE_DEST_NAMES.len(),
+                "{m:?}'s dest table should be narrower than Full's ({} vs {})",
+                names.len(), FM_VOICE_DEST_NAMES.len()
+            );
+            for (i, name) in names.iter().enumerate() {
+                assert_eq!(fp(name), ids[i], "{m:?}: name/id mismatch at position {i} ({name})");
+                assert_eq!(ranges[i].0, ids[i], "{m:?}: range/id mismatch at position {i} ({name})");
+                assert!(
+                    FM_VOICE_DEST_IDS.contains(&ids[i]),
+                    "{m:?}: dest {name} is not one of Full's own destinations"
+                );
+            }
+        }
+    }
+
+    /// Spec's own C7 bullet: "param_labels for algo... so Theotokos/Theoria
+    /// render algorithm names, not raw indices" — every one of the seven
+    /// variants needs its own entry (`Rule` has no top-level `param_labels`
+    /// field; only `MachineVariant` does, so `Full` needs this too, not
+    /// just the six macros).
+    #[test]
+    fn every_variant_carries_readable_algo_names() {
+        let expected: Vec<Option<&str>> = Algo::ALL.iter().map(|a| Some(a.name())).collect();
+        for variant in FmVoice::machine_variants() {
+            let (_, labels) = variant
+                .param_labels
+                .iter()
+                .find(|(id, _)| *id == fp("algo"))
+                .unwrap_or_else(|| panic!("{} is missing an algo param_labels entry", variant.name));
+            let got: Vec<Option<&str>> = labels.iter().map(|o| o.as_deref()).collect();
+            assert_eq!(got, expected, "{}: algo labels mismatch", variant.name);
+        }
+    }
+
+    /// `validate_view` runs per-variant (ADR-041's implementation note:
+    /// "that widening is what caught #156") — every page ref across all
+    /// seven variants must resolve to a real declared param, and every
+    /// affordance/envelope-group id must be displayed on the view it's
+    /// declared for. Cheap to run now, before P14-C8 even registers this
+    /// node, rather than discovering a malformed page ref later.
+    #[test]
+    fn capability_document_has_no_view_defects() {
+        let eng = new_engine();
+        let doc = eng.capability_document();
+        let defects = paraclete_node_api::validate_view(&doc);
+        assert!(defects.is_empty(), "view defects: {defects:?}");
     }
 }
