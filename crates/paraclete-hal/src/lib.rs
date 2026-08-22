@@ -13,7 +13,10 @@ pub mod midi;
 #[cfg(target_os = "linux")]
 mod rtkit;
 
-pub use audio::{query_sample_rate, AudioBackend, AudioEngine, AudioError};
+pub use audio::{
+    query_input_sample_rate, query_sample_rate, AudioBackend, AudioEngine, AudioError,
+    InputStreamHandle,
+};
 pub use digitakt::DigitaktMidiNode;
 pub use emulator::LaunchpadEmulator;
 pub use keystep::KeystepNode;

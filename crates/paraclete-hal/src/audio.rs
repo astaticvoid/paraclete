@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -65,6 +65,206 @@ pub fn query_sample_rate() -> Option<f32> {
         .default_output_config()
         .map(|c| c.sample_rate().0 as f32)
         .ok()
+}
+
+/// Query the default input device's sample rate without opening a stream.
+/// Returns `None` if no input device is available or the config is inaccessible.
+pub fn query_input_sample_rate() -> Option<f32> {
+    let host = cpal::default_host();
+    let device = host.default_input_device()?;
+    device
+        .default_input_config()
+        .map(|c| c.sample_rate().0 as f32)
+        .ok()
+}
+
+/// Handle for an open audio input stream (AN1). Keep this alive for the
+/// stream's lifetime — dropping it stops capture, same convention as
+/// `AudioBackend`'s `_stream` field.
+pub struct InputStreamHandle {
+    _stream: cpal::Stream,
+    dropped_samples: Arc<AtomicU64>,
+}
+
+impl InputStreamHandle {
+    /// Total samples dropped so far because the cross-thread ring was full
+    /// (`an1-anamnesis.md` §2.1 — "log a counter, don't block"). Read from
+    /// the main thread; the input callback only ever increments this
+    /// atomically, never logs from inside itself (`log::warn!` on every
+    /// overflowed callback would itself be a real-time hazard on a thread
+    /// that's already falling behind — the counter is the RT-safe half of
+    /// "log a counter," reporting is a main-thread concern).
+    pub fn dropped_samples(&self) -> u64 {
+        self.dropped_samples.load(Ordering::Relaxed)
+    }
+
+    /// Open the default input device and start streaming.
+    ///
+    /// Unlike `AudioBackend::start`, this is never fatal to call and fail —
+    /// callers (`try_open_audio_input()` in `paraclete-app`) treat any `Err`
+    /// as "no input hardware today," the same graceful posture already used
+    /// for the Launchpad/Digitakt/Keystep surfaces (`an1-anamnesis.md` D3).
+    ///
+    /// Returns the handle, the consumer half of a cross-thread `rtrb` ring
+    /// carrying raw interleaved samples at the device's native channel
+    /// count and sample rate (both returned so the caller — `AudioInputNode`
+    /// — can downmix/resample correctly), and those two values.
+    ///
+    /// This is a genuine cross-thread SPSC ring: the input stream's OS
+    /// callback runs on its own thread, independent of the output stream's
+    /// callback thread where the returned consumer will actually be drained
+    /// (inside `NodeExecutor::process()`). Unlike `OutputRing` below, which
+    /// only buffers *within* one callback, this ring is what makes crossing
+    /// that thread boundary real-time-safe (`an1-anamnesis.md` §2.1, D1).
+    ///
+    /// `min_capacity_frames` sizes the ring in frames (not interleaved
+    /// samples) — a few audio blocks' worth of headroom absorbs scheduling
+    /// jitter between the two independent callback threads.
+    pub fn start(
+        min_capacity_frames: usize,
+    ) -> Result<(Self, rtrb::Consumer<f32>, usize, u32), AudioError> {
+        let host = cpal::default_host();
+
+        let device = host
+            .default_input_device()
+            .ok_or(AudioError::NoInputDevice)?;
+
+        log::info!(
+            "audio input device: {}",
+            device.name().unwrap_or_default()
+        );
+
+        let supported = device
+            .default_input_config()
+            .map_err(|e| AudioError::Config(e.to_string()))?;
+
+        let channels = supported.channels() as usize;
+        let sample_rate = supported.sample_rate().0;
+
+        log::info!(
+            "input config: {} Hz, {} ch, {:?}",
+            sample_rate,
+            channels,
+            supported.sample_format()
+        );
+
+        let config = StreamConfig {
+            channels: supported.channels(),
+            sample_rate: SampleRate(sample_rate),
+            buffer_size: BufferSize::Default,
+        };
+
+        let capacity = (min_capacity_frames * channels).max(channels);
+        let (producer, consumer) = rtrb::RingBuffer::<f32>::new(capacity);
+        let dropped_samples = Arc::new(AtomicU64::new(0));
+
+        let err_fn = |err| log::error!("audio input stream error: {err}");
+
+        // Deliberately not calling `lrt::set_realtime_callback()` here.
+        // That helper's `CB_ONCE` guard is a process-global one-shot flag,
+        // not per-thread — `pthread_setschedparam` sets priority for
+        // whichever thread calls it, but only the *first* caller across the
+        // whole process ever actually gets SCHED_FIFO; a second caller
+        // (this input callback) would silently no-op, and worse, if this
+        // stream's first callback happened to fire before the output
+        // stream's, it would steal the one-shot RT grant *from* output,
+        // which must never underrun. Filed as INFRA-023 rather than
+        // reworked here — fixing `lrt` to be per-thread touches the
+        // existing (working) output path, out of scope for C0's HAL-only
+        // plumbing. Input tolerates dropped frames far better than output
+        // tolerates underrun (a few lost samples degrade a capture's exact
+        // edge, not the whole session's audio), so running without RT
+        // priority is an acceptable interim posture, not a silent gap.
+        let stream = match supported.sample_format() {
+            SampleFormat::F32 => {
+                let mut producer = producer;
+                let dropped = dropped_samples.clone();
+                device.build_input_stream(
+                    &config,
+                    move |data: &[f32], _| {
+                        push_input_samples(&mut producer, data, &dropped);
+                    },
+                    err_fn,
+                    None,
+                )
+            }
+            SampleFormat::I16 => {
+                let mut producer = producer;
+                let dropped = dropped_samples.clone();
+                device.build_input_stream(
+                    &config,
+                    move |data: &[i16], _| {
+                        push_input_samples_converting(&mut producer, data, &dropped, |s| {
+                            s as f32 / i16::MAX as f32
+                        });
+                    },
+                    err_fn,
+                    None,
+                )
+            }
+            SampleFormat::U16 => {
+                let mut producer = producer;
+                let dropped = dropped_samples.clone();
+                device.build_input_stream(
+                    &config,
+                    move |data: &[u16], _| {
+                        push_input_samples_converting(&mut producer, data, &dropped, |s| {
+                            (s as f32 / u16::MAX as f32) * 2.0 - 1.0
+                        });
+                    },
+                    err_fn,
+                    None,
+                )
+            }
+            _ => return Err(AudioError::Config("unsupported sample format".into())),
+        }
+        .map_err(|e| AudioError::Build(e.to_string()))?;
+
+        stream.play().map_err(|e| AudioError::Play(e.to_string()))?;
+
+        log::info!("audio input stream started");
+
+        Ok((
+            Self { _stream: stream, dropped_samples },
+            consumer,
+            channels,
+            sample_rate,
+        ))
+    }
+}
+
+/// Push as many samples from `data` onto `producer` as fit; on
+/// `PushError::Full` the remainder of this callback's data is dropped
+/// silently (no logging — see the RT-priority note in `start()`) rather
+/// than blocking (`an1-anamnesis.md` §2.1), incrementing `dropped` so the
+/// main thread can observe and report sustained overflow. The ring being
+/// full for more than a few blocks means the consuming (output) thread
+/// has stalled, an already-unhandled hang scenario elsewhere in this
+/// codebase, not a new failure mode to design around here.
+fn push_input_samples(producer: &mut rtrb::Producer<f32>, data: &[f32], dropped: &AtomicU64) {
+    for (i, &s) in data.iter().enumerate() {
+        if producer.push(s).is_err() {
+            dropped.fetch_add((data.len() - i) as u64, Ordering::Relaxed);
+            break;
+        }
+    }
+}
+
+/// Same as `push_input_samples`, converting each source sample to `f32`
+/// via `convert` first (mirrors the output path's inverse conversions in
+/// `AudioBackend::start`).
+fn push_input_samples_converting<T: Copy>(
+    producer: &mut rtrb::Producer<f32>,
+    data: &[T],
+    dropped: &AtomicU64,
+    convert: impl Fn(T) -> f32,
+) {
+    for (i, &s) in data.iter().enumerate() {
+        if producer.push(convert(s)).is_err() {
+            dropped.fetch_add((data.len() - i) as u64, Ordering::Relaxed);
+            break;
+        }
+    }
 }
 
 impl AudioBackend {
@@ -629,6 +829,10 @@ impl AudioEngine {
 #[derive(Debug)]
 pub enum AudioError {
     NoOutputDevice,
+    /// AN1: no default input device found. Never fatal — callers treat
+    /// this the same as an absent Launchpad/Digitakt/Keystep
+    /// (`an1-anamnesis.md` D3).
+    NoInputDevice,
     Config(String),
     Build(String),
     Play(String),
@@ -638,6 +842,7 @@ impl std::fmt::Display for AudioError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoOutputDevice => write!(f, "no default output device found"),
+            Self::NoInputDevice => write!(f, "no default input device found"),
             Self::Config(s) => write!(f, "device config error: {s}"),
             Self::Build(s) => write!(f, "stream build error: {s}"),
             Self::Play(s) => write!(f, "stream play error: {s}"),
@@ -673,5 +878,92 @@ fn enable_ftz_daz() {
             }
             log::info!("FTZ/DAZ enabled on audio thread");
         }
+    }
+}
+
+#[cfg(test)]
+mod input_ring_tests {
+    use super::*;
+
+    /// C0: proves the producer/converter functions round-trip data through
+    /// the ring correctly — no real input device needed, mirrors the
+    /// stand-in producer/consumer style `asset_plane_tests.rs` uses for the
+    /// AN0 asset plane.
+    #[test]
+    fn push_input_samples_round_trips_through_the_ring() {
+        let (mut producer, mut consumer) = rtrb::RingBuffer::<f32>::new(8);
+        let dropped = AtomicU64::new(0);
+        push_input_samples(&mut producer, &[0.1, 0.2, 0.3, 0.4], &dropped);
+        let mut out = Vec::new();
+        while let Ok(s) = consumer.pop() {
+            out.push(s);
+        }
+        assert_eq!(out, vec![0.1, 0.2, 0.3, 0.4]);
+        assert_eq!(dropped.load(Ordering::Relaxed), 0);
+    }
+
+    /// D1: overflow drops the remainder silently — never blocks, never
+    /// panics — and the drop is counted, not just discarded (review
+    /// finding: the spec requires an observable counter, not a bare
+    /// `break`).
+    #[test]
+    fn push_input_samples_drops_excess_when_full_without_blocking_or_panicking() {
+        let (mut producer, mut consumer) = rtrb::RingBuffer::<f32>::new(4);
+        let dropped = AtomicU64::new(0);
+        push_input_samples(&mut producer, &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0], &dropped);
+        let mut out = Vec::new();
+        while let Ok(s) = consumer.pop() {
+            out.push(s);
+        }
+        assert_eq!(out.len(), 4, "ring capacity must cap what's retained");
+        assert_eq!(out, vec![1.0, 2.0, 3.0, 4.0], "oldest-arriving samples win, not newest");
+        assert_eq!(
+            dropped.load(Ordering::Relaxed),
+            2,
+            "the two samples that didn't fit must be counted, not silently lost"
+        );
+    }
+
+    /// The contract `AudioInputNode::process()` (C1) relies on for
+    /// underrun silence-padding: popping an empty consumer is a graceful
+    /// `Err`, never a panic or a block.
+    #[test]
+    fn consumer_pop_on_empty_ring_is_a_graceful_err_not_a_panic() {
+        let (_producer, mut consumer) = rtrb::RingBuffer::<f32>::new(4);
+        assert!(consumer.pop().is_err());
+    }
+
+    /// I16/U16 conversion matches the output path's inverse conversions
+    /// (`audio_callback_f32`'s `i16::MAX`/`u16::MAX` scaling) closely
+    /// enough to round-trip through both without drift beyond integer
+    /// quantization.
+    #[test]
+    fn push_input_samples_converting_maps_i16_full_scale_to_unit_range() {
+        let (mut producer, mut consumer) = rtrb::RingBuffer::<f32>::new(4);
+        let dropped = AtomicU64::new(0);
+        push_input_samples_converting(&mut producer, &[i16::MIN, 0, i16::MAX], &dropped, |s| {
+            s as f32 / i16::MAX as f32
+        });
+        let out: Vec<f32> = std::iter::from_fn(|| consumer.pop().ok()).collect();
+        assert!((out[0] - (-1.0)).abs() < 0.001);
+        assert_eq!(out[1], 0.0);
+        assert_eq!(out[2], 1.0);
+    }
+
+    /// Review finding: the U16 conversion closure (`(s as f32 / u16::MAX
+    /// as f32) * 2.0 - 1.0`, `InputStreamHandle::start`'s U16 arm) was
+    /// exercised nowhere — only its I16 sibling was tested, so a sign or
+    /// scaling error in the U16 formula would have passed CI silently.
+    #[test]
+    fn push_input_samples_converting_maps_u16_full_scale_to_unit_range() {
+        let (mut producer, mut consumer) = rtrb::RingBuffer::<f32>::new(4);
+        let dropped = AtomicU64::new(0);
+        push_input_samples_converting(&mut producer, &[0u16, u16::MAX / 2, u16::MAX], &dropped, |s| {
+            (s as f32 / u16::MAX as f32) * 2.0 - 1.0
+        });
+        let out: Vec<f32> = std::iter::from_fn(|| consumer.pop().ok()).collect();
+        assert!((out[0] - (-1.0)).abs() < 0.001, "silence (0) must map near -1.0");
+        assert!(out[1].abs() < 0.001, "mid-scale must map near 0.0");
+        assert!((out[2] - 1.0).abs() < 0.001, "full-scale must map near 1.0");
     }
 }
