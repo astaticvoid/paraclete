@@ -313,7 +313,7 @@ impl FmOperator {
 /// fixed 5-partial stack. The `harm^(n-1)` shaping fades higher partials in
 /// later as the knob turns up, not all at once.
 #[allow(dead_code)]
-fn harmonic_sine(phase: f32, harm: f32) -> f32 {
+pub(crate) fn harmonic_sine(phase: f32, harm: f32) -> f32 {
     const K: [f32; 4] = [0.60, 0.40, 0.25, 0.15]; // n = 2, 3, 4, 5
     let theta = phase * std::f32::consts::TAU;
     let mut sum = theta.sin();

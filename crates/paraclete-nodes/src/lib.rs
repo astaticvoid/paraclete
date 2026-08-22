@@ -9,6 +9,7 @@ pub mod engine_dsp;
 pub mod envelope;
 pub mod filter;
 pub mod fm_engine;
+pub mod fm_voice;
 pub mod gateway;
 pub mod internal_clock;
 pub mod ladder;
