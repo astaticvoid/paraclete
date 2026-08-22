@@ -8,9 +8,11 @@
 
 > **Session status: held 2026-08-21.** Walked the three items session #6
 > left for user verdict (T6, T7, §6.2). T6 accepted with two fixes; §6.2
-> verified PASS. T7 (overall feel) was not reached — the session ended
-> before that round. Five live bugs found and fixed along the way, none of
-> them on the original agenda; all five have new regression tests.
+> verified PASS. T7 has no dedicated round (see below) but got a direct
+> user verdict at session close, after having played with all the fixes
+> live throughout: **"it works fine, it's better now."** Five live bugs
+> found and fixed along the way, none of them on the original agenda; all
+> five have new regression tests.
 
 ## Hypotheses
 
@@ -18,7 +20,7 @@
 |---|---|---|
 | T6 | `FUNC+8`/MIX screen key binding is acceptable | **Accepted**, with two fixes (see below) — see Round 1 |
 | §6.2 | Params survive a `machine` round-trip | **PASS** — see Round 2 |
-| T7 | The TK3 feature set as a whole improves playability | **Not reached.** Session ended before this round. |
+| T7 | The TK3 feature set as a whole improves playability | **PASS** (informal, no dedicated round — see Round 3) |
 
 ## Round 1 — T6: the `FUNC+8`/MIX binding
 
@@ -64,6 +66,21 @@ the Source page.
   left it open.
 
 **Verdict: PASS.** Closes the open question.
+
+## Round 3 — T7: overall playability
+
+**Method:** none dedicated — no scripted round of laying down a beat,
+jogging params, and trying a p-lock the way T1–T5 got in session #6. The
+user played with each fix as it landed (MIX binding, TRK-hold hints, the
+now-working command line) across Rounds 1–2 and the bug fixes below, then
+gave a direct verdict at session close rather than asking for a separate
+round.
+
+**Verdict: "it works fine, it's better now."** Treated as **PASS** — informal
+relative to T1–T6's scripted rounds, but a real verdict from actually using
+the fixes live, not a rubber stamp. No dedicated playability round (lay
+down a beat cold, jog params, try a p-lock) was run; if a future session
+wants that rigor specifically, it would be new ground, not a re-open of T7.
 
 ## Bugs found and fixed (not on the original agenda)
 
@@ -137,15 +154,9 @@ tests caught it, because the existing cmdline tests all use
 | Tests | 258 passing in `paraclete-theotokos` (253 → 258; 5 new, all covering the bugs above) |
 | Session notes | This file |
 
-## Deferred to user verdict
+## Outcome
 
-- **T7:** Overall TK3 feature set — does it improve playability? Not
-  reached this session.
-
-## Noticed, not addressed this session
-
-`design/phases/tk3-report.md`'s status banner ("code-complete, awaiting
-session #6") and its Session #6 gate row ("⏳ pending (needs user)") are
-now stale — session #6 was held 2026-08-06 and this session (#7) resolved
-two of its three deferred items. Left unedited here per this session's
-scope; recorded so the divergence isn't silently carried forward.
+All three items session #6 left for user verdict (T6, T7, §6.2) are
+resolved. `design/phases/tk3-report.md` updated to match (status banner,
+exit-criteria table, gate section) in a follow-up commit; milestone 18
+(`TK3 — Theotokos session track`) closed on the strength of this session.
