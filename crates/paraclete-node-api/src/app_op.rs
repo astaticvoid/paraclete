@@ -39,4 +39,21 @@ pub enum AppOp {
     /// runtime pool-population path AN0 ships (no capture yet — this is
     /// how a session populates a slot without editing the project file).
     PoolLoadFile { slot: u32, path: String },
+    /// AN1 C4: arm `recorder_id` for a threshold-triggered capture at
+    /// `db`. Sent as `CMD_RECORDER_ARM_THRESHOLD`.
+    RecorderArmThreshold { recorder_id: u32, db: f64 },
+    /// AN1 C4: disarm `recorder_id`, clearing any pending threshold-arm
+    /// state. Sent as `CMD_RECORDER_DISARM`.
+    RecorderDisarm { recorder_id: u32 },
+    /// AN1 C4: capture the last `bars` bars from `recorder_id`'s
+    /// always-on ring into a new pool slot (design.md §4's Retro row, or
+    /// the app's own reaction to a threshold-arm firing, §2.4). `bars` is
+    /// converted to frames against the current tempo at the moment this
+    /// op is executed, not when it was queued.
+    RecorderCapture { recorder_id: u32, bars: f32 },
+    /// AN1 C4, R2's frozen requirement: the `FUNC+9` one-gesture
+    /// transition trick — capture the last 2 bars of `recorder_id` into a
+    /// new pool slot, apply a 16-slot even slice grid, and deliver it to
+    /// `sampler_id` via `SwapSample`, all as one composite op.
+    CaptureTransition { recorder_id: u32, sampler_id: u32 },
 }

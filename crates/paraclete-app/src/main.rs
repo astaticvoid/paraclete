@@ -213,6 +213,25 @@ fn main() {
 
     // ── 6. Project save (before executor — nodes still in configurator) ──────
     if let Some(ref path) = save_path {
+        // AN1 D13 (OQ-A2): freeze any Ram-sourced pool slots to WAV files
+        // before the project file itself is written, so save_project_v3
+        // never needs Ram-vs-File awareness.
+        //
+        // Review finding: this `--save=<file>` startup path is currently
+        // the *only* place `save_project_v3` is called anywhere in the
+        // app (grepped), and it runs before `conf.build_executor()` —
+        // before any capture could possibly have happened. There is no
+        // in-session or shutdown-time save yet, so today this freeze step
+        // never actually has a Ram-sourced slot to act on in a real run.
+        // The mechanism itself is correct and unit-tested
+        // (`sample_pool.rs`); a live save trigger is a separate, later
+        // piece of work this phase doesn't scope — not a silent gap,
+        // just not yet reachable end-to-end.
+        let project_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        for w in perform_state.sample_pool.freeze_ram_captures_to_files(project_dir) {
+            eprintln!("[paraclete] WARN: {w}");
+        }
+
         let meta = ProjectMetadata {
             name: path
                 .file_stem()

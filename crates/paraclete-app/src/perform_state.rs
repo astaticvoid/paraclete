@@ -21,10 +21,32 @@ use crate::sample_pool::SamplePool;
 use log::{info, warn};
 use paraclete_node_api::app_op::{AppOp, KitId};
 use paraclete_node_api::{NodeCommand, SampleData, StateBusHandle, StateBusValue, SwapSample, CMD_SET_PARAM};
+use paraclete_nodes::{CMD_RECORDER_ARM_THRESHOLD, CMD_RECORDER_CAPTURE, CMD_RECORDER_DISARM};
 use paraclete_runtime::NodeConfigurator;
 
 /// How many kit entries are pushed into the command ring per tick.
 const APPLY_CHUNK: usize = 16;
+
+/// R2's frozen `FUNC+9` defaults (tunable) — AN1 D-decisions inherited
+/// straight from `design.md` §4's transition-trick spec, not re-derived
+/// here.
+const TRANSITION_TRICK_BARS: f32 = 2.0;
+const TRANSITION_TRICK_SLICES: usize = 16;
+
+/// Context kept between issuing `CMD_RECORDER_CAPTURE` and the fulfilled
+/// `RecorderCapture` arriving one or more main-loop ticks later
+/// (`an1-anamnesis.md` §2.3) — which sampler (if any) to assign the
+/// result to, and whether to apply the transition trick's slice grid.
+struct PendingCapture {
+    assign_to_sampler: Option<u32>,
+    apply_transition_slices: bool,
+    /// The bar count the request was issued with — carried through to
+    /// `SamplePool::record_capture`'s `bars` parameter. Review finding:
+    /// an earlier version of this struct dropped this on the floor
+    /// (`record_capture` was always called with `None`), silently
+    /// discarding real metadata the pool entry exists to hold.
+    bars: f32,
+}
 
 pub struct PerformState {
     pub kit_store: KitStore,
@@ -43,6 +65,14 @@ pub struct PerformState {
     cached_active_patterns: HashMap<u32, usize>,
     /// Residual entries still being applied (chunked apply).
     apply_pending: Vec<KitEntry>,
+    /// AN1 C4 (§2.3): outstanding `CMD_RECORDER_CAPTURE` requests, keyed
+    /// by the `request_id` stamped on the command and echoed back on the
+    /// `RecorderCapture` that eventually arrives. No timeout — an entry
+    /// for a capture that never completes (the recorder was removed
+    /// mid-flight) is inert and harmless, same tolerance
+    /// `drain_asset_swaps` already documents for undelivered messages.
+    pending_captures: HashMap<u32, PendingCapture>,
+    next_request_id: u32,
 }
 
 impl PerformState {
@@ -56,6 +86,8 @@ impl PerformState {
             temp_param_snapshot: None,
             cached_active_patterns: HashMap::new(),
             apply_pending: Vec::new(),
+            pending_captures: HashMap::new(),
+            next_request_id: 0,
         }
     }
 
@@ -66,6 +98,11 @@ impl PerformState {
     pub fn tick(&mut self, conf: &mut NodeConfigurator, bus: &Rc<RefCell<StateBusHandle>>) {
         // 1. Continue chunked apply
         self.apply_pending_chunk(conf);
+
+        // 1.5. AN1 C4: collect any capture(s) that finished since the
+        // last tick (§2.3) — may be zero, one, or several if the audio
+        // thread fulfilled more than one request between ticks.
+        self.drain_finished_captures(conf);
 
         // 2. Pattern-switch kit-apply trigger (only outside perform mode —
         //    in perform mode the user has taken manual control).
@@ -188,6 +225,149 @@ impl PerformState {
                     Err(e) => warn!("[pool_load] slot {slot}: failed to load {path:?}: {e}"),
                 }
             }
+            AppOp::RecorderArmThreshold { recorder_id, db } => {
+                let cmd = NodeCommand {
+                    target_id: recorder_id,
+                    type_id: CMD_RECORDER_ARM_THRESHOLD,
+                    arg0: 0,
+                    arg1: db,
+                };
+                if conf.send_command(cmd).is_err() {
+                    warn!("[recorder] command ring full arming {recorder_id}");
+                }
+            }
+            AppOp::RecorderDisarm { recorder_id } => {
+                let cmd = NodeCommand {
+                    target_id: recorder_id,
+                    type_id: CMD_RECORDER_DISARM,
+                    arg0: 0,
+                    arg1: 0.0,
+                };
+                if conf.send_command(cmd).is_err() {
+                    warn!("[recorder] command ring full disarming {recorder_id}");
+                }
+            }
+            AppOp::RecorderCapture { recorder_id, bars } => {
+                // Plain capture (manual/threshold/retro, design.md §4):
+                // populates the pool only. "assign to track N" is a
+                // separate, later gesture the performer makes explicitly
+                // — unlike PoolLoadFile, this does not broadcast to every
+                // live Sampler.
+                self.issue_capture(conf, recorder_id, bars, None, false);
+            }
+            AppOp::CaptureTransition { recorder_id, sampler_id } => {
+                // R2's frozen requirement: the FUNC+9 one-gesture chord.
+                self.issue_capture(
+                    conf,
+                    recorder_id,
+                    TRANSITION_TRICK_BARS,
+                    Some(sampler_id),
+                    true,
+                );
+            }
+        }
+    }
+
+    /// Shared by `AppOp::RecorderCapture` and `AppOp::CaptureTransition`
+    /// (§2.3): converts `bars` to frames against the current tempo,
+    /// issues `CMD_RECORDER_CAPTURE`, and registers the request so
+    /// `drain_finished_captures` knows what to do once it completes.
+    fn issue_capture(
+        &mut self,
+        conf: &mut NodeConfigurator,
+        recorder_id: u32,
+        bars: f32,
+        assign_to_sampler: Option<u32>,
+        apply_transition_slices: bool,
+    ) {
+        let bpm = match conf.state_bus_read("/transport/bpm") {
+            Some(StateBusValue::Float(b)) => b as f32,
+            _ => {
+                // Review finding: silently guessing a tempo is exactly
+                // the "using a fallback, something's off" case CLAUDE.md's
+                // logging convention exists for — a capture issued before
+                // any clock has published would otherwise span the wrong
+                // wall-clock duration with zero trace in the logs.
+                warn!(
+                    "[recorder] /transport/bpm not yet published — falling back to 120 BPM for \
+                     capture on {recorder_id}; the captured span's length may not match {bars} bars"
+                );
+                120.0
+            }
+        };
+        let seconds = bars * 4.0 * 60.0 / bpm.max(1.0);
+        let frames = (seconds * conf.sample_rate()) as usize;
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        let cmd = NodeCommand {
+            target_id: recorder_id,
+            type_id: CMD_RECORDER_CAPTURE,
+            arg0: request_id as i64,
+            arg1: frames as f64,
+        };
+        if conf.send_command(cmd).is_err() {
+            warn!("[recorder] command ring full issuing capture on {recorder_id}");
+            return;
+        }
+        self.pending_captures.insert(
+            request_id,
+            PendingCapture { assign_to_sampler, apply_transition_slices, bars },
+        );
+    }
+
+    /// AN1 C4 (§2.3): collect every `RecorderCapture` the audio thread has
+    /// fulfilled since the last call, assemble each into a `SamplePool`
+    /// slot, distribute it if the request asked for that (the
+    /// transition-trick composite), and return the drained buffer for
+    /// reuse. A `request_id` with no matching `pending_captures` entry
+    /// (already handled, or not one of ours) still gets its buffer
+    /// returned — never left dangling.
+    fn drain_finished_captures(&mut self, conf: &mut NodeConfigurator) {
+        while let Some(capture) = conf.poll_recorder_capture() {
+            let Some(pending) = self.pending_captures.remove(&capture.request_id) else {
+                let _ = conf.return_capture_buffer(paraclete_node_api::CaptureBufferReturn {
+                    node_id: capture.node_id,
+                    buf: capture.buf,
+                });
+                continue;
+            };
+            let rate = conf.sample_rate();
+            let samples = &capture.buf[..capture.frames];
+            let (slot, owned) = self.sample_pool.record_capture(samples, rate, Some(pending.bars));
+            if pending.apply_transition_slices {
+                if let Some(entry) = self.sample_pool.slots.get_mut(slot).and_then(|s| s.as_mut())
+                {
+                    entry.slice_table = even_slice_grid(entry.frames, TRANSITION_TRICK_SLICES);
+                }
+            }
+            if let Some(sampler_id) = pending.assign_to_sampler {
+                let data = Arc::new(SampleData { samples: owned, rate, frames: capture.frames });
+                let msg = SwapSample { node_id: sampler_id, pool_slot: slot as u32, data };
+                if let Err(_msg) = conf.send_swap_sample(msg) {
+                    warn!("[capture] asset ring full delivering slot {slot} to node {sampler_id}");
+                }
+                // Caching the buffer (SwapSample, above) is not the same
+                // as playing it — the Sampler's `sample` param still
+                // selects whatever slot it was pointed at before. "Assign
+                // to track N" means the target actually starts playing
+                // the new slot, so this must also move its `sample` param
+                // (the AN0 pool-indexed param, CMD 33-35's lock target)
+                // to the freshly assigned slot.
+                let set_sample_cmd = NodeCommand {
+                    target_id: sampler_id,
+                    type_id: CMD_SET_PARAM,
+                    arg0: paraclete_node_api::ParamDescriptor::id_for_name("sample") as i64,
+                    arg1: slot as f64,
+                };
+                if conf.send_command(set_sample_cmd).is_err() {
+                    warn!("[capture] command ring full setting sample param on {sampler_id}");
+                }
+            }
+            info!("[capture] slot {slot} <- recorder {} ({} frames)", capture.node_id, capture.frames);
+            let _ = conf.return_capture_buffer(paraclete_node_api::CaptureBufferReturn {
+                node_id: capture.node_id,
+                buf: capture.buf,
+            });
         }
     }
 
@@ -364,6 +544,18 @@ impl PerformState {
 /// a byte slice would panic mid-UTF-8).
 pub fn truncate_kit_name(name: &str) -> String {
     name.chars().take(16).collect()
+}
+
+/// R2's transition trick: `n` evenly-sized slices spanning `[0, frames)`.
+/// The last slice absorbs any remainder from integer division (`frames *
+/// (i+1) / n` for each boundary, not `frames / n` per slice — this
+/// avoids uneven slices dropping a few trailing samples off the pool
+/// entry's frame count when `frames` doesn't divide evenly by `n`).
+fn even_slice_grid(frames: usize, n: usize) -> Vec<(usize, usize)> {
+    if n == 0 || frames == 0 {
+        return vec![(0, frames)];
+    }
+    (0..n).map(|i| (frames * i / n, frames * (i + 1) / n)).collect()
 }
 
 /// Capture current param values for all in_kit params across all nodes.
@@ -776,6 +968,184 @@ mod tests {
         assert!(
             perform.apply_pending.is_empty(),
             "perform mode must suppress kit-apply on pattern switch"
+        );
+    }
+
+    #[test]
+    fn even_slice_grid_covers_the_whole_range_with_no_gaps_or_overlap() {
+        let slices = even_slice_grid(100, 16);
+        assert_eq!(slices.len(), 16);
+        assert_eq!(slices[0].0, 0);
+        assert_eq!(slices[15].1, 100);
+        for w in slices.windows(2) {
+            assert_eq!(w[0].1, w[1].0, "adjacent slices must be contiguous");
+        }
+    }
+
+    #[test]
+    fn even_slice_grid_handles_a_frame_count_not_divisible_by_slice_count() {
+        // 100 / 16 = 6 remainder 4 — must still cover exactly [0, 100)
+        // with no gaps, not silently drop the remainder.
+        let slices = even_slice_grid(97, 16);
+        assert_eq!(slices.first().unwrap().0, 0);
+        assert_eq!(slices.last().unwrap().1, 97);
+    }
+
+    /// AN1 C4 (§2.3): `AppOp::CaptureTransition` end to end through a real
+    /// executor — a source Sampler plays a known non-silent sample into a
+    /// wired RecorderNode; the transition trick captures it, assembles a
+    /// new pool slot with a 16-slot grid, and delivers it to a *different*
+    /// target Sampler via SwapSample — mirrors
+    /// `pool_load_file_delivers_to_every_live_sampler_node_via_the_asset_plane`'s
+    /// silent-before/audio-after proof technique, since that's the only
+    /// way to observe "the slot truly arrived" without a cross-crate
+    /// pool_cache accessor.
+    #[test]
+    fn capture_transition_delivers_captured_audio_to_the_target_sampler() {
+        let sr = 44100.0;
+        let block = 64usize;
+        let mut conf = NodeConfigurator::new(sr, block);
+
+        let mut source = paraclete_nodes::Sampler::new();
+        source.set_base_sample(5); // will be populated by PoolLoadFile below
+        conf.add_node(1, Box::new(source));
+        conf.add_node(2, Box::new(paraclete_nodes::RecorderNode::new()));
+        // Default-constructed: base_sample 0, uncached — silent until the
+        // transition trick both delivers *and* re-points its `sample`
+        // param at the newly captured slot.
+        conf.add_node(3, Box::new(paraclete_nodes::Sampler::new()));
+        conf.connect(1, paraclete_nodes::Sampler::PORT_AUDIO_OUT_L, 2, 0 /* RecorderNode::PORT_AUDIO_IN */)
+            .expect("wiring source -> recorder must succeed");
+
+        let bus = conf.state_bus_handle();
+        let mut perform = PerformState::new();
+
+        let mut exec = conf.build_executor();
+        let mut out = vec![0.0f32; block * 2];
+
+        // Load a real, non-silent sample into pool slot 5 and deliver it
+        // to the source Sampler (node 1, already pointed at slot 5 via
+        // set_base_sample above), then trigger it playing.
+        perform.sampler_ids = vec![1]; // must be set before execute() — PoolLoadFile reads it
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../samples/kick.wav");
+        perform.execute(
+            AppOp::PoolLoadFile { slot: 5, path: path.to_string_lossy().into_owned() },
+            &mut conf,
+            &bus,
+        );
+        exec.process(&mut out, 2); // deliver slot 5's SwapSample to node 1
+
+        // The transition trick captures the last TRANSITION_TRICK_BARS
+        // bars (at the fallback 120 BPM, no clock node in this minimal
+        // graph — 4s = 176400 frames @ 44.1kHz). Retrigger the source
+        // periodically across enough cycles to cover that whole window
+        // with real, non-silent audio — a single kick decays long before
+        // 4s, so one trigger alone would leave most of the captured
+        // buffer silent and this test would fail for a scale reason
+        // having nothing to do with correctness.
+        let trigger_source = || NodeCommand {
+            target_id: 1,
+            type_id: paraclete_node_api::CMD_TRIGGER,
+            arg0: -1,
+            arg1: 0.0,
+        };
+        for i in 0..2800 {
+            if i % 50 == 0 {
+                let _ = conf.send_command(trigger_source());
+            }
+            exec.process(&mut out, 2);
+        }
+
+        // Target (node 3) is silent before delivery — proves whatever
+        // arrives later didn't come from anywhere else.
+        let _ = conf.send_command(NodeCommand {
+            target_id: 3,
+            type_id: paraclete_node_api::CMD_TRIGGER,
+            arg0: -1,
+            arg1: 0.0,
+        });
+        exec.process(&mut out, 2);
+        assert!(out.iter().all(|&x| x == 0.0), "target sampler must be silent before the transition trick");
+
+        // The transition trick: capture recorder 2's last ~2 bars, assign
+        // to sampler 3, with a 16-slot grid.
+        perform.execute(AppOp::CaptureTransition { recorder_id: 2, sampler_id: 3 }, &mut conf, &bus);
+        exec.process(&mut out, 2); // RecorderNode fulfills CMD_RECORDER_CAPTURE
+        perform.tick(&mut conf, &bus); // drains it, assembles the pool slot, sends SwapSample
+        exec.process(&mut out, 2); // delivers SwapSample to node 3
+
+        let entry = perform
+            .sample_pool
+            .slots
+            .iter()
+            .flatten()
+            .find(|e| matches!(&e.source, crate::sample_pool::SampleSource::Ram { .. }))
+            .expect("a Ram pool entry must exist after the transition trick");
+        assert_eq!(entry.slice_table.len(), 16, "R2's frozen default: a 16-slot even grid");
+        assert_eq!(
+            entry.bars,
+            Some(TRANSITION_TRICK_BARS),
+            "review finding: the requested bar count must reach PoolEntry.bars, not be dropped to None"
+        );
+
+        let _ = conf.send_command(NodeCommand {
+            target_id: 3,
+            type_id: paraclete_node_api::CMD_TRIGGER,
+            arg0: -1,
+            arg1: 0.0,
+        });
+        exec.process(&mut out, 2);
+        assert!(
+            out.iter().any(|&x| x != 0.0),
+            "target sampler must produce audio after the transition trick delivers the captured slot"
+        );
+    }
+
+    /// A capture whose `request_id` has no matching `pending_captures`
+    /// entry (already handled, or spurious) must still return its buffer
+    /// rather than leaving it stuck in the executor forever — verified
+    /// indirectly: a second, real capture on the same recorder must still
+    /// succeed afterward (proving the return-leg ring wasn't starved of
+    /// scratch-buffer turnover by the orphaned one).
+    #[test]
+    fn drain_finished_captures_returns_the_buffer_for_an_unmatched_request_id() {
+        let sr = 44100.0;
+        let block = 64usize;
+        let mut conf = NodeConfigurator::new(sr, block);
+        conf.add_node(2, Box::new(paraclete_nodes::RecorderNode::new()));
+        let bus = conf.state_bus_handle();
+        let mut perform = PerformState::new();
+        let mut exec = conf.build_executor();
+        let mut out = vec![0.0f32; block * 2];
+
+        // A capture command with a request_id perform_state never
+        // registered (simulating an already-handled or foreign request).
+        let _ = conf.send_command(NodeCommand {
+            target_id: 2,
+            type_id: paraclete_nodes::CMD_RECORDER_CAPTURE,
+            arg0: 12345,
+            arg1: 4.0,
+        });
+        exec.process(&mut out, 2);
+        perform.tick(&mut conf, &bus); // must not panic; must return the buffer
+
+        // A real, tracked capture afterward must still work — proves the
+        // scratch pool wasn't left exhausted by the untracked one.
+        perform.execute(AppOp::RecorderCapture { recorder_id: 2, bars: 0.001 }, &mut conf, &bus);
+        exec.process(&mut out, 2);
+        perform.tick(&mut conf, &bus);
+        let entry = perform
+            .sample_pool
+            .slots
+            .iter()
+            .flatten()
+            .next()
+            .expect("a real capture after an unmatched one must still populate the pool");
+        assert_eq!(
+            entry.bars,
+            Some(0.001),
+            "the plain RecorderCapture path (not just CaptureTransition) must also carry bars through"
         );
     }
 }

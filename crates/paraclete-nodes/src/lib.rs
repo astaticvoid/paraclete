@@ -40,7 +40,9 @@ pub use mapping::SurfaceMappingNode;
 pub use mix::MixNode;
 pub use oscillator::{OscillatorNode, SineOscillator, midi_note_to_hz};
 pub use pattern::{apply_preset, TrackPreset, TRACKS};
-pub use recorder::{RecorderNode, CMD_RECORDER_ARM_THRESHOLD, CMD_RECORDER_DISARM};
+pub use recorder::{
+    RecorderNode, CMD_RECORDER_ARM_THRESHOLD, CMD_RECORDER_CAPTURE, CMD_RECORDER_DISARM,
+};
 pub use reverb::ReverbNode;
 pub use sampler::Sampler;
 pub use sequencer::{Pattern, Sequencer, Step, StepParamLock, PAGE_SIZE};
