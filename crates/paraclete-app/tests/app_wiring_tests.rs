@@ -86,6 +86,46 @@ fn app_wiring_loads_the_fm_voice_fixture() {
     assert!(ids.generators.contains(&28), "expected node 28 (FmVoice) classified as a generator");
 }
 
+/// TK1 C7 7.5 (#139/#138): `instrument-8track.yaml` realizes the AGENTS.md
+/// 8-track graph (8 sequencers -> 8 voices, each behind its own
+/// distortion+filter chain -> mix). Discovery must yield exactly 8 tracks,
+/// paired sequencer-to-voice by the edge each sequencer drives (the same
+/// edge-derived pairing `paraclete-app/src/main.rs` uses to build Theotokos's
+/// `gen_ids`), matching the fixture's documented 20-27 voice-id order.
+#[test]
+fn eight_track_fixture_discovers_eight_tracks() {
+    use paraclete_app::builder::load_instrument_definition;
+
+    let instrument =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instrument-8track.yaml");
+    let def = load_instrument_definition(&instrument).expect("load instrument-8track.yaml");
+    let mut conf = NodeConfigurator::new(SR, BLOCK);
+    let ids = build_from_instrument(&def, &mut conf, &Default::default(), &mut Default::default())
+        .expect("build should succeed");
+
+    assert_eq!(ids.sequencers.len(), 8, "expected 8 discovered sequencer tracks");
+    assert_eq!(ids.sequencers, vec![10, 11, 12, 13, 14, 15, 16, 17]);
+    assert_eq!(ids.generators.len(), 8, "expected 8 discovered voices");
+
+    let edges: Vec<(u32, u32)> = conf.all_edges().map(|e| (e.src_node, e.dst_node)).collect();
+    let gen_ids: Vec<u32> = ids
+        .sequencers
+        .iter()
+        .map(|&seq_id| {
+            edges
+                .iter()
+                .find(|(s, _)| *s == seq_id)
+                .map(|(_, t)| *t)
+                .unwrap_or(0)
+        })
+        .collect();
+    assert_eq!(
+        gen_ids,
+        vec![20, 21, 22, 23, 24, 25, 26, 27],
+        "expected edge-derived sequencer->voice pairing to match the fixture's documented order"
+    );
+}
+
 #[test]
 fn app_wiring_project_save_load_roundtrip() {
     let def = parse_instrument_definition(MINIMAL_YAML).expect("parse");

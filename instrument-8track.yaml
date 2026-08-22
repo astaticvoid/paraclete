@@ -1,0 +1,220 @@
+# Dev fixture for TK1 C7 7.5 (#139) — the AGENTS.md aspirational 8-track
+# graph: 8 sequencers -> 8 voices, each behind its own DistortionNode ->
+# FilterNode chain -> mix. Realizes the review M6 requirement that C3's
+# composite-page smoke ("PERF FLTR page binds the chain node's params") has
+# something to bind on every track, and gives eight_track_fixture_discovers_
+# eight_tracks (#138) a real graph instead of a copy-pasted one.
+#
+# Voices follow the documented node-ID table (AGENTS.md "App graph node
+# IDs"): 20-22 AnalogEngine (kick/snare/hihat), 23-26 Sampler[3-6]
+# (`samples/track{3..6}.wav`, produced by `cargo run -p gen-samples`), 27
+# FmEngine::bass(). Chain ids: 30-37 distortion, 40-47 filter — one pair per
+# voice, paired by index (voice N -> distortion 30+N -> filter 40+N).
+format_version: 1
+name: "paraclete-8track-fixture"
+bpm: 140.0
+
+nodes:
+  - id: 1
+    type: internal_clock
+
+  # ── Sequencers (one per track) ──────────────────────────────────────────
+  - id: 10
+    type: sequencer
+    display_name: "Kick"
+    default_note: 36
+  - id: 11
+    type: sequencer
+    display_name: "Snare"
+    default_note: 36
+  - id: 12
+    type: sequencer
+    display_name: "HiHat"
+    default_note: 36
+  - id: 13
+    type: sequencer
+    display_name: "Smp3"
+  - id: 14
+    type: sequencer
+    display_name: "Smp4"
+  - id: 15
+    type: sequencer
+    display_name: "Smp5"
+  - id: 16
+    type: sequencer
+    display_name: "Smp6"
+  - id: 17
+    type: sequencer
+    display_name: "Bass"
+    default_note: 36
+
+  # ── Voices ──────────────────────────────────────────────────────────────
+  - id: 20
+    type: analog_engine:kick
+  - id: 21
+    type: analog_engine:snare
+  - id: 22
+    type: analog_engine:hihat
+  - id: 23
+    type: sampler
+    display_name: "Smp3"
+    sample: "samples/track3.wav"
+  - id: 24
+    type: sampler
+    display_name: "Smp4"
+    sample: "samples/track4.wav"
+  - id: 25
+    type: sampler
+    display_name: "Smp5"
+    sample: "samples/track5.wav"
+  - id: 26
+    type: sampler
+    display_name: "Smp6"
+    sample: "samples/track6.wav"
+  - id: 27
+    type: fm_engine:bass
+
+  # ── Per-voice chain: distortion (30-37) -> filter (40-47) ───────────────
+  - id: 30
+    type: distortion
+  - id: 31
+    type: distortion
+  - id: 32
+    type: distortion
+  - id: 33
+    type: distortion
+  - id: 34
+    type: distortion
+  - id: 35
+    type: distortion
+  - id: 36
+    type: distortion
+  - id: 37
+    type: distortion
+  - id: 40
+    type: filter
+  - id: 41
+    type: filter
+  - id: 42
+    type: filter
+  - id: 43
+    type: filter
+  - id: 44
+    type: filter
+  - id: 45
+    type: filter
+  - id: 46
+    type: filter
+  - id: 47
+    type: filter
+
+  # ── Master bus ──────────────────────────────────────────────────────────
+  - id: 2
+    type: mix
+    channel_count: 8
+    initial_params:
+      master_gain: 1.33
+  - id: 200
+    type: reverb
+  - id: 60
+    type: audio_output
+
+edges:
+  # clock -> each sequencer
+  - from: [1, "clock_out"]
+    to:   [10, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [11, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [12, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [13, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [14, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [15, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [16, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [17, "clock_in"]
+
+  # sequencer -> voice (events)
+  - from: [10, "events_out"]
+    to:   [20, 0]
+  - from: [11, "events_out"]
+    to:   [21, 0]
+  - from: [12, "events_out"]
+    to:   [22, 0]
+  - from: [13, "events_out"]
+    to:   [23, 0]
+  - from: [14, "events_out"]
+    to:   [24, 0]
+  - from: [15, "events_out"]
+    to:   [25, 0]
+  - from: [16, "events_out"]
+    to:   [26, 0]
+  - from: [17, "events_out"]
+    to:   [27, 0]
+
+  # voice -> distortion -> filter -> mix input N
+  - from: [20, 1]
+    to:   [30, 0]
+  - from: [30, 1]
+    to:   [40, 0]
+  - from: [40, 1]
+    to:   [2, 0]
+
+  - from: [21, 1]
+    to:   [31, 0]
+  - from: [31, 1]
+    to:   [41, 0]
+  - from: [41, 1]
+    to:   [2, 1]
+
+  - from: [22, 1]
+    to:   [32, 0]
+  - from: [32, 1]
+    to:   [42, 0]
+  - from: [42, 1]
+    to:   [2, 2]
+
+  - from: [23, 1]
+    to:   [33, 0]
+  - from: [33, 1]
+    to:   [43, 0]
+  - from: [43, 1]
+    to:   [2, 3]
+
+  - from: [24, 1]
+    to:   [34, 0]
+  - from: [34, 1]
+    to:   [44, 0]
+  - from: [44, 1]
+    to:   [2, 4]
+
+  - from: [25, 1]
+    to:   [35, 0]
+  - from: [35, 1]
+    to:   [45, 0]
+  - from: [45, 1]
+    to:   [2, 5]
+
+  - from: [26, 1]
+    to:   [36, 0]
+  - from: [36, 1]
+    to:   [46, 0]
+  - from: [46, 1]
+    to:   [2, 6]
+
+  - from: [27, 1]
+    to:   [37, 0]
+  - from: [37, 1]
+    to:   [47, 0]
+  - from: [47, 1]
+    to:   [2, 7]
+
+  # mix -> reverb -> audio output
+  - from: [2, 8]
+    to:   [200, 0]
+  - from: [200, 1]
+    to:   [60, 0]

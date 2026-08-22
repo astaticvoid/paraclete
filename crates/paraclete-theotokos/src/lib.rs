@@ -3973,6 +3973,91 @@ mod tests {
         );
     }
 
+    /// TK1 C7 7.2/7.6 (#138): paste clamps to `min(src_len, dst_len)` — a
+    /// paste onto a shorter destination pattern must not walk past the
+    /// destination's own step count.
+    #[test]
+    fn paste_clamps_to_shorter_pattern() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        {
+            let mut b = bus.borrow_mut();
+            b.write(
+                "/node/200/state/steps",
+                StateBusValue::Text("1100000000000000".into()), // 16 steps
+            );
+            b.write("/node/200/state/locks", StateBusValue::Text(String::new()));
+        }
+        app.handle_keys(&bus, &[func_key('z')]); // FUNC+REC copies 16 steps.
+        assert_eq!(app.model.yank_buffer.len(), 16);
+
+        // Destination pattern is now shorter (8 steps).
+        bus.borrow_mut().write(
+            "/node/200/state/steps",
+            StateBusValue::Text("11000000".into()),
+        );
+        app.pending.clear();
+        app.handle_keys(&bus, &[func_key('c')]); // FUNC+STOP pastes.
+
+        // 6 commands/step (clear-lock, set-step, velocity, length, timing,
+        // condition) with no lock pairs (locks were empty) — clamped to the
+        // 8-step destination, not the 16-step source.
+        assert_eq!(
+            app.pending.len(),
+            8 * 6,
+            "paste must clamp to the shorter destination pattern; got: {:?}",
+            app.pending
+        );
+        assert!(
+            app.pending.iter().all(|c| c.arg0 < 8),
+            "no pasted command may target a step past the destination's length; got: {:?}",
+            app.pending
+        );
+    }
+
+    /// TK1 C7 7.2/7.6 (#138): the paste batch always includes the
+    /// velocity/length/timing/condition commands per step (review M2 — CMD
+    /// 17 alone is lossy), not just the note/active `CMD_SET_STEP`.
+    #[test]
+    fn paste_includes_velocity_length_condition_timing_commands() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        {
+            let mut b = bus.borrow_mut();
+            b.write(
+                "/node/200/state/steps",
+                StateBusValue::Text("1000000000000000".into()),
+            );
+            b.write("/node/200/state/locks", StateBusValue::Text(String::new()));
+        }
+        app.handle_keys(&bus, &[func_key('z')]);
+        app.pending.clear();
+        app.handle_keys(&bus, &[func_key('c')]);
+
+        let step0: Vec<u32> = app
+            .pending
+            .iter()
+            .filter(|c| c.arg0 == 0)
+            .map(|c| c.type_id)
+            .collect();
+        assert!(
+            step0.contains(&CMD_SET_STEP_VELOCITY),
+            "paste must emit a velocity command; got type_ids: {step0:?}"
+        );
+        assert!(
+            step0.contains(&CMD_SET_STEP_LENGTH),
+            "paste must emit a length command; got type_ids: {step0:?}"
+        );
+        assert!(
+            step0.contains(&CMD_SET_STEP_TIMING),
+            "paste must emit a timing command; got type_ids: {step0:?}"
+        );
+        assert!(
+            step0.contains(&CMD_SET_STEP_CONDITION),
+            "paste must emit a condition command; got type_ids: {step0:?}"
+        );
+    }
+
     /// ADR-046 T5: bare STOP is halt-in-place then rewind — two commands,
     /// STOP before REWIND (the ordering the phase spec's decomposition
     /// hazard note relies on: a stop-then-rewind pair applied to a running

@@ -3039,4 +3039,81 @@ mod tests {
             "live LFO phase: must show the dot marker in the phase track; got: {text}"
         );
     }
+
+    /// TK1 C7 7.6 (#138): the CHAIN screen's pattern bank row colors the
+    /// active pattern Green and a distinct cued pattern Cyan — the
+    /// "active and cued pattern markers" §7.1 describes for the transport
+    /// (that row only ever shows the active pattern, see #187/#140-adjacent
+    /// gap notes; this is where both markers actually render today).
+    #[test]
+    fn render_shows_active_and_cued_pattern_markers() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Chain, 1);
+        data.active_pattern = 2; // P3
+        data.cued_pattern = Some(5); // P6
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let row = find_row(&terminal, 24, 80, "P3");
+        let line = buffer_row_text(&terminal, row, 80);
+
+        let active_col = line.find("P3").expect("active pattern P3 must render") as u16;
+        let active_fg = terminal.backend().buffer().get(active_col, row).fg;
+        assert_eq!(active_fg, Color::Green, "active pattern must render Green; row: {line:?}");
+
+        let cued_col = line.find("P6").expect("cued pattern P6 must render") as u16;
+        let cued_fg = terminal.backend().buffer().get(cued_col, row).fg;
+        assert_eq!(cued_fg, Color::Cyan, "cued pattern must render Cyan; row: {line:?}");
+
+        let neutral_col = line.find("P1").expect("neutral pattern P1 must render") as u16;
+        let neutral_fg = terminal.backend().buffer().get(neutral_col, row).fg;
+        assert_eq!(
+            neutral_fg,
+            Color::Gray,
+            "a pattern that is neither active nor cued must render Gray; row: {line:?}"
+        );
+    }
+
+    /// TK1 C7 7.4/7.6 (#138): a slot within its flash window renders Yellow;
+    /// the window-detection itself is `flash_detects_value_change` (model
+    /// layer) — this is the render-layer half, the flag-to-color mapping.
+    #[test]
+    fn flash_colors_value_within_window() {
+        let backend = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Param(0), 1);
+        data.slot_a = Some(SlotBinding {
+            node_id: 20,
+            param_id: 1,
+            param_name: "decay".into(),
+            min: 0.0,
+            max: 1.0,
+        });
+        data.slot_a_value = 0.5;
+        data.slot_a_flash = true;
+        terminal.draw(|f| render(f, &data)).unwrap();
+
+        let row = find_row(&terminal, 24, 100, "A:decay");
+        let line = buffer_row_text(&terminal, row, 100);
+        let col = line.find("A:decay").expect("slot A text must render") as u16;
+        let fg = terminal.backend().buffer().get(col, row).fg;
+        assert_eq!(
+            fg,
+            Color::Yellow,
+            "a slot within its flash window must render Yellow; row: {line:?}"
+        );
+
+        // Outside the window (flag cleared), the same slot renders White.
+        let backend2 = ratatui::backend::TestBackend::new(100, 24);
+        let mut terminal2 = ratatui::Terminal::new(backend2).unwrap();
+        data.slot_a_flash = false;
+        terminal2.draw(|f| render(f, &data)).unwrap();
+        let row2 = find_row(&terminal2, 24, 100, "A:decay");
+        let fg2 = terminal2.backend().buffer().get(col, row2).fg;
+        assert_eq!(
+            fg2,
+            Color::White,
+            "outside the flash window the slot must render White, not stay Yellow"
+        );
+    }
 }
