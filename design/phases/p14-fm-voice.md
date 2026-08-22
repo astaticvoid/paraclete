@@ -129,6 +129,15 @@ recipe is what's frozen):
 | **Pad** | 5 (Parallel Carriers) | slow attack, `porta` on | both branch levels (via `mix`), amp attack/release, `detune` |
 | **Pluck** | 6 (Feedback Pair) | fast decay, moderate feedback | `feedback`, amp decay, `harm`, `mix` |
 
+**C3 finding carried here:** group A's SYN2 envelope (`atk_a`/`dec_a`/`end_a`/
+`lev_a`) is architecturally inert on **Additive Twin** (algo 7) and
+**Parallel Carriers** (algo 5) — in both, A is a final output tap, never a
+modulator, so nothing in the signal path reads `gain_a`. **Pad's anchor is
+Parallel Carriers** — its SRC curation above correctly omits any group-A
+control, and C7 must not add one (a knob a performer can turn with zero
+audible effect is worse than no knob). If a later curation pass considers
+Additive Twin for a seventh character, the same caution applies.
+
 Every macro's non-SRC pages (SYN2, AMP, expression, MOD) stay fully live —
 only the *visible curated page* narrows; nothing is clamped or hidden from
 the underlying bank. This is the concrete form of "human interface level
