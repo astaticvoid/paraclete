@@ -96,6 +96,22 @@ struct AlgoSwitchFade {
     target: Option<Algo>,
 }
 
+// ── Portamento (P14-C5) ───────────────────────────────────────────────────────
+
+/// In-flight glide from the note being left to the note-stack-pop's
+/// revealed note. Only ever started by `legato_retarget` (a `porta > 0`
+/// stack-pop) — a fresh `retrigger()` never glides, matching how a real
+/// mono synth's portamento only bridges held-note transitions, not a new
+/// keypress. Advanced at sub-block granularity (once per `process_algo`
+/// call, by that call's own span length) — the same control-rate cadence
+/// ADR-042 already accepted for LFOs, plenty smooth for a pitch glide.
+#[derive(Clone, Copy)]
+struct Glide {
+    from_hz: f32,
+    elapsed_secs: f32,
+    total_secs: f32,
+}
+
 // ── AMP page DSP (P14 §0 D4) ─────────────────────────────────────────────────
 
 /// Pre-gain multiplier at `drive=1.0`, before `soft_clip`. `drive<=0.0` is
@@ -185,6 +201,11 @@ pub struct FmVoice {
     /// downstream audio stage, not part of the oscillator core.
     tone_lp_state: f32,
 
+    /// P14-C5 portamento: `Some` while a note-stack-pop's glide is still in
+    /// flight. Always cleared by a hard `retrigger()` — a fresh keypress
+    /// never glides.
+    glide: Option<Glide>,
+
     current_note: u8,
     node_id: u32,
     last_note: u8,
@@ -224,6 +245,7 @@ impl FmVoice {
             env_amp: AdsrState::new(),
             note_stack: NoteStack::new(),
             tone_lp_state: 0.0,
+            glide: None,
             current_note: 60,
             node_id: 0,
             last_note: 60,
@@ -410,6 +432,72 @@ impl FmVoice {
         ]
     }
 
+    /// ADR-043 decision 4's expression params (4) — placed on **AMP sub-page
+    /// 2** (slots 8-11), not a new `page_groups` entry: ADR-038's own
+    /// post-ratification amendment revises "FUNC+PG overflow chords" to
+    /// "re-pressing the active PG key to cycle sub-pages" — overflow *is*
+    /// the sub-page mechanism, the same one SYN1/SYN2 already use on SRC
+    /// (ADR-043 amendment 1). A brand-new "EXP" page_groups entry would be
+    /// the pre-amendment reading of ADR-038, not the current one.
+    ///
+    /// `keytrack` and `vel_mod` both default to 0.0 (no effect) — a fresh
+    /// voice's brightness should come from `harm`/SYN2 alone until a
+    /// performer asks for note- or velocity-dependent variation.
+    /// `env_reset` defaults to 0.0 (legato) — this is the exact behavior
+    /// P14-C4 hard-coded for every note-stack-pop, so a project with
+    /// `env_reset` untouched sees no change from before this commit.
+    /// `porta` defaults to 0.0 (instant retune) for the same regression
+    /// reason — glide is opt-in.
+    fn expression_params() -> Vec<ParamDescriptor> {
+        vec![
+            // §0/ADR-043 decision 4: "ratio-independent brightness
+            // tracking" — the ratio tables already track pitch
+            // *proportionally* (every operator's Hz is a multiple of the
+            // note's own Hz via `note_to_hz`), so this has to be a
+            // *separate* mechanism: it shifts `harm` by how far the
+            // current note sits from middle C (note 60), scaled by this
+            // depth control. See `process_algo`'s `keytrack_offset`.
+            ParamDescriptor {
+                id: fp("keytrack"), name: "keytrack".into(),
+                min: 0.0, max: 1.0, default: 0.0,
+                stepped: false, in_kit: true, unit: ParamUnit::Generic, display: None,
+            },
+            // "velocity -> modulation level": scales gain_a/gain_b
+            // (SYN2's own depth-scaled envelope outputs) by how far below
+            // max velocity the triggering NoteOn was — velocity=1.0 always
+            // gives full gain regardless of vel_mod (see process_algo's
+            // vel_scale), so this only ever *reduces* brightness at softer
+            // playing, never boosts beyond the SYN2 envelopes' own ceiling.
+            ParamDescriptor {
+                id: fp("vel_mod"), name: "vel_mod".into(),
+                min: 0.0, max: 1.0, default: 0.0,
+                stepped: false, in_kit: true, unit: ParamUnit::Generic, display: None,
+            },
+            // Stepped boolean, same convention as Sampler's "loop"
+            // (sampler.rs) — 0.0 = legato (a note-stack pop continues
+            // env_a/env_b/env_amp from their current level, P14-C4's
+            // behavior), 1.0 = retrig (a pop restarts all three envelopes
+            // from zero). Either way, operator phase is NEVER reset on
+            // this path — that's `legato_retarget`'s permanent contract
+            // (the click env_reset=retrig is not meant to reintroduce),
+            // only the envelopes' continuity is what this switches.
+            ParamDescriptor {
+                id: fp("env_reset"), name: "env_reset".into(),
+                min: 0.0, max: 1.0, default: 0.0,
+                stepped: true, in_kit: true, unit: ParamUnit::Generic, display: None,
+            },
+            // Glide time in seconds for a note-stack-pop retarget only —
+            // a fresh `retrigger()` (a genuine NoteOn) never glides, the
+            // way a real mono synth's portamento doesn't affect a brand
+            // new keypress, only a legato transition between held notes.
+            ParamDescriptor {
+                id: fp("porta"), name: "porta".into(),
+                min: 0.0, max: 2.0, default: 0.0,
+                stepped: false, in_kit: true, unit: ParamUnit::Seconds, display: None,
+            },
+        ]
+    }
+
     fn default_ports() -> [PortDescriptor; 3] {
         [
             PortDescriptor { id: Self::PORT_EVENTS_IN, name: "events_in".into(), direction: PortDirection::Input, port_type: PortType::Event },
@@ -424,7 +512,8 @@ impl FmVoice {
             vendor: "Paraclete".into(),
             version: (0, 1, 0),
             ports: Self::default_ports().to_vec(),
-            params: Self::params().into_iter().chain(Self::syn2_params()).chain(Self::amp_params()).collect(),
+            params: Self::params().into_iter().chain(Self::syn2_params()).chain(Self::amp_params())
+                .chain(Self::expression_params()).collect(),
             extensions: vec!["paraclete.instrument".into()],
             view: None,
         }
@@ -576,17 +665,27 @@ impl FmVoice {
     }
 
     /// A `NoteOn` — the very first note of a phrase or an overlapping press
-    /// on an already-sounding mono voice. Always a hard reset (§ below):
-    /// a fresh keypress is a fresh attack, click accepted.
+    /// on an already-sounding mono voice. Always a hard reset: a fresh
+    /// keypress is a fresh attack, click accepted, and it never glides
+    /// (P14-C5: portamento only bridges a note-stack-pop transition, the
+    /// way a real mono synth's `porta` doesn't affect a brand new keypress).
     fn retrigger(&mut self, note: u8, velocity: f32) {
         self.consume_pending_locks();
         self.note_stack.push(note);
-        self.trigger_note(note, Some(velocity), true);
+        self.trigger_note(note, Some(velocity), true, true);
     }
 
     /// A `NoteOff` that reveals a still-held note underneath (mono
-    /// note-stack pop, e.g. releasing the top of a held chord) — legato
-    /// retarget, no operator phase reset (see `trigger_note`).
+    /// note-stack pop, e.g. releasing the top of a held chord). **Never**
+    /// resets operator phase — that's the click this path exists to avoid,
+    /// and it's permanent, not something `env_reset` reintroduces (see
+    /// `trigger_note`). `env_reset` (P14-C5) only decides whether
+    /// `env_a`/`env_b`/`env_amp` restart from zero (retrig, `env_reset=1`)
+    /// or continue from their current level (legato, `env_reset=0`, the
+    /// default and P14-C4's original hard-coded behavior).
+    ///
+    /// Also starts a glide (P14-C5) if `porta > 0`: captures the outgoing
+    /// note's frequency as the glide's start point before retargeting.
     ///
     /// **Known limitation**: `NoteStack` (P14-C0) stores note numbers only,
     /// not velocity — the revealed note resumes at whatever
@@ -595,49 +694,84 @@ impl FmVoice {
     /// this is out of scope here (OQ-P14-2 already flags the note stack as
     /// provisional pending P13's paraphonic allocator work).
     fn legato_retarget(&mut self, note: u8) {
-        self.trigger_note(note, None, false);
+        let porta = self.raw_param(fp("porta"));
+        if porta > 0.0 {
+            // NOT `note_to_hz(self.current_note, ...)` — if a glide from an
+            // *earlier* stack-pop is still in flight (e.g. a 3-note chord
+            // released top-down faster than `porta`), the voice is actually
+            // sounding somewhere between that glide's start and target, not
+            // at the target's nominal frequency yet. Restarting from the
+            // nominal frequency would itself be an audible pitch-snap, on
+            // the one path that exists specifically to avoid one. Found in
+            // C5 review, reachable through Pad's own D5 recipe ("slow
+            // attack, porta on" — pads are canonically played as held
+            // chords with staggered releases).
+            let from_hz = self.current_sounding_hz();
+            self.glide = Some(Glide { from_hz, elapsed_secs: 0.0, total_secs: porta });
+        } else {
+            self.glide = None;
+        }
+        let env_reset = self.raw_param(fp("env_reset")) >= 0.5;
+        self.trigger_note(note, None, false, env_reset);
+    }
+
+    /// The frequency the voice is *actually* sounding right now: the live
+    /// interpolated point of an in-flight glide, or the plain target
+    /// frequency if no glide is running. `self.glide`'s `elapsed_secs` is
+    /// already current at the point this is called — `process()`'s event
+    /// loop always renders up through an event's own sample offset (which
+    /// advances `elapsed_secs` via `process_algo`) before dispatching that
+    /// event, so no additional bookkeeping is needed here, only a read.
+    fn current_sounding_hz(&self) -> f32 {
+        let detune_cents = self.raw_param(fp("detune"));
+        let target_hz = note_to_hz(self.current_note, detune_cents / 100.0);
+        match self.glide {
+            Some(g) => {
+                let t = (g.elapsed_secs / g.total_secs).min(1.0);
+                g.from_hz + (target_hz - g.from_hz) * t
+            }
+            None => target_hz,
+        }
     }
 
     /// Shared core of every note-target change.
     ///
-    /// `hard_reset=true` resets the four operators' running phase and
-    /// retriggers `env_a`/`env_b`/`env_amp` all from zero — appropriate for
-    /// a fresh keypress (`retrigger`), where the click is acceptable
-    /// because the note itself is new. `hard_reset=false` (`legato_retarget`)
-    /// does **not** touch operator phase (that's the click this path exists
-    /// to avoid) and only re-triggers `env_amp`, in legato mode
-    /// (`AdsrState::trigger(false)`: re-enters Attack from its current
-    /// level, no snap) — `env_a`/`env_b` are deliberately left alone on
-    /// this path; their own reset policy on a stack-pop is an open
-    /// question (not this commit's job — only "AMP page + NoteOff wiring"
-    /// is in scope, per the spec's C4 bullet).
+    /// `reset_operators=true` resets the four operators' running phase and
+    /// the `tone` filter state — appropriate only for a genuine `NoteOn`
+    /// (`retrigger`), where the click is acceptable because the note itself
+    /// is new. `legato_retarget` always passes `false`: not resetting
+    /// operator phase is the whole reason that path exists, and it does not
+    /// vary with `env_reset` (P14-C5) — a stack-pop is never allowed to
+    /// reintroduce the click, retrig or not.
     ///
-    /// `env_reset` is a real, user-facing param starting P14-C5 (the
-    /// expression page) — until then, `hard_reset` is hard-coded by call
-    /// site rather than read from a param: `retrigger` always hard-resets,
-    /// `legato_retarget` always legatos. C5 replaces both hard-codes with
-    /// the actual param read.
-    fn trigger_note(&mut self, note: u8, velocity: Option<f32>, hard_reset: bool) {
+    /// `reset_envelopes` independently decides whether `env_a`/`env_b`/
+    /// `env_amp` restart from zero. `retrigger` always passes `true`
+    /// (a fresh keypress always restarts everything). `legato_retarget`
+    /// passes `env_reset`'s value (P14-C5) — `env_reset=0` (legato, the
+    /// default) preserves P14-C4's original behavior exactly.
+    fn trigger_note(&mut self, note: u8, velocity: Option<f32>, reset_operators: bool, reset_envelopes: bool) {
         self.current_note = note;
         self.last_note = note;
         if let Some(v) = velocity {
             self.velocity_level = v.clamp(0.0, 1.0);
         }
-        if hard_reset {
+        if reset_operators {
             self.op_c.reset();
             self.op_a.reset();
             self.op_b1.reset();
             self.op_b2.reset();
-            self.env_a.trigger(true);
-            self.env_b.trigger(true);
             // The oscillator core resets specifically to avoid carrying a
             // discontinuity into the new note; the `tone` one-pole filter
             // sitting downstream of it is the same kind of state and gets
             // the same treatment — otherwise a loud prior tail's filter
             // history blends into the fresh attack under a nonzero `tone`.
             self.tone_lp_state = 0.0;
+            // A hard reset is always a fresh attack, never a glide target.
+            self.glide = None;
         }
-        self.env_amp.trigger(hard_reset);
+        self.env_a.trigger(reset_envelopes);
+        self.env_b.trigger(reset_envelopes);
+        self.env_amp.trigger(reset_envelopes);
     }
 
     /// Render `[start, end)` with the current voice state. Chunked into
@@ -658,7 +792,23 @@ impl FmVoice {
     }
 
     fn process_algo(&mut self, start: usize, end: usize) {
-        let harm = self.raw_param(fp("harm"));
+        // §0/ADR-043 decision 4's `keytrack`: "ratio-independent brightness
+        // tracking" — the ratio tables already scale every operator's Hz
+        // *proportionally* to the note, so this has to shift something
+        // else. Shifts `harm` by how far the current note sits from middle
+        // C (60), scaled by `keytrack`'s own depth: `keytrack=0` is exactly
+        // today's flat `harm` (no note dependence); `keytrack=1` spans
+        // +/-0.5 harm across +/-4 octaves from middle C — higher notes get
+        // brighter, lower notes darker, a common "brighter on top" EP/bell
+        // character. Clamped back into `harm`'s own 0..1 contract.
+        const KEYTRACK_CENTER_NOTE: f32 = 60.0;
+        const KEYTRACK_RANGE_SEMITONES: f32 = 48.0;
+        const KEYTRACK_MAX_HARM_SHIFT: f32 = 0.5;
+        let keytrack = self.raw_param(fp("keytrack"));
+        let keytrack_offset = keytrack
+            * ((self.current_note as f32 - KEYTRACK_CENTER_NOTE) / KEYTRACK_RANGE_SEMITONES)
+            * KEYTRACK_MAX_HARM_SHIFT;
+        let harm = (self.raw_param(fp("harm")) + keytrack_offset).clamp(0.0, 1.0);
         let feedback = self.raw_param(fp("feedback"));
         let mix = self.raw_param(fp("mix"));
         let detune_cents = self.raw_param(fp("detune"));
@@ -685,6 +835,15 @@ impl FmVoice {
         let end_b = self.raw_param(fp("end_b"));
         let lev_b = self.raw_param(fp("lev_b"));
 
+        // §0/ADR-043 decision 4's `vel_mod`: "velocity -> modulation level".
+        // `vel_mod=0` is exactly today's flat gain (no velocity dependence,
+        // the default). At full velocity (1.0), `vel_scale` is always 1.0
+        // regardless of `vel_mod` — this only ever *reduces* brightness at
+        // softer playing, it never boosts past what lev_a/lev_b/the SYN2
+        // envelopes already allow.
+        let vel_mod = self.raw_param(fp("vel_mod"));
+        let vel_scale = 1.0 - vel_mod * (1.0 - self.velocity_level);
+
         // §0 D4's AMP page (P14-C4). Same sub-block-cached-coefficient
         // convention as SYN2 above; `env_amp` is the real gate on the
         // voice's audibility now (see `is_sounding()`), ticked per-sample
@@ -702,7 +861,26 @@ impl FmVoice {
         let rel_amp_coeff = 0.001f32.powf(1.0 / (release_amp * sr).max(1.0));
         let (pan_l, pan_r) = equal_power_pan(pan);
 
-        let base_hz = note_to_hz(self.current_note, detune_cents / 100.0);
+        // P14-C5 portamento: while a glide is in flight, `base_hz` is the
+        // linear interpolation from where the outgoing note left off toward
+        // the current (target) note's own frequency, advanced by this call's
+        // own span length — `render_span` may call `process_algo` several
+        // times per `process()` block (one per `LFO_SUB_BLOCK` chunk), so
+        // accumulating `elapsed_secs` here by `(end-start)/sr` each call adds
+        // up to the real wall-clock time across the whole block. `porta=0`
+        // never creates a `Glide` (see `legato_retarget`), so this reduces
+        // to the pre-C5 instant-retune exactly when portamento is off.
+        let target_base_hz = note_to_hz(self.current_note, detune_cents / 100.0);
+        let base_hz = match self.glide {
+            Some(mut g) => {
+                g.elapsed_secs += (end - start) as f32 / sr;
+                let t = (g.elapsed_secs / g.total_secs).min(1.0);
+                let interpolated = g.from_hz + (target_base_hz - g.from_hz) * t;
+                self.glide = if t >= 1.0 { None } else { Some(g) };
+                interpolated
+            }
+            None => target_base_hz,
+        };
         let c_freq = base_hz * ratio_c;
         let a_freq = base_hz * ratio_a;
         let b1_freq = base_hz * ratio_b1;
@@ -725,8 +903,8 @@ impl FmVoice {
             // Intra-group hops (B2 feeding B1) and the self/cross feedback
             // terms already routed through `feedback` are unaffected by
             // either gain; those are the `feedback` knob's job, not SYN2's.
-            let gain_a = self.env_a.tick(atk_a_inc, dec_a_coeff, end_a, 0.0) * lev_a;
-            let gain_b = self.env_b.tick(atk_b_inc, dec_b_coeff, end_b, 0.0) * lev_b;
+            let gain_a = self.env_a.tick(atk_a_inc, dec_a_coeff, end_a, 0.0) * lev_a * vel_scale;
+            let gain_b = self.env_b.tick(atk_b_inc, dec_b_coeff, end_b, 0.0) * lev_b * vel_scale;
 
             let (x, y) = match algo {
                 // §0 D1 #1 — Stack: B2->B1->A->C serial. Feedback: B2.
@@ -882,9 +1060,14 @@ impl ViewPlugin for FmVoice {
             // across commits — P14-C6 fills it in, it doesn't append a new
             // group after the fact.
             page_groups: Cow::Owned(vec![Cow::Borrowed("SRC"), Cow::Borrowed("AMP"), Cow::Borrowed("MOD")]),
-            // SYN2 (P14-C3) is SRC **sub-page 2** (slots 8-15), not a
-            // separate page_groups entry — ADR-043's post-ratification
-            // amendment 1 is explicit: "SYN1/SYN2 are SRC sub-pages 1/2."
+            // SYN2 (P14-C3) is SRC **sub-page 2** (slots 8-15); the P14-C5
+            // expression params are AMP **sub-page 2** (slots 8-11) — same
+            // sub-page mechanism, not a separate page_groups entry.
+            // ADR-043's post-ratification amendment 1 is explicit about
+            // SYN1/SYN2; ADR-038's own post-ratification amendment revises
+            // "FUNC+PG overflow chords" to "re-pressing the active PG key
+            // to cycle sub-pages" — the expression page's "overflow" *is*
+            // this same sub-page cycling, not a new page key.
             param_pages: Cow::Owned(vec![
                 src("algo", 0),
                 src("ratio_c", 1),
@@ -910,6 +1093,10 @@ impl ViewPlugin for FmVoice {
                 amp("pan", 5),
                 amp("drive", 6),
                 amp("tone", 7),
+                amp("keytrack", 8),
+                amp("vel_mod", 9),
+                amp("env_reset", 10),
+                amp("porta", 11),
             ]),
             macros: Cow::Borrowed(&[]),
             // Anchored on each group's `dec_*`/`decay` param, matching
@@ -1001,6 +1188,7 @@ impl Node for FmVoice {
         self.env_amp = AdsrState::new();
         self.note_stack = NoteStack::new();
         self.tone_lp_state = 0.0;
+        self.glide = None;
         self.current_note = 60;
         self.last_note = 60;
         self.velocity_level = 1.0;
@@ -1481,26 +1669,28 @@ mod tests {
 
     /// `legato_retarget`'s entire reason to exist is *not* doing what
     /// `retrigger` does to the oscillator core — assert that directly,
-    /// rather than trusting the `if hard_reset` guard by inspection. A
-    /// mutation that made the operator-reset/`env_a`/`env_b`-retrigger
-    /// block in `trigger_note` unconditional would pass every other test in
-    /// this file (they all converge to the same steady state by the end of
-    /// a full block, hard-reset or not) but must be caught here.
+    /// rather than trusting the `if reset_operators` guard by inspection. A
+    /// mutation that made the operator-reset block in `trigger_note`
+    /// unconditional would pass every other test in this file (they all
+    /// converge to the same steady state by the end of a full block,
+    /// hard-reset or not) but must be caught here. This is permanent and
+    /// does not vary with `env_reset` (P14-C5) — a stack-pop never clicks,
+    /// retrig or legato.
+    ///
+    /// `env_a`/`env_b` DO re-enter `Attack` on a legato retarget (P14-C5
+    /// resolved C4's "open question": all three envelopes — `env_a`,
+    /// `env_b`, `env_amp` — share one `env_reset` policy) — the same way
+    /// `env_amp` already does in `legato_retarget_preserves_amp_envelope_
+    /// level_no_snap` below. What must hold under legato (`env_reset=0`,
+    /// the default) is level continuity, no snap — not that the phase is
+    /// untouched.
     #[test]
-    fn legato_retarget_does_not_touch_operator_phase_or_mod_envelopes() {
+    fn legato_retarget_does_not_touch_operator_phase() {
         let mut eng = new_engine();
         run(&mut eng, &[make_note_on(60)]);
-        run(&mut eng, &[]); // advance operators/env_a/env_b off their post-trigger reset values
+        run(&mut eng, &[]); // advance operators off their post-trigger reset values
 
         let (c, a, b1, b2) = (eng.op_c.phase, eng.op_a.phase, eng.op_b1.phase, eng.op_b2.phase);
-        let (env_a_phase, env_a_value) = (
-            std::mem::discriminant(&eng.env_a.phase),
-            eng.env_a.value,
-        );
-        let (env_b_phase, env_b_value) = (
-            std::mem::discriminant(&eng.env_b.phase),
-            eng.env_b.value,
-        );
         assert!(c != 0.0 || a != 0.0 || b1 != 0.0 || b2 != 0.0, "operators must have advanced by now");
 
         eng.legato_retarget(64);
@@ -1509,10 +1699,57 @@ mod tests {
         assert_eq!(eng.op_a.phase, a, "legato retarget must not reset op_a's phase");
         assert_eq!(eng.op_b1.phase, b1, "legato retarget must not reset op_b1's phase");
         assert_eq!(eng.op_b2.phase, b2, "legato retarget must not reset op_b2's phase");
-        assert_eq!(std::mem::discriminant(&eng.env_a.phase), env_a_phase, "legato retarget must not touch env_a's phase");
-        assert_eq!(eng.env_a.value, env_a_value, "legato retarget must not touch env_a's value");
-        assert_eq!(std::mem::discriminant(&eng.env_b.phase), env_b_phase, "legato retarget must not touch env_b's phase");
-        assert_eq!(eng.env_b.value, env_b_value, "legato retarget must not touch env_b's value");
+    }
+
+    /// P14-C5's `env_reset=0` (legato, the default): `env_a`/`env_b` must
+    /// preserve their level across a stack-pop, same continuity contract as
+    /// `env_amp`'s own legato test below — no snap, even though the phase
+    /// itself moves back to `Attack` (that's `AdsrState::trigger(false)`'s
+    /// documented contract, not a bug).
+    #[test]
+    fn legato_retarget_preserves_mod_envelope_levels_no_snap() {
+        let mut eng = new_engine();
+        eng.env_a.trigger(true);
+        eng.env_b.trigger(true);
+        for _ in 0..5 {
+            eng.env_a.tick(0.01, 0.999, 0.5, 0.999);
+            eng.env_b.tick(0.01, 0.999, 0.4, 0.999);
+        }
+        let (level_a, level_b) = (eng.env_a.value, eng.env_b.value);
+        assert!(level_a > 0.0 && level_a < 1.0, "expected a partial level to test continuity against");
+        assert!(level_b > 0.0 && level_b < 1.0, "expected a partial level to test continuity against");
+
+        eng.legato_retarget(64); // env_reset defaults to 0.0 (legato)
+
+        assert_eq!(eng.env_a.value, level_a, "legato retarget must not snap env_a's level");
+        assert_eq!(eng.env_b.value, level_b, "legato retarget must not snap env_b's level");
+        assert!(matches!(eng.env_a.phase, AdsrPhase::Attack));
+        assert!(matches!(eng.env_b.phase, AdsrPhase::Attack));
+    }
+
+    /// P14-C5's `env_reset=1` (retrig): a stack-pop now snaps all three
+    /// envelopes to zero, unlike the legato default — while still never
+    /// touching operator phase (traced in the test above's companion
+    /// assertions, reconfirmed here for the retrig path specifically).
+    #[test]
+    fn env_reset_retrig_snaps_envelopes_to_zero_but_not_operator_phase() {
+        let mut eng = new_engine();
+        eng.bank.set(fp("env_reset"), 1.0);
+        run(&mut eng, &[make_note_on(60)]);
+        run(&mut eng, &[]); // let everything settle away from zero
+
+        let (c, a, b1, b2) = (eng.op_c.phase, eng.op_a.phase, eng.op_b1.phase, eng.op_b2.phase);
+        assert!(eng.env_amp.value > 0.0, "expected env_amp to have risen off zero by now");
+
+        eng.legato_retarget(64);
+
+        assert_eq!(eng.env_a.value, 0.0, "env_reset=1 must snap env_a to zero");
+        assert_eq!(eng.env_b.value, 0.0, "env_reset=1 must snap env_b to zero");
+        assert_eq!(eng.env_amp.value, 0.0, "env_reset=1 must snap env_amp to zero");
+        assert_eq!(eng.op_c.phase, c, "operator phase must still be untouched under env_reset=1");
+        assert_eq!(eng.op_a.phase, a, "operator phase must still be untouched under env_reset=1");
+        assert_eq!(eng.op_b1.phase, b1, "operator phase must still be untouched under env_reset=1");
+        assert_eq!(eng.op_b2.phase, b2, "operator phase must still be untouched under env_reset=1");
     }
 
     /// The other half of the same guard: a genuine `NoteOn` (`retrigger`)
@@ -1562,6 +1799,142 @@ mod tests {
             run(&mut eng, &[]);
         }
         assert!(!eng.is_sounding(), "must go silent once the last held note is released and Release completes");
+    }
+
+    // ── P14-C5: expression page + portamento ────────────────────────────
+
+    /// `porta=0` (the default) is the hard regression requirement this
+    /// commit's spec names: a stack-pop must never create a glide, and the
+    /// sounding frequency must retune to the new note exactly, not
+    /// partway. Measured via a single-sample `process_algo` call (calling
+    /// the private method directly, same module) rather than a full
+    /// 512-sample block: at note 60's frequency (~261.6 Hz), a block spans
+    /// several full phase wraps, which a two-point before/after phase
+    /// comparison can't safely unwrap — one sample's increment is well
+    /// under a full cycle, so no unwrapping ambiguity exists.
+    #[test]
+    fn porta_zero_creates_no_glide_and_retunes_instantly() {
+        let mut eng = new_engine();
+        run(&mut eng, &[make_note_on(60)]);
+        run(&mut eng, &[make_note_on(64)]); // overlapping press, hard reset
+
+        run(&mut eng, &[make_note_off(64)]); // reveals 60; porta=0 by default
+        assert_eq!(eng.current_note, 60);
+        assert!(eng.glide.is_none(), "porta=0 must never create a glide");
+
+        let phase_before = eng.op_c.phase;
+        eng.process_algo(0, 1);
+        let advanced = eng.op_c.phase - phase_before;
+        let expected_per_sample = note_to_hz(60, 0.0) / 44100.0;
+        assert!(
+            (advanced - expected_per_sample).abs() < 1e-6,
+            "expected an instant retune to note 60's frequency, got increment {advanced}, \
+             expected {expected_per_sample}"
+        );
+    }
+
+    /// A second stack-pop arriving before the first glide finishes (a
+    /// 3-note chord released top-down faster than `porta` — Pad's own D5
+    /// recipe is exactly this: "slow attack, porta on", played as held
+    /// chords with staggered releases) must restart from the *live*
+    /// interpolated pitch, not from the first glide's nominal target — found
+    /// in C5 review: `legato_retarget` originally read
+    /// `note_to_hz(self.current_note, ...)` unconditionally, which is only
+    /// correct when no glide is already in flight; recomputing the nominal
+    /// target while a glide is live would itself be the audible pitch-snap
+    /// this whole mechanism exists to avoid.
+    #[test]
+    fn overlapping_glide_restarts_from_the_live_interpolated_pitch_not_the_nominal_target() {
+        let mut eng = new_engine();
+        eng.bank.set(fp("porta"), 0.5); // long enough to reliably catch mid-flight
+        run(&mut eng, &[make_note_on(67)]);
+        run(&mut eng, &[make_note_on(64)]); // overlapping presses build the stack: 67, 64
+        run(&mut eng, &[make_note_on(60)]); // ... then 60 on top
+
+        run(&mut eng, &[make_note_off(60)]); // reveals 64, starts a glide 60 -> 64
+        for _ in 0..8 {
+            run(&mut eng, &[]); // let it run partway, well short of porta=0.5s
+        }
+        let g = eng.glide.expect("glide toward 64 should still be in flight");
+        let t = (g.elapsed_secs / g.total_secs).min(1.0);
+        assert!(t > 0.05 && t < 0.95, "expected to catch the glide mid-flight, t={t}");
+        let live_hz = eng.current_sounding_hz();
+        assert!(
+            (live_hz - note_to_hz(60, 0.0)).abs() > 0.5 && (live_hz - note_to_hz(64, 0.0)).abs() > 0.5,
+            "expected to be genuinely between 60 and 64's frequencies, got {live_hz}"
+        );
+
+        run(&mut eng, &[make_note_off(64)]); // reveals 67 — must restart from `live_hz`, not note_to_hz(64)
+
+        let new_glide = eng.glide.expect("second stack-pop should start a new glide toward 67");
+        assert!(
+            (new_glide.from_hz - live_hz).abs() < 1.0,
+            "the new glide must start from the live sounding pitch ({live_hz}), not a nominal one, got {}",
+            new_glide.from_hz
+        );
+    }
+
+    /// Nonzero `porta`: the sounding frequency must glide from the
+    /// outgoing note toward the new one, completing only once `porta`
+    /// seconds have actually elapsed — not immediately, and not much
+    /// later either.
+    #[test]
+    fn nonzero_porta_glides_to_target_within_porta_seconds() {
+        let mut eng = new_engine();
+        eng.bank.set(fp("porta"), 0.1); // 100ms glide
+        run(&mut eng, &[make_note_on(60)]);
+        run(&mut eng, &[make_note_on(72)]); // fresh NoteOn — hard reset, never glides
+
+        run(&mut eng, &[make_note_off(72)]); // reveals 60, starts a glide toward it
+        assert_eq!(eng.current_note, 60);
+        let glide = eng.glide.expect("porta>0 stack-pop must start a glide");
+        assert!(
+            (glide.from_hz - note_to_hz(72, 0.0)).abs() < 1.0,
+            "glide must start from the outgoing note's (72's) frequency, got {}",
+            glide.from_hz
+        );
+
+        // ~11.6ms/block at 44100Hz/512 samples — 0.1s is ~8.6 blocks away;
+        // one more block is nowhere near enough to have finished gliding.
+        run(&mut eng, &[]);
+        assert!(eng.glide.is_some(), "glide must still be in flight well before porta has elapsed");
+
+        // 15 blocks ≈ 174ms, comfortably past 0.1s + a block's margin.
+        for _ in 0..15 {
+            run(&mut eng, &[]);
+        }
+        assert!(eng.glide.is_none(), "glide must have completed within porta seconds (+ margin)");
+    }
+
+    /// `keytrack`/`vel_mod` at both range extremes must not destabilize
+    /// output — same non-finite/non-panic bar every other continuous P14
+    /// param has been held to (`harm`/`ratio_*` in C2/C3). A high note
+    /// (96) stresses `keytrack`'s note-distance shift the hardest.
+    #[test]
+    fn keytrack_and_vel_mod_extremes_are_reachable() {
+        for &(param, val) in &[("keytrack", 0.0), ("keytrack", 1.0), ("vel_mod", 0.0), ("vel_mod", 1.0)] {
+            let mut eng = new_engine();
+            eng.bank.set(fp(param), val);
+            let out = run(&mut eng, &[make_note_on(96)]);
+            assert!(out.iter().all(|s| s.is_finite()), "{param}={val} produced a non-finite sample");
+        }
+    }
+
+    /// `keytrack=1`'s note-distance shift is only designed around a ±4-octave
+    /// range (§0's `keytrack` formula) — the true MIDI extremes (0 and 127)
+    /// sit well outside that, which is exactly where an unclamped shift
+    /// would push `harm` out of `harmonic_sine`'s caller-guaranteed
+    /// `0.0..=1.0` domain (a P14-C1 finding). Confirms the final clamp holds
+    /// at the actual extremes, not just the design-assumption range.
+    #[test]
+    fn keytrack_extreme_shift_stays_within_harm_domain_at_true_midi_extremes() {
+        for note in [0u8, 127u8] {
+            let mut eng = new_engine();
+            eng.bank.set(fp("keytrack"), 1.0);
+            eng.bank.set(fp("harm"), 1.0); // pre-shift ceiling — the case most likely to overflow
+            let out = run(&mut eng, &[make_note_on(note)]);
+            assert!(out.iter().all(|s| s.is_finite()), "note {note} produced a non-finite sample");
+        }
     }
 
     #[test]
