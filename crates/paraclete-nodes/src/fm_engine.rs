@@ -112,6 +112,11 @@ pub struct FmEngine {
     /// MM-C9: one LFO per hosting node (ADR-042 decision 1).
     lfo: LfoHost,
 
+    /// Cached `/node/{id}/state/lfo_phase` path (BUG-007 residual, #188): no
+    /// `format!` on the audio thread after the first cycle — same technique
+    /// `FmVoice::lfo_phase_path` uses.
+    lfo_phase_path: std::sync::OnceLock<String>,
+
     render_l: Vec<f32>,
     render_r: Vec<f32>,
 
@@ -233,6 +238,7 @@ impl FmEngine {
             locks_pending: false,
             switch_fade: None,
             lfo:            LfoHost::new(),
+            lfo_phase_path: std::sync::OnceLock::new(),
             render_l:   Vec::new(),
             render_r:   Vec::new(),
             pending_initial_params: HashMap::new(),
@@ -950,11 +956,14 @@ impl Node for FmEngine {
             format!("/node/{}/state/env_level", self.node_id),
             StateBusValue::Float(self.amp_env.value as f64),
         ));
-        // ADR-042 decision 7.
-        buf.push((
-            format!("/node/{}/state/lfo_phase", self.node_id),
-            StateBusValue::Float(self.lfo.phase() as f64),
-        ));
+        // ADR-042 decision 7. Path built once and cached (#188, BUG-007
+        // residual) — the residual `String::clone` per cycle is the same
+        // accepted cost `publish_bank_state`'s own `path_cache` pays, not a
+        // fresh `format!`.
+        let path = self
+            .lfo_phase_path
+            .get_or_init(|| format!("/node/{}/state/lfo_phase", self.node_id));
+        buf.push((path.clone(), StateBusValue::Float(self.lfo.phase() as f64)));
     }
 
     fn activate(&mut self, sample_rate: f32, block_size: usize) {
