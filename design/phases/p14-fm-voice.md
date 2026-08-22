@@ -358,6 +358,32 @@ rediscovery.
   hazard recurring in a new engine — test it explicitly, don't assume the
   pattern transfers).
 
+**As landed — a real, deliberate gap against §6 exit criterion 4's literal
+wording, confirmed correct against precedent, carried here rather than
+silently reconciled:** a live `machine` switch does **not** rewrite any
+bank param, matching `FmEngine::apply_machine_switch`'s own established
+behavior exactly — ADR-041 decision 2's "switching away and back loses
+nothing" governs *preserving edited values*, not auto-applying a target
+machine's tuned defaults. Consequence: switching to a macro does not make
+it sound like that macro's D5 recipe (and does not even change `algo` to
+the macro's anchored algorithm) until a performer dials in the values by
+hand or a fixture/patch sets `machine` and the underlying params together
+— which is exactly what P14-C9's reference-patch scenarios do. So exit
+criterion 4 ("tuned, audibly-distinct defaults") is not satisfied by C7
+alone; it is satisfied once C9 lands. Not a bug, not fixed here — recorded
+so C9 isn't mistaken for optional polish on top of an already-complete
+C7.
+
+**Also ruled in C7 review:** `algo`'s `ParamOverlay` is **not** `identity`
+(unlike `machine`) — a first draft marked it identity by analogy to
+`machine`'s "topology, not a setting" reasoning, but that removes p-lock
+and scene-morph capability from `algo` with no ADR or spec text actually
+calling for it, and directly against the phase's own delegated mandate to
+keep the instrument expressive. `AlgoSwitchFade` already declicks whatever
+drives an algo change, p-lock included, so there's no technical reason
+(unlike `machine`, which ADR-041 amendment 4 says cannot declick inside a
+step) to forbid it.
+
 ### P14-C8 — Node registration + fixture
 
 - New node id **28**, single type_tag `"fm_voice"` (defaulting to machine
