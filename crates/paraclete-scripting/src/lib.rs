@@ -441,9 +441,15 @@ fn register_builtins(engine: &mut Engine, state: Rc<RefCell<ScriptState>>) {
     engine.register_fn("reload_profile", |_name: &str| {});
 
     // ── assert helper ─────────────────────────────────────────────────────────
-    engine.register_fn("assert", |condition: bool| {
-        if !condition {
-            panic!("rhai assertion failed");
+    // A failed assertion is a script bug, not a host bug — it must come back
+    // as a catchable rhai error (surfaced via eval_str's Result), not a Rust
+    // panic. Profile scripts are user-authored (§ AGENTS.md profiles/*.rhai);
+    // panicking here would crash the whole app on a bad profile.
+    engine.register_fn("assert", |condition: bool| -> Result<(), Box<EvalAltResult>> {
+        if condition {
+            Ok(())
+        } else {
+            Err("rhai assertion failed".into())
         }
     });
 }
@@ -818,6 +824,16 @@ mod tests {
         "#,
             )
             .expect("script failed");
+    }
+
+    /// A failed `assert()` must come back as a catchable `Err` from
+    /// `eval_str`, not unwind the whole process — a profile script is
+    /// user-authored and a bad one shouldn't crash the app.
+    #[test]
+    fn scripting_engine_failed_assert_returns_err_not_panic() {
+        let (engine, _handle) = make_engine_with_bus();
+        let result = engine.eval_str("assert(1 == 2);");
+        assert!(result.is_err(), "a failing assert() must return Err, got: {result:?}");
     }
 
     #[test]
