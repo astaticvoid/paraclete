@@ -1831,6 +1831,7 @@ impl TheotokosApp {
         if track >= self.model.tracks.len() {
             return;
         }
+        self.model.yank_source_generator = Some(self.model.tracks[track].generator_id);
         let seq_id = self.model.tracks[track].sequencer_id;
         let steps_text = bus
             .read(&format!("/node/{}/state/steps", seq_id))
@@ -1892,14 +1893,19 @@ impl TheotokosApp {
         if self.model.yank_buffer.is_empty() {
             return;
         }
-        let src_track = self.model.active_track; // same-track paste for now
-        let dst_track = src_track;
+        let dst_track = self.model.active_track;
         if dst_track >= self.model.tracks.len() {
             return;
         }
-        let seq_id = self.model.tracks[dst_track].sequencer_id;
-        let src_gen = self.model.tracks[src_track].generator_id;
+        // #138: src_gen is the generator the yank was captured from — may
+        // be a different track than dst_track if the operator switched
+        // tracks between `y` and `Y` (cross-track paste). Falls back to
+        // dst_gen (same-track behavior) if paste is somehow reached with
+        // no recorded yank source (yank_buffer non-empty implies a yank
+        // did happen, so this is defensive, not a real path).
         let dst_gen = self.model.tracks[dst_track].generator_id;
+        let src_gen = self.model.yank_source_generator.unwrap_or(dst_gen);
+        let seq_id = self.model.tracks[dst_track].sequencer_id;
 
         let dst_steps = bus
             .read(&format!("/node/{}/state/steps", seq_id))
@@ -1959,7 +1965,7 @@ impl TheotokosApp {
                 } else {
                     lock.node_id
                 };
-                if nid == dst_gen || src_track == dst_track {
+                if nid == dst_gen || src_gen == dst_gen {
                     self.pending.push(paraclete_node_api::NodeCommand {
                         target_id: seq_id,
                         type_id: CMD_SET_LOCK_TARGET,
@@ -4012,6 +4018,61 @@ mod tests {
             app.pending.iter().all(|c| c.arg0 < 8),
             "no pasted command may target a step past the destination's length; got: {:?}",
             app.pending
+        );
+    }
+
+    /// TK1 C7 7.2/7.6 (#138): cross-track paste — yank on one track, switch
+    /// tracks, paste — remaps locks that targeted the source's generator to
+    /// the destination's generator, and drops locks that targeted anything
+    /// else (chain nodes; "chains differ across tracks, remapping them is
+    /// guesswork" — design/phases/tk1-theotokos.md §7.2). Exercises the fix
+    /// for the bug this test used to be blocked on: `paste_pattern` read
+    /// both src and dst from the *current* `active_track`, so cross-track
+    /// paste was unreachable and the drop-foreign-locks branch was dead.
+    #[test]
+    fn cross_track_paste_remaps_generator_locks_drops_chain_locks() {
+        let bus = test_bus();
+        // Track 0: sequencer 200, generator (voice) 20, chain node 30.
+        // Track 1: sequencer 201, generator (voice) 21, chain node 31.
+        let mut app = test_app(1, vec![200, 201], vec![20, 21], vec!["T1".into(), "T2".into()]);
+        {
+            let mut b = bus.borrow_mut();
+            b.write(
+                "/node/200/state/steps",
+                StateBusValue::Text("1000000000000000".into()),
+            );
+            // Step 0 carries a generator-targeted lock (voice 20) and a
+            // chain-targeted lock (its DistortionNode, 30).
+            b.write(
+                "/node/200/state/locks",
+                StateBusValue::Text("s0:20:1:0.5;s0:30:2:0.8".into()),
+            );
+        }
+        app.handle_keys(&bus, &[func_key('z')]); // FUNC+REC yanks track 0.
+        assert_eq!(app.model.yank_source_generator, Some(20));
+
+        app.model.active_track = 1; // switch to track 1 before pasting.
+        app.pending.clear();
+        app.handle_keys(&bus, &[func_key('c')]); // FUNC+STOP pastes onto track 1.
+
+        let lock_targets: Vec<(u32, i64)> = app
+            .pending
+            .iter()
+            .filter(|c| c.type_id == CMD_SET_LOCK_TARGET)
+            .map(|c| (c.type_id, c.arg0))
+            .collect();
+        assert!(
+            lock_targets.iter().any(|&(_, nid)| nid == 21),
+            "the generator-targeted lock must remap 20 -> 21 (dst generator); got: {lock_targets:?}"
+        );
+        assert!(
+            lock_targets.iter().all(|&(_, nid)| nid != 30),
+            "the chain-targeted lock (node 30) must be dropped on cross-track paste; got: {lock_targets:?}"
+        );
+        assert_eq!(
+            lock_targets.len(),
+            1,
+            "exactly one lock (the remapped generator lock) should survive; got: {lock_targets:?}"
         );
     }
 

@@ -341,6 +341,13 @@ pub struct Model {
     /// `paste_pattern`) is unchanged, only its TK1 `y`/`Y` key trigger was
     /// retired at the TK2 C3 wiring flip.
     pub yank_buffer: Vec<YankedStep>,
+    /// #138: the yanked-from track's `generator_id`, captured at yank time
+    /// (not re-derived from `active_track` at paste time, which is always
+    /// the *destination* track by the time paste runs). Lets
+    /// `paste_pattern` tell same-track paste (verbatim locks) from
+    /// cross-track paste (remap generator-targeted locks, drop the rest)
+    /// even after the operator has switched tracks between `y` and `Y`.
+    pub yank_source_generator: Option<u32>,
     /// TK1 C7, extended TK2 C5 (D8): Instant when each slot/encoder value
     /// last changed (for yellow flash) — slots A/B/C, then encoders 1-8.
     pub slot_flash: [Option<std::time::Instant>; 3],
@@ -468,6 +475,7 @@ impl Model {
             cmdline_status: None,
             fuzzy_index,
             yank_buffer: Vec::new(),
+            yank_source_generator: None,
             slot_flash: [None; 3],
             last_slot_values: [0.0; 3],
             encoder_flash: [None; 8],
