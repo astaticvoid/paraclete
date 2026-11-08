@@ -503,3 +503,48 @@ fn loadtest_topology_churn_under_live_audio() {
     assert_eq!(no_exec, 0, "audio callback found no executor {no_exec}x");
     assert_eq!(overflows, 0, "state bus overflowed {overflows}x");
 }
+
+#[test]
+fn apply_patch_tier2_modular_primitives_add_and_connect() {
+    let mut conf = NodeConfigurator::new(SR, BLOCK);
+    let registry = build_registry();
+    let vca = registry.build("vca").unwrap();
+    let vca_id = conf.add_node_tagged(vca, "vca");
+    let slew = registry.build("slew").unwrap();
+    let slew_id = conf.add_node_tagged(slew, "slew");
+
+    let engine = AudioEngine::new_paused();
+
+    let changes = vec![
+        TopologyChange::AddNode {
+            type_tag: "quantizer".to_string(),
+            initial_params: Default::default(),
+        },
+        TopologyChange::AddNode {
+            type_tag: "sample_hold".to_string(),
+            initial_params: Default::default(),
+        },
+        TopologyChange::AddNode {
+            type_tag: "cv_mixer".to_string(),
+            initial_params: Default::default(),
+        },
+        TopologyChange::AddNode {
+            type_tag: "clock_divider".to_string(),
+            initial_params: Default::default(),
+        },
+        TopologyChange::AddEdge {
+            src: slew_id,
+            src_port: 2,
+            dst: vca_id,
+            dst_port: 2,
+        },
+    ];
+
+    let result = apply_patch(changes, &engine, &mut conf, &registry);
+    assert!(result.is_ok(), "failed to add modular primitives: {:?}", result);
+    let ids = result.unwrap();
+    assert_eq!(ids.len(), 4);
+
+    let edges: Vec<_> = conf.all_edges().collect();
+    assert!(edges.iter().any(|e| e.src_node == slew_id && e.dst_node == vca_id));
+}

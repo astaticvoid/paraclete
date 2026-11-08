@@ -77,6 +77,16 @@ pub struct PerformState {
     pub pending_project_save: Option<Option<String>>,
     /// Pending runtime project load request (`Some(path)`).
     pub pending_project_load: Option<String>,
+    /// [W5] Pending dynamic topology patch operations.
+    pub pending_patches: Vec<paraclete_node_api::app_op::TopologyChangeOp>,
+    /// [W5] Pending request to broadcast full graph topology.
+    pub pending_get_topology: bool,
+}
+
+impl Default for PerformState {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PerformState {
@@ -94,7 +104,26 @@ impl PerformState {
             next_request_id: 0,
             pending_project_save: None,
             pending_project_load: None,
+            pending_patches: Vec::new(),
+            pending_get_topology: false,
         }
+    }
+
+    /// True if dynamic patch operations are pending application.
+    pub fn has_pending_patch(&self) -> bool {
+        !self.pending_patches.is_empty()
+    }
+
+    /// Take all pending dynamic patch operations.
+    pub fn take_pending_patches(&mut self) -> Vec<paraclete_node_api::app_op::TopologyChangeOp> {
+        std::mem::take(&mut self.pending_patches)
+    }
+
+    /// Check and clear the pending get_topology request flag.
+    pub fn take_pending_get_topology(&mut self) -> bool {
+        let val = self.pending_get_topology;
+        self.pending_get_topology = false;
+        val
     }
 
     /// True if a runtime `:save` or `:load` was queued and awaits execution.
@@ -364,6 +393,12 @@ impl PerformState {
             }
             AppOp::LoadProject { path } => {
                 self.pending_project_load = Some(path);
+            }
+            AppOp::Patch { changes } => {
+                self.pending_patches.extend(changes);
+            }
+            AppOp::GetTopology => {
+                self.pending_get_topology = true;
             }
         }
     }

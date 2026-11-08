@@ -61,4 +61,32 @@ pub enum AppOp {
     SaveProject { path: Option<String> },
     /// Load a saved project file at runtime via pause-restore-rebuild-resume.
     LoadProject { path: String },
+    /// [W5] Dynamic graph patching operation from Antiphon / web patch editor.
+    Patch { changes: Vec<TopologyChangeOp> },
+    /// [W5] Request immediate graph topology broadcast.
+    GetTopology,
+}
+
+/// A single topology mutation for dynamic patching via `AppOp::Patch`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum TopologyChangeOp {
+    AddNode {
+        type_tag: String,
+        initial_params: std::collections::HashMap<String, f64>,
+    },
+    RemoveNode {
+        id: u32,
+    },
+    AddEdge {
+        src: u32,
+        src_port: u32,
+        dst: u32,
+        dst_port: u32,
+    },
+    RemoveEdge {
+        src: u32,
+        src_port: u32,
+        dst: u32,
+        dst_port: u32,
+    },
 }

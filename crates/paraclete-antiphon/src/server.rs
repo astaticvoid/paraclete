@@ -208,6 +208,10 @@ pub fn route_frame(msg: ClientMsg, session: &SessionInfo) -> FrameAction {
                 .map(|line| line.clone())
                 .unwrap_or_default(),
         ),
+        ClientMsg::Patch { changes } => FrameAction::AppOp(AppOp::Patch {
+            changes: changes.into_iter().map(Into::into).collect(),
+        }),
+        ClientMsg::GetTopology {} => FrameAction::AppOp(AppOp::GetTopology),
         ref m @ (ClientMsg::SetParam { .. }
         | ClientMsg::BumpParam { .. }
         | ClientMsg::NodeCmd { .. }) => resolve_semantic(m.clone(), session),
@@ -596,6 +600,7 @@ mod tests {
                 type_tag: "filter".into(),
                 name: "Filter".into(),
                 has_view: false,
+                ports: vec![],
                 params: vec![crate::protocol::ParamSummary {
                     id: 7,
                     name: "cutoff".into(),
@@ -748,6 +753,7 @@ mod semantic_tests {
                 type_tag: "test".into(),
                 name: "test".into(),
                 has_view: false,
+                ports: vec![],
                 params: vec![ParamSummary {
                     id: 123,
                     name: "cutoff".into(),

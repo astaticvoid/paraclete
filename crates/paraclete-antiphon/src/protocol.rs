@@ -6,6 +6,8 @@
 //! `Err`, never panics. Variants marked [W1] are parsed at W0 but not acted
 //! on (parse-and-drop), so the W4 protocol freeze cannot foreclose them.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Protocol revision carried in `welcome`. 0 = unstable pre-freeze.
@@ -92,6 +94,12 @@ pub enum ClientMsg {
     /// [P11 C7] kit-list query (not an app-op); the server replies with
     /// `ServerMsg::KitList`, read at query time.
     ListKits {},
+    /// [W5] Live graph patching operations
+    Patch {
+        changes: Vec<TopologyPatchMsg>,
+    },
+    /// [W5] Explicit query for full graph topology
+    GetTopology {},
 }
 
 // ── Server → client ───────────────────────────────────────────────────────────
@@ -125,9 +133,11 @@ pub enum ServerMsg {
     Context {
         slots: Vec<ContextSlotLike>,
     },
-    /// [W1] same shape as `welcome.nodes`, sent after apply_patch.
+    /// [W1, W5] graph topology snapshot, sent on connect, on query, and after apply_patch.
     Topology {
         nodes: Vec<NodeSummary>,
+        #[serde(skip_serializing_if = "Vec::is_empty", default)]
+        edges: Vec<EdgeSummary>,
     },
     /// [W2] composite page layout for a track, in response to `get_view_meta`.
     ViewMeta {
@@ -171,9 +181,72 @@ pub struct NodeSummary {
     pub type_tag: String,
     pub name: String,
     pub params: Vec<ParamSummary>,
+    #[serde(skip_serializing_if = "Vec::is_empty", default)]
+    pub ports: Vec<PortSummary>,
     /// [W2] whether this node has a view (non-None `view` on the cap-doc).
     #[serde(default)]
     pub has_view: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct PortSummary {
+    pub id: u32,
+    pub name: String,
+    pub direction: String,
+    pub port_type: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EdgeSummary {
+    pub src_node: u32,
+    pub src_port: u32,
+    pub dst_node: u32,
+    pub dst_port: u32,
+}
+
+/// [W5] Dynamic topology patch operation sent from a web patch editor.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum TopologyPatchMsg {
+    AddNode {
+        type_tag: String,
+        #[serde(default)]
+        initial_params: HashMap<String, f64>,
+    },
+    RemoveNode {
+        id: u32,
+    },
+    AddEdge {
+        src: u32,
+        src_port: u32,
+        dst: u32,
+        dst_port: u32,
+    },
+    RemoveEdge {
+        src: u32,
+        src_port: u32,
+        dst: u32,
+        dst_port: u32,
+    },
+}
+
+impl From<TopologyPatchMsg> for paraclete_node_api::app_op::TopologyChangeOp {
+    fn from(msg: TopologyPatchMsg) -> Self {
+        match msg {
+            TopologyPatchMsg::AddNode { type_tag, initial_params } => {
+                paraclete_node_api::app_op::TopologyChangeOp::AddNode { type_tag, initial_params }
+            }
+            TopologyPatchMsg::RemoveNode { id } => {
+                paraclete_node_api::app_op::TopologyChangeOp::RemoveNode { id }
+            }
+            TopologyPatchMsg::AddEdge { src, src_port, dst, dst_port } => {
+                paraclete_node_api::app_op::TopologyChangeOp::AddEdge { src, src_port, dst, dst_port }
+            }
+            TopologyPatchMsg::RemoveEdge { src, src_port, dst, dst_port } => {
+                paraclete_node_api::app_op::TopologyChangeOp::RemoveEdge { src, src_port, dst, dst_port }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -466,6 +539,13 @@ mod tests {
                 kit_id: None,
             },
             ClientMsg::ListKits {},
+            ClientMsg::Patch {
+                changes: vec![TopologyPatchMsg::AddNode {
+                    type_tag: "vca".into(),
+                    initial_params: HashMap::new(),
+                }],
+            },
+            ClientMsg::GetTopology {},
         ];
         for m in &msgs {
             round_trip_client(m);
@@ -531,6 +611,7 @@ mod tests {
                     type_tag: "analog_engine:kick".into(),
                     name: "AnalogEngine".into(),
                     has_view: false,
+                    ports: vec![],
                     params: vec![ParamSummary {
                         id: 123,
                         name: "cutoff".into(),
@@ -567,7 +648,10 @@ mod tests {
                     param: "cutoff".into(),
                 })],
             },
-            ServerMsg::Topology { nodes: vec![] },
+            ServerMsg::Topology {
+                nodes: vec![],
+                edges: vec![],
+            },
             ServerMsg::ViewMeta {
                 track_id: 0,
                 nonce: Some("req-1".into()),

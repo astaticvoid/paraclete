@@ -10,7 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use paraclete_antiphon::protocol::{NodeSummary, ParamSummary, TransportSummary};
+use paraclete_antiphon::protocol::{
+    EdgeSummary, NodeSummary, ParamSummary, PortSummary, TransportSummary,
+};
 use paraclete_antiphon::view::ViewRegistry;
 use paraclete_antiphon::{AntiphonConfig, AntiphonHandle, AntiphonServer};
 use paraclete_app::builder::{build_from_instrument, load_instrument_definition, InstrumentIds};
@@ -282,6 +284,8 @@ fn main() {
             eprintln!("[paraclete] project saved: {}", path.display());
         }
     }
+
+    let registry = paraclete_app::build_registry();
 
     // ── 6.5 Antiphon interface server (Theoria surfaces, ADR-031) ────────────
     // After project load so the welcome snapshot reflects restored topology;
@@ -703,6 +707,47 @@ fn main() {
             audio.resume_with_executor(Box::new(new_exec));
         }
 
+        if perform_state.has_pending_patch() {
+            let raw_changes = perform_state.take_pending_patches();
+            let changes: Vec<paraclete_app::TopologyChange> = raw_changes
+                .into_iter()
+                .map(|op| match op {
+                    paraclete_node_api::app_op::TopologyChangeOp::AddNode { type_tag, initial_params } => {
+                        paraclete_app::TopologyChange::AddNode { type_tag, initial_params }
+                    }
+                    paraclete_node_api::app_op::TopologyChangeOp::RemoveNode { id } => {
+                        paraclete_app::TopologyChange::RemoveNode { id }
+                    }
+                    paraclete_node_api::app_op::TopologyChangeOp::AddEdge { src, src_port, dst, dst_port } => {
+                        paraclete_app::TopologyChange::AddEdge { src, src_port, dst, dst_port }
+                    }
+                    paraclete_node_api::app_op::TopologyChangeOp::RemoveEdge { src, src_port, dst, dst_port } => {
+                        paraclete_app::TopologyChange::RemoveEdge { src, src_port, dst, dst_port }
+                    }
+                })
+                .collect();
+
+            match paraclete_app::apply_patch(changes, &audio, &mut conf, &registry) {
+                Ok(new_ids) => {
+                    log::info!("[patch] applied changes; new node ids: {:?}", new_ids);
+                    if let Some(h) = antiphon.as_ref() {
+                        let summaries = collect_node_summaries(&conf, &ids);
+                        let edges = collect_all_edge_summaries(&conf);
+                        h.publish_topology(summaries, edges);
+                    }
+                }
+                Err(e) => {
+                    log::warn!("[patch] failed: {e}");
+                }
+            }
+        } else if perform_state.take_pending_get_topology() {
+            if let Some(h) = antiphon.as_ref() {
+                let summaries = collect_node_summaries(&conf, &ids);
+                let edges = collect_all_edge_summaries(&conf);
+                h.publish_topology(summaries, edges);
+            }
+        }
+
         let mut led_output = scripting.take_pending_output();
         // Mirror LED output addressed to the Launchpad/emulator onto the
         // Theoria surface so both show the same state (w0-interfaces §wiring).
@@ -1023,7 +1068,43 @@ fn collect_node_summaries(conf: &NodeConfigurator, ids: &InstrumentIds) -> Vec<N
                         default: p.default,
                     })
                     .collect(),
+                ports: doc
+                    .ports
+                    .iter()
+                    .map(|port| PortSummary {
+                        id: port.id,
+                        name: port.name.as_str().to_string(),
+                        direction: match port.direction {
+                            paraclete_node_api::PortDirection::Input => "input".into(),
+                            paraclete_node_api::PortDirection::Output => "output".into(),
+                            _ => "unknown".into(),
+                        },
+                        port_type: match port.port_type {
+                            paraclete_node_api::PortType::Audio => "audio".into(),
+                            paraclete_node_api::PortType::Mono => "mono".into(),
+                            paraclete_node_api::PortType::Cv => "cv".into(),
+                            paraclete_node_api::PortType::Phase => "phase".into(),
+                            paraclete_node_api::PortType::Logic => "logic".into(),
+                            paraclete_node_api::PortType::Pitch => "pitch".into(),
+                            paraclete_node_api::PortType::Modulation => "modulation".into(),
+                            paraclete_node_api::PortType::Event => "event".into(),
+                            paraclete_node_api::PortType::Clock => "clock".into(),
+                            _ => "unknown".into(),
+                        },
+                    })
+                    .collect(),
             })
+        })
+        .collect()
+}
+
+fn collect_all_edge_summaries(conf: &NodeConfigurator) -> Vec<EdgeSummary> {
+    conf.all_edges()
+        .map(|e| EdgeSummary {
+            src_node: e.src_node,
+            src_port: e.src_port,
+            dst_node: e.dst_node,
+            dst_port: e.dst_port,
         })
         .collect()
 }

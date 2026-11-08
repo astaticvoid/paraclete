@@ -27,8 +27,8 @@ use kerygma::{ClientTable, Kerygma, MAX_CLIENTS};
 use paraclete_node_api::app_op::AppOp;
 use paraclete_node_api::{NodeCommand, StateBusHandle, StateBusValue};
 use protocol::{
-    ContextPathSlot, ContextPathValue, ContextSlot, ContextSlotLike, NodeSummary, ServerMsg,
-    StateUpdate, TransportSummary,
+    ContextPathSlot, ContextPathValue, ContextSlot, ContextSlotLike, EdgeSummary, NodeSummary,
+    ServerMsg, StateUpdate, TransportSummary,
 };
 use server::SessionInfo;
 use surface::TheoriaSurfaceNode;
@@ -303,12 +303,10 @@ impl AntiphonHandle {
         }
     }
 
-    /// Broadcast a refreshed topology snapshot (same shape as `welcome.nodes`)
-    /// after `apply_patch()` changes the graph. No live runtime call site
-    /// exists yet at W1 (dynamic topology is exercised in tests only); this
-    /// is the hook for when `apply_patch` is wired to a trigger.
-    pub fn publish_topology(&self, nodes: Vec<NodeSummary>) {
-        let Ok(frame) = serde_json::to_string(&ServerMsg::Topology { nodes }) else {
+    /// Broadcast a refreshed topology snapshot with nodes and edges
+    /// after `apply_patch()` changes the graph or when requested.
+    pub fn publish_topology(&self, nodes: Vec<NodeSummary>, edges: Vec<EdgeSummary>) {
+        let Ok(frame) = serde_json::to_string(&ServerMsg::Topology { nodes, edges }) else {
             return;
         };
         if let Ok(table) = self.clients.lock() {
