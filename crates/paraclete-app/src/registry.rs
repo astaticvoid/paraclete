@@ -57,9 +57,10 @@ impl Default for NodeRegistry {
 pub fn build_registry() -> NodeRegistry {
     use paraclete_graph_nodes::InnerGraphNode;
     use paraclete_nodes::{
-        AnalogEngine, AudioOutputNode, DelayNode, DistortionNode, EnvelopeNode, FilterNode,
-        FmEngine, FmVoice, InternalClock, LadderFilterNode, LfoNode, LoopBreakNode, MatrixNode,
-        MixNode, OscillatorNode, RecorderNode, ReverbNode, Sampler, Sequencer, SplitNode,
+        AnalogEngine, AudioOutputNode, ClockDividerNode, CvMixerNode, DelayNode, DistortionNode,
+        EnvelopeNode, FilterNode, FmEngine, FmVoice, InternalClock, LadderFilterNode, LfoNode,
+        LoopBreakNode, MatrixNode, MixNode, OscillatorNode, QuantizerNode, RecorderNode, ReverbNode,
+        SampleHoldNode, Sampler, Sequencer, SlewNode, SplitNode, VcaNode,
     };
 
     let mut r = NodeRegistry::new();
@@ -81,6 +82,12 @@ pub fn build_registry() -> NodeRegistry {
     r.register("split", || Box::new(SplitNode::new()));
     r.register("audio_output", || Box::new(AudioOutputNode::new()));
     r.register("recorder", || Box::new(RecorderNode::new()));
+    r.register("vca", || Box::new(VcaNode::new()));
+    r.register("cv_mixer", || Box::new(CvMixerNode::new()));
+    r.register("slew", || Box::new(SlewNode::new()));
+    r.register("sample_hold", || Box::new(SampleHoldNode::new()));
+    r.register("quantizer", || Box::new(QuantizerNode::new()));
+    r.register("clock_divider", || Box::new(ClockDividerNode::new()));
     r.register("analog_engine:kick", || Box::new(AnalogEngine::kick()));
     r.register("analog_engine:snare", || Box::new(AnalogEngine::snare()));
     r.register("analog_engine:hihat", || Box::new(AnalogEngine::hihat()));

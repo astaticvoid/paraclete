@@ -241,6 +241,42 @@ impl<'a> ProcessOutput<'a> {
         None
     }
 
+    /// Try to write a Modulation port output if connected/registered.
+    /// Returns `None` if `port_id` is not present in `self.signal_outputs`.
+    pub fn try_mod_output_mut(&mut self, port_id: u32) -> Option<&mut [f32]> {
+        for slot in self.signal_outputs.iter_mut() {
+            if slot.port_id == port_id && slot.kind == SignalPortKind::Modulation {
+                // SAFETY: ptr is valid for the duration of this process() call.
+                return Some(unsafe { std::slice::from_raw_parts_mut(slot.ptr, slot.frames) });
+            }
+        }
+        None
+    }
+
+    /// Try to write a Logic port output if connected/registered.
+    /// Returns `None` if `port_id` is not present in `self.signal_outputs`.
+    pub fn try_logic_output_mut(&mut self, port_id: u32) -> Option<&mut [f32]> {
+        for slot in self.signal_outputs.iter_mut() {
+            if slot.port_id == port_id && slot.kind == SignalPortKind::Logic {
+                // SAFETY: ptr is valid for the duration of this process() call.
+                return Some(unsafe { std::slice::from_raw_parts_mut(slot.ptr, slot.frames) });
+            }
+        }
+        None
+    }
+
+    /// Try to write a Pitch port output if connected/registered.
+    /// Returns `None` if `port_id` is not present in `self.signal_outputs`.
+    pub fn try_pitch_output_mut(&mut self, port_id: u32) -> Option<&mut [f32]> {
+        for slot in self.signal_outputs.iter_mut() {
+            if slot.port_id == port_id && slot.kind == SignalPortKind::Pitch {
+                // SAFETY: ptr is valid for the duration of this process() call.
+                return Some(unsafe { std::slice::from_raw_parts_mut(slot.ptr, slot.frames) });
+            }
+        }
+        None
+    }
+
     /// Emit a debug event from the current node.
     ///
     /// `node_id` is filled by the executor after `process()` returns.

@@ -3,6 +3,8 @@
 
 pub mod analog_engine;
 pub mod audio_input;
+pub mod clock_divider;
+pub mod cv_mixer;
 pub mod delay;
 pub mod distortion;
 pub mod engine_dsp;
@@ -20,14 +22,20 @@ pub mod matrix;
 pub mod mix;
 pub mod oscillator;
 pub mod pattern;
+pub mod quantizer;
 pub mod recorder;
 pub mod reverb;
 pub mod sampler;
+pub mod sample_hold;
 pub mod sequencer;
+pub mod slew;
 pub mod split;
+pub mod vca;
 
 pub use analog_engine::{AnalogEngine, AnalogMachine};
 pub use audio_input::AudioInputNode;
+pub use clock_divider::ClockDividerNode;
+pub use cv_mixer::CvMixerNode;
 pub use delay::DelayNode;
 pub use distortion::DistortionNode;
 pub use envelope::EnvelopeNode;
@@ -44,13 +52,17 @@ pub use matrix::MatrixNode;
 pub use mix::MixNode;
 pub use oscillator::{OscillatorNode, SineOscillator, midi_note_to_hz};
 pub use pattern::{apply_preset, TrackPreset, TRACKS};
+pub use quantizer::QuantizerNode;
 pub use recorder::{
     RecorderNode, CMD_RECORDER_ARM_THRESHOLD, CMD_RECORDER_CAPTURE, CMD_RECORDER_DISARM,
 };
 pub use reverb::ReverbNode;
 pub use sampler::Sampler;
+pub use sample_hold::SampleHoldNode;
 pub use sequencer::{Pattern, Sequencer, Step, StepParamLock, PAGE_SIZE};
+pub use slew::SlewNode;
 pub use split::SplitNode;
+pub use vca::VcaNode;
 
 use paraclete_node_api::{
     CapabilityDocument, ConnectionAgreement, Node, PortDescriptor, PortDirection,
