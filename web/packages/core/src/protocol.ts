@@ -131,6 +131,23 @@ export interface ListKitsMsg {
   t: "list_kits";
 }
 
+export type TopologyPatchOp =
+  | { op: "add_node"; type_tag: string; initial_params?: Record<string, number> }
+  | { op: "remove_node"; id: number }
+  | { op: "add_edge"; src: number; src_port: number; dst: number; dst_port: number }
+  | { op: "remove_edge"; src: number; src_port: number; dst: number; dst_port: number };
+
+/** [W5] Live graph patching operations. */
+export interface PatchMsg {
+  t: "patch";
+  changes: TopologyPatchOp[];
+}
+
+/** [W5] Query full graph topology. */
+export interface GetTopologyMsg {
+  t: "get_topology";
+}
+
 export type ClientMsg =
   | HelloMsg
   | PadDownMsg
@@ -151,9 +168,25 @@ export type ClientMsg =
   | TempReloadMsg
   | SetPerformModeMsg
   | BindKitMsg
-  | ListKitsMsg;
+  | ListKitsMsg
+  | PatchMsg
+  | GetTopologyMsg;
 
 // ── Server → client ─────────────────────────────────────────────────────────
+
+export interface PortSummary {
+  id: number;
+  name: string;
+  direction: "input" | "output" | string;
+  port_type: string;
+}
+
+export interface EdgeSummary {
+  src_node: number;
+  src_port: number;
+  dst_node: number;
+  dst_port: number;
+}
 
 export interface ParamSummary {
   id: number;
@@ -168,6 +201,7 @@ export interface NodeSummary {
   type_tag: string;
   name: string;
   params: ParamSummary[];
+  ports?: PortSummary[];
   /** [W2] whether this node has a view (non-None view on the cap-doc). */
   has_view?: boolean;
 }
@@ -248,10 +282,11 @@ export interface ContextMsg {
   slots: ContextSlotLike[];
 }
 
-/** [W1] same shape as `welcome.nodes`, sent after a topology patch. */
+/** [W1, W5] topology snapshot with nodes, ports, and edges. */
 export interface TopologyMsg {
   t: "topology";
   nodes: NodeSummary[];
+  edges?: EdgeSummary[];
 }
 
 export type ServerMsg =
