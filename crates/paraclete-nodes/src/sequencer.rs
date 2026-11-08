@@ -146,6 +146,8 @@ pub struct Step {
     /// `cv_port_index` is 0-relative (cv_out_0 = index 0).
     /// Out-of-range indices are silently ignored at process time.
     pub cv_locks: Vec<(u16, f32)>,
+    /// P12: Ratchet / retrig count (1..=8 sub-triggers within step duration).
+    pub ratchet: u8,
 }
 
 #[derive(Clone, Debug)]
@@ -171,6 +173,7 @@ impl Step {
             condition: TrigCondition::default(),
             timing: StepTiming::default(),
             cv_locks: Vec::with_capacity(Self::CV_LOCK_CAP),
+            ratchet: 1,
         }
     }
 }
@@ -254,6 +257,7 @@ impl Pattern {
             d.length = step.length;
             d.timing = step.timing;
             d.condition = step.condition.clone();
+            d.ratchet = step.ratchet;
             d.param_locks.clear();
             d.param_locks.extend_from_slice(&step.param_locks);
             d.cv_locks.clear();
@@ -337,6 +341,10 @@ pub struct Sequencer {
     playing: bool,
     trig_count: u64,
     last_fired_step: usize,
+
+    current_ratchet: u8,
+    ratchet_fired: u8,
+    ratchet_interval_ticks: u32,
 
     bank: ParameterBank,
 
@@ -491,6 +499,12 @@ impl Sequencer {
     /// P11 C6: live-erase arm (canonical `u8` in `paraclete_node_api::command`).
     pub(crate) const CMD_LIVE_ERASE: u32 = paraclete_node_api::command::CMD_LIVE_ERASE as u32;
 
+    /// P12: per-step ratchet/retrig count (1..=8 sub-triggers).
+    pub const CMD_SET_STEP_RATCHET: u32 =
+        paraclete_node_api::command::CMD_SET_STEP_RATCHET as u32;
+    /// P12: Euclidean pattern generation into active pattern.
+    pub const CMD_EUCLIDEAN: u32 = paraclete_node_api::command::CMD_EUCLIDEAN as u32;
+
     /// Runtime step capacity per pattern (P10: 8 pages × 8 steps). The
     /// serialized format stores counts as plain integers and does not depend
     /// on this value (forward-extensibility amendment).
@@ -607,6 +621,9 @@ impl Sequencer {
             playing: false,
             trig_count: 0,
             last_fired_step: 0,
+            current_ratchet: 1,
+            ratchet_fired: 0,
+            ratchet_interval_ticks: 0,
             bank: ParameterBank::empty(),
             group: 0,
             channel: 0,
@@ -721,6 +738,51 @@ impl Sequencer {
             steps[index].velocity = velocity;
             steps[index].active = active;
         }
+    }
+
+    /// Return the ratchet (sub-trigger) count for step `index` (default 1).
+    pub fn step_ratchet(&self, index: usize) -> u8 {
+        let pat = self.active_index();
+        self.patterns[pat]
+            .steps
+            .get(index)
+            .map(|s| s.ratchet)
+            .unwrap_or(1)
+    }
+
+    /// Set the ratchet (sub-trigger) count for step `index` (clamped 1..=8).
+    pub fn set_step_ratchet(&mut self, index: usize, ratchet: u8) {
+        let pat = self.active_index();
+        if let Some(step) = self.patterns[pat].steps.get_mut(index) {
+            step.ratchet = ratchet.clamp(1, 8);
+        }
+    }
+
+    /// P12: Generate an exact Bjorklund Euclidean pattern of `pulses` distributed across
+    /// `steps` with `rotation` into the active pattern.
+    pub fn generate_euclidean(&mut self, pulses: usize, steps: usize, rotation: i32) {
+        let pat = self.active_index();
+        let n = steps.clamp(1, Self::STEP_CAPACITY);
+        let k = pulses.min(n);
+        let note = self.default_note;
+        for s in 0..n {
+            let i = ((s as i32 - rotation).rem_euclid(n as i32)) as usize;
+            let active = if k > 0 { (i * k) % n < k } else { false };
+            let step = &mut self.patterns[pat].steps[s];
+            step.active = active;
+            if active {
+                step.note = note;
+                step.velocity = 32768;
+            }
+            step.timing.micro_offset = 0;
+        }
+        for s in n..Self::STEP_CAPACITY {
+            self.patterns[pat].steps[s].active = false;
+        }
+        self.patterns[pat].length = n;
+        let pages = n.div_ceil(PAGE_SIZE).max(1) as u8;
+        let end = self.patterns[pat].page_loop.1.min(pages - 1);
+        self.patterns[pat].page_loop = (self.patterns[pat].page_loop.0.min(end), end);
     }
 
     /// ASCII bitfield over the active pattern's played steps: '1' = active,
@@ -1081,6 +1143,27 @@ impl Sequencer {
                     // 0 = off, 1 = on.
                     self.live_erase_armed = cmd.arg0 != 0;
                 }
+                Self::CMD_SET_STEP_RATCHET => {
+                    let idx = cmd.arg0 as usize;
+                    let steps = &mut self.patterns[pat].steps;
+                    if idx < steps.len() && idx < Self::STEP_CAPACITY {
+                        steps[idx].ratchet = (cmd.arg1.round() as u8).clamp(1, 8);
+                    }
+                }
+                Self::CMD_EUCLIDEAN => {
+                    let (pulses, steps, rot) = if cmd.arg0 > 64 {
+                        let p = ((cmd.arg0 >> 16) & 0xFFFF) as usize;
+                        let s = (cmd.arg0 & 0xFFFF) as usize;
+                        let r = cmd.arg1.round() as i32;
+                        (p, s, r)
+                    } else {
+                        let p = cmd.arg0.max(0) as usize;
+                        let s = (cmd.arg1.abs().round() as usize).max(1);
+                        let r = 0;
+                        (p, s, r)
+                    };
+                    self.generate_euclidean(pulses, steps, rot);
+                }
                 _ => {}
             }
         }
@@ -1283,6 +1366,37 @@ impl Sequencer {
             }
         }
 
+        // P12: Ratchet sub-triggers during step playback
+        if self.playing && self.current_ratchet > 1 && self.ratchet_fired < self.current_ratchet {
+            let next_sub_tick =
+                (self.ratchet_fired as u32) * self.step_period / (self.current_ratchet as u32);
+            if self.step_tick >= next_sub_tick {
+                self.ratchet_fired += 1;
+                if !self.is_muted() {
+                    if self.gate_open {
+                        self.emit_note_off(sample_offset, output);
+                    }
+                    let pat = self.active_index();
+                    let step = &self.patterns[pat].steps[self.current_step];
+                    self.active_note = step.note;
+                    self.gate_open = true;
+                    let sub_gate =
+                        (step.length * self.ratchet_interval_ticks as f32).max(1.0) as u32;
+                    self.gate_ticks_left =
+                        sub_gate.min(self.ratchet_interval_ticks.saturating_sub(1)).max(1);
+                    output.events_out.push(TimedEvent::new(
+                        sample_offset,
+                        Event::Midi2(build_note_on(
+                            self.group,
+                            self.channel,
+                            step.note,
+                            step.velocity,
+                        )),
+                    ));
+                }
+            }
+        }
+
         // BUG-004 (P10 C3): a negative micro_offset pulls a step EARLIER —
         // it fires during the previous step's window, `|offset|` 1/96-beat
         // units (10 ticks each) before its grid boundary. Tick-exact: the
@@ -1332,6 +1446,8 @@ impl Sequencer {
 
         if self.step_tick >= self.step_period {
             self.step_tick = 0;
+            self.current_ratchet = 1;
+            self.ratchet_fired = 0;
             self.step_period = self.next_step_period();
             let (next, wrapped) = self.advance_step(self.current_step);
             self.current_step = next;
@@ -1548,7 +1664,19 @@ impl Sequencer {
         let step = &self.patterns[pat].steps[step_idx];
         self.active_note = step.note;
         self.gate_open = true;
-        self.gate_ticks_left = (step.length * self.step_period as f32).max(1.0) as u32;
+
+        let r = step.ratchet.clamp(1, 8);
+        self.current_ratchet = r;
+        self.ratchet_fired = 1;
+        if r > 1 {
+            self.ratchet_interval_ticks = (self.step_period as f32 / r as f32).max(1.0) as u32;
+            let sub_gate = (step.length * self.ratchet_interval_ticks as f32).max(1.0) as u32;
+            self.gate_ticks_left = sub_gate.min(self.ratchet_interval_ticks.saturating_sub(1)).max(1);
+        } else {
+            self.ratchet_interval_ticks = self.step_period;
+            self.gate_ticks_left = (step.length * self.step_period as f32).max(1.0) as u32;
+        }
+
         // A pattern step retakes the gate from any live trig (§0 A3): the
         // tick-driven countdown above now owns closing it.
         self.live_gate_samples_left = None;
@@ -2130,6 +2258,7 @@ impl Sequencer {
                 condition: TrigCondition::default(),
                 timing: StepTiming::default(),
                 cv_locks,
+                ratchet: 1,
             });
         }
 
@@ -2359,6 +2488,7 @@ impl Sequencer {
             ("length", 2),
             ("timing", 3),
             ("condition", 4),
+            ("ratchet", 5),
         ]
         .into_iter()
         .map(|(name, slot)| {
@@ -2387,6 +2517,7 @@ fn pattern_is_used(p: &Pattern) -> bool {
                 || !s.cv_locks.is_empty()
                 || s.timing.micro_offset != 0
                 || s.condition != TrigCondition::default()
+                || s.ratchet > 1
         })
 }
 
@@ -2467,6 +2598,8 @@ fn write_step_record(step: &Step, buf: &mut Vec<u8>) {
         buf.extend_from_slice(&idx.to_le_bytes());
         buf.extend_from_slice(&val.to_le_bytes());
     }
+    // P12: Ratchet count
+    buf.push(step.ratchet);
     let record_len = (buf.len() - len_pos - 2) as u16;
     buf[len_pos..len_pos + 2].copy_from_slice(&record_len.to_le_bytes());
 }
@@ -2511,6 +2644,11 @@ fn read_step_record(r: &mut ByteReader) -> Option<Step> {
         let val = r.f32()?;
         cv_locks.push((idx, val));
     }
+    let ratchet = if r.cur < end {
+        r.u8().unwrap_or(1).clamp(1, 8)
+    } else {
+        1
+    };
     // A record whose declared length is shorter than its own fields is
     // malformed; anything between here and `end` is a future field — skip it.
     if r.cur > end {
@@ -2534,6 +2672,7 @@ fn read_step_record(r: &mut ByteReader) -> Option<Step> {
             micro_offset: micro,
         },
         cv_locks,
+        ratchet,
     })
 }
 
@@ -6863,17 +7002,18 @@ mod tests {
         assert_eq!(rule.page_groups.to_vec(), vec!["TRIG"]);
 
         let pages = Sequencer::virtual_step_param_pages();
-        assert_eq!(pages.len(), 4);
-        let names = ["velocity", "length", "timing", "condition"];
+        assert_eq!(pages.len(), 5);
+        let names = ["velocity", "length", "timing", "condition", "ratchet"];
         for (i, (pid, pr)) in pages.iter().enumerate() {
             assert_eq!(pr.slot, (i + 1) as u8, "slot {}", i + 1);
             assert_eq!(pr.page.as_ref(), "TRIG");
             assert_eq!(*pid, ParamDescriptor::id_for_name(names[i]));
         }
         // The Rule's param_pages agree with the helper (same construction).
-        assert_eq!(rule.param_pages.len(), 4);
+        assert_eq!(rule.param_pages.len(), 5);
         assert_eq!(rule.param_pages[0].1.slot, 1);
         assert_eq!(rule.param_pages[3].1.slot, 4);
+        assert_eq!(rule.param_pages[4].1.slot, 5);
     }
 
     #[test]
@@ -6965,5 +7105,81 @@ mod tests {
         assert_eq!(m, 2);
         let fill: u8 = first[6].parse().unwrap();
         assert_eq!(fill, 1, "FillA");
+    }
+
+    #[test]
+    fn serialize_roundtrip_preserves_ratchet() {
+        let mut seq = Sequencer::new();
+        seq.set_step(0, 36, 40000, true);
+        seq.set_step_ratchet(0, 3);
+        assert_eq!(seq.step_ratchet(0), 3);
+
+        let bytes = seq.serialize();
+        let mut restored = Sequencer::new();
+        restored.deserialize(&bytes);
+
+        assert_eq!(restored.step_ratchet(0), 3);
+        assert_eq!(restored.step_ratchet(1), 1);
+    }
+
+    #[test]
+    fn cmd_euclidean_generates_bjorklund_patterns() {
+        let mut seq = Sequencer::new();
+
+        // E(4, 16): four-on-the-floor
+        seq.handle_commands(&[NodeCommand {
+            target_id: 0,
+            type_id: Sequencer::CMD_EUCLIDEAN,
+            arg0: (4 << 16) | 16,
+            arg1: 0.0,
+        }]);
+        assert_eq!(seq.steps_bitfield(), "1000100010001000");
+
+        // E(3, 8): tresillo (3 + 3 + 2)
+        seq.generate_euclidean(3, 8, 0);
+        assert_eq!(seq.steps_bitfield(), "10010010");
+
+        // E(3, 8) rotated +1: "01001001"
+        seq.generate_euclidean(3, 8, 1);
+        assert_eq!(seq.steps_bitfield(), "01001001");
+    }
+
+    #[test]
+    fn ratchet_fires_sub_triggers_within_step_period() {
+        let mut seq = Sequencer::new();
+        seq.set_node_id(1);
+        seq.activate(44100.0, 64);
+        seq.set_step(0, 36, 40000, true);
+        seq.set_step_ratchet(0, 4); // 4-sub-trigger ratchet
+        assert_eq!(seq.step_ratchet(0), 4);
+
+        let mut note_on_count = 0;
+
+        // Tick 0: start transport (global_start / playing transition)
+        let events = run_seq(&mut seq, &[transport_tick(0, true, true, false, false)]);
+        for e in &events {
+            if matches!(
+                e,
+                Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_)))
+            ) {
+                note_on_count += 1;
+            }
+        }
+
+        // Advance 239 ticks through the rest of the 240-tick step period
+        for tick in 1..240 {
+            let events = run_seq(&mut seq, &[transport_tick(tick, true, false, false, false)]);
+            for e in &events {
+                if matches!(
+                    e,
+                    Event::Midi2(UmpMessage::ChannelVoice2(ChannelVoice2::NoteOn(_)))
+                ) {
+                    note_on_count += 1;
+                }
+            }
+        }
+
+        // Exactly 4 sub-triggers must have fired across the step!
+        assert_eq!(note_on_count, 4);
     }
 }

@@ -69,6 +69,15 @@ pub const CMD_PREPARE_PATTERN_MUTE: u8 = 43;
 /// on transport stop.
 pub const CMD_LIVE_ERASE: u8 = 44;
 
+/// P12: set ratchet / retrig count for a sequencer step. `arg0`: step index (0..63),
+/// `arg1`: ratchet count (1..=8 sub-triggers within the step's duration).
+pub const CMD_SET_STEP_RATCHET: u8 = 45;
+
+/// P12: generate a Euclidean pattern into the active pattern.
+/// `arg0`: bit-packed `(pulses as u32) << 16 | (steps as u32)` (or pulses when <= 64),
+/// `arg1`: rotation offset (-64..=64 steps) or step count.
+pub const CMD_EUCLIDEAN: u8 = 46;
+
 #[cfg(test)]
 mod tests {
     use super::*;
