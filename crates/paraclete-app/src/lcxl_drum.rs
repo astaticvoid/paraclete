@@ -29,6 +29,7 @@ use paraclete_node_api::{
 use paraclete_runtime::NodeConfigurator;
 
 use crate::builder::InstrumentIds;
+use crate::instrument::{LcxlDef, ParamTargetDef};
 
 /// Sequencer command type IDs (`paraclete-nodes::Sequencer`).
 const CMD_TOGGLE_STEP: u32 = 16;
@@ -92,8 +93,7 @@ fn resolve_param_id(conf: &NodeConfigurator, node_id: u32, param_name: &str) -> 
 pub struct LcxlDrumController {
     mix_id: u32,
     tracks: Vec<TrackTargets>,
-    reverb_targets: Option<[KnobTarget; 4]>,
-    delay_targets: Option<[KnobTarget; 4]>,
+    master_fx_row: [Option<KnobTarget>; 8],
     active_track: usize,
     active_page: usize,
     bottom_mode: BottomMode,
@@ -110,41 +110,86 @@ pub struct LcxlDrumController {
 }
 
 impl LcxlDrumController {
-    /// Build a controller bound to the active instrument graph in `conf`.
+    /// Build a controller bound to the active instrument graph in `conf` using graph discovery.
     pub fn new(ids: &InstrumentIds, conf: &mut NodeConfigurator) -> Self {
-        let known: Vec<u32> = conf.known_node_ids().collect();
-        let has_node = |id: u32| known.contains(&id);
+        Self::from_definition(ids, None, conf)
+    }
 
+    /// Build a controller bound to the active instrument graph, applying any declarative
+    /// `lcxl:` knob/FX mappings from the `InstrumentDefinition` and falling back to
+    /// edge-derived track chain discovery when omitted.
+    pub fn from_definition(
+        ids: &InstrumentIds,
+        lcxl_def: Option<&LcxlDef>,
+        conf: &mut NodeConfigurator,
+    ) -> Self {
+        let edges: Vec<(u32, u32)> = conf.all_edges().map(|e| (e.src_node, e.dst_node)).collect();
+        let resolve_def = |def: &ParamTargetDef| KnobTarget {
+            node_id: def.node,
+            param_id: resolve_param_id(conf, def.node, &def.param),
+        };
+
+        // Follow edges from `seq_id` to find its target generator if possible,
+        // falling back to positional `ids.generators[col]`.
         let mut tracks = Vec::with_capacity(ids.sequencers.len().min(8));
-        for (col, (&seq_id, &gen_id)) in ids
-            .sequencers
-            .iter()
-            .zip(ids.generators.iter())
-            .take(8)
-            .enumerate()
-        {
+        for (col, &seq_id) in ids.sequencers.iter().take(8).enumerate() {
+            let gen_id = edges
+                .iter()
+                .find(|(src, _)| *src == seq_id)
+                .map(|(_, dst)| *dst)
+                .or_else(|| ids.generators.get(col).copied())
+                .unwrap_or(0);
+
             let gen_tag = conf.type_tag_for(gen_id).unwrap_or("analog_engine");
-            let filter_cand = 40 + col as u32;
-            let dist_cand = 30 + col as u32;
-            let filter_id = has_node(filter_cand).then_some(filter_cand);
-            let dist_id = has_node(dist_cand).then_some(dist_cand);
+
+            // Discover insert filter and distortion by walking downstream edges from `gen_id`
+            // until `ids.mix` or `ids.output`, falling back to `ids.filters`/`ids.distortions`.
+            let mut filter_id = None;
+            let mut dist_id = None;
+            let mut cur = gen_id;
+            for _ in 0..8 {
+                let Some(&(_, next)) = edges
+                    .iter()
+                    .find(|(src, dst)| *src == cur && *dst != ids.mix && *dst != ids.output)
+                else {
+                    break;
+                };
+                match conf.type_tag_for(next) {
+                    Some("filter" | "ladder_filter") if filter_id.is_none() => {
+                        filter_id = Some(next);
+                    }
+                    Some("distortion") if dist_id.is_none() => {
+                        dist_id = Some(next);
+                    }
+                    _ => {}
+                }
+                cur = next;
+            }
+            if filter_id.is_none() {
+                filter_id = ids.filters.get(col).copied();
+            }
+            if dist_id.is_none() {
+                dist_id = ids.distortions.get(col).copied();
+            }
 
             let (p1, p2, p3, fx1, fx2) = match gen_tag {
                 "sampler" => ("pitch", "end", "start", "loop_enable", "pitch"),
-                "fm_engine" => ("tune", "decay", "index1", "feedback", "ratio1"),
+                "fm_engine" | "fm_engine:kick" | "fm_engine:bell" | "fm_engine:bass" => {
+                    ("tune", "decay", "index1", "feedback", "ratio1")
+                }
                 "fm_voice" => ("tune", "decay", "timbre", "color", "attack"),
                 _ => ("tune", "decay", "tone", "drive", "sweep"),
             };
 
-            let row1_normal = KnobTarget {
+            let default_r1 = KnobTarget {
                 node_id: gen_id,
                 param_id: resolve_param_id(conf, gen_id, p1),
             };
-            let row2_normal = KnobTarget {
+            let default_r2 = KnobTarget {
                 node_id: gen_id,
                 param_id: resolve_param_id(conf, gen_id, p2),
             };
-            let row3_normal = if let Some(fid) = filter_id {
+            let default_r3 = if let Some(fid) = filter_id {
                 KnobTarget {
                     node_id: fid,
                     param_id: resolve_param_id(conf, fid, "cutoff"),
@@ -156,7 +201,7 @@ impl LcxlDrumController {
                 }
             };
 
-            let row1_fx = if let Some(did) = dist_id {
+            let default_fx1 = if let Some(did) = dist_id {
                 KnobTarget {
                     node_id: did,
                     param_id: resolve_param_id(conf, did, "drive"),
@@ -167,7 +212,7 @@ impl LcxlDrumController {
                     param_id: resolve_param_id(conf, gen_id, fx1),
                 }
             };
-            let row2_fx = if let Some(fid) = filter_id {
+            let default_fx2 = if let Some(fid) = filter_id {
                 KnobTarget {
                     node_id: fid,
                     param_id: resolve_param_id(conf, fid, "resonance"),
@@ -178,6 +223,28 @@ impl LcxlDrumController {
                     param_id: resolve_param_id(conf, gen_id, fx2),
                 }
             };
+
+            let track_override = lcxl_def.and_then(|d| d.tracks.get(col));
+            let row1_normal = track_override
+                .and_then(|t| t.normal.first())
+                .map(&resolve_def)
+                .unwrap_or(default_r1);
+            let row2_normal = track_override
+                .and_then(|t| t.normal.get(1))
+                .map(&resolve_def)
+                .unwrap_or(default_r2);
+            let row3_normal = track_override
+                .and_then(|t| t.normal.get(2))
+                .map(&resolve_def)
+                .unwrap_or(default_r3);
+            let row1_fx = track_override
+                .and_then(|t| t.fx.first())
+                .map(&resolve_def)
+                .unwrap_or(default_fx1);
+            let row2_fx = track_override
+                .and_then(|t| t.fx.get(1))
+                .map(&resolve_def)
+                .unwrap_or(default_fx2);
 
             let gain_name = format!("input_gain_{col}");
             tracks.push(TrackTargets {
@@ -192,53 +259,47 @@ impl LcxlDrumController {
             });
         }
 
-        let reverb_targets = has_node(200).then(|| {
-            [
-                KnobTarget {
-                    node_id: 200,
-                    param_id: resolve_param_id(conf, 200, "wet"),
-                },
-                KnobTarget {
-                    node_id: 200,
-                    param_id: resolve_param_id(conf, 200, "room_size"),
-                },
-                KnobTarget {
-                    node_id: 200,
-                    param_id: resolve_param_id(conf, 200, "damping"),
-                },
-                KnobTarget {
-                    node_id: 200,
-                    param_id: resolve_param_id(conf, 200, "dry"),
-                },
-            ]
-        });
-
-        let delay_targets = has_node(190).then(|| {
-            [
-                KnobTarget {
-                    node_id: 190,
-                    param_id: resolve_param_id(conf, 190, "wet"),
-                },
-                KnobTarget {
-                    node_id: 190,
-                    param_id: resolve_param_id(conf, 190, "delay_time_ms"),
-                },
-                KnobTarget {
-                    node_id: 190,
-                    param_id: resolve_param_id(conf, 190, "feedback"),
-                },
-                KnobTarget {
-                    node_id: 190,
-                    param_id: resolve_param_id(conf, 190, "filter_hz"),
-                },
-            ]
-        });
+        let mut master_fx_row: [Option<KnobTarget>; 8] = [None; 8];
+        if let Some(defs) = lcxl_def.filter(|d| !d.master_fx.is_empty()) {
+            for (col, def) in defs.master_fx.iter().take(8).enumerate() {
+                master_fx_row[col] = Some(resolve_def(def));
+            }
+        } else {
+            // Auto-discover master Reverb (cols 0..4) and Delay (cols 4..8) by type_tag.
+            let known: Vec<u32> = conf.known_node_ids().collect();
+            let reverb_id = known
+                .iter()
+                .copied()
+                .find(|&id| conf.type_tag_for(id) == Some("reverb"));
+            if let Some(rid) = reverb_id {
+                for (i, name) in ["wet", "room_size", "damping", "dry"].into_iter().enumerate() {
+                    master_fx_row[i] = Some(KnobTarget {
+                        node_id: rid,
+                        param_id: resolve_param_id(conf, rid, name),
+                    });
+                }
+            }
+            let delay_id = known
+                .iter()
+                .copied()
+                .find(|&id| conf.type_tag_for(id) == Some("delay"));
+            if let Some(did) = delay_id {
+                for (i, name) in ["wet", "delay_time_ms", "feedback", "filter_hz"]
+                    .into_iter()
+                    .enumerate()
+                {
+                    master_fx_row[4 + i] = Some(KnobTarget {
+                        node_id: did,
+                        param_id: resolve_param_id(conf, did, name),
+                    });
+                }
+            }
+        }
 
         let ctrl = Self {
             mix_id: ids.mix,
             tracks,
-            reverb_targets,
-            delay_targets,
+            master_fx_row,
             active_track: 0,
             active_page: 0,
             bottom_mode: BottomMode::StepSequencer,
@@ -282,13 +343,7 @@ impl LcxlDrumController {
         let row = (id / 8) as usize;
         let col = (id % 8) as usize;
         if self.fx_layer && row == 2 {
-            if col < 4 {
-                let rev = self.reverb_targets.as_ref()?;
-                return rev.get(col).copied();
-            } else {
-                let dly = self.delay_targets.as_ref()?;
-                return dly.get(col - 4).copied();
-            }
+            return self.master_fx_row.get(col).copied().flatten();
         }
 
         let t = self.tracks.get(col)?;
@@ -690,9 +745,7 @@ impl LcxlDrumController {
                 let led_idx = 24 + row * 8 + col;
                 if self.fx_layer {
                     if row == 2 {
-                        leds[led_idx] = if (col < 4 && self.reverb_targets.is_some())
-                            || (col >= 4 && self.delay_targets.is_some())
-                        {
+                        leds[led_idx] = if self.master_fx_row.get(col).copied().flatten().is_some() {
                             amber
                         } else {
                             RgbColor::OFF
@@ -818,8 +871,44 @@ mod tests {
         let mut pool = SamplePool::default();
         let ids =
             build_from_instrument(&def, &mut conf, &libs, &mut pool).expect("build 8-track graph");
-        let ctrl = LcxlDrumController::new(&ids, &mut conf);
+        let ctrl = LcxlDrumController::from_definition(&ids, def.lcxl.as_ref(), &mut conf);
         (conf, ids, ctrl)
+    }
+
+    #[test]
+    fn x0x_lcxl_bundle_loads_and_applies_declarative_knob_mappings() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let bundle_path = root.join("instruments/x0x-lcxl");
+        let def = load_instrument_definition(&bundle_path).expect("load instruments/x0x-lcxl");
+        assert_eq!(def.name, "x0x-lcxl-drum-machine");
+        assert!(def.lcxl.is_some(), "bundle must include declarative lcxl block");
+
+        let mut conf = NodeConfigurator::new(48_000.0, 512);
+        let libs = HashMap::new();
+        let mut pool = SamplePool::default();
+        let ids =
+            build_from_instrument(&def, &mut conf, &libs, &mut pool).expect("build x0x-lcxl graph");
+        let ctrl = LcxlDrumController::from_definition(&ids, def.lcxl.as_ref(), &mut conf);
+
+        // Col 1 Row 3 (knob id = 16) in normal mode is mapped to Kick punch (node 20, param "punch")
+        // rather than filter cutoff (node 40), proving YAML override works.
+        let r3_col0 = ctrl.resolve_knob_target(16).expect("Col 1 Row 3 target");
+        assert_eq!(r3_col0.node_id, 20);
+        assert_eq!(r3_col0.param_id, ParamDescriptor::id_for_name("punch"));
+
+        // Col 3 Row 1 (knob id = 2) is Clap tone (node 22, param "tone")
+        let r1_col2 = ctrl.resolve_knob_target(2).expect("Col 3 Row 1 target");
+        assert_eq!(r1_col2.node_id, 22);
+        assert_eq!(r1_col2.param_id, ParamDescriptor::id_for_name("tone"));
+
+        // Col 6 Row 1 (knob id = 5) is Tom tune (node 25, param "tune")
+        let r1_col5 = ctrl.resolve_knob_target(5).expect("Col 6 Row 1 target");
+        assert_eq!(r1_col5.node_id, 25);
+        assert_eq!(r1_col5.param_id, ParamDescriptor::id_for_name("tune"));
     }
 
     #[test]

@@ -235,3 +235,44 @@ edges:
   # mix -> always-on recorder (AN1 transition trick / SAMPLING screen)
   - from: [2, 8]
     to:   [210, 0]
+
+# Declarative Launch Control XL 8-track drum strip mapping:
+# Edit any `{ node, param }` entry below to rebind physical knobs without recompiling Rust.
+lcxl:
+  tracks:
+    # Col 1: Kick (voice 20, dist 30, filter 40)
+    - normal: [{ node: 20, param: tune }, { node: 20, param: decay }, { node: 40, param: cutoff }]
+      fx:     [{ node: 30, param: drive }, { node: 40, param: resonance }]
+    # Col 2: Snare (voice 21, dist 31, filter 41)
+    - normal: [{ node: 21, param: tune }, { node: 21, param: decay }, { node: 41, param: cutoff }]
+      fx:     [{ node: 31, param: drive }, { node: 41, param: resonance }]
+    # Col 3: HiHat (voice 22, dist 32, filter 42)
+    - normal: [{ node: 22, param: tune }, { node: 22, param: decay }, { node: 42, param: cutoff }]
+      fx:     [{ node: 32, param: drive }, { node: 42, param: resonance }]
+    # Col 4: Smp3 (voice 23, dist 33, filter 43)
+    - normal: [{ node: 23, param: pitch }, { node: 23, param: end }, { node: 43, param: cutoff }]
+      fx:     [{ node: 33, param: drive }, { node: 43, param: resonance }]
+    # Col 5: Smp4 (voice 24, dist 34, filter 44)
+    - normal: [{ node: 24, param: pitch }, { node: 24, param: end }, { node: 44, param: cutoff }]
+      fx:     [{ node: 34, param: drive }, { node: 44, param: resonance }]
+    # Col 6: Smp5 (voice 25, dist 35, filter 45)
+    - normal: [{ node: 25, param: pitch }, { node: 25, param: end }, { node: 45, param: cutoff }]
+      fx:     [{ node: 35, param: drive }, { node: 45, param: resonance }]
+    # Col 7: Smp6 (voice 26, dist 36, filter 46)
+    - normal: [{ node: 26, param: pitch }, { node: 26, param: end }, { node: 46, param: cutoff }]
+      fx:     [{ node: 36, param: drive }, { node: 46, param: resonance }]
+    # Col 8: Bass (voice 27, dist 37, filter 47)
+    - normal: [{ node: 27, param: tune }, { node: 27, param: decay }, { node: 47, param: cutoff }]
+      fx:     [{ node: 37, param: drive }, { node: 47, param: resonance }]
+  master_fx:
+    # FX Layer Row 3 Cols 1-4: Master Reverb (200)
+    - { node: 200, param: wet }
+    - { node: 200, param: room_size }
+    - { node: 200, param: damping }
+    - { node: 200, param: dry }
+    # FX Layer Row 3 Cols 5-8: Master Delay (190)
+    - { node: 190, param: wet }
+    - { node: 190, param: delay_time_ms }
+    - { node: 190, param: feedback }
+    - { node: 190, param: filter_hz }
+

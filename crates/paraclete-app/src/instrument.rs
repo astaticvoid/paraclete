@@ -13,6 +13,37 @@ pub struct InstrumentDefinition {
     pub macros: Vec<MacroDef>,
     #[serde(default)]
     pub profiles: Vec<String>,
+    #[serde(default)]
+    pub lcxl: Option<LcxlDef>,
+}
+
+/// Declarative Launch Control XL surface mapping for an instrument.
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct LcxlDef {
+    /// Per-track column knob overrides (up to 8 columns, in track order).
+    #[serde(default)]
+    pub tracks: Vec<LcxlTrackDef>,
+    /// FX layer Row 3 master effect knob targets (up to 8 columns, `0..8`).
+    #[serde(default)]
+    pub master_fx: Vec<ParamTargetDef>,
+}
+
+/// Per-track column knob mapping on Launch Control XL.
+#[derive(Deserialize, Debug, Clone, Default)]
+pub struct LcxlTrackDef {
+    /// Normal layer knobs: `[row1, row2, row3]`.
+    #[serde(default)]
+    pub normal: Vec<ParamTargetDef>,
+    /// FX layer track knobs: `[row1_fx, row2_fx]`.
+    #[serde(default)]
+    pub fx: Vec<ParamTargetDef>,
+}
+
+/// A `(node_id, param_name)` binding target for hardware controls.
+#[derive(Deserialize, Debug, Clone)]
+pub struct ParamTargetDef {
+    pub node: u32,
+    pub param: String,
 }
 
 #[derive(Deserialize, Debug)]

@@ -38,10 +38,42 @@ pub fn parse_instrument_definition(text: &str) -> Result<InstrumentDefinition, I
     Ok(def)
 }
 
+pub fn resolve_instrument_path(path: &std::path::Path) -> std::path::PathBuf {
+    if path.is_file() {
+        return path.to_path_buf();
+    }
+    if path.is_dir() {
+        let graph = path.join("graph.yaml");
+        if graph.is_file() {
+            return graph;
+        }
+        let inst = path.join("instrument.yaml");
+        if inst.is_file() {
+            return inst;
+        }
+    }
+    if let Some(stem) = path.to_str() {
+        let in_dir_bundle = std::path::Path::new("instruments").join(stem).join("graph.yaml");
+        if in_dir_bundle.is_file() {
+            return in_dir_bundle;
+        }
+        let in_dir_yaml = std::path::Path::new("instruments").join(format!("{stem}.yaml"));
+        if in_dir_yaml.is_file() {
+            return in_dir_yaml;
+        }
+        let in_dir_direct = std::path::Path::new("instruments").join(stem);
+        if in_dir_direct.is_file() {
+            return in_dir_direct;
+        }
+    }
+    path.to_path_buf()
+}
+
 pub fn load_instrument_definition(
     path: &std::path::Path,
 ) -> Result<InstrumentDefinition, InstrumentError> {
-    let text = std::fs::read_to_string(path)?;
+    let resolved = resolve_instrument_path(path);
+    let text = std::fs::read_to_string(resolved)?;
     parse_instrument_definition(&text)
 }
 

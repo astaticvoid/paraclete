@@ -208,7 +208,11 @@ fn main() {
         conf.add_node(ID_GW_LCXL, Box::new(gw_lcxl));
         conf.connect(lid, 0, ID_GW_LCXL, 0).ok();
         consumer_lcxl = Some(cons);
-        lcxl_ctrl = Some(LcxlDrumController::new(&ids, &mut conf));
+        lcxl_ctrl = Some(LcxlDrumController::from_definition(
+            &ids,
+            def.lcxl.as_ref(),
+            &mut conf,
+        ));
     }
 
     // ── 5. Project load (before executor — nodes still in configurator) ──────

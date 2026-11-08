@@ -1,0 +1,287 @@
+# Roland x0x + Launch Control XL 8-Track Drum Machine Bundle
+# Run with: cargo run -- --instrument=x0x-lcxl
+format_version: 1
+name: "x0x-lcxl-drum-machine"
+bpm: 132.0
+
+nodes:
+  - id: 1
+    type: internal_clock
+
+  # ── 8 Drum Sequencers ───────────────────────────────────────────────────
+  - id: 10
+    type: sequencer
+    display_name: "Kick"
+    default_note: 36
+  - id: 11
+    type: sequencer
+    display_name: "Snare"
+    default_note: 36
+  - id: 12
+    type: sequencer
+    display_name: "Clap"
+    default_note: 36
+  - id: 13
+    type: sequencer
+    display_name: "CHat"
+    default_note: 36
+  - id: 14
+    type: sequencer
+    display_name: "OHat"
+    default_note: 36
+  - id: 15
+    type: sequencer
+    display_name: "Tom"
+    default_note: 36
+  - id: 16
+    type: sequencer
+    display_name: "Perc"
+  - id: 17
+    type: sequencer
+    display_name: "Bass"
+    default_note: 36
+
+  # ── 8 Drum / Synth Voices ───────────────────────────────────────────────
+  - id: 20
+    type: analog_engine:kick
+    initial_params:
+      decay: 0.45
+      punch: 0.65
+      drive: 0.25
+  - id: 21
+    type: analog_engine:snare
+    initial_params:
+      decay: 0.28
+      snap: 0.65
+      tone: 900.0
+  - id: 22
+    type: analog_engine:clap
+    initial_params:
+      decay: 0.35
+      snap: 0.70
+      tone: 1200.0
+  - id: 23
+    type: analog_engine:hihat
+    display_name: "CHat"
+    initial_params:
+      decay: 0.07
+      tone: 9500.0
+  - id: 24
+    type: analog_engine:hihat
+    display_name: "OHat"
+    initial_params:
+      decay: 0.42
+      tone: 8500.0
+  - id: 25
+    type: analog_engine:tom
+    initial_params:
+      tune: -3.0
+      decay: 0.32
+      punch: 0.55
+      tone: 600.0
+  - id: 26
+    type: sampler
+    display_name: "Perc"
+    sample: "samples/track3.wav"
+  - id: 27
+    type: fm_engine:bass
+
+  # ── Per-Track Insert Chain: Distortion (30-37) -> Filter (40-47) ────────
+  - id: 30
+    type: distortion
+  - id: 31
+    type: distortion
+  - id: 32
+    type: distortion
+  - id: 33
+    type: distortion
+  - id: 34
+    type: distortion
+  - id: 35
+    type: distortion
+  - id: 36
+    type: distortion
+  - id: 37
+    type: distortion
+  - id: 40
+    type: filter
+  - id: 41
+    type: filter
+  - id: 42
+    type: filter
+  - id: 43
+    type: filter
+  - id: 44
+    type: filter
+  - id: 45
+    type: filter
+  - id: 46
+    type: filter
+  - id: 47
+    type: filter
+
+  # ── Master Bus (Mix -> Dub Delay -> Reverb -> Output + Live Recorder) ───
+  - id: 2
+    type: mix
+    channel_count: 8
+    initial_params:
+      master_gain: 1.33
+  - id: 190
+    type: delay
+    initial_params:
+      wet: 0.0
+      dry: 1.0
+      delay_time_ms: 340.0
+      feedback: 0.45
+  - id: 200
+    type: reverb
+    initial_params:
+      wet: 0.0
+      dry: 1.0
+  - id: 210
+    type: recorder
+  - id: 60
+    type: audio_output
+
+edges:
+  # clock -> sequencers
+  - from: [1, "clock_out"]
+    to:   [10, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [11, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [12, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [13, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [14, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [15, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [16, "clock_in"]
+  - from: [1, "clock_out"]
+    to:   [17, "clock_in"]
+
+  # sequencer -> voice
+  - from: [10, "events_out"]
+    to:   [20, 0]
+  - from: [11, "events_out"]
+    to:   [21, 0]
+  - from: [12, "events_out"]
+    to:   [22, 0]
+  - from: [13, "events_out"]
+    to:   [23, 0]
+  - from: [14, "events_out"]
+    to:   [24, 0]
+  - from: [15, "events_out"]
+    to:   [25, 0]
+  - from: [16, "events_out"]
+    to:   [26, 0]
+  - from: [17, "events_out"]
+    to:   [27, 0]
+
+  # voice -> distortion -> filter -> mix channel
+  - from: [20, 1]
+    to:   [30, 0]
+  - from: [30, 1]
+    to:   [40, 0]
+  - from: [40, 1]
+    to:   [2, 0]
+
+  - from: [21, 1]
+    to:   [31, 0]
+  - from: [31, 1]
+    to:   [41, 0]
+  - from: [41, 1]
+    to:   [2, 1]
+
+  - from: [22, 1]
+    to:   [32, 0]
+  - from: [32, 1]
+    to:   [42, 0]
+  - from: [42, 1]
+    to:   [2, 2]
+
+  - from: [23, 1]
+    to:   [33, 0]
+  - from: [33, 1]
+    to:   [43, 0]
+  - from: [43, 1]
+    to:   [2, 3]
+
+  - from: [24, 1]
+    to:   [34, 0]
+  - from: [34, 1]
+    to:   [44, 0]
+  - from: [44, 1]
+    to:   [2, 4]
+
+  - from: [25, 1]
+    to:   [35, 0]
+  - from: [35, 1]
+    to:   [45, 0]
+  - from: [45, 1]
+    to:   [2, 5]
+
+  - from: [26, 1]
+    to:   [36, 0]
+  - from: [36, 1]
+    to:   [46, 0]
+  - from: [46, 1]
+    to:   [2, 6]
+
+  - from: [27, 1]
+    to:   [37, 0]
+  - from: [37, 1]
+    to:   [47, 0]
+  - from: [47, 1]
+    to:   [2, 7]
+
+  # master bus
+  - from: [2, 8]
+    to:   [190, 0]
+  - from: [190, 1]
+    to:   [200, 0]
+  - from: [200, 1]
+    to:   [60, 0]
+  - from: [2, 8]
+    to:   [210, 0]
+
+# Declarative Launch Control XL 8-Track x0x Drum Machine Mapping
+lcxl:
+  tracks:
+    # Col 1: Kick — Tune, Decay, Punch | FX: Dist Drive, Filter Cutoff
+    - normal: [{ node: 20, param: tune }, { node: 20, param: decay }, { node: 20, param: punch }]
+      fx:     [{ node: 30, param: drive }, { node: 40, param: cutoff }]
+    # Col 2: Snare — Tune, Decay, Snap | FX: Dist Drive, Filter Cutoff
+    - normal: [{ node: 21, param: tune }, { node: 21, param: decay }, { node: 21, param: snap }]
+      fx:     [{ node: 31, param: drive }, { node: 41, param: cutoff }]
+    # Col 3: Clap — Tone, Decay, Snap | FX: Dist Drive, Filter Cutoff
+    - normal: [{ node: 22, param: tone }, { node: 22, param: decay }, { node: 22, param: snap }]
+      fx:     [{ node: 32, param: drive }, { node: 42, param: cutoff }]
+    # Col 4: Closed Hat — Tune, Decay, Tone | FX: Dist Drive, Filter Cutoff
+    - normal: [{ node: 23, param: tune }, { node: 23, param: decay }, { node: 23, param: tone }]
+      fx:     [{ node: 33, param: drive }, { node: 43, param: cutoff }]
+    # Col 5: Open Hat — Tune, Decay, Tone | FX: Dist Drive, Filter Cutoff
+    - normal: [{ node: 24, param: tune }, { node: 24, param: decay }, { node: 24, param: tone }]
+      fx:     [{ node: 34, param: drive }, { node: 44, param: cutoff }]
+    # Col 6: Tom — Tune, Decay, Punch | FX: Dist Drive, Filter Cutoff
+    - normal: [{ node: 25, param: tune }, { node: 25, param: decay }, { node: 25, param: punch }]
+      fx:     [{ node: 35, param: drive }, { node: 45, param: cutoff }]
+    # Col 7: Perc Sampler — Pitch, End, Filter Cutoff | FX: Dist Drive, Filter Res
+    - normal: [{ node: 26, param: pitch }, { node: 26, param: end }, { node: 46, param: cutoff }]
+      fx:     [{ node: 36, param: drive }, { node: 46, param: resonance }]
+    # Col 8: FM Bass — Tune, Decay, Filter Cutoff | FX: FM Index1, Filter Res
+    - normal: [{ node: 27, param: tune }, { node: 27, param: decay }, { node: 47, param: cutoff }]
+      fx:     [{ node: 27, param: index1 }, { node: 47, param: resonance }]
+  master_fx:
+    # FX Layer Row 3 Cols 1-4: Master Reverb (200)
+    - { node: 200, param: wet }
+    - { node: 200, param: room_size }
+    - { node: 200, param: damping }
+    - { node: 200, param: dry }
+    # FX Layer Row 3 Cols 5-8: Master Dub Delay (190)
+    - { node: 190, param: wet }
+    - { node: 190, param: delay_time_ms }
+    - { node: 190, param: feedback }
+    - { node: 190, param: filter_hz }
