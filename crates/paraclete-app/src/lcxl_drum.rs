@@ -123,20 +123,23 @@ impl LcxlDrumController {
         lcxl_def: Option<&LcxlDef>,
         conf: &mut NodeConfigurator,
     ) -> Self {
-        let edges: Vec<(u32, u32)> = conf.all_edges().map(|e| (e.src_node, e.dst_node)).collect();
+        let edges: Vec<(u32, u32, u32)> = conf
+            .all_edges()
+            .map(|e| (e.src_node, e.dst_node, e.dst_port))
+            .collect();
         let resolve_def = |def: &ParamTargetDef| KnobTarget {
             node_id: def.node,
             param_id: resolve_param_id(conf, def.node, &def.param),
         };
 
-        // Follow edges from `seq_id` to find its target generator if possible,
+        // Follow primary event edge (dst_port == 0) from `seq_id` to find its target generator,
         // falling back to positional `ids.generators[col]`.
         let mut tracks = Vec::with_capacity(ids.sequencers.len().min(8));
         for (col, &seq_id) in ids.sequencers.iter().take(8).enumerate() {
             let gen_id = edges
                 .iter()
-                .find(|(src, _)| *src == seq_id)
-                .map(|(_, dst)| *dst)
+                .find(|(src, _, dst_port)| *src == seq_id && *dst_port == 0)
+                .map(|(_, dst, _)| *dst)
                 .or_else(|| ids.generators.get(col).copied())
                 .unwrap_or(0);
 
@@ -148,9 +151,9 @@ impl LcxlDrumController {
             let mut dist_id = None;
             let mut cur = gen_id;
             for _ in 0..8 {
-                let Some(&(_, next)) = edges
+                let Some(&(_, next, _)) = edges
                     .iter()
-                    .find(|(src, dst)| *src == cur && *dst != ids.mix && *dst != ids.output)
+                    .find(|(src, dst, _)| *src == cur && *dst != ids.mix && *dst != ids.output)
                 else {
                     break;
                 };

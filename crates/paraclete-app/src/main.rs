@@ -283,12 +283,16 @@ fn main() {
     let summaries = collect_node_summaries(&conf, &ids);
     // Compute gen_ids before view_registry so chains are built in
     // instrument-file declaration order (BUG-059).
-    let edges: Vec<(u32, u32)> = conf.all_edges().map(|e| (e.src_node, e.dst_node)).collect();
+    let primary_event_edges: Vec<(u32, u32)> = conf
+        .all_edges()
+        .filter(|e| e.dst_port == 0)
+        .map(|e| (e.src_node, e.dst_node))
+        .collect();
     let gen_ids: Vec<u32> = ids
         .sequencers
         .iter()
         .map(|&seq_id| {
-            edges
+            primary_event_edges
                 .iter()
                 .find(|(s, _)| *s == seq_id)
                 .map(|(_, t)| *t)
@@ -497,6 +501,7 @@ fn main() {
             Ok(terminal) => {
                 match TheotokosApp::new(TheotokosConfig {
                     clock_id: ids.clock,
+                    mix_id: ids.mix,
                     seq_ids,
                     gen_ids,
                     gen_names,

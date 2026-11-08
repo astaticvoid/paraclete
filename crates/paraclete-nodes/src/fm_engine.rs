@@ -1523,14 +1523,14 @@ mod tests {
         let mut eng = FmEngine::kick();
         eng.activate(44100.0, 512);
         eng.set_node_id(27);
-        let lock = TimedEvent {
-            sample_offset: 0,
-            event: Event::ParamLock(ParamLockEvent {
+        let lock = TimedEvent::new(
+            0,
+            Event::ParamLock(ParamLockEvent {
                 node_id: 27,
                 param_id: fp("machine"),
                 value: FmMachine::Bass.value() as f64,
             }),
-        };
+        );
         for _ in 0..3 {
             let _ = run_fm(&mut eng, std::slice::from_ref(&lock));
             assert_eq!(eng.machine, FmMachine::Kick, "a p-lock must never switch machines");

@@ -36,7 +36,7 @@ struct ResolvedLoopBackEdge {
 
 pub struct NodeExecutor {
     nodes: Vec<NodeSlot>,
-    event_routes: Vec<Vec<usize>>,
+    event_routes: Vec<Vec<(usize, u32)>>,
     /// For each slot position: the upstream slot indices that provide audio input.
     /// Pre-computed at build_executor() time; never changes at runtime.
     audio_routes: Vec<Vec<usize>>,
@@ -219,7 +219,7 @@ impl NodeExecutor {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         nodes: Vec<(u32, NodeOrDevice)>,
-        event_routes: Vec<Vec<usize>>,
+        event_routes: Vec<Vec<(usize, u32)>>,
         audio_routes: Vec<Vec<usize>>,
         signal_output_bufs: Vec<Vec<(u32, SignalPortKind, Vec<f32>)>>,
         signal_input_routes: Vec<Vec<(u32, SignalPortKind, usize, u32)>>,
@@ -437,6 +437,24 @@ impl NodeExecutor {
         } else {
             vec![]
         }
+    }
+
+    /// Serialise all nodes' private states in `(node_id, bytes)` pairs.
+    pub fn serialize_all_nodes(&self) -> Vec<(u32, Vec<u8>)> {
+        let mut out: Vec<(u32, Vec<u8>)> = self
+            .nodes
+            .iter()
+            .map(|slot| {
+                let bytes = match &slot.kind {
+                    crate::configurator::NodeOrDevice::Node(n) => n.serialize(),
+                    crate::configurator::NodeOrDevice::Device(d) => d.serialize(),
+                };
+                (slot.id, bytes)
+            })
+            .filter(|(_, b)| !b.is_empty())
+            .collect();
+        out.sort_by_key(|(id, _)| *id);
+        out
     }
 
     /// Deserialise a node's private state from a previously saved byte blob.
@@ -854,16 +872,17 @@ impl NodeExecutor {
                 // SAFETY: events_out and incoming are disjoint fields; DAG guarantees no self-loops.
                 let outgoing: *const [TimedEvent] =
                     self.nodes[slot_idx].events_out.as_slice() as *const [TimedEvent];
-                for &dst_idx in &self.event_routes[slot_idx] {
+                for &(dst_idx, dst_port) in &self.event_routes[slot_idx] {
                     // BUG-025: split cross-block offset events into deferred queues.
                     // Events with offset >= block_size are held for future cycles.
                     for &e in unsafe { &*outgoing } {
-                        if e.sample_offset < block_size as u32 {
-                            self.incoming[dst_idx].push(e);
+                        let mut delivered = e;
+                        delivered.port_id = dst_port;
+                        if delivered.sample_offset < block_size as u32 {
+                            self.incoming[dst_idx].push(delivered);
                         } else {
-                            let mut deferred = e;
-                            deferred.sample_offset -= block_size as u32;
-                            self.deferred_events[dst_idx].push(deferred);
+                            delivered.sample_offset -= block_size as u32;
+                            self.deferred_events[dst_idx].push(delivered);
                         }
                     }
                 }

@@ -958,6 +958,12 @@ impl NodeConfigurator {
         for (user_id, slot) in nodes {
             if let Some(&ni) = self.id_to_index.get(&user_id) {
                 self.nodes.entry(ni).or_insert(slot);
+            } else {
+                let cap_doc = slot.as_node_ref().capability_document();
+                self.cap_doc_cache.insert(user_id, cap_doc);
+                let idx = self.graph.add_node(NodeMeta { user_id });
+                self.id_to_index.insert(user_id, idx);
+                self.nodes.insert(idx, slot);
             }
         }
     }
@@ -1011,7 +1017,7 @@ impl NodeConfigurator {
             .collect();
 
         let n = order.len();
-        let mut event_routes: Vec<Vec<usize>> = vec![vec![]; n];
+        let mut event_routes: Vec<Vec<(usize, u32)>> = vec![vec![]; n];
         let mut audio_routes: Vec<Vec<usize>> = vec![vec![]; n];
         let mut signal_input_routes: Vec<Vec<(u32, SignalPortKind, usize, u32)>> = vec![vec![]; n];
 
@@ -1021,7 +1027,7 @@ impl NodeConfigurator {
                 match edge.weight().src_port_type {
                     PortType::Event | PortType::Clock => {
                         if let Some(&dst_pos) = idx_to_slot.get(&edge.target()) {
-                            event_routes[slot_pos].push(dst_pos);
+                            event_routes[slot_pos].push((dst_pos, edge.weight().dst_port));
                         }
                     }
                     PortType::Audio => {

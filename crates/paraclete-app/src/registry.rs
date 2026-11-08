@@ -58,8 +58,8 @@ pub fn build_registry() -> NodeRegistry {
     use paraclete_graph_nodes::InnerGraphNode;
     use paraclete_nodes::{
         AnalogEngine, AudioOutputNode, DelayNode, DistortionNode, EnvelopeNode, FilterNode,
-        FmEngine, FmVoice, InternalClock, LadderFilterNode, LfoNode, LoopBreakNode, MixNode,
-        OscillatorNode, RecorderNode, ReverbNode, Sampler, Sequencer, SplitNode,
+        FmEngine, FmVoice, InternalClock, LadderFilterNode, LfoNode, LoopBreakNode, MatrixNode,
+        MixNode, OscillatorNode, RecorderNode, ReverbNode, Sampler, Sequencer, SplitNode,
     };
 
     let mut r = NodeRegistry::new();
@@ -94,6 +94,7 @@ pub fn build_registry() -> NodeRegistry {
     // already runtime-switchable via ADR-041's `machine` param — a fixture
     // just needs one starting point (Full), not a proliferated tag per macro.
     r.register("fm_voice", || Box::new(FmVoice::new()));
+    r.register("matrix", || Box::new(MatrixNode::new()));
     r.register("inner_graph", || Box::new(InnerGraphNode::new()));
 
     r

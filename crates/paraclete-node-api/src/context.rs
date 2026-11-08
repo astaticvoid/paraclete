@@ -229,6 +229,18 @@ impl<'a> ProcessOutput<'a> {
         self.find_output(port_id, SignalPortKind::Cv)
     }
 
+    /// Try to write a CV signal port output if connected/registered.
+    /// Returns `None` if `port_id` is not present in `self.signal_outputs`.
+    pub fn try_cv_signal_output_mut(&mut self, port_id: u32) -> Option<&mut [f32]> {
+        for slot in self.signal_outputs.iter_mut() {
+            if slot.port_id == port_id && slot.kind == SignalPortKind::Cv {
+                // SAFETY: ptr is valid for the duration of this process() call.
+                return Some(unsafe { std::slice::from_raw_parts_mut(slot.ptr, slot.frames) });
+            }
+        }
+        None
+    }
+
     /// Emit a debug event from the current node.
     ///
     /// `node_id` is filled by the executor after `process()` returns.

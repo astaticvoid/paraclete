@@ -162,6 +162,7 @@ mod tests {
             edges: Vec::new(),
             macros: Vec::new(),
             profiles: Vec::new(),
+            lcxl: None,
         }
     }
 

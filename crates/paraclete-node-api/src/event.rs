@@ -106,6 +106,8 @@ pub enum Event {
 pub struct TimedEvent {
     /// Sample index within the current block (0 .. block_size − 1).
     pub sample_offset: u32,
+    /// Destination input port ID on the receiving node (`0` by default).
+    pub port_id: u32,
     pub event: Event,
 }
 
@@ -113,6 +115,15 @@ impl TimedEvent {
     pub fn new(sample_offset: u32, event: Event) -> Self {
         Self {
             sample_offset,
+            port_id: 0,
+            event,
+        }
+    }
+
+    pub fn with_port(sample_offset: u32, port_id: u32, event: Event) -> Self {
+        Self {
+            sample_offset,
+            port_id,
             event,
         }
     }

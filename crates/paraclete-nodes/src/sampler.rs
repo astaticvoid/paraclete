@@ -152,13 +152,14 @@ fn advance_envelope(
 /// `pitch_mod`/`volume_mod` are `Modulation`, not `Audio`, so a sampler still
 /// reads as "audio out, no audio in" — which is what distinguishes a source
 /// from an effect in `main.rs`'s track derivation.
-fn sampler_ports() -> [PortDescriptor; 5] {
+fn sampler_ports() -> [PortDescriptor; 6] {
     [
         PortDescriptor { id: Sampler::PORT_EVENTS_IN,   name: "events_in".into(),   direction: PortDirection::Input,  port_type: PortType::Event },
         PortDescriptor { id: Sampler::PORT_AUDIO_OUT_L, name: "audio_out_l".into(), direction: PortDirection::Output, port_type: PortType::Audio },
         PortDescriptor { id: Sampler::PORT_AUDIO_OUT_R, name: "audio_out_r".into(), direction: PortDirection::Output, port_type: PortType::Audio },
         PortDescriptor { id: Sampler::PORT_PITCH_MOD,   name: "pitch_mod".into(),   direction: PortDirection::Input,  port_type: PortType::Modulation },
         PortDescriptor { id: Sampler::PORT_VOLUME_MOD,  name: "volume_mod".into(),  direction: PortDirection::Input,  port_type: PortType::Modulation },
+        PortDescriptor { id: Sampler::PORT_CHOKE_IN,    name: "choke_in".into(),    direction: PortDirection::Input,  port_type: PortType::Event },
     ]
 }
 
@@ -216,7 +217,7 @@ fn sampler_capability_document() -> CapabilityDocument {
 /// `activate()` time. All parameters are lockable per sequencer step.
 pub struct Sampler {
     node_id: u32,
-    ports: [PortDescriptor; 5],
+    ports: [PortDescriptor; 6],
 
     /// AN0: cached decoded pool samples, keyed by pool slot. Populated by
     /// `swap_sample()` — at graph-construction time (main thread, directly)
@@ -269,6 +270,7 @@ impl Sampler {
     pub const PORT_AUDIO_OUT_R: u32 = 2;
     pub const PORT_PITCH_MOD:   u32 = 3;
     pub const PORT_VOLUME_MOD:  u32 = 4;
+    pub const PORT_CHOKE_IN:    u32 = 5;
 
     /// Trigger the default note at full velocity immediately.
     /// Sent from scripts in trigger mode: send_cmd(samp_id, CMD_TRIGGER, 0, 0.0)
@@ -794,13 +796,20 @@ impl Node for Sampler {
                 }
                 Event::Midi2(UmpMessage::ChannelVoice2(ref cv2)) => match cv2 {
                     ChannelVoice2::NoteOn(n) => {
-                        self.trigger_voice(
-                            u8::from(n.note_number()),
-                            n.velocity(),
-                            timed.sample_offset,
-                        );
+                        if timed.port_id == Self::PORT_CHOKE_IN {
+                            for v in &mut self.voices {
+                                v.active = false;
+                                v.active_locks.clear();
+                            }
+                        } else {
+                            self.trigger_voice(
+                                u8::from(n.note_number()),
+                                n.velocity(),
+                                timed.sample_offset,
+                            );
+                        }
                     }
-                    ChannelVoice2::NoteOff(n) => {
+                    ChannelVoice2::NoteOff(n) if timed.port_id != Self::PORT_CHOKE_IN => {
                         self.release_voice(u8::from(n.note_number()), timed.sample_offset);
                     }
                     _ => {}

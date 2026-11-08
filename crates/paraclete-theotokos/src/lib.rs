@@ -41,6 +41,7 @@ pub const MIX_NODE_ID: u32 = 2;
 
 pub struct TheotokosConfig {
     pub clock_id: u32,
+    pub mix_id: u32,
     pub seq_ids: Vec<u32>,
     pub gen_ids: Vec<u32>,
     pub gen_names: Vec<String>,
@@ -110,6 +111,9 @@ impl TheotokosApp {
             config.caps,
             config.composite,
         );
+        if config.mix_id != 0 {
+            model.mix_id = config.mix_id;
+        }
 
         let frame_ms = if config.fps > 0 {
             1000 / config.fps
@@ -1035,7 +1039,8 @@ impl TheotokosApp {
                             Dir::Next => delta,
                             Dir::Prev => -delta,
                         };
-                        let path = format!("/node/{MIX_NODE_ID}/param/{name}");
+                        let mix_id = self.model.mix_id;
+                        let path = format!("/node/{mix_id}/param/{name}");
                         let current = match state.read(&path) {
                             Some(StateBusValue::Float(f)) => *f,
                             _ => 0.0,
@@ -1050,7 +1055,7 @@ impl TheotokosApp {
                         }
                         self.last_jog_param = Some(name.clone());
                         self.pending.push(NodeCommand {
-                            target_id: MIX_NODE_ID,
+                            target_id: mix_id,
                             type_id: paraclete_node_api::CMD_BUMP_PARAM,
                             arg0: param_id as i64,
                             arg1: signed,
@@ -2277,10 +2282,11 @@ pub fn build_render_data(
                 _ => 0.0,
             }
         };
+        let mix_id = model.mix_id;
         let mix_gains: Vec<f64> = (0..model.tracks.len())
-            .map(|i| read_gain(&format!("/node/{MIX_NODE_ID}/param/input_gain_{i}")))
+            .map(|i| read_gain(&format!("/node/{mix_id}/param/input_gain_{i}")))
             .collect();
-        let mix_master = read_gain(&format!("/node/{MIX_NODE_ID}/param/master_gain"));
+        let mix_master = read_gain(&format!("/node/{mix_id}/param/master_gain"));
 
         // TK3 C6 (OQ-T31): held-modifier chips. SHIFT/CTRL reflect the
         // physically held state (kitty only — release events are what make

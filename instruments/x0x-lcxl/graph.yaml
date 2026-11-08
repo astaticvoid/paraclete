@@ -171,6 +171,9 @@ edges:
     to:   [22, 0]
   - from: [13, "events_out"]
     to:   [23, 0]
+  # Closed Hat (seq 13) chokes Open Hat (voice 24) via graph-native choke_in port (#172)
+  - from: [13, "events_out"]
+    to:   [24, "choke_in"]
   - from: [14, "events_out"]
     to:   [24, 0]
   - from: [15, "events_out"]

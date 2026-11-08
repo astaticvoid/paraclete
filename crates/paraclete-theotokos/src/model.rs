@@ -295,6 +295,7 @@ pub struct Model {
     pub active_track: usize,
     pub tracks: Vec<TrackInfo>,
     pub clock_id: u32,
+    pub mix_id: u32,
     pub page_windows: Vec<usize>,
     pub caps: HashMap<u32, CapabilityDocument>,
     /// TK1 C3: composite views, one per track — **index-aligned with
@@ -477,6 +478,7 @@ impl Model {
             active_track: 0,
             tracks,
             clock_id,
+            mix_id: crate::MIX_NODE_ID,
             page_windows,
             caps,
             composite,

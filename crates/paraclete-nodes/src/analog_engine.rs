@@ -135,6 +135,9 @@ pub struct AnalogEngine {
     /// In-flight gain ramp for a machine switch (MM §0 D1).
     switch_fade: Option<SwitchFade>,
 
+    /// Remaining samples in a 2 ms click-free choke fade-out triggered via `PORT_CHOKE_IN` (#172).
+    choke_remaining: Option<u32>,
+
     /// MM-C9: one LFO per hosting node (ADR-042 decision 1), ticked once per
     /// 64-sample sub-block in MM-C7's loop.
     lfo: LfoHost,
@@ -149,7 +152,7 @@ pub struct AnalogEngine {
 
     pending_initial_params: HashMap<String, f64>,
 
-    ports: [PortDescriptor; 3],
+    ports: [PortDescriptor; 4],
 }
 
 /// The dest table as **names**, in the same order as `AnalogEngine::LFO_DESTS`.
@@ -287,6 +290,7 @@ impl AnalogEngine {
     pub const PORT_EVENTS_IN:   u32 = 0;
     pub const PORT_AUDIO_OUT_L: u32 = 1;
     pub const PORT_AUDIO_OUT_R: u32 = 2;
+    pub const PORT_CHOKE_IN:    u32 = 3;
 
     pub fn new(machine: AnalogMachine) -> Self {
         let doc = Self::build_doc(machine);
@@ -312,6 +316,7 @@ impl AnalogEngine {
             last_note:   36, // C2 — matches current_hz's initial value
             velocity_level: 1.0,
             switch_fade: None,
+            choke_remaining: None,
             lfo:            LfoHost::new(),
             lfo_phase_path: std::sync::OnceLock::new(),
             render_l:    Vec::new(),
@@ -678,11 +683,12 @@ impl AnalogEngine {
     /// `CompositeView::chain` was empty for every track in the app — no
     /// per-track effect could appear in a track's pages at all. Invisible
     /// until `instrument-fx.yaml` became the first fixture to wire one.
-    fn default_ports() -> [PortDescriptor; 3] {
+    fn default_ports() -> [PortDescriptor; 4] {
         [
             PortDescriptor { id: Self::PORT_EVENTS_IN,   name: "events_in".into(),   direction: PortDirection::Input,  port_type: PortType::Event },
             PortDescriptor { id: Self::PORT_AUDIO_OUT_L, name: "audio_out_l".into(), direction: PortDirection::Output, port_type: PortType::Audio },
             PortDescriptor { id: Self::PORT_AUDIO_OUT_R, name: "audio_out_r".into(), direction: PortDirection::Output, port_type: PortType::Audio },
+            PortDescriptor { id: Self::PORT_CHOKE_IN,    name: "choke_in".into(),    direction: PortDirection::Input,  port_type: PortType::Event },
         ]
     }
 
@@ -756,6 +762,10 @@ impl AnalogEngine {
 
     fn fade_len(&self) -> u32 {
         (MACHINE_SWITCH_FADE_SECS * self.sample_rate).max(1.0) as u32
+    }
+
+    fn choke_fade_len(&self) -> u32 {
+        (0.002 * self.sample_rate).max(1.0) as u32
     }
 
     /// Ramp the rendered block, and once a fade-out reaches silence, swap.
@@ -848,6 +858,7 @@ impl AnalogEngine {
         self.clap_age_samples = 0;
         self.osc_phase = 0.0;
         self.active    = true;
+        self.choke_remaining = None;
         self.lfo.trigger(self.lfo_settings());
     }
 
@@ -899,6 +910,29 @@ impl AnalogEngine {
         if v != 1.0 {
             for s in &mut self.render_l[start..end] { *s *= v; }
             for s in &mut self.render_r[start..end] { *s *= v; }
+        }
+        if let Some(mut left) = self.choke_remaining {
+            let total = self.choke_fade_len() as f32;
+            for i in start..end {
+                if left > 0 {
+                    let g = left as f32 / total;
+                    self.render_l[i] *= g;
+                    self.render_r[i] *= g;
+                    left -= 1;
+                } else {
+                    self.render_l[i] = 0.0;
+                    self.render_r[i] = 0.0;
+                }
+            }
+            if left == 0 {
+                self.choke_remaining = None;
+                self.active = false;
+                self.amp_env = AdState::new();
+                self.body_env = AdState::new();
+                self.noise_env = AdState::new();
+            } else {
+                self.choke_remaining = Some(left);
+            }
         }
     }
 
@@ -1296,6 +1330,7 @@ impl Node for AnalogEngine {
         self.last_note   = 36;
         self.velocity_level = 1.0;
         self.switch_fade = None;
+        self.choke_remaining = None;
         // #169: locks outlive a block now, so a re-activate must retire them —
         // otherwise a lock survives the topology rebuild that killed its note.
         self.node_locks.clear();
@@ -1358,9 +1393,15 @@ impl Node for AnalogEngine {
                                 self.render_span(cursor, off);
                                 cursor = off;
                             }
-                            let velocity = n.velocity() as f32 / 65535.0;
-                            self.retrigger(u8::from(n.note_number()), velocity);
-                            output.emit_debug(off as u32, DebugEventKind::VoiceTrigger, u8::from(n.note_number()) as i64, velocity as f64);
+                            if timed.port_id == Self::PORT_CHOKE_IN {
+                                if self.active && self.choke_remaining.is_none() {
+                                    self.choke_remaining = Some(self.choke_fade_len());
+                                }
+                            } else {
+                                let velocity = n.velocity() as f32 / 65535.0;
+                                self.retrigger(u8::from(n.note_number()), velocity);
+                                output.emit_debug(off as u32, DebugEventKind::VoiceTrigger, u8::from(n.note_number()) as i64, velocity as f64);
+                            }
                         }
                         ChannelVoice2::NoteOff(_) => {}
                         _ => {}
@@ -3317,14 +3358,14 @@ mod tests {
         // lock only exists on the *second* block; a one-block test would pass
         // against an implementation that reads `get_param` (design-process
         // learning 4).
-        let lock = TimedEvent {
-            sample_offset: 0,
-            event: Event::ParamLock(ParamLockEvent {
+        let lock = TimedEvent::new(
+            0,
+            Event::ParamLock(ParamLockEvent {
                 node_id: 20,
                 param_id: ap("machine"),
                 value: AnalogMachine::HiHat.value() as f64,
             }),
-        };
+        );
         for _ in 0..3 {
             let _ = run_engine(&mut eng, std::slice::from_ref(&lock));
             assert_eq!(
@@ -3489,4 +3530,30 @@ mod tests {
             "first note's span keeps its own velocity (solo {solo_peak}, got {first_peak})");
     }
 
+    #[test]
+    fn choke_in_port_smoothly_silences_ringing_open_hat() {
+        let mut eng = AnalogEngine::hihat();
+        eng.activate(44100.0, 512);
+        // Set open = 1.0, decay = 0.8 so the hat rings across multiple blocks
+        eng.bank.set(ap("open"), 1.0);
+        eng.bank.set(ap("decay"), 0.8);
+
+        // Trigger on PORT_EVENTS_IN (0) at sample 0, then send NoteOn on PORT_CHOKE_IN (3) at sample 100
+        let trig = make_note_on(36);
+        let mut choke = make_note_on(36);
+        choke.sample_offset = 100;
+        choke.port_id = AnalogEngine::PORT_CHOKE_IN;
+
+        let out = run_engine(&mut eng, &[trig, choke]);
+        assert!(
+            out[..100].iter().any(|&s| s.abs() > 1e-4),
+            "open hat must ring before choke offset"
+        );
+        // 2 ms at 44100 Hz is ~88 samples; by sample 250 the voice must be completely silent
+        assert!(
+            out[250..].iter().all(|&s| s == 0.0),
+            "open hat must be completely silent after 2ms choke ramp"
+        );
+        assert!(!eng.active, "voice must be inactive after choke completes");
+    }
 }

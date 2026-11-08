@@ -16,6 +16,7 @@ pub mod ladder;
 pub mod lfo;
 pub mod loop_break;
 pub mod mapping;
+pub mod matrix;
 pub mod mix;
 pub mod oscillator;
 pub mod pattern;
@@ -39,6 +40,7 @@ pub use ladder::LadderFilterNode;
 pub use lfo::LfoNode;
 pub use loop_break::LoopBreakNode;
 pub use mapping::SurfaceMappingNode;
+pub use matrix::MatrixNode;
 pub use mix::MixNode;
 pub use oscillator::{OscillatorNode, SineOscillator, midi_note_to_hz};
 pub use pattern::{apply_preset, TrackPreset, TRACKS};
@@ -363,6 +365,7 @@ mod view_validation {
             ("DelayNode", Box::new(delay::DelayNode::new())),
             ("LadderFilterNode", Box::new(ladder::LadderFilterNode::new())),
             ("SplitNode", Box::new(split::SplitNode::new())),
+            ("MatrixNode", Box::new(matrix::MatrixNode::new())),
         ];
         let mut docs: Vec<(String, CapabilityDocument)> = nodes
             .into_iter()

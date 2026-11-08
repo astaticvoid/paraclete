@@ -26,12 +26,18 @@ pub const INNER_KICK_ID: u32 = 2;
 
 pub struct InnerGraphNode {
     executor: Option<NodeExecutor>,
+    /// Stored inner edges `(src_node, src_port, dst_node, dst_port)` for runtime patching.
+    inner_edges: Vec<(u32, u32, u32, u32)>,
+    /// Pending inner node state blobs `(node_id, bytes)` to apply on/after `activate()`.
+    pending_states: Vec<(u32, Vec<u8>)>,
     /// Interleaved stereo output buffer filled by the inner executor each cycle.
     inner_audio_buf: Vec<f32>,
     ports: [PortDescriptor; 3],
     sample_rate: f32,
     block_size: usize,
 }
+
+const IGN_MAGIC: &[u8; 4] = b"IGN1";
 
 impl InnerGraphNode {
     /// Construct with the default inner graph (Sequencer → AnalogEngine::kick()).
@@ -41,6 +47,13 @@ impl InnerGraphNode {
     pub fn new() -> Self {
         InnerGraphNode {
             executor: None,
+            inner_edges: vec![(
+                INNER_SEQ_ID,
+                Sequencer::PORT_EVENTS_OUT,
+                INNER_KICK_ID,
+                AnalogEngine::PORT_EVENTS_IN,
+            )],
+            pending_states: Vec::new(),
             inner_audio_buf: Vec::new(),
             ports: [
                 PortDescriptor {
@@ -77,7 +90,39 @@ impl InnerGraphNode {
         }
     }
 
-    fn build_inner_executor(sample_rate: f32, block_size: usize) -> NodeExecutor {
+    /// Mutate the inner graph topology at runtime (`Fixes #119`).
+    ///
+    /// Drains live inner nodes into a temporary `NodeConfigurator`, reconnects
+    /// existing edges, runs `f`, and rebuilds the inner `NodeExecutor`.
+    pub fn with_configurator<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut NodeConfigurator) -> R,
+    {
+        let mut conf = if let Some(exec) = self.executor.take() {
+            let mut c = NodeConfigurator::new(self.sample_rate, self.block_size);
+            c.restore_nodes(exec.drain_nodes());
+            for &(s, sp, d, dp) in &self.inner_edges {
+                let _ = c.connect(s, sp, d, dp);
+            }
+            c
+        } else {
+            Self::build_default_configurator(self.sample_rate, self.block_size)
+        };
+        for (id, bytes) in self.pending_states.drain(..) {
+            if let Some(node) = conf.node_mut(id) {
+                node.deserialize(&bytes);
+            }
+        }
+        let out = f(&mut conf);
+        self.inner_edges = conf
+            .all_edges()
+            .map(|e| (e.src_node, e.src_port, e.dst_node, e.dst_port))
+            .collect();
+        self.executor = Some(conf.build_executor());
+        out
+    }
+
+    fn build_default_configurator(sample_rate: f32, block_size: usize) -> NodeConfigurator {
         let mut conf = NodeConfigurator::new(sample_rate, block_size);
 
         // Inner Sequencer: pre-activates steps so audio fires without external pattern setup.
@@ -88,8 +133,10 @@ impl InnerGraphNode {
         seq.set_step(4, 60, 32768, true);
         seq.set_step(6, 60, 32768, true);
         conf.add_node(INNER_SEQ_ID, Box::new(seq));
+        conf.set_type_tag_for(INNER_SEQ_ID, "sequencer");
 
         conf.add_node(INNER_KICK_ID, Box::new(AnalogEngine::kick()));
+        conf.set_type_tag_for(INNER_KICK_ID, "analog_engine:kick");
 
         // inner_seq.events_out → inner_kick.events_in
         conf.connect(
@@ -100,7 +147,7 @@ impl InnerGraphNode {
         )
         .expect("InnerGraphNode: inner sequencer → kick connection must succeed");
 
-        conf.build_executor()
+        conf
     }
 }
 
@@ -136,11 +183,28 @@ impl Node for InnerGraphNode {
         self.block_size = block_size;
         // Interleaved stereo: 2 channels × block_size frames.
         self.inner_audio_buf = vec![0.0_f32; 2 * block_size];
-        self.executor = Some(Self::build_inner_executor(sample_rate, block_size));
+
+        let mut conf = if let Some(exec) = self.executor.take() {
+            let mut c = NodeConfigurator::new(sample_rate, block_size);
+            c.restore_nodes(exec.drain_nodes());
+            for &(s, sp, d, dp) in &self.inner_edges {
+                let _ = c.connect(s, sp, d, dp);
+            }
+            c
+        } else {
+            Self::build_default_configurator(sample_rate, block_size)
+        };
+        let mut exec = conf.build_executor();
+        for (id, bytes) in self.pending_states.drain(..) {
+            exec.deserialize_node(id, &bytes);
+        }
+        self.executor = Some(exec);
     }
 
     fn deactivate(&mut self) {
-        // Dropping NodeExecutor deactivates all inner nodes.
+        if let Some(exec) = &self.executor {
+            self.pending_states = exec.serialize_all_nodes();
+        }
         self.executor = None;
         self.inner_audio_buf = Vec::new();
     }
@@ -176,9 +240,64 @@ impl Node for InnerGraphNode {
     }
 
     fn serialize(&self) -> Vec<u8> {
-        vec![]
+        let states: Vec<(u32, Vec<u8>)> = if let Some(exec) = &self.executor {
+            exec.serialize_all_nodes()
+        } else if !self.pending_states.is_empty() {
+            self.pending_states.clone()
+        } else {
+            return Vec::new();
+        };
+
+        let mut out = Vec::new();
+        out.extend_from_slice(IGN_MAGIC);
+        out.extend_from_slice(&(states.len() as u32).to_le_bytes());
+        for (id, bytes) in states {
+            out.extend_from_slice(&id.to_le_bytes());
+            out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+            out.extend_from_slice(&bytes);
+        }
+        out
     }
-    fn deserialize(&mut self, _data: &[u8]) {}
+
+    fn deserialize(&mut self, data: &[u8]) {
+        if data.len() < 8 || &data[0..4] != IGN_MAGIC {
+            return;
+        }
+        let count = u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize;
+        let mut cursor = 8usize;
+        let mut states = Vec::with_capacity(count.min(256));
+        for _ in 0..count {
+            if cursor + 8 > data.len() {
+                break;
+            }
+            let id = u32::from_le_bytes([
+                data[cursor],
+                data[cursor + 1],
+                data[cursor + 2],
+                data[cursor + 3],
+            ]);
+            let len = u32::from_le_bytes([
+                data[cursor + 4],
+                data[cursor + 5],
+                data[cursor + 6],
+                data[cursor + 7],
+            ]) as usize;
+            cursor += 8;
+            if cursor + len > data.len() {
+                break;
+            }
+            states.push((id, data[cursor..cursor + len].to_vec()));
+            cursor += len;
+        }
+
+        if let Some(exec) = &mut self.executor {
+            for (id, bytes) in &states {
+                exec.deserialize_node(*id, bytes);
+            }
+        } else {
+            self.pending_states = states;
+        }
+    }
 }
 
 impl GraphNode for InnerGraphNode {}
@@ -306,5 +425,63 @@ mod tests {
         // This test is in paraclete-app — verified via a separate integration test.
         // Compile-time: InnerGraphNode::new() returns a valid node.
         let _ = InnerGraphNode::new();
+    }
+
+    #[test]
+    fn inner_graph_node_serialize_deserialize_roundtrips_inner_node_state() {
+        use paraclete_node_api::{NodeCommand, ParamDescriptor, CMD_SET_PARAM};
+
+        let mut src = InnerGraphNode::new();
+        src.activate(44100.0, 256);
+
+        // Mutate inner kick's tune to +12.0 via with_configurator + process
+        let tune_id = ParamDescriptor::id_for_name("tune");
+        src.with_configurator(|conf| {
+            let _ = conf.send_command(NodeCommand {
+                target_id: INNER_KICK_ID,
+                type_id: CMD_SET_PARAM,
+                arg0: tune_id as i64,
+                arg1: 12.0,
+            });
+        });
+        let _ = run_ignode(&mut src, &[]);
+
+        let blob = src.serialize();
+        assert!(
+            blob.starts_with(b"IGN1") && blob.len() > 16,
+            "activated InnerGraphNode::serialize() must return non-empty IGN1 state blob"
+        );
+
+        let mut dst = InnerGraphNode::new();
+        dst.activate(44100.0, 256);
+        dst.deserialize(&blob);
+
+        assert_eq!(
+            dst.serialize(),
+            blob,
+            "InnerGraphNode serialize/deserialize must round-trip identically"
+        );
+    }
+
+    #[test]
+    fn inner_graph_node_with_configurator_patches_live_inner_topology() {
+        use paraclete_nodes::FilterNode;
+
+        let mut ignode = InnerGraphNode::new();
+        ignode.activate(44100.0, 256);
+
+        // Patch a FilterNode (id 40) downstream of INNER_KICK_ID (2) at runtime
+        ignode.with_configurator(|conf| {
+            conf.add_node(40, Box::new(FilterNode::new()));
+            conf.connect(INNER_KICK_ID, 1, 40, 0)
+                .expect("connect inner kick -> inner filter");
+        });
+
+        ignode.inject_inner_event(INNER_KICK_ID, make_note_on());
+        let samples = run_ignode(&mut ignode, &[]);
+        assert!(
+            samples.iter().any(|&s| s.abs() > 1e-6),
+            "patched InnerGraphNode with inner filter must render audio"
+        );
     }
 }

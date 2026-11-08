@@ -276,7 +276,7 @@ fn classify_node(node_def: &NodeDef, ids: &mut InstrumentIds) {
         | "fm_voice"
         | "oscillator"
         | "clap_plugin" => ids.generators.push(node_def.id),
-        "distortion" | "filter" | "ladder_filter" | "reverb" | "delay" => {
+        "distortion" | "filter" | "ladder_filter" | "reverb" | "delay" | "matrix" => {
             ids.effects.push(node_def.id)
         }
         _ => {}
