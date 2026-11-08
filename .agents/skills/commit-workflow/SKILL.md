@@ -55,6 +55,7 @@ diff /tmp/clippy-before.txt /tmp/clippy-after.txt
 - Present tense, no trailing period
 - `Fixes #N` or `Refs #N` for issue reference
 - Type prefix: `feat`, `fix`, `docs`, `tool`, `style`, `refactor`, `test`
+- Never include AI `Co-Authored-By` or agent attribution trailers
 
 ## Session close
 

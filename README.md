@@ -1,283 +1,157 @@
 # Paraclete
 
-A live signal graph for instruments, sequencers, controllers, and effects.
-Everything is a node.
+A real-time Rust audio, modulation, and event graph substrate—and a suite of
+"no-DAW" live performance and composition instruments built directly on top of
+it.
 
 ---
 
-## Quick start
+## Core Architecture: Substrate vs. Instruments
+
+Paraclete separates the **universal signal-graph underlay** from the
+**opinionated instruments and control surfaces** that drive it:
+
+1. **The Graph Substrate (`paraclete-node-api`, `paraclete-runtime`, `paraclete-graph-nodes`, `paraclete-nodes`):**
+   Every component—oscillators, filters, envelopes, LFOs, macro drum/FM/sampler
+   engines, step sequencers, effects, clocks, and hardware MIDI controllers—is
+   a first-class `Node` with typed ports (`Audio`, `Modulation`, `Midi2`,
+   `Surface`, `Transport`).
+   - `NodeConfigurator` (main thread, DAG & topological sort) communicates via
+     lock-free SPSC rings (`rtrb`) with `NodeExecutor` (real-time audio thread:
+     zero allocations, zero locks).
+   - Arbitrary single-sample feedback loops are explicit via `LoopBreakNode`.
+   - Subgraphs encapsulate into reusable macro nodes via `InnerGraphNode`.
+   - Any node or subgraph compiles standalone to a `.clap` plugin
+     (`paraclete-clap`) or hosts external `.clap` plugins
+     (`paraclete-clap-host`).
+
+2. **The Live Instruments & Surfaces (`paraclete-theotokos`, `paraclete-app`, `paraclete-antiphon`):**
+   Rather than forcing a mouse-driven DAW timeline, Paraclete exposes the graph
+   through dedicated hardware and keyboard interfaces:
+   - **Theotokos (`paraclete-theotokos`):** Keyboard-first performance terminal
+     designed around a ThinkPad keyboard. 16-step trig grid, parameter-lock
+     authoring, conditional trigs, 8-pattern chains, kit recall, live sampling,
+     and an 8-track drum strip (`Shift+8` / `MIX`).
+   - **Launch Control XL Drum Machine (`lcxl_drum`):** 8-track x0x-style
+     channel-strip drum machine. Each column maps 3 primary synthesis/filter
+     pots and 1 volume fader to a drum voice, while the bottom 16 buttons toggle
+     between Track Focus/Mute and a live 16-step x0x sequencer.
+   - **Launchpad 8×8 Grid & Keystep:** Tactile pad matrix and chromatic/seq
+     input via lock-free ALSA/CPAL MIDI nodes.
+   - **Antiphon & Theoria (`paraclete-antiphon`, `web/`):** Zero-tokio
+     WebSocket/HTTP state & topology bridge serving a companion web interface
+     (acting as the bridge for visual graph patching until the native binary GUI
+     host lands).
+
+---
+
+## Quick Start
 
 ```bash
 # 1. Generate synthesized drum samples (one-time)
 cargo run -p gen-samples
 
-# 2. Run
+# 2. Run default 4-track instrument + Theotokos TUI
 cargo run
+
+# 3. Run full 8-track drum machine (for Launch Control XL + MIX view)
+cargo run -- --instrument=instrument-8track.yaml
 ```
 
-Loads `instrument.yaml`: a 4-track drum machine (kick, snare, hihat, FM bass →
-mix → reverb → output) at 140 BPM. Use `--instrument=<file>` for a different
-graph.
-
-`cargo run` opens **Theotokos**, the keyboard-first performance terminal
-(below). Sequencers start empty — program steps with the keyboard or a
-connected Launchpad. `Ctrl-C` stops; `Esc` is NO/back-out inside Theotokos,
-not quit.
-
-Hardware devices (Novation Launchpad, Elektron Digitakt, Arturia Keystep) open
-if connected and are skipped otherwise.
+Hardware controllers (Launch Control XL, Launchpad X/MK2, Keystep, Digitakt) are
+auto-detected at startup and skipped cleanly if disconnected.
 
 ---
 
-## Keyboard controls
+## Controls
 
-### Theotokos (keyboard-first performance — the default)
+### Launch Control XL (8-Track Drum Machine)
 
-`cargo run` starts the keyboard-first performance terminal; `--theotokos` is
-accepted but does nothing, since this is what you get unless you ask for
-`--emulator` (legacy grid) or `--no-tui` (headless).
-A fixed seven-region panel (ADR-044 D1) with one always-visible 2×8 trig
-strip for the *selected* track, TRK/PTN hold-chords for track/pattern
-select, an explicit ENC mode for the 8-encoder parameter bank, a shared
-p-lock target (latched or momentary), and dedicated Tempo/Settings/Chain
-screens. There is no dedicated Mute screen — mute state lives on the
-always-visible track indicator; TRK+FUNC+trig toggles it.
+| Control | Function |
+|---|---|
+| **Row 1–3 Knobs (Cols 1–8)** | Track 1–8 primary synthesis & filter macros (Tune/Pitch, Decay, Cutoff/Tone) |
+| **Faders 1–8** | Track 1–8 mixer channel level (`MixNode` `input_gain_0..7`) |
+| **Bottom Buttons (`Track` mode)** | Top row = Focus + audition track 1–8; Bottom row = Mute track 1–8 |
+| **Bottom Buttons (`Seq` mode)** | Buttons 1–16 = Step 1–16 toggle for the focused track (with running LED playhead) |
+| **Device Button** | Toggle bottom 16 buttons between `Track` mode and `Seq` (x0x) mode |
+| **Mute Button** | Toggle Mute arm mode between Immediate Mute and Pattern Mute |
+| **Send Select Up / Down** | Master Reverb wet/dry ± |
+| **Track Select Left / Right** | Step focused track ← / → |
 
-**Pads + rec:**
+### Theotokos (Keyboard-First Terminal)
 
 | Key | Action |
 |---|---|
-| `q w e r t y u i` | Trig 1–8 (top row) |
-| `a s d f g h j k` | Trig 9–16 (bottom row) |
-| bare trig (REC off/Live) | play + select that track |
-| `Tab` (hold) + trig | select track silently |
-| `p` (hold) + trig | select pattern |
-| `z` | REC — toggles `Off ↔ Grid` (step-entry); bare trig writes/clears a step in `Grid` |
-| `z` (hold) + `x` | REC + PLAY — escalates to `Live` (engine-side live record) and starts the transport |
-| `x` / `c` | PLAY / STOP (`Space` = PLAY alias) |
-| `Shift+z` / `Shift+x` / `Shift+c` | copy / clear / paste the active lane |
-| `-` / `=` | previous / next 16-step page window |
-
-**Screens:**
-
-| Key | Action |
-|---|---|
-| `1`–`6` | param pages, canonical order TRIG SRC FLTR AMP FX MOD |
-| `7` / `9` | KIT / SAMPLING (reserved) |
-| `8` | SETTINGS (read-only: bpm, kitty status, track/pattern counts, version) |
-| `0` | TEMPO (`Enter` taps tempo) |
-| `o` | SONG — opens the Chain screen |
-| `v` | KEYBD (reserved, chromatic input) |
-| `Esc` | NO — also returns to the Grid screen from any other screen, and clears a set p-lock target |
-| arrows | navigate the current screen (Tempo: ±bpm; Chain: cursor — no-op elsewhere) |
-
-**Encoder mode + p-lock (ADR-044 D9/D15):**
-
-| Key | Action |
-|---|---|
-| `n` | toggle ENC mode — while on, a bare trig jogs encoder *n* (top row up, bottom row down) on **any** screen |
-| `Ctrl` / `Shift` (FUNC) + trig, in ENC mode | fine / coarse jog |
-| `Shift` (FUNC) + top/bottom-row key *n*, ENC off | jog encoder *n* up / down (`Ctrl+FUNC` = fine) |
-| `m` (hold) + trig, in `Grid` | arm a p-lock target (latched — same trig again, `m` again, or `Esc` clears it) |
-| hold a trig in `Grid` (kitty terminals) | set the p-lock target for the duration of the hold (momentary) |
-
-While a p-lock target is set, encoder jog / numpad slots / `:set` write a
-per-step lock instead of the live value.
-
-Numpad slot A/B/C jog remains unwired — formally descoped, not merely
-deferred; ADR-044 D9's ENC mode gives the encoder bank its own
-modifier-free path, so the numpad cluster's fate is an open question for
-a future usability session, not a wiring gap. See BUG-038 —
-`gh issue list --search "BUG-038 in:title" --state all`.
-
-**Other:**
-
-| Key | Action |
-|---|---|
-| `Shift+;` (`:`) | command line |
-| `?` | help |
-| `Backspace` | clear locks |
-| `Ctrl-C` | quit |
-
-### Emulator (legacy grid mirror: `--emulator`)
-
-`cargo run -- --emulator` replaces Theotokos with the 8x8 Launchpad grid
-mapped to the keyboard. Theotokos does not fall back to it, so this flag is
-the only way in:
-```
-1 2 3 4 5 6 7 8   select track row (0–7)
-Q W E R T Y U I   toggle steps in the active row
-A S D F G H J K   scene buttons (page select)
-Z X C V B N M ,   control row (modes / navigation)
-Tab               cycle input mode      Esc / Ctrl-C  quit
-```
+| `q w e r t y u i` / `a s d f g h j k` | Trig 1–8 / Trig 9–16 |
+| `Tab` (hold) + trig | Select track 1–8 silently |
+| `p` (hold) + trig | Select pattern 1–8 |
+| `z` | Toggle `REC` (`Off ↔ Grid` step entry) |
+| `z` (hold) + `x` | Toggle `Live` record + start playback |
+| `x` / `c` (`Space`) | PLAY / STOP |
+| `1`–`6` | Parameter pages (`TRIG`, `SRC`, `FLTR`, `AMP`, `FX`, `MOD`) |
+| `7` / `9` | `KIT` screen / `SAMPLING` screen (`Shift+9` = live transition trick) |
+| `8` / `Shift+8` | `SETTINGS` / `MIX` (8-track drum strip & step overview) |
+| `0` / `o` / `v` | `TEMPO` / `CHAIN` (song mode) / `KEYBD` |
+| `n` | Toggle `ENC` mode (top row increments, bottom row decrements encoders 1–8) |
+| `m` (hold) + trig | Arm parameter-lock target step (or hold step directly in kitty) |
+| `y` / `Y` | Lossless pattern yank (copy) / paste (preserves locks, micro-timing, conditions, note) |
+| `:w [file]` / `:e <file>` | Save project (`.ron` + freezes live RAM captures) / Load project at runtime |
+| `Shift+Enter` / `Shift+Esc` | Temp-save state / Temp-reload state |
+| `Esc` / `Ctrl-C` | Back out to Grid (clear lock target) / Quit |
 
 ---
 
-## Building and testing
+## Build, Test, and Headless Verification
+
+Always pass `--workspace` (bare `cargo test` only runs root binary tests):
 
 ```bash
-# Build (must use --workspace)
 cargo build --workspace
-cargo build --workspace --release
-
-# Test
 cargo test --workspace
 cargo clippy --workspace
-```
 
----
-
-## Architecture
-
-Five-layer model. No layer reaches across another.
-
-| Layer | Crate | License | Responsibility |
-|-------|-------|---------|----------------|
-| L0 HAL | `paraclete-hal` | GPL3 | Audio I/O (cpal), MIDI, terminal emulator |
-| L1 Runtime | `paraclete-runtime` | GPL3 | Node graph, scheduling, clock |
-| L2 Node API | `paraclete-node-api` | **LGPL3** | Contract every node implements; third-party boundary |
-| L3 Nodes | `paraclete-nodes` | GPL3 | Sequencer, engines, effects, samplers |
-| L4 Scripting | `paraclete-scripting` | GPL3 | Rhai sandbox, hardware profiles |
-
-The runtime splits into `NodeConfigurator` (main thread, graph topology) and
-`NodeExecutor` (audio thread, no allocation, no locks). All cross-thread
-communication uses a lock-free ring buffer.
-
-Full architecture reference: `design/architecture-core.md`.
-
----
-
-## Commands
-
-```bash
-# Run
-cargo run                              # instrument.yaml + Theotokos
-cargo run -- --instrument=my.yaml      # custom instrument
-cargo run -- --emulator                # legacy Launchpad grid instead
-cargo run -- --no-tui                  # headless, no terminal UI
-cargo run -- --dev-ui                  # step/pattern on stderr
-cargo run -- --load=project.ron        # restore saved state
-cargo run -- --save=project.ron        # write state at startup (not on quit)
-cargo run -- --theoria-dir=web/packages/app/dist  # serve web client
-cargo run -- --token                   # require a 6-digit code (LAN is open by default)
-
-# Web client
-cd web && npm install && npm run build
-
-# Generate drum samples
-cargo run -p gen-samples
-
-# CLAP plugins — the machine-* crates are the cdylibs; `paraclete-clap` is a
-# plain lib and builds no plugin on its own. Rename the artifact to `.clap`:
-#   target/debug/libparaclete_machine_kick.so  (.dylib on macOS)
-cargo build -p paraclete-machine-kick
-
-# Headless testing
+# Offline DSP test-driver & regression baselines
 cargo run -p test-driver -- --trigger analog_engine:kick --at 1.0 -d 3
 cargo run -p test-driver -- tools/test-driver/tests/kick_reverb_clean.yaml
+
+# Build Web UI bridge (Theoria)
+cd web && npm install && npm run build
+cargo run -- --theoria-dir=web/packages/app/dist
 ```
 
 ---
 
-## Realtime audio (Linux)
+## Workspace Layout
 
-Paraclete requests `SCHED_FIFO` realtime scheduling on the audio thread for
-glitch-free playback under load.  Two paths are tried automatically at startup:
-
-1. **rtkit** — D-Bus service on PipeWire/PulseAudio desktops.  Works with zero
-   configuration on Debian, Ubuntu, Fedora.
-2. **Raw `pthread_setschedparam`** — works if the user has `rtprio` limits
-   (common on Arch via `realtime-privileges`).
-
-**Setup per distro:**
-
-| Distro | Package / config |
-|---|---|
-| Arch | `sudo pacman -S realtime-privileges rtkit && sudo usermod -a -G realtime $USER` (log out/in) |
-| Debian / Ubuntu | `rtkit` is installed with `pipewire` or `pulseaudio` — no extra steps |
-| Fedora | `sudo dnf install realtime-setup && sudo usermod -a -G realtime $USER` (log out/in) |
-| Other | `sudo setcap cap_sys_nice=eip target/release/paraclete` |
-
-If neither path succeeds, audio runs under normal scheduling with a warning —
-fine for light use, may produce underruns under heavy load.
+| Layer / Role | Crate | License | Description |
+|---|---|---|---|
+| **L0 HAL** | `paraclete-hal` | GPL3 | CPAL audio I/O, lock-free MIDI surfaces (LCXL, Launchpad, Keystep), terminal |
+| **L1 Runtime** | `paraclete-runtime` | GPL3 | DAG configurator, lock-free audio executor, state bus |
+| **L2 Node API** | `paraclete-node-api` | **LGPL3** | `Node` trait, `ParameterBank`, `CapabilityDocument`, UMP/commands |
+| **L3 Nodes** | `paraclete-nodes` | GPL3 | Sequencer, Analog/FM/Sampler voices, filters, delay, reverb, primitives |
+| **L3 Subgraphs** | `paraclete-graph-nodes` | GPL3 | `InnerGraphNode` (hierarchical nested executors) |
+| **L4 Scripting** | `paraclete-scripting` | GPL3 | Rhai controller scripts & state-bus subscriptions |
+| **Views** | `paraclete-view-assembly` | GPL3 | Capability-driven parameter page & overlay assembly |
+| **Terminal UI** | `paraclete-theotokos` | GPL3 | Keyboard-first performance workstation & multi-track mixer |
+| **Wire Server** | `paraclete-antiphon` | GPL3 | Blocking WebSocket/HTTP state & topology server |
+| **Plugins** | `paraclete-clap` / `-host` | GPL3 | Export nodes/subgraphs as `.clap` plugins; host external `.clap` plugins |
+| **Binary** | `paraclete-app` | GPL3 | Main runtime, project persistence, hardware surface orchestration |
 
 ---
 
-## Hardware
+## Realtime Audio Setup (Linux)
 
-Connect devices before starting. Detected by USB name substring:
+Paraclete requests `SCHED_FIFO` realtime priority for the audio thread via
+`rtkit` (PipeWire/PulseAudio) or `pthread_setschedparam`:
 
-| Device | Name substring | Fallback |
-|--------|---------------|---------|
-| Novation Launchpad X / MK2 | `"Launchpad"` | Skipped (`--emulator` for the grid) |
-| Elektron Digitakt | `"Digitakt"` | Skipped |
-| Arturia Keystep 37 | `"Keystep"` | Skipped |
-
-Hardware behavior is scripted in Rhai profiles (`profiles/`).
-
----
-
-## What works
-
-- Up to 8 tracks: clock → sequencer → synth → distortion → filter → mix → audio
-  (the shipped `instrument.yaml` wires 4; `instrument-fx.yaml` shows a
-  filter/distortion chain)
-- Analog engine (kick, snare, hihat), FM engine (bass, bell, kick)
-- Sampler with Hermite pitch playback (symphonia WAV loading)
-- Step sequencer: swing, fill A/B, per-step probability and micro-timing,
-  8-pattern bank with cued switching and chain, multi-page (64-step) patterns,
-  page-loop windows, per-track length and speed
-- Per-step CV locks with sample-and-hold output
-- Reverb on master bus
-- Declarative instrument definitions in YAML
-- Theotokos performance terminal: seven-region panel, trig strip, hold-chords,
-  encoder mode, p-locks (the legacy `--emulator` grid remains)
-- Dynamic topology at runtime (`apply_patch`, ~5 ms silence)
-- Single-sample feedback via `LoopBreakNode`
-- `InnerGraphNode`: nodes that own a nested executor
-- Project save/recall in RON (v3 with full sequencer state)
-- CLAP plugin output (`SingleNodePlugin`, `SubgraphPlugin`, five machine-bank `.clap` files)
-- CLAP host: load third-party `.clap` plugins as nodes
-- WebSocket + HTTP interface server + web client
-- Rhai scripting for hardware profiles and state bus subscriptions
-- Headless test-driver with interactive REPL, regression baselines, and
-  structured per-node debug logging
-
----
-
-## Project layout
-
-```
-crates/
-  paraclete-node-api    L2 LGPL3 — Node API (third-party boundary)
-  paraclete-runtime     L1 GPL3  — graph, configurator/executor, state bus
-  paraclete-hal         L0 GPL3  — cpal audio, MIDI, terminal emulator
-  paraclete-nodes       L3 GPL3  — sequencer, engines, effects, samplers
-  paraclete-scripting   L4 GPL3  — Rhai sandbox, hardware event dispatch
-  paraclete-app              GPL3 — binary entry point
-  paraclete-clap             GPL3 — CLAP plugin output
-  paraclete-clap-host        GPL3 — CLAP host (loads third-party .clap files)
-  paraclete-tui              GPL3 — legacy emulator grid UI (display-only)
-  paraclete-theotokos        GPL3 — keyboard-first performance terminal (default)
-  paraclete-graph-nodes      GPL3 — nodes owning an inner executor
-  paraclete-antiphon         GPL3 — WebSocket interface server
-  paraclete-view-assembly    GPL3 — page/rule assembly shared by web + terminal
-  paraclete-machine-*        GPL3 — one CLAP plugin per machine (5 crates)
-tools/
-  gen-samples/          — drum sample generator
-  test-driver/          — headless test/CI harness
-  lpx-debug/            — Launchpad X protocol probe
-profiles/               — Rhai hardware profile scripts
-samples/                — WAV files (not committed)
-web/                    — Theoria web client (npm workspaces: core, app)
-design/                 — architecture docs, ADRs, phase specs/reports
-                          (open bugs + questions are GitHub Issues)
-```
+- **Arch:** `sudo pacman -S realtime-privileges rtkit && sudo usermod -a -G realtime $USER`
+- **Debian/Ubuntu:** Included with `pipewire` / `pulseaudio` (`rtkit`)
+- **Fedora:** `sudo dnf install realtime-setup && sudo usermod -a -G realtime $USER`
+- **Manual capability:** `sudo setcap cap_sys_nice=eip target/release/paraclete`
 
 ---
 
 ## License
 
-`crates/paraclete-node-api` is LGPL3. All other crates are GPL3.
-See `LICENSE` and `crates/paraclete-node-api/LICENSE`.
+`crates/paraclete-node-api` is **LGPL-3.0-or-later** (the third-party node boundary).
+All other crates are **GPL-3.0-or-later**. See `LICENSE` and `crates/paraclete-node-api/LICENSE`.
