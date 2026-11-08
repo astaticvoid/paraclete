@@ -80,7 +80,10 @@ pub use node::{GraphNode, Negotiable, Node};
 
 pub use templates::{ControllerNode, InstrumentNode, SequencerNode, SignalNode};
 
-pub use command::{NodeCommand, CMD_BUMP_PARAM, CMD_SET_PARAM, CMD_TRIGGER};
+pub use command::{
+    NodeCommand, CMD_BUMP_PARAM, CMD_BUMP_PARAM_NORM, CMD_SET_PARAM, CMD_SET_PARAM_NORM,
+    CMD_TRIGGER,
+};
 
 pub use asset::{CaptureBufferReturn, RecorderCapture, SampleData, SwapSample};
 

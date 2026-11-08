@@ -24,6 +24,16 @@ pub const CMD_SET_PARAM: u32 = 0;
 /// arg0 = param_id (u32 cast), arg1 = delta (result clamped to declared range).
 pub const CMD_BUMP_PARAM: u32 = 1;
 
+/// Universal: set a declared parameter from a normalized `0.0..=1.0` value.
+/// `arg0` = `param_id` (`u32` cast), `arg1` = normalized value in `0.0..=1.0`
+/// mapped linearly to `[min, max]` (and rounded for `stepped` parameters).
+pub const CMD_SET_PARAM_NORM: u32 = 2;
+
+/// Universal: adjust a declared parameter by a signed normalized delta (`-1.0..=1.0`).
+/// `arg0` = `param_id` (`u32` cast), `arg1` = normalized delta scaled by `(max - min)`
+/// (or at least one integer step in the direction of `arg1` for `stepped` parameters).
+pub const CMD_BUMP_PARAM_NORM: u32 = 3;
+
 /// Universal instrument command: live-trigger a voice (pad "trigger mode").
 /// arg0 = note number (< 0 → the node's default/last note); arg1 = velocity
 /// 0.0–1.0 (<= 0.0 → default 0.79). Same retrigger path as a `NoteOn` event.

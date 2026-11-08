@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
 use crate::capability::CapabilityDocument;
-use crate::command::{NodeCommand, CMD_BUMP_PARAM, CMD_SET_PARAM};
+use crate::command::{
+    NodeCommand, CMD_BUMP_PARAM, CMD_BUMP_PARAM_NORM, CMD_SET_PARAM, CMD_SET_PARAM_NORM,
+};
 use crate::state_bus::StateBusValue;
 
 struct ParameterSlot {
@@ -11,6 +13,7 @@ struct ParameterSlot {
     min: f64,
     max: f64,
     default: f64,
+    stepped: bool,
 }
 
 /// Pre-allocated parameter storage built from a node's capability document.
@@ -67,6 +70,7 @@ impl ParameterBank {
                 min: p.min,
                 max: p.max,
                 default: p.default,
+                stepped: p.stepped,
             })
             .collect();
         Self {
@@ -107,6 +111,39 @@ impl ParameterBank {
                     let next = s.current + cmd.arg1;
                     if next.is_finite() {
                         s.current = next.clamp(s.min, s.max);
+                    }
+                }
+            } else if cmd.type_id == CMD_SET_PARAM_NORM {
+                let param_id = cmd.arg0 as u32;
+                if let Some(s) = self.slots.iter_mut().find(|s| s.param_id == param_id) {
+                    if cmd.arg1.is_finite() {
+                        let norm = cmd.arg1.clamp(0.0, 1.0);
+                        let mapped = s.min + norm * (s.max - s.min);
+                        if mapped.is_finite() {
+                            let val = if s.stepped { mapped.round() } else { mapped };
+                            s.current = val.clamp(s.min, s.max);
+                        }
+                    }
+                }
+            } else if cmd.type_id == CMD_BUMP_PARAM_NORM {
+                let param_id = cmd.arg0 as u32;
+                if let Some(s) = self.slots.iter_mut().find(|s| s.param_id == param_id) {
+                    if cmd.arg1.is_finite() && cmd.arg1 != 0.0 {
+                        let span = s.max - s.min;
+                        let next = if s.stepped {
+                            let raw_step = (cmd.arg1 * span).round();
+                            let d = if raw_step == 0.0 {
+                                cmd.arg1.signum()
+                            } else {
+                                raw_step
+                            };
+                            (s.current + d).round()
+                        } else {
+                            s.current + cmd.arg1 * span
+                        };
+                        if next.is_finite() {
+                            s.current = next.clamp(s.min, s.max);
+                        }
                     }
                 }
             }
@@ -745,5 +782,63 @@ mod tests {
             (pairs[0].1 - 0.9).abs() < 1e-12,
             "iter_values should reflect mutated value"
         );
+    }
+
+    #[test]
+    fn set_and_bump_param_norm_maps_range_and_respects_stepped() {
+        use crate::capability::{CapabilityDocument, ParamDescriptor, ParamUnit};
+        use std::borrow::Cow;
+
+        let machine_id = ParamDescriptor::id_for_name("machine");
+        let doc = CapabilityDocument {
+            name: Cow::Borrowed("TestNorm"),
+            vendor: Cow::Borrowed("Test"),
+            version: (0, 1, 0),
+            ports: vec![],
+            params: vec![
+                ParamDescriptor {
+                    id: cutoff_id(),
+                    name: "cutoff".into(),
+                    min: 20.0,
+                    max: 1020.0,
+                    default: 520.0,
+                    stepped: false,
+                    in_kit: true,
+                    unit: ParamUnit::Hz,
+                    display: None,
+                },
+                ParamDescriptor {
+                    id: machine_id,
+                    name: "machine".into(),
+                    min: 0.0,
+                    max: 5.0,
+                    default: 0.0,
+                    stepped: true,
+                    in_kit: false,
+                    unit: ParamUnit::Generic,
+                    display: None,
+                },
+            ],
+            extensions: vec![],
+            view: None,
+        };
+
+        let mut bank = ParameterBank::from_capability_document(&doc);
+
+        // CMD_SET_PARAM_NORM on continuous param: 0.25 -> 20 + 0.25 * 1000 = 270.0
+        bank.handle_commands(&[cmd(CMD_SET_PARAM_NORM, cutoff_id(), 0.25)]);
+        assert!((bank.get(cutoff_id()) - 270.0).abs() < 1e-9);
+
+        // CMD_BUMP_PARAM_NORM on continuous param: +0.1 -> +100.0 -> 370.0
+        bank.handle_commands(&[cmd(CMD_BUMP_PARAM_NORM, cutoff_id(), 0.1)]);
+        assert!((bank.get(cutoff_id()) - 370.0).abs() < 1e-9);
+
+        // CMD_SET_PARAM_NORM on stepped param: 0.6 -> 3.0, 0.52 -> rounds to 3.0
+        bank.handle_commands(&[cmd(CMD_SET_PARAM_NORM, machine_id, 0.52)]);
+        assert!((bank.get(machine_id) - 3.0).abs() < 1e-9);
+
+        // Small CMD_BUMP_PARAM_NORM on stepped param advances by at least 1 step
+        bank.handle_commands(&[cmd(CMD_BUMP_PARAM_NORM, machine_id, 0.02)]);
+        assert!((bank.get(machine_id) - 4.0).abs() < 1e-9);
     }
 }

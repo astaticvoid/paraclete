@@ -3,6 +3,7 @@ pub mod app_ops;
 pub mod builder;
 pub mod instrument;
 pub mod kit;
+pub mod lcxl_drum;
 pub mod patch;
 pub mod perform_state;
 pub mod project;

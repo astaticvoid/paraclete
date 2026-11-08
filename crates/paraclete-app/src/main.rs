@@ -15,12 +15,13 @@ use paraclete_antiphon::view::ViewRegistry;
 use paraclete_antiphon::{AntiphonConfig, AntiphonHandle, AntiphonServer};
 use paraclete_app::builder::{build_from_instrument, load_instrument_definition, InstrumentIds};
 use paraclete_app::instrument::InstrumentDefinition;
+use paraclete_app::lcxl_drum::{LcxlDrumController, ID_LCXL};
 use paraclete_app::perform_state::PerformState;
 use paraclete_app::project::{load_project_v3, save_project_v3, ProfileBinding, ProjectMetadata};
 use paraclete_clap_host::{scan_clap_paths, PluginLibrary};
 use paraclete_hal::{
     query_sample_rate, DigitaktMidiNode, InputStreamHandle, KeystepNode,
-    LaunchpadEmulator, LaunchpadNode,
+    LaunchpadEmulator, LaunchpadNode, LcxlNode,
 };
 use paraclete_nodes::{AudioInputNode, ScriptEventConsumer, ScriptingGatewayNode};
 use paraclete_runtime::NodeConfigurator;
@@ -40,6 +41,7 @@ const ID_GW_LP: u32 = 110;
 const ID_GW_DT: u32 = 111;
 const ID_GW_KS: u32 = 112;
 const ID_GW_THEORIA: u32 = 113;
+const ID_GW_LCXL: u32 = 114;
 /// AN1 D4: id 61, adjacent to `AudioOutput`'s 60 — both are HAL-facing
 /// endpoints. Not in `NodeRegistry`/YAML — see `try_open_audio_input`.
 const ID_AUDIO_INPUT: u32 = 61;
@@ -173,6 +175,7 @@ fn main() {
     let launchpad_id = try_open_launchpad(&mut conf, no_emulator);
     let digitakt_id = try_open_digitakt(&mut conf);
     let keystep_id = try_open_keystep(&mut conf);
+    let lcxl_id = try_open_lcxl(&mut conf);
 
     let mut consumer_lp: Option<ScriptEventConsumer> = None;
     if let Some(lp_dev_id) = launchpad_id {
@@ -196,6 +199,16 @@ fn main() {
         conf.add_node(ID_GW_KS, Box::new(gw_ks));
         conf.connect(kid, 0, ID_GW_KS, 0).ok();
         consumer_ks = Some(cons);
+    }
+
+    let mut consumer_lcxl: Option<ScriptEventConsumer> = None;
+    let mut lcxl_ctrl: Option<LcxlDrumController> = None;
+    if let Some(lid) = lcxl_id {
+        let (gw_lcxl, cons) = ScriptingGatewayNode::new(lid, 256);
+        conf.add_node(ID_GW_LCXL, Box::new(gw_lcxl));
+        conf.connect(lid, 0, ID_GW_LCXL, 0).ok();
+        consumer_lcxl = Some(cons);
+        lcxl_ctrl = Some(LcxlDrumController::new(&ids, &mut conf));
     }
 
     // ── 5. Project load (before executor — nodes still in configurator) ──────
@@ -598,8 +611,16 @@ fn main() {
         if let Some(ref mut c) = consumer_theoria {
             c.drain(&mut event_buf);
         }
+        if let Some(ref mut c) = consumer_lcxl {
+            c.drain(&mut event_buf);
+        }
 
         for ev in &event_buf {
+            if ev.device_id == ID_LCXL {
+                if let Some(ref mut ctrl) = lcxl_ctrl {
+                    ctrl.handle_event(ev.event, &mut conf);
+                }
+            }
             scripting.dispatch_surface_event(ev);
         }
 
@@ -679,6 +700,9 @@ fn main() {
         }
         if !led_output.is_empty() {
             conf.deliver_script_output(led_output);
+        }
+        if let Some(ref mut ctrl) = lcxl_ctrl {
+            ctrl.tick_leds(&mut conf);
         }
 
         if let Some((ref mut tk, ref mut terminal)) = theotokos_opt {
@@ -1307,6 +1331,17 @@ fn try_open_keystep(conf: &mut NodeConfigurator) -> Option<u32> {
             conf.add_surface(ID_KEYSTEP, Box::new(node));
             eprintln!("[paraclete] Keystep connected");
             Some(ID_KEYSTEP)
+        }
+        Err(_) => None,
+    }
+}
+
+fn try_open_lcxl(conf: &mut NodeConfigurator) -> Option<u32> {
+    match LcxlNode::open() {
+        Ok(node) => {
+            conf.add_surface(ID_LCXL, Box::new(node));
+            eprintln!("[paraclete] Launch Control XL connected");
+            Some(ID_LCXL)
         }
         Err(_) => None,
     }

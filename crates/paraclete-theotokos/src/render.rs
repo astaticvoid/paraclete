@@ -585,34 +585,124 @@ fn legend_chips_for_screen(screen: Screen, enc: bool) -> Vec<LegendChip> {
     }
 }
 
-/// TK3 C2: the MIX screen — one row per track with a block-element level
-/// bar and the gain value, then a MASTER row. The encoder bank's columns
-/// 1..N map to those track rows (column 8 = master); the jog dispatch in
-/// lib.rs routes them to the MixNode's `input_gain_{n}` / `master_gain`.
+/// TK3 C2 + Drum Strip: the MIX screen — one row per track with selection
+/// marker, mute status, block-element level bar, two-decimal gain value, and
+/// a live 16-step drum strip (`▪`/`·` grouped in 4s with playhead highlight),
+/// followed by a MASTER row. The encoder bank's columns 1..N map to those
+/// track rows (column 8 = master), matching the Launch Control XL fader bank.
 fn render_mix_screen(frame: &mut Frame, area: Rect, data: &RenderData) {
     let mut lines: Vec<Line> = Vec::new();
+    let base_step = data.page_window * 16;
     for (i, name) in data.display_names.iter().enumerate() {
         let gain = data.mix_gains.get(i).copied().unwrap_or(0.0);
-        lines.push(level_line(name, gain, Color::Cyan));
+        let is_selected = i == data.active_track;
+        let muted = data.mute_states.get(i).copied().unwrap_or(false);
+        let pat_muted = data.pattern_muted_states.get(i).copied().unwrap_or(false);
+        let st = data.step_states.get(i).unwrap_or(&data.step_state);
+        lines.push(drum_strip_line(
+            name,
+            gain,
+            is_selected,
+            muted,
+            pat_muted,
+            Some((st, base_step, data.playing)),
+            Color::Cyan,
+        ));
     }
-    lines.push(level_line("MASTER", data.mix_master, Color::Yellow));
+    lines.push(drum_strip_line(
+        "MASTER",
+        data.mix_master,
+        false,
+        false,
+        false,
+        None,
+        Color::Yellow,
+    ));
     frame.render_widget(
         Paragraph::new(lines).style(Style::default().fg(Color::White)),
         area,
     );
 }
 
-/// One MIX row: ` name  ████░░░░ 1.20` — a block bar scaled over the
-/// MixNode's 0.0–2.0 gain range and the two-decimal value.
-fn level_line(name: &str, value: f64, color: Color) -> Line<'static> {
+/// One MIX / Drum Strip row:
+/// `▸   Kick  ████░░░░ 1.00  ▪··· ▪··· ▪··· ▪···`
+fn drum_strip_line(
+    name: &str,
+    value: f64,
+    is_selected: bool,
+    muted: bool,
+    pat_muted: bool,
+    steps_info: Option<(&StepState, usize, bool)>,
+    color: Color,
+) -> Line<'static> {
     let ratio = (value / 2.0).clamp(0.0, 1.0);
     let filled = (ratio * 8.0).round() as usize;
     let bar = "█".repeat(filled) + &"░".repeat(8 - filled);
-    Line::from(vec![
-        Span::styled(format!(" {:>7} ", name), Style::default().fg(Color::White)),
-        Span::styled(format!("{bar} "), Style::default().fg(color)),
+    let sel_glyph = if is_selected { "▸" } else { " " };
+    let mute_glyph = if muted {
+        "●"
+    } else if pat_muted {
+        "◌"
+    } else {
+        " "
+    };
+    let name_style = if is_selected {
+        Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD)
+    } else if muted {
+        Style::default().fg(Color::Gray)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    let mute_color = if muted {
+        Color::Red
+    } else if pat_muted {
+        Color::Yellow
+    } else {
+        Color::Gray
+    };
+    let bar_color = if muted { Color::Gray } else { color };
+
+    let mut spans = vec![
+        Span::styled(
+            sel_glyph.to_string(),
+            Style::default().fg(if is_selected {
+                Color::Green
+            } else {
+                Color::Gray
+            }),
+        ),
+        Span::styled(format!("{:>7}", name), name_style),
+        Span::styled(format!("{mute_glyph} "), Style::default().fg(mute_color)),
+        Span::styled(format!("{bar} "), Style::default().fg(bar_color)),
         Span::raw(format!("{:.2}", value)),
-    ])
+    ];
+
+    if let Some((st, base_step, playing)) = steps_info {
+        spans.push(Span::raw("  "));
+        for col in 0..16 {
+            if col > 0 && col % 4 == 0 {
+                spans.push(Span::raw(" "));
+            }
+            let step = base_step + col;
+            let active = st.steps.get(step).copied().unwrap_or(false);
+            let is_head = (playing || st.current_step > 0) && step == st.current_step;
+            let glyph = if active { "▪" } else { "·" };
+            let style = if is_head {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::REVERSED)
+            } else if active {
+                Style::default().fg(if muted { Color::Gray } else { Color::Cyan })
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            spans.push(Span::styled(glyph, style));
+        }
+    }
+
+    Line::from(spans)
 }
 
 /// TK2.1 C2 (D4): greedily fills line 0, then line 1, from an ordered chip
@@ -2093,6 +2183,43 @@ mod tests {
         assert!(
             text.contains("0.50") && text.contains("0.80"),
             "gain values must render; got: {text}"
+        );
+    }
+
+    #[test]
+    fn mix_screen_renders_multi_track_drum_strip_steps_and_mute_state() {
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        let mut data = RenderData::for_test(Screen::Mix, 2);
+        data.display_names = vec!["Kick".into(), "Snare".into()];
+        data.mix_gains = vec![1.0, 0.5];
+        data.mute_states = vec![false, true];
+        let mut kick_steps = StepState {
+            steps: vec![false; 16],
+            ..StepState::default()
+        };
+        kick_steps.steps[0] = true;
+        kick_steps.steps[4] = true;
+        kick_steps.steps[8] = true;
+        kick_steps.steps[12] = true;
+        let snare_steps = StepState {
+            steps: vec![false; 16],
+            ..StepState::default()
+        };
+        data.step_states = vec![kick_steps, snare_steps];
+
+        terminal.draw(|f| render(f, &data)).unwrap();
+        let kick_row = find_row(&terminal, 24, 80, "1.00");
+        let kick_line = buffer_row_text(&terminal, kick_row, 80);
+        assert!(
+            kick_line.contains("▪··· ▪··· ▪··· ▪···"),
+            "Kick row on MIX screen must show 4-on-the-floor 16-step drum strip; got: {kick_line:?}"
+        );
+        let snare_row = find_row(&terminal, 24, 80, "0.50");
+        let snare_line = buffer_row_text(&terminal, snare_row, 80);
+        assert!(
+            snare_line.contains("Snare●"),
+            "Muted Snare row on MIX screen must show mute indicator; got: {snare_line:?}"
         );
     }
 

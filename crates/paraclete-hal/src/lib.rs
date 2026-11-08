@@ -9,6 +9,7 @@ pub mod digitakt;
 pub mod emulator;
 pub mod keystep;
 pub mod launchpad;
+pub mod lcxl;
 pub mod midi;
 #[cfg(target_os = "linux")]
 mod rtkit;
@@ -21,4 +22,5 @@ pub use digitakt::DigitaktMidiNode;
 pub use emulator::LaunchpadEmulator;
 pub use keystep::KeystepNode;
 pub use launchpad::LaunchpadNode;
+pub use lcxl::LcxlNode;
 pub use midi::{MidiDeviceError, MidiDeviceRegistry};
