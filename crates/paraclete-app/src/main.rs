@@ -15,6 +15,7 @@ use paraclete_antiphon::view::ViewRegistry;
 use paraclete_antiphon::{AntiphonConfig, AntiphonHandle, AntiphonServer};
 use paraclete_app::builder::{build_from_instrument, load_instrument_definition, InstrumentIds};
 use paraclete_app::instrument::InstrumentDefinition;
+use paraclete_app::launchpad_matrix::LaunchpadMatrixController;
 use paraclete_app::lcxl_drum::{LcxlDrumController, ID_LCXL};
 use paraclete_app::perform_state::PerformState;
 use paraclete_app::project::{load_project_v3, save_project_v3, ProfileBinding, ProjectMetadata};
@@ -178,11 +179,19 @@ fn main() {
     let lcxl_id = try_open_lcxl(&mut conf);
 
     let mut consumer_lp: Option<ScriptEventConsumer> = None;
+    let mut lp_matrix_ctrl: Option<LaunchpadMatrixController> = None;
     if let Some(lp_dev_id) = launchpad_id {
         let (gw_lp, cons) = ScriptingGatewayNode::new(lp_dev_id, 512);
         conf.add_node(ID_GW_LP, Box::new(gw_lp));
         conf.connect(lp_dev_id, 0, ID_GW_LP, 0).ok();
         consumer_lp = Some(cons);
+        lp_matrix_ctrl = LaunchpadMatrixController::from_graph(&conf, lp_dev_id);
+        if let Some(ref ctrl) = lp_matrix_ctrl {
+            eprintln!(
+                "[paraclete] Launchpad Matrix controller bound to MatrixNode ({})",
+                ctrl.matrix_id()
+            );
+        }
     }
 
     let mut consumer_dt: Option<ScriptEventConsumer> = None;
@@ -630,6 +639,11 @@ fn main() {
                     ctrl.handle_event(ev.event, &mut conf);
                 }
             }
+            if Some(ev.device_id) == launchpad_id {
+                if let Some(ref mut ctrl) = lp_matrix_ctrl {
+                    ctrl.handle_event(ev.event, &mut conf);
+                }
+            }
             scripting.dispatch_surface_event(ev);
         }
 
@@ -711,6 +725,9 @@ fn main() {
             conf.deliver_script_output(led_output);
         }
         if let Some(ref mut ctrl) = lcxl_ctrl {
+            ctrl.tick_leds(&mut conf);
+        }
+        if let Some(ref mut ctrl) = lp_matrix_ctrl {
             ctrl.tick_leds(&mut conf);
         }
 

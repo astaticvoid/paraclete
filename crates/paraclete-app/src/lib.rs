@@ -3,6 +3,7 @@ pub mod app_ops;
 pub mod builder;
 pub mod instrument;
 pub mod kit;
+pub mod launchpad_matrix;
 pub mod lcxl_drum;
 pub mod patch;
 pub mod perform_state;
@@ -10,6 +11,7 @@ pub mod project;
 pub mod registry;
 pub mod sample_pool;
 
+pub use launchpad_matrix::LaunchpadMatrixController;
 pub use patch::{apply_patch, PatchError, TopologyChange};
 pub use registry::{build_registry, NodeRegistry};
 

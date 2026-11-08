@@ -44,6 +44,8 @@ pub struct MatrixNode {
     sample_rate: f32,
     smooth_coeff: f32,
     active_mask_path: OnceLock<String>,
+    in_activity_path: OnceLock<String>,
+    in_peaks: [f32; MATRIX_SIZE],
     pending_initial_params: HashMap<String, f64>,
 }
 
@@ -69,6 +71,8 @@ impl MatrixNode {
             sample_rate: 44100.0,
             smooth_coeff: Self::compute_coeff(44100.0),
             active_mask_path: OnceLock::new(),
+            in_activity_path: OnceLock::new(),
+            in_peaks: [0.0; MATRIX_SIZE],
             pending_initial_params: HashMap::new(),
         }
     }
@@ -192,6 +196,17 @@ impl Node for MatrixNode {
             .active_mask_path
             .get_or_init(|| format!("/node/{}/state/active_cells", self.node_id));
         buf.push((path.clone(), StateBusValue::Int(mask)));
+
+        let mut packed_levels: i64 = 0;
+        for row in 0..MATRIX_SIZE {
+            let peak = self.in_peaks[row].clamp(0.0, 1.0);
+            let byte = (peak * 255.0).round() as u8;
+            packed_levels |= (byte as i64) << (row * 8);
+        }
+        let in_path = self
+            .in_activity_path
+            .get_or_init(|| format!("/node/{}/state/in_levels", self.node_id));
+        buf.push((in_path.clone(), StateBusValue::Int(packed_levels)));
     }
 
     fn activate(&mut self, sample_rate: f32, _block_size: usize) {
@@ -206,6 +221,7 @@ impl Node for MatrixNode {
         for i in 0..CELL_COUNT {
             self.smoothed[i] = self.bank.get(self.cell_ids[i]) as f32;
         }
+        self.in_peaks = [0.0; MATRIX_SIZE];
         self.node_locks.clear();
     }
 
@@ -258,6 +274,39 @@ impl Node for MatrixNode {
         let mut out_0_scratch = [0.0f32; 2048];
         let mut out_1_scratch = [0.0f32; 2048];
         let frames = block_size.min(2048);
+
+        // Track peak signal level per input row for LED visualization and metering
+        for row in 0..MATRIX_SIZE {
+            let mut peak = 0.0f32;
+            if has_cv_in[row] {
+                for &s in cv_ins[row].iter().take(frames) {
+                    let a = s.abs();
+                    if a > peak {
+                        peak = a;
+                    }
+                }
+            } else if row == 0 {
+                if let Some(s) = audio_in_l {
+                    for &val in s.iter().take(frames) {
+                        let a = val.abs();
+                        if a > peak {
+                            peak = a;
+                        }
+                    }
+                }
+            } else if row == 1 {
+                if let Some(s) = audio_in_r {
+                    for &val in s.iter().take(frames) {
+                        let a = val.abs();
+                        if a > peak {
+                            peak = a;
+                        }
+                    }
+                }
+            }
+            // Smoothly decay previous peak while capturing new maxima
+            self.in_peaks[row] = (self.in_peaks[row] * 0.95).max(peak);
+        }
 
         // Advance smoothed weights sample-by-sample and compute all 8 output columns.
         let initial_smoothed = self.smoothed;

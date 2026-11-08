@@ -32,7 +32,7 @@ fn build_surface() -> SurfaceDescriptor {
                 row: Some(row),
                 col: Some(col),
                 velocity_sensitive: true,
-                pressure_sensitive: false,
+                pressure_sensitive: true,
                 rgb: true,
             }));
         }
@@ -161,6 +161,16 @@ fn parse_launchpad_midi(bytes: &[u8]) -> Option<SurfaceEvent> {
             }
             if let Some(id) = lp_x_top_cc_to_id(note) {
                 return Some(SurfaceEvent::ButtonReleased { id });
+            }
+            None
+        }
+        0xA0 => {
+            // Polyphonic Aftertouch (key pressure on Launchpad X pads)
+            if let Some(id) = lp_x_note_to_pad_id(note) {
+                return Some(SurfaceEvent::PadPressure {
+                    id,
+                    pressure: (vel as u16) << 9,
+                });
             }
             None
         }
@@ -487,6 +497,15 @@ mod tests {
     fn parse_note_on_vel_zero_gives_released() {
         let ev = parse_launchpad_midi(&[0x90, 81, 0]);
         assert!(matches!(ev, Some(SurfaceEvent::PadReleased { id: 0 })));
+    }
+
+    #[test]
+    fn parse_poly_aftertouch_gives_pad_pressure() {
+        let ev = parse_launchpad_midi(&[0xA0, 81, 100]);
+        assert!(matches!(
+            ev,
+            Some(SurfaceEvent::PadPressure { id: 0, pressure }) if pressure == 100 << 9
+        ));
     }
 
     #[test]
