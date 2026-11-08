@@ -11,11 +11,8 @@
 //!
 //! Top round buttons: CC 91–98. Bottom-row round buttons (scene): notes 19,29,…,89.
 
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-
 use paraclete_node_api::{
-    CapabilityDocument, Control, Event, LedUpdate, Node, PadDescriptor, PortDescriptor,
+    CapabilityDocument, Control, Event, Node, PadDescriptor, PortDescriptor,
     PortDirection, PortName, PortType, ProcessInput, ProcessOutput, RgbColor, Surface,
     SurfaceDescriptor, SurfaceEvent, SurfaceOutput, SurfaceOutputHandle, TimedEvent,
 };
@@ -198,31 +195,24 @@ pub struct LaunchpadOutputHandle {
     initialised: bool,
 }
 
-/// Velocity index for the Launchpad X's 128-colour static palette.
-fn rgb_to_lp_x_velocity(c: RgbColor) -> u8 {
-    // Threshold: treat anything below 32 on all channels as off.
-    let max = c.r.max(c.g).max(c.b);
-    if max < 32 {
-        return 0;
-    }
-
-    // Map to nearest LPX palette entry by dominant channel.
-    if c == RgbColor::GREEN {
-        return 87;
-    }
-    if c == RgbColor::RED {
-        return 5;
-    }
-    if c == RgbColor::BLUE {
-        return 67;
-    }
-    if c.g >= c.r && c.g >= c.b {
-        87
-    } else if c.r >= c.b {
-        5
-    } else {
-        67
-    }
+/// Build a Launchpad X 24-bit RGB Lighting SysEx message for a single pad/button.
+/// `F0 00 20 29 02 0C 03 03 <index> <r 0..127> <g 0..127> <b 0..127> F7`.
+fn build_lp_x_rgb_sysex(note: u8, c: RgbColor) -> [u8; 13] {
+    [
+        0xF0,
+        0x00,
+        0x20,
+        0x29,
+        0x02,
+        0x0C,
+        0x03,
+        0x03,
+        note,
+        c.r >> 1,
+        c.g >> 1,
+        c.b >> 1,
+        0xF7,
+    ]
 }
 
 /// pad ID 0–63 → Launchpad X programmer-mode note (row 0 = top → phys row 8).
@@ -246,14 +236,14 @@ impl LaunchpadOutputHandle {
             } else {
                 continue;
             };
-            let vel = rgb_to_lp_x_velocity(update.color);
-            eprintln!(
-                "[lpx] note={note} vel={vel} (ctrl_id={})",
-                update.control_id
-            );
-            let result = self.conn_out.send(&[0x90, note, vel]);
-            if result.is_err() {
-                eprintln!("[lpx] send failed!");
+            let result = if update.color == RgbColor::OFF {
+                self.conn_out.send(&[0x90, note, 0])
+            } else {
+                let sysex = build_lp_x_rgb_sysex(note, update.color);
+                self.conn_out.send(&sysex)
+            };
+            if let Err(e) = result {
+                log::warn!("[launchpad] LED send failed: {e}");
             }
         }
     }
@@ -282,7 +272,7 @@ impl SurfaceOutputHandle for LaunchpadOutputHandle {
     }
 
     fn deliver(&mut self, output: SurfaceOutput) {
-        eprintln!("[lpx-deliver] {} LED updates", output.led_updates.len());
+        log::debug!("[launchpad] delivering {} LED updates", output.led_updates.len());
         self.send_led_updates(&output);
     }
 }
@@ -294,8 +284,7 @@ pub struct LaunchpadNode {
     node_id: u32,
     _conn_in: midir::MidiInputConnection<()>,
     conn_out: Option<midir::MidiOutputConnection>,
-    incoming: Arc<Mutex<VecDeque<SurfaceEvent>>>,
-    hw_out_tx: rtrb::Producer<SurfaceOutput>,
+    incoming_rx: rtrb::Consumer<SurfaceEvent>,
     hw_out_rx: Option<rtrb::Consumer<SurfaceOutput>>,
     surface: SurfaceDescriptor,
 }
@@ -304,8 +293,7 @@ impl LaunchpadNode {
     /// Open the Launchpad X on its standard MIDI port ("LPX MIDI").
     /// Falls back to any port containing "Launchpad" if the X is not found.
     pub fn open() -> Result<Self, MidiDeviceError> {
-        let incoming = Arc::new(Mutex::new(VecDeque::<SurfaceEvent>::new()));
-        let incoming_cb = Arc::clone(&incoming);
+        let (mut incoming_tx, incoming_rx) = rtrb::RingBuffer::<SurfaceEvent>::new(256);
 
         // Step 1: Reset any stuck DAW/Session state via the DAW port.
         // The spec requires: "When the DAW/software exits, it should send SysEx to revert
@@ -324,7 +312,7 @@ impl LaunchpadNode {
             if !daw_port.is_empty() {
                 if let Ok(mut c) = MidiDeviceRegistry::new().and_then(|r| r.open_output(daw_port)) {
                     let _ = c.send(&[0xF0, 0x00, 0x20, 0x29, 0x02, 0x0C, 0x10, 0x00, 0xF7]);
-                    eprintln!("[launchpad] reset: DAW mode → Standalone");
+                    log::info!("[launchpad] reset: DAW mode → Standalone");
                     std::thread::sleep(std::time::Duration::from_millis(50));
                 }
             }
@@ -348,20 +336,18 @@ impl LaunchpadNode {
         // Step 3: Enter Programmer Mode.
         std::thread::sleep(std::time::Duration::from_millis(50));
         let _ = conn_out.send(&[0xF0, 0x00, 0x20, 0x29, 0x02, 0x0C, 0x00, 0x7F, 0xF7]);
-        eprintln!("[launchpad] Programmer Mode SysEx sent");
+        log::info!("[launchpad] Programmer Mode SysEx sent");
         std::thread::sleep(std::time::Duration::from_millis(100));
 
         // Step 4: Open input.
         let reg_in = MidiDeviceRegistry::new()?;
         let conn_in = reg_in.open_input(port_in, move |_ts, bytes, _| {
             if let Some(ev) = parse_launchpad_midi(bytes) {
-                if let Ok(mut q) = incoming_cb.try_lock() {
-                    q.push_back(ev);
-                }
+                let _ = incoming_tx.push(ev);
             }
         })?;
 
-        let (tx, rx) = rtrb::RingBuffer::<SurfaceOutput>::new(64);
+        let (_tx, rx) = rtrb::RingBuffer::<SurfaceOutput>::new(64);
 
         Ok(Self {
             ports: [PortDescriptor {
@@ -373,8 +359,7 @@ impl LaunchpadNode {
             node_id: 0,
             _conn_in: conn_in,
             conn_out: Some(conn_out),
-            incoming,
-            hw_out_tx: tx,
+            incoming_rx,
             hw_out_rx: Some(rx),
             surface: build_surface(),
         })
@@ -416,12 +401,10 @@ impl Node for LaunchpadNode {
     }
 
     fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
-        if let Ok(mut q) = self.incoming.try_lock() {
-            while let Some(ev) = q.pop_front() {
-                output
-                    .events_out
-                    .push(TimedEvent::new(0, Event::Surface(ev)));
-            }
+        while let Ok(ev) = self.incoming_rx.pop() {
+            output
+                .events_out
+                .push(TimedEvent::new(0, Event::Surface(ev)));
         }
     }
 }
@@ -431,18 +414,8 @@ impl Surface for LaunchpadNode {
         &self.surface
     }
 
-    fn update_output(&mut self, output: &SurfaceOutput) {
-        let _ = self.hw_out_tx.push(SurfaceOutput {
-            led_updates: output
-                .led_updates
-                .iter()
-                .map(|u| LedUpdate {
-                    control_id: u.control_id,
-                    color: u.color,
-                })
-                .collect(),
-            display_updates: vec![],
-        });
+    fn update_output(&mut self, _output: &SurfaceOutput) {
+        // LED updates are delivered on the main thread via `LaunchpadOutputHandle::deliver`.
     }
 
     fn take_output_handle(&mut self) -> Option<Box<dyn SurfaceOutputHandle>> {
@@ -533,5 +506,14 @@ mod tests {
     fn parse_scene_button_cc_release_gives_button_released() {
         let ev = parse_launchpad_midi(&[0xB0, 89, 0]);
         assert!(matches!(ev, Some(SurfaceEvent::ButtonReleased { id: 64 })));
+    }
+
+    #[test]
+    fn build_lp_x_rgb_sysex_preserves_distinct_rgb_channels() {
+        let amber = build_lp_x_rgb_sysex(81, RgbColor { r: 240, g: 120, b: 0 });
+        assert_eq!(
+            amber,
+            [0xF0, 0x00, 0x20, 0x29, 0x02, 0x0C, 0x03, 0x03, 81, 120, 60, 0, 0xF7]
+        );
     }
 }

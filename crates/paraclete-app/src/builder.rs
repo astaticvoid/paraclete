@@ -4,13 +4,11 @@ use std::sync::Arc;
 
 use paraclete_clap_host::PluginLibrary;
 use paraclete_node_api::Node;
-use paraclete_nodes::{
-    AnalogEngine, AudioOutputNode, DistortionNode, FilterNode, FmEngine, FmVoice, InternalClock,
-    MixNode, ReverbNode, Sampler, Sequencer,
-};
+use paraclete_nodes::{InternalClock, MixNode, Sampler, Sequencer};
 use paraclete_runtime::NodeConfigurator;
 
 use crate::instrument::{InstrumentDefinition, InstrumentError, NodeDef};
+use crate::registry::{build_registry, NodeRegistry};
 use crate::sample_pool::SamplePool;
 
 #[derive(Debug)]
@@ -71,13 +69,26 @@ pub fn build_from_instrument(
     };
 
     // Map from node_id → (port_name_lowercase → port_id) for name resolution.
+    // Pre-populate with any hardware/endpoint nodes already registered in `conf`
+    // before `build_from_instrument` (e.g. `AudioInputNode` id 61).
     let mut port_names: HashMap<u32, HashMap<String, u32>> = HashMap::new();
+    for (existing_id, existing_node) in conf.all_nodes() {
+        let map: HashMap<String, u32> = existing_node
+            .ports()
+            .iter()
+            .map(|p| (p.name.as_str().to_ascii_lowercase(), p.id))
+            .collect();
+        port_names.insert(existing_id, map);
+    }
+
+    let registry = build_registry();
 
     for node_def in &def.nodes {
         if !seen_ids.insert(node_def.id) {
             return Err(InstrumentError::DuplicateNodeId(node_def.id));
         }
-        let mut node = construct_node(node_def, def.bpm, sr, block, libraries, sample_pool)?;
+        let mut node =
+            construct_node(node_def, def.bpm, sr, block, libraries, sample_pool, &registry)?;
         if !node_def.initial_params.is_empty() {
             node.set_initial_params(&node_def.initial_params);
         }
@@ -129,6 +140,7 @@ fn construct_node(
     block_size: usize,
     libraries: &HashMap<String, Arc<PluginLibrary>>,
     sample_pool: &mut SamplePool,
+    registry: &NodeRegistry,
 ) -> Result<Box<dyn Node>, InstrumentError> {
     let tag = node_def.type_tag.as_str();
     let node: Box<dyn Node> = match tag {
@@ -176,15 +188,6 @@ fn construct_node(
             }
             Box::new(s)
         }
-        "analog_engine:kick" => Box::new(AnalogEngine::kick()),
-        "analog_engine:snare" => Box::new(AnalogEngine::snare()),
-        "analog_engine:hihat" => Box::new(AnalogEngine::hihat()),
-        "fm_engine:kick" => Box::new(FmEngine::kick()),
-        "fm_engine:bell" => Box::new(FmEngine::bell()),
-        "fm_engine:bass" => Box::new(FmEngine::bass()),
-        "fm_voice" => Box::new(FmVoice::new()),
-        "distortion" => Box::new(DistortionNode::new()),
-        "filter" => Box::new(FilterNode::new()),
         "mix" => {
             let n = node_def
                 .channel_count
@@ -194,8 +197,6 @@ fn construct_node(
                 })?;
             Box::new(MixNode::new(n))
         }
-        "audio_output" => Box::new(AudioOutputNode::new()),
-        "reverb" => Box::new(ReverbNode::new()),
         "clap_plugin" => {
             let plugin_id = node_def
                 .plugin_id
@@ -212,11 +213,9 @@ fn construct_node(
             lib.instantiate(plugin_id, sample_rate, block_size)
                 .map_err(|e| InstrumentError::ConnectionError(e.to_string()))?
         }
-        _ => {
-            return Err(InstrumentError::UnknownNodeType {
-                type_tag: tag.to_string(),
-            })
-        }
+        other => registry.build(other).ok_or_else(|| InstrumentError::UnknownNodeType {
+            type_tag: other.to_string(),
+        })?,
     };
     Ok(node)
 }
@@ -232,7 +231,7 @@ fn classify_node(node_def: &NodeDef, ids: &mut InstrumentIds) {
         "internal_clock" => ids.clock = node_def.id,
         "mix" => ids.mix = node_def.id,
         "audio_output" => ids.output = node_def.id,
-        "sequencer" => ids.sequencers.push(node_def.id),
+        "sequencer" | "sequencer_cv" => ids.sequencers.push(node_def.id),
         "sampler"
         | "analog_engine:kick"
         | "analog_engine:snare"
@@ -241,15 +240,18 @@ fn classify_node(node_def: &NodeDef, ids: &mut InstrumentIds) {
         | "fm_engine:bell"
         | "fm_engine:bass"
         | "fm_voice"
+        | "oscillator"
         | "clap_plugin" => ids.generators.push(node_def.id),
-        "distortion" | "filter" | "reverb" => ids.effects.push(node_def.id),
+        "distortion" | "filter" | "ladder_filter" | "reverb" | "delay" => {
+            ids.effects.push(node_def.id)
+        }
         _ => {}
     }
     // Typed sub-lists (used for profile script constant injection).
     match node_def.type_tag.as_str() {
         "sampler" => ids.samplers.push(node_def.id),
         "distortion" => ids.distortions.push(node_def.id),
-        "filter" => ids.filters.push(node_def.id),
+        "filter" | "ladder_filter" => ids.filters.push(node_def.id),
         _ => {}
     }
 }
@@ -301,5 +303,34 @@ fn yaml_to_u32(v: &serde_yml::Value) -> Option<u32> {
         serde_yml::Value::Number(n) => n.as_u64().map(|v| v as u32),
         serde_yml::Value::String(s) => s.parse::<u32>().ok(),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builder_constructs_every_registered_node_type_tag() {
+        let reg = build_registry();
+        let tags = reg.known_type_tags();
+        assert!(!tags.is_empty());
+
+        let mut yaml = String::from("format_version: 1\nname: all_tags\nbpm: 120.0\nnodes:\n");
+        for (idx, tag) in tags.iter().enumerate() {
+            let id = (idx as u32) + 1;
+            yaml.push_str(&format!("  - id: {id}\n    type: {tag}\n"));
+            if *tag == "mix" {
+                yaml.push_str("    channel_count: 4\n");
+            }
+        }
+        yaml.push_str("edges: []\n");
+
+        let def = parse_instrument_definition(&yaml).expect("parse all_tags yaml");
+        let mut conf = NodeConfigurator::new(44100.0, 64);
+        let mut pool = SamplePool::default();
+        let ids = build_from_instrument(&def, &mut conf, &HashMap::new(), &mut pool)
+            .expect("every registered type_tag must construct in build_from_instrument");
+        assert_eq!(ids.all.len(), tags.len());
     }
 }

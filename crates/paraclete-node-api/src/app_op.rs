@@ -56,4 +56,9 @@ pub enum AppOp {
     /// new pool slot, apply a 16-slot even slice grid, and deliver it to
     /// `sampler_id` via `SwapSample`, all as one composite op.
     CaptureTransition { recorder_id: u32, sampler_id: u32 },
+    /// Save the current project state (nodes, kits, sample pool + frozen RAM
+    /// captures) to `path` (or the session's default project path if `None`).
+    SaveProject { path: Option<String> },
+    /// Load a saved project file at runtime via pause-restore-rebuild-resume.
+    LoadProject { path: String },
 }

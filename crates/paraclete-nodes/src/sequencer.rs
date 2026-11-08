@@ -766,14 +766,15 @@ impl Sequencer {
             };
             let _ = write!(
                 s,
-                "{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{}",
                 step.velocity,
                 step.length,
                 step.timing.micro_offset,
                 prob,
                 n,
                 m,
-                fill
+                fill,
+                step.note
             );
         }
         s
@@ -6941,9 +6942,10 @@ mod tests {
         };
         assert_eq!(tuples.len(), steps_text.len(), "one tuple per step: {t}");
         for (i, tuple) in tuples.iter().enumerate() {
-            assert_eq!(tuple.split(',').count(), 7, "tuple {i}: {tuple}");
+            assert_eq!(tuple.split(',').count(), 8, "tuple {i}: {tuple}");
         }
         let first: Vec<&str> = tuples[0].split(',').collect();
+        assert_eq!(first[7].parse::<u8>().unwrap(), 60);
 
         let vel: u16 = first[0].parse().unwrap();
         assert_eq!(

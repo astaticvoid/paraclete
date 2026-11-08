@@ -412,6 +412,27 @@ impl NodeConfigurator {
         self.id_to_index.contains_key(&user_id)
     }
 
+    /// Iterate all registered node IDs in ascending order, regardless of
+    /// whether the nodes are currently resident or moved to a live executor.
+    pub fn known_node_ids(&self) -> impl Iterator<Item = u32> {
+        let mut ids: Vec<u32> = self.id_to_index.keys().copied().collect();
+        ids.sort_unstable();
+        ids.into_iter()
+    }
+
+    /// Iterate `(user_id, type_tag)` in ascending `user_id` order for all
+    /// registered nodes that have a recorded `type_tag`. Remains valid after
+    /// `build_executor()` moves node instances to the audio thread.
+    pub fn all_type_tags(&self) -> impl Iterator<Item = (u32, &str)> {
+        let mut pairs: Vec<(u32, &str)> = self
+            .type_tag_map
+            .iter()
+            .map(|(&id, tag)| (id, tag.as_str()))
+            .collect();
+        pairs.sort_by_key(|(id, _)| *id);
+        pairs.into_iter()
+    }
+
     /// Iterate all registered nodes in registration order (by user_id).
     /// Yields `(user_id, &dyn Node)`. Only valid before `build_executor()` — after
     /// that call, nodes have been moved to the executor and this returns nothing.

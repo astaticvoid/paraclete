@@ -230,11 +230,16 @@ fn register_builtins(engine: &mut Engine, state: Rc<RefCell<ScriptState>>) {
                 let param_hash = ParamDescriptor::id_for_name(param_name) as f64;
                 let node_path = format!("/context/{}/node", encoder_key);
                 let param_path = format!("/context/{}/param", encoder_key);
+                let param_name_path = format!("/context/{}/param_name", encoder_key);
                 let st = s.borrow();
                 if let Some(bus) = &st.state_bus {
                     let mut bus = bus.borrow_mut();
                     bus.write(&node_path, StateBusValue::Float(node_id as f64));
                     bus.write(&param_path, StateBusValue::Float(param_hash));
+                    bus.write(
+                        &param_name_path,
+                        StateBusValue::Text(param_name.to_string()),
+                    );
                 }
             },
         );

@@ -327,10 +327,15 @@ fn build_context_frame(bus: &StateBusHandle) -> Option<String> {
             continue;
         };
         if let Some(key) = rest.strip_suffix("/node") {
-            if let StateBusValue::Int(i) = value {
-                halves.entry(key).or_default().0 = Some(*i);
+            match value {
+                StateBusValue::Int(i) => halves.entry(key).or_default().0 = Some(*i),
+                StateBusValue::Float(f) => halves.entry(key).or_default().0 = Some(*f as i64),
+                _ => {}
             }
-        } else if let Some(key) = rest.strip_suffix("/param") {
+        } else if let Some(key) = rest
+            .strip_suffix("/param_name")
+            .or_else(|| rest.strip_suffix("/param"))
+        {
             if let StateBusValue::Text(s) = value {
                 halves.entry(key).or_default().1 = Some(s.as_str());
             }
@@ -368,7 +373,7 @@ fn build_context_frame(bus: &StateBusHandle) -> Option<String> {
             continue;
         }
         let rest = &path["/context/".len()..];
-        if rest.ends_with("/node") || rest.ends_with("/param") {
+        if rest.ends_with("/node") || rest.ends_with("/param") || rest.ends_with("/param_name") {
             continue; // encoder halves, handled above
         }
         let value = match value {

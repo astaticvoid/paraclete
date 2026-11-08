@@ -63,7 +63,7 @@ impl MidiDeviceRegistry {
         callback: F,
     ) -> Result<MidiInputConnection<()>, MidiDeviceError>
     where
-        F: Fn(u64, &[u8], &mut ()) + Send + 'static,
+        F: FnMut(u64, &[u8], &mut ()) + Send + 'static,
     {
         let port = self
             .midi_in

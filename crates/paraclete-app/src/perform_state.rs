@@ -73,6 +73,10 @@ pub struct PerformState {
     /// `drain_asset_swaps` already documents for undelivered messages.
     pending_captures: HashMap<u32, PendingCapture>,
     next_request_id: u32,
+    /// Pending runtime project save request (`Some(None)` = use default path).
+    pub pending_project_save: Option<Option<String>>,
+    /// Pending runtime project load request (`Some(path)`).
+    pub pending_project_load: Option<String>,
 }
 
 impl PerformState {
@@ -88,7 +92,76 @@ impl PerformState {
             apply_pending: Vec::new(),
             pending_captures: HashMap::new(),
             next_request_id: 0,
+            pending_project_save: None,
+            pending_project_load: None,
         }
+    }
+
+    /// True if a runtime `:save` or `:load` was queued and awaits execution.
+    pub fn has_pending_project_io(&self) -> bool {
+        self.pending_project_save.is_some() || self.pending_project_load.is_some()
+    }
+
+    /// Execute any queued project save/load while nodes are resident in `conf`.
+    /// Callers running a live `AudioEngine` must pause the engine, call
+    /// `conf.restore_nodes(old_exec)`, invoke this method, and then rebuild
+    /// and resume the executor (`ADR-029` pause-restore-rebuild-resume).
+    pub fn execute_project_io_in_conf(
+        &mut self,
+        conf: &mut NodeConfigurator,
+        default_path: Option<&std::path::Path>,
+        instrument_name: &str,
+        default_bpm: f64,
+    ) -> Result<(), String> {
+        if let Some(path_opt) = self.pending_project_save.take() {
+            let target_path = path_opt
+                .map(std::path::PathBuf::from)
+                .or_else(|| default_path.map(std::path::Path::to_path_buf))
+                .unwrap_or_else(|| std::path::PathBuf::from("project.ron"));
+            let project_dir = target_path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| std::path::Path::new("."));
+            for w in self.sample_pool.freeze_ram_captures_to_files(project_dir) {
+                warn!("[save] {w}");
+            }
+            let bpm = match conf.state_bus_read("/transport/bpm") {
+                Some(StateBusValue::Float(b)) => b,
+                _ => default_bpm,
+            };
+            let meta = crate::project::ProjectMetadata {
+                name: instrument_name.to_string(),
+                bpm: bpm as f32,
+                created: String::new(),
+            };
+            let profiles = crate::project::ProfileBinding { active: vec![] };
+            let raw_binding = self.kit_binding.map(|slot| slot.map(|k| k.0));
+            crate::project::save_project_v3(
+                &target_path,
+                conf,
+                meta,
+                profiles,
+                &self.kit_store.kits,
+                raw_binding,
+                &self.sample_pool.slots,
+            )
+            .map_err(|e| format!("save failed: {e}"))?;
+            info!("[project] saved: {}", target_path.display());
+        }
+
+        if let Some(path_str) = self.pending_project_load.take() {
+            let target_path = std::path::PathBuf::from(&path_str);
+            let warnings = crate::project::load_project_v3(&target_path, conf, self)
+                .map_err(|e| format!("load failed: {e}"))?;
+            for w in &warnings {
+                warn!("[load] {w}");
+            }
+            self.cached_active_patterns.clear();
+            self.apply_pending.clear();
+            info!("[project] loaded: {}", target_path.display());
+        }
+
+        Ok(())
     }
 
     /// Called each main-loop tick with mutable access to conf.
@@ -126,8 +199,8 @@ impl PerformState {
         // (unlike AudioInputNode's fixed id) and Theotokos has no other
         // way to discover it.
         let recorder_id = conf
-            .all_nodes()
-            .find(|(id, _)| conf.type_tag_for(*id) == Some("recorder"))
+            .all_type_tags()
+            .find(|(_, tag)| *tag == "recorder")
             .map(|(id, _)| id);
         conf.state_bus_write(
             "/context/sampling_available",
@@ -285,6 +358,12 @@ impl PerformState {
                     Some(sampler_id),
                     true,
                 );
+            }
+            AppOp::SaveProject { path } => {
+                self.pending_project_save = Some(path);
+            }
+            AppOp::LoadProject { path } => {
+                self.pending_project_load = Some(path);
             }
         }
     }
@@ -586,8 +665,7 @@ fn capture_kit_entries(
 ) -> Vec<KitEntry> {
     let mut entries: Vec<KitEntry> = Vec::new();
     let bus_ref = bus.borrow();
-    // Scan nodes 1-200 — the app graph node id range.
-    for node_id in 1u32..=200 {
+    for node_id in conf.known_node_ids() {
         if let Some(doc) = conf.get_node_cap_doc(node_id) {
             for p in &doc.params {
                 if p.in_kit {
@@ -1168,5 +1246,127 @@ mod tests {
             Some(0.001),
             "the plain RecorderCapture path (not just CaptureTransition) must also carry bars through"
         );
+    }
+
+    #[test]
+    fn sampling_available_survives_build_executor_drain() {
+        let mut conf = NodeConfigurator::new(44100.0, 64);
+        conf.add_node(210, Box::new(paraclete_nodes::RecorderNode::new()));
+        conf.set_type_tag_for(210, "recorder");
+        let bus = conf.state_bus_handle();
+        let mut perform = PerformState::new();
+
+        // Drain nodes into the executor just like main.rs does before the main loop.
+        let _exec = conf.build_executor();
+        assert_eq!(
+            conf.all_nodes().count(),
+            0,
+            "precondition: build_executor() drains resident nodes"
+        );
+
+        perform.tick(&mut conf, &bus);
+        conf.process_main_thread();
+
+        assert_eq!(
+            conf.state_bus_read("/context/sampling_available"),
+            Some(StateBusValue::Float(1.0)),
+            "sampling_available must be 1.0 even after build_executor() drains conf.nodes"
+        );
+        assert_eq!(
+            conf.state_bus_read("/context/recorder_id"),
+            Some(StateBusValue::Int(210)),
+            "recorder_id must publish 210 after build_executor()"
+        );
+    }
+
+    #[test]
+    fn runtime_save_and_load_project_roundtrips_nodes_and_freezes_ram_captures() {
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "paraclete_runtime_save_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+        std::fs::create_dir_all(&tmp_dir).unwrap();
+        let proj_path = tmp_dir.join("live_session.ron");
+
+        let mut conf = NodeConfigurator::new(44100.0, 64);
+        conf.add_node(20, Box::new(paraclete_nodes::AnalogEngine::kick()));
+        conf.set_type_tag_for(20, "analog_engine:kick");
+        let bus = conf.state_bus_handle();
+        let mut perform = PerformState::new();
+
+        // Simulate a live RAM capture recorded during the session.
+        let (slot, _) = perform
+            .sample_pool
+            .record_capture(&[0.25, -0.25, 0.5, -0.5], 44100.0, Some(2.0));
+
+        // Drain nodes into executor, mutate param on node 20, then restore-save-rebuild.
+        let mut exec = conf.build_executor();
+        let decay_id = paraclete_node_api::ParamDescriptor::id_for_name("decay");
+        let _ = conf.send_command(NodeCommand {
+            target_id: 20,
+            type_id: CMD_SET_PARAM,
+            arg0: decay_id as i64,
+            arg1: 1.23,
+        });
+        let mut out = vec![0.0f32; 128];
+        exec.process(&mut out, 2);
+
+        perform.execute(
+            AppOp::SaveProject {
+                path: Some(proj_path.to_string_lossy().into_owned()),
+            },
+            &mut conf,
+            &bus,
+        );
+        assert!(perform.has_pending_project_io());
+
+        conf.restore_nodes(exec.drain_nodes());
+        perform
+            .execute_project_io_in_conf(&mut conf, None, "test-inst", 120.0)
+            .expect("runtime save must succeed");
+        assert!(!perform.has_pending_project_io());
+
+        // Verify the RAM capture was frozen to a File entry on disk.
+        let frozen_entry = perform.sample_pool.get(slot).expect("slot must exist");
+        assert!(
+            matches!(frozen_entry.source, crate::sample_pool::SampleSource::File(_)),
+            "RAM capture must freeze to File on runtime project save"
+        );
+
+        // Reset node 20's decay back to 0.1, then runtime-load the saved project.
+        let mut exec = conf.rebuild_executor();
+        let _ = conf.send_command(NodeCommand {
+            target_id: 20,
+            type_id: CMD_SET_PARAM,
+            arg0: decay_id as i64,
+            arg1: 0.1,
+        });
+        exec.process(&mut out, 2);
+
+        perform.execute(
+            AppOp::LoadProject {
+                path: proj_path.to_string_lossy().into_owned(),
+            },
+            &mut conf,
+            &bus,
+        );
+        conf.restore_nodes(exec.drain_nodes());
+        perform
+            .execute_project_io_in_conf(&mut conf, None, "test-inst", 120.0)
+            .expect("runtime load must succeed");
+        let mut exec = conf.rebuild_executor();
+        exec.process(&mut out, 2);
+        conf.process_main_thread();
+
+        let restored = conf.state_bus_read("/node/20/param/decay");
+        match restored {
+            Some(StateBusValue::Float(v)) => {
+                assert!((v - 1.23).abs() < 1e-4, "expected decay ~1.23, got {v}");
+            }
+            other => panic!("expected Float(1.23), got {other:?}"),
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp_dir);
     }
 }

@@ -4,9 +4,6 @@
 //! Encoders use relative encoding (127=CCW, 1–63=CW).
 //! No LED output — `take_output_handle()` returns `None`.
 
-use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
-
 use paraclete_node_api::{
     ButtonDescriptor, CapabilityDocument, Control, EncoderBehaviour, EncoderDescriptor, Event,
     Node, PortDescriptor, PortDirection, PortName, PortType, ProcessInput, ProcessOutput, Surface,
@@ -54,21 +51,18 @@ pub struct DigitaktMidiNode {
     ports: [PortDescriptor; 1],
     node_id: u32,
     _conn_in: midir::MidiInputConnection<()>,
-    incoming: Arc<Mutex<VecDeque<SurfaceEvent>>>,
+    incoming_rx: rtrb::Consumer<SurfaceEvent>,
     surface: SurfaceDescriptor,
 }
 
 impl DigitaktMidiNode {
     pub fn open() -> Result<Self, MidiDeviceError> {
-        let incoming = Arc::new(Mutex::new(VecDeque::<SurfaceEvent>::new()));
-        let incoming_cb = Arc::clone(&incoming);
+        let (mut incoming_tx, incoming_rx) = rtrb::RingBuffer::<SurfaceEvent>::new(256);
 
         let reg = MidiDeviceRegistry::new()?;
         let conn_in = reg.open_input("Digitakt", move |_ts, bytes, _| {
             if let Some(ev) = parse_digitakt_midi(bytes) {
-                if let Ok(mut q) = incoming_cb.try_lock() {
-                    q.push_back(ev);
-                }
+                let _ = incoming_tx.push(ev);
             }
         })?;
 
@@ -81,7 +75,7 @@ impl DigitaktMidiNode {
             }],
             node_id: 0,
             _conn_in: conn_in,
-            incoming,
+            incoming_rx,
             surface: build_surface(),
         })
     }
@@ -143,12 +137,10 @@ impl Node for DigitaktMidiNode {
     }
 
     fn process(&mut self, _input: &ProcessInput, output: &mut ProcessOutput) {
-        if let Ok(mut q) = self.incoming.try_lock() {
-            while let Some(ev) = q.pop_front() {
-                output
-                    .events_out
-                    .push(TimedEvent::new(0, Event::Surface(ev)));
-            }
+        while let Ok(ev) = self.incoming_rx.pop() {
+            output
+                .events_out
+                .push(TimedEvent::new(0, Event::Surface(ev)));
         }
     }
 }

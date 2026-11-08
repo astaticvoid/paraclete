@@ -1173,6 +1173,7 @@ impl TheotokosApp {
                                             repeat_n: 0,
                                             repeat_m: 0,
                                             fill: 0,
+                                            note: 36,
                                         });
                                         (
                                             CMD_SET_STEP_CONDITION,
@@ -1804,6 +1805,20 @@ impl TheotokosApp {
                 self.pending_app_ops
                     .push(paraclete_node_api::app_op::AppOp::PoolLoadFile { slot, path });
             }
+            CmdlineVerb::SaveProject { path } => {
+                let status = match &path {
+                    Some(p) => format!("saving {p}"),
+                    None => "saving project".to_string(),
+                };
+                self.pending_app_ops
+                    .push(paraclete_node_api::app_op::AppOp::SaveProject { path });
+                self.model.cmdline_status = Some(status);
+            }
+            CmdlineVerb::LoadProject { path } => {
+                self.model.cmdline_status = Some(format!("loading {path}"));
+                self.pending_app_ops
+                    .push(paraclete_node_api::app_op::AppOp::LoadProject { path });
+            }
         }
     }
 
@@ -1847,6 +1862,13 @@ impl TheotokosApp {
                 _ => None,
             })
             .unwrap_or_default();
+        let detail_list = bus
+            .read(&format!("/node/{}/state/step_detail", seq_id))
+            .and_then(|v| match v {
+                StateBusValue::Text(s) => Some(model::parse_step_detail(s)),
+                _ => None,
+            })
+            .unwrap_or_default();
 
         let mut yanked: Vec<YankedStep> = Vec::with_capacity(steps_text.len());
         for (i, ch) in steps_text.chars().enumerate() {
@@ -1876,15 +1898,27 @@ impl TheotokosApp {
                     }
                 }
             }
-            yanked.push(YankedStep {
-                active,
-                note: if active { 36 } else { -1 },
-                velocity: if active { 1.0 } else { 0.0 },
-                length: 1.0,
-                timing: 0,
-                condition: 0.0,
-                locks,
-            });
+            if let Some(d) = detail_list.get(i) {
+                yanked.push(YankedStep {
+                    active,
+                    note: if active { d.note as i64 } else { -1 },
+                    velocity: d.velocity,
+                    length: d.length,
+                    timing: (d.timing * 47.0).round() as i64,
+                    condition: d.packed_condition(),
+                    locks,
+                });
+            } else {
+                yanked.push(YankedStep {
+                    active,
+                    note: if active { 36 } else { -1 },
+                    velocity: if active { 1.0 } else { 0.0 },
+                    length: 1.0,
+                    timing: 0,
+                    condition: 100.0,
+                    locks,
+                });
+            }
         }
         self.model.yank_buffer = yanked;
     }
@@ -7152,5 +7186,92 @@ mod tests {
 
         model.update_flash(0, 0.7);
         // second update with same value should not reset flash time
+    }
+
+    #[test]
+    fn yank_and_paste_preserves_note_velocity_length_timing_and_condition_losslessly() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["T1".into()]);
+        {
+            let mut b = bus.borrow_mut();
+            b.write(
+                "/node/200/state/steps",
+                StateBusValue::Text("10".into()),
+            );
+            b.write("/node/200/state/locks", StateBusValue::Text(String::new()));
+            // Step 0: vel=32768 (~0.5), len=0.25, timing=-12, prob=75, n=1, m=2, fill=1, note=48
+            // Step 1: inactive
+            b.write(
+                "/node/200/state/step_detail",
+                StateBusValue::Text("32768,0.25,-12,75,1,2,1,48;65535,1.0,0,100,0,0,0,36".into()),
+            );
+        }
+
+        app.handle_keys(&bus, &[func_key('z')]); // yank
+        app.pending.clear();
+        app.handle_keys(&bus, &[func_key('c')]); // paste
+
+        let step0: Vec<&NodeCommand> = app.pending.iter().filter(|c| c.arg0 == 0).collect();
+        let set_step = step0.iter().find(|c| c.type_id == 17).expect("CMD_SET_STEP");
+        assert_eq!(set_step.arg1, 48.0, "yanked note 48 must be preserved on paste");
+
+        let set_vel = step0
+            .iter()
+            .find(|c| c.type_id == CMD_SET_STEP_VELOCITY)
+            .expect("CMD_SET_STEP_VELOCITY");
+        assert!((set_vel.arg1 - 32768.0 / 65535.0).abs() < 1e-4);
+
+        let set_len = step0
+            .iter()
+            .find(|c| c.type_id == CMD_SET_STEP_LENGTH)
+            .expect("CMD_SET_STEP_LENGTH");
+        assert!((set_len.arg1 - 0.25).abs() < 1e-4);
+
+        let set_tim = step0
+            .iter()
+            .find(|c| c.type_id == CMD_SET_STEP_TIMING)
+            .expect("CMD_SET_STEP_TIMING");
+        assert_eq!(set_tim.arg1, -12.0);
+
+        let set_cond = step0
+            .iter()
+            .find(|c| c.type_id == CMD_SET_STEP_CONDITION)
+            .expect("CMD_SET_STEP_CONDITION");
+        let expected_cond = (75u64 | (1u64 << 8) | (2u64 << 16) | (1u64 << 24)) as f64;
+        assert_eq!(set_cond.arg1, expected_cond);
+    }
+
+    #[test]
+    fn save_and_load_cmdline_verbs_queue_project_app_ops() {
+        let bus = test_bus();
+        let mut app = test_app(1, vec![200], vec![100], vec!["Kick".into()]);
+        setup_bus_with_params(&bus, 200, 100, true);
+
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "w");
+        app.handle_keys(&bus, &[enter_key()]);
+        assert!(app.model.cmdline_error.is_none());
+
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "save my_song.ron");
+        app.handle_keys(&bus, &[enter_key()]);
+        assert!(app.model.cmdline_error.is_none());
+
+        app.handle_keys(&bus, &[colon_key()]);
+        cmdline_type(&mut app, &bus, "load my_song.ron");
+        app.handle_keys(&bus, &[enter_key()]);
+        assert!(app.model.cmdline_error.is_none());
+
+        let ops = app.take_pending_app_ops();
+        assert_eq!(ops.len(), 3);
+        assert!(matches!(&ops[0], AppOp::SaveProject { path: None }));
+        assert!(matches!(
+            &ops[1],
+            AppOp::SaveProject { path: Some(p) } if p == "my_song.ron"
+        ));
+        assert!(matches!(
+            &ops[2],
+            AppOp::LoadProject { path } if path == "my_song.ron"
+        ));
     }
 }

@@ -19,7 +19,7 @@ use paraclete_app::perform_state::PerformState;
 use paraclete_app::project::{load_project_v3, save_project_v3, ProfileBinding, ProjectMetadata};
 use paraclete_clap_host::{scan_clap_paths, PluginLibrary};
 use paraclete_hal::{
-    query_sample_rate, AudioBackend, DigitaktMidiNode, InputStreamHandle, KeystepNode,
+    query_sample_rate, DigitaktMidiNode, InputStreamHandle, KeystepNode,
     LaunchpadEmulator, LaunchpadNode,
 };
 use paraclete_nodes::{AudioInputNode, ScriptEventConsumer, ScriptingGatewayNode};
@@ -156,6 +156,9 @@ fn main() {
 
     // ── 3. Build node graph ───────────────────────────────────────────────────
     let mut conf = NodeConfigurator::new(sample_rate, BLOCK_SIZE);
+    // AN1: never fatal (D3) — opened before `build_from_instrument` so an
+    // instrument YAML may wire edges from `AudioInputNode` (id 61).
+    let _audio_input = try_open_audio_input(&mut conf);
     let ids =
         match build_from_instrument(&def, &mut conf, &libraries, &mut perform_state.sample_pool) {
             Ok(ids) => ids,
@@ -170,9 +173,6 @@ fn main() {
     let launchpad_id = try_open_launchpad(&mut conf, no_emulator);
     let digitakt_id = try_open_digitakt(&mut conf);
     let keystep_id = try_open_keystep(&mut conf);
-    // AN1: never fatal (D3) — kept alive here for the process lifetime,
-    // same convention as `_audio` below for the output stream.
-    let _audio_input = try_open_audio_input(&mut conf);
 
     let mut consumer_lp: Option<ScriptEventConsumer> = None;
     if let Some(lp_dev_id) = launchpad_id {
@@ -337,7 +337,7 @@ fn main() {
     // a device disconnect (e.g. suspend) triggers a clean exit path.
     let running = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
 
-    let _audio = match AudioBackend::start(executor, Arc::clone(&running)) {
+    let audio = match paraclete_hal::AudioEngine::start(executor) {
         Ok(b) => {
             eprintln!("[paraclete] audio running — Esc or Ctrl-C to stop");
             b
@@ -636,6 +636,28 @@ fn main() {
                 &bus_handle,
             );
         }
+        if perform_state.has_pending_project_io() {
+            audio.pause();
+            audio.wait_paused();
+            if let Some(old_exec) = audio.take_executor() {
+                let old_exec: Box<paraclete_runtime::NodeExecutor> = old_exec
+                    .into_any()
+                    .downcast()
+                    .expect("AudioBackend executor must be a NodeExecutor");
+                conf.restore_nodes(old_exec.drain_nodes());
+            }
+            let default_proj_path = load_path.as_deref().or(save_path.as_deref());
+            if let Err(e) = perform_state.execute_project_io_in_conf(
+                &mut conf,
+                default_proj_path,
+                &def.name,
+                def.bpm,
+            ) {
+                log::warn!("[project] {e}");
+            }
+            let new_exec = conf.rebuild_executor();
+            audio.resume_with_executor(Box::new(new_exec));
+        }
 
         let mut led_output = scripting.take_pending_output();
         // Mirror LED output addressed to the Launchpad/emulator onto the
@@ -688,10 +710,21 @@ fn main() {
                 _ => keystep_routing_decision(None, ks_seq_edge, &ids.sequencers),
             };
             if let Some(sid) = target {
+                audio.pause();
+                audio.wait_paused();
+                if let Some(old_exec) = audio.take_executor() {
+                    let old_exec: Box<paraclete_runtime::NodeExecutor> = old_exec
+                        .into_any()
+                        .downcast()
+                        .expect("AudioEngine executor must be a NodeExecutor");
+                    conf.restore_nodes(old_exec.drain_nodes());
+                }
                 if let Some(old) = ks_seq_edge {
                     conf.disconnect(kid, 0, old, paraclete_nodes::Sequencer::PORT_EVENTS_IN).ok();
                 }
                 conf.connect(kid, 0, sid, paraclete_nodes::Sequencer::PORT_EVENTS_IN).ok();
+                let new_exec = conf.rebuild_executor();
+                audio.resume_with_executor(Box::new(new_exec));
                 ks_seq_edge = Some(sid);
                 log::info!("[keystep] routing events_out → sequencer {sid}");
             }

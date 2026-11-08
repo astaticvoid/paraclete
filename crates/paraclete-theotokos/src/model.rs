@@ -207,11 +207,24 @@ pub struct StepDetail {
     pub repeat_m: u8,
     /// `FillCondition` discriminant (0=Ignore … 6=NotFillB).
     pub fill: u8,
+    /// MIDI note (0..127), defaults to 36 if omitted by legacy 7-field tuples.
+    pub note: u8,
+}
+
+impl StepDetail {
+    /// Pack the four condition fields into the `u64`-as-`f64` encoding
+    /// expected by `CMD_SET_STEP_CONDITION` (26).
+    pub fn packed_condition(&self) -> f64 {
+        ((self.probability as u64)
+            | ((self.repeat_n as u64) << 8)
+            | ((self.repeat_m as u64) << 16)
+            | ((self.fill as u64) << 24)) as f64
+    }
 }
 
 /// Parse the `step_detail` bus blob into one `StepDetail` per step, in step
 /// order. The format is a semicolon-delimited list of
-/// `vel_u16,len_f32,timing_i8,prob_u8,repeat_n_u8,repeat_m_u8,fill_u8`
+/// `vel_u16,len_f32,timing_i8,prob_u8,repeat_n_u8,repeat_m_u8,fill_u8[,note_u8]`
 /// tuples. Malformed tuples are skipped (a malformed field never constitutes
 /// the whole parse failing — hostile or drifted bus data degrades to fewer
 /// readable steps, not a panic).
@@ -234,6 +247,7 @@ fn parse_step_tuple(tuple: &str) -> StepDetail {
     let repeat_n = next_field(&mut parts).and_then(|s| s.parse::<u8>().ok());
     let repeat_m = next_field(&mut parts).and_then(|s| s.parse::<u8>().ok());
     let fill = next_field(&mut parts).and_then(|s| s.parse::<u8>().ok());
+    let note = next_field(&mut parts).and_then(|s| s.parse::<u8>().ok());
     StepDetail {
         velocity: vel.map_or(0.0, |v| v as f64 / 65535.0),
         length: len.map_or(0.0, |l| l as f64),
@@ -242,6 +256,7 @@ fn parse_step_tuple(tuple: &str) -> StepDetail {
         repeat_n: repeat_n.unwrap_or(0),
         repeat_m: repeat_m.unwrap_or(0),
         fill: fill.unwrap_or(0),
+        note: note.unwrap_or(36),
     }
 }
 
@@ -420,6 +435,10 @@ pub enum CmdlineVerb {
     /// AN0 C5: `:pool-load <slot> <path>` — decode `path` into the sample
     /// pool at `slot`, delivered to every live Sampler node.
     PoolLoad { slot: u32, path: String },
+    /// `:w [path]` or `:save [path]` — runtime project save.
+    SaveProject { path: Option<String> },
+    /// `:e <path>` or `:load <path>` — runtime project load.
+    LoadProject { path: String },
 }
 
 impl Model {
@@ -1321,6 +1340,9 @@ impl Model {
             "reset-bindings",
             "save-bindings",
             "load-bindings",
+            "pool-load",
+            "save",
+            "load",
         ] {
             entries.push(FuzzyEntry {
                 text: verb.to_string(),
@@ -1562,6 +1584,22 @@ impl Model {
                     return Err("pool-load <slot> <path>".into());
                 }
                 Ok(CmdlineVerb::PoolLoad { slot, path: path.to_string() })
+            }
+            "w" | "save" => {
+                let path = if rest.is_empty() {
+                    None
+                } else {
+                    Some(rest.to_string())
+                };
+                Ok(CmdlineVerb::SaveProject { path })
+            }
+            "e" | "load" => {
+                if rest.is_empty() {
+                    return Err("load <path>".into());
+                }
+                Ok(CmdlineVerb::LoadProject {
+                    path: rest.to_string(),
+                })
             }
             _ => Err(format!("?{input}")),
         }
@@ -1843,6 +1881,7 @@ mod tests {
             repeat_n: 1,
             repeat_m: 2,
             fill: 1,
+            note: 36,
         };
         let packed = Model::pack_condition(&d, 4); // NoFill
         // Unpack exactly as Sequencer::CMD_SET_STEP_CONDITION does.
