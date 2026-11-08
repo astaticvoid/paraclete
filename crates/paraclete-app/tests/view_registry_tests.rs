@@ -222,10 +222,15 @@ fn a_real_engines_stepped_selectors_carry_their_names() {
             .iter()
             .filter_map(|o| o.as_deref())
             .collect();
+        let expected_machines = match label {
+            "analog" => 5,
+            "fm" => 3,
+            _ => unreachable!(),
+        };
         assert_eq!(
             machine_names.len(),
-            3,
-            "{label}: three machines per family; got {machine_names:?}"
+            expected_machines,
+            "{label}: expected {expected_machines} machines in family; got {machine_names:?}"
         );
         assert!(
             machine_names.iter().all(|n| !n.is_empty()),

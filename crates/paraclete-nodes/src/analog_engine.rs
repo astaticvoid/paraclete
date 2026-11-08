@@ -21,17 +21,19 @@ fn ap(name: &str) -> u32 { ParamDescriptor::id_for_name(name) }
 // ── Machine variant ───────────────────────────────────────────────────────────
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum AnalogMachine { Kick, Snare, HiHat }
+pub enum AnalogMachine { Kick, Snare, HiHat, Tom, Clap }
 
 impl AnalogMachine {
     /// Declaration order, and therefore the `machine` param's value order.
     /// **Append-only** — a saved project stores the numeric value, so
     /// reordering this silently re-points every stored `machine` at a
     /// different engine.
-    pub const ALL: [AnalogMachine; 3] = [
+    pub const ALL: [AnalogMachine; 5] = [
         AnalogMachine::Kick,
         AnalogMachine::Snare,
         AnalogMachine::HiHat,
+        AnalogMachine::Tom,
+        AnalogMachine::Clap,
     ];
 
     pub fn value(self) -> u32 {
@@ -39,13 +41,15 @@ impl AnalogMachine {
             AnalogMachine::Kick => 0,
             AnalogMachine::Snare => 1,
             AnalogMachine::HiHat => 2,
+            AnalogMachine::Tom => 3,
+            AnalogMachine::Clap => 4,
         }
     }
 
     /// Out-of-range values clamp to the last machine rather than panicking —
     /// this reads a `f64` bank slot that a malformed project could carry.
     pub fn from_value(v: u32) -> Self {
-        *Self::ALL.get(v as usize).unwrap_or(&AnalogMachine::HiHat)
+        *Self::ALL.get(v as usize).unwrap_or(&AnalogMachine::Clap)
     }
 
     /// Capability-document name, shown as the engine name on a surface.
@@ -54,6 +58,8 @@ impl AnalogMachine {
             AnalogMachine::Kick => "AnalogKick",
             AnalogMachine::Snare => "AnalogSnare",
             AnalogMachine::HiHat => "AnalogHiHat",
+            AnalogMachine::Tom => "AnalogTom",
+            AnalogMachine::Clap => "AnalogClap",
         }
     }
 
@@ -62,6 +68,8 @@ impl AnalogMachine {
             AnalogMachine::Kick => "Kick",
             AnalogMachine::Snare => "Snare",
             AnalogMachine::HiHat => "HiHat",
+            AnalogMachine::Tom => "Tom",
+            AnalogMachine::Clap => "Clap",
         }
     }
 }
@@ -108,6 +116,7 @@ pub struct AnalogEngine {
     noise_env:   AdState,
     noise_state: u32,
     hihat_noise: u32,
+    clap_age_samples: u32,
     svf_low:     f32,
     svf_band:    f32,
     current_hz:  f32,
@@ -185,6 +194,8 @@ static ANALOG_DEST_NAMES: &[&str] = &["tune", "tone", "decay", "punch", "drive",
 static KICK_DEST_NAMES:  &[&str] = &["tune", "punch", "decay", "drive", "tone"];
 static SNARE_DEST_NAMES: &[&str] = &["tune", "snap", "noise", "decay", "tone"];
 static HIHAT_DEST_NAMES: &[&str] = &["tone", "decay", "open"];
+static TOM_DEST_NAMES:   &[&str] = &["tune", "punch", "decay", "tone"];
+static CLAP_DEST_NAMES:  &[&str] = &["tone", "snap", "decay", "drive"];
 
 // Per-machine **id** tables, mirroring the name tables above. `lfo_dest_id`
 // resolves through these rather than hashing a name per sub-block — the names
@@ -210,6 +221,18 @@ const HIHAT_DEST_IDS: &[u32] = &[
     ParamDescriptor::id_for_name("tone"),
     ParamDescriptor::id_for_name("decay"),
     ParamDescriptor::id_for_name("open"),
+];
+const TOM_DEST_IDS: &[u32] = &[
+    ParamDescriptor::id_for_name("tune"),
+    ParamDescriptor::id_for_name("punch"),
+    ParamDescriptor::id_for_name("decay"),
+    ParamDescriptor::id_for_name("tone"),
+];
+const CLAP_DEST_IDS: &[u32] = &[
+    ParamDescriptor::id_for_name("tone"),
+    ParamDescriptor::id_for_name("snap"),
+    ParamDescriptor::id_for_name("decay"),
+    ParamDescriptor::id_for_name("drive"),
 ];
 
 // Per-machine (id, min, max) range tables, for the LFO's scale and clamp
@@ -241,10 +264,24 @@ const HIHAT_DEST_RANGES: &[(u32, f32, f32)] = &[
     (ParamDescriptor::id_for_name("decay"),   0.01, 1.0),
     (ParamDescriptor::id_for_name("open"),    0.0, 1.0),
 ];
+const TOM_DEST_RANGES: &[(u32, f32, f32)] = &[
+    (ParamDescriptor::id_for_name("tune"),  -24.0, 24.0),
+    (ParamDescriptor::id_for_name("punch"),   0.0, 1.0),
+    (ParamDescriptor::id_for_name("decay"),   0.01, 2.0),
+    (ParamDescriptor::id_for_name("tone"),  200.0, 8000.0),
+];
+const CLAP_DEST_RANGES: &[(u32, f32, f32)] = &[
+    (ParamDescriptor::id_for_name("tone"),  200.0, 8000.0),
+    (ParamDescriptor::id_for_name("snap"),   0.005, 0.3),
+    (ParamDescriptor::id_for_name("decay"),  0.01, 2.0),
+    (ParamDescriptor::id_for_name("drive"),  0.0, 1.0),
+];
 
 static KICK_DEST_LABELS:  LfoDestLabels = LfoDestLabels(KICK_DEST_NAMES);
 static SNARE_DEST_LABELS: LfoDestLabels = LfoDestLabels(SNARE_DEST_NAMES);
 static HIHAT_DEST_LABELS: LfoDestLabels = LfoDestLabels(HIHAT_DEST_NAMES);
+static TOM_DEST_LABELS:   LfoDestLabels = LfoDestLabels(TOM_DEST_NAMES);
+static CLAP_DEST_LABELS:  LfoDestLabels = LfoDestLabels(CLAP_DEST_NAMES);
 
 impl AnalogEngine {
     pub const PORT_EVENTS_IN:   u32 = 0;
@@ -264,6 +301,7 @@ impl AnalogEngine {
             noise_env:   AdState::new(),
             noise_state: 1,
             hihat_noise: 1,
+            clap_age_samples: 0,
             svf_low:     0.0,
             svf_band:    0.0,
             current_hz:  65.41, // C2
@@ -286,6 +324,8 @@ impl AnalogEngine {
     pub fn kick()  -> Self { Self::new(AnalogMachine::Kick)  }
     pub fn snare() -> Self { Self::new(AnalogMachine::Snare) }
     pub fn hihat() -> Self { Self::new(AnalogMachine::HiHat) }
+    pub fn tom()   -> Self { Self::new(AnalogMachine::Tom)   }
+    pub fn clap()  -> Self { Self::new(AnalogMachine::Clap)  }
 
     /// **APPEND ONLY.** `lfo_dest` stores a one-based index into this table,
     /// so inserting or reordering an entry silently re-points every saved
@@ -423,6 +463,8 @@ impl AnalogEngine {
             AnalogMachine::Kick => KICK_DEST_NAMES,
             AnalogMachine::Snare => SNARE_DEST_NAMES,
             AnalogMachine::HiHat => HIHAT_DEST_NAMES,
+            AnalogMachine::Tom => TOM_DEST_NAMES,
+            AnalogMachine::Clap => CLAP_DEST_NAMES,
         }
     }
 
@@ -452,6 +494,8 @@ impl AnalogEngine {
             AnalogMachine::Kick => KICK_DEST_IDS,
             AnalogMachine::Snare => SNARE_DEST_IDS,
             AnalogMachine::HiHat => HIHAT_DEST_IDS,
+            AnalogMachine::Tom => TOM_DEST_IDS,
+            AnalogMachine::Clap => CLAP_DEST_IDS,
         }
     }
 
@@ -463,6 +507,8 @@ impl AnalogEngine {
             AnalogMachine::Kick => KICK_DEST_RANGES,
             AnalogMachine::Snare => SNARE_DEST_RANGES,
             AnalogMachine::HiHat => HIHAT_DEST_RANGES,
+            AnalogMachine::Tom => TOM_DEST_RANGES,
+            AnalogMachine::Clap => CLAP_DEST_RANGES,
         }
     }
 
@@ -471,6 +517,8 @@ impl AnalogEngine {
             AnalogMachine::Kick => &KICK_DEST_LABELS,
             AnalogMachine::Snare => &SNARE_DEST_LABELS,
             AnalogMachine::HiHat => &HIHAT_DEST_LABELS,
+            AnalogMachine::Tom => &TOM_DEST_LABELS,
+            AnalogMachine::Clap => &CLAP_DEST_LABELS,
         }
     }
 
@@ -543,6 +591,18 @@ impl AnalogEngine {
                 ParamDescriptor { id: ap("tone"),  name: "tone".into(),  min: 1000.0, max: 18000.0, default: 8000.0, stepped: false, in_kit: true,  unit: ParamUnit::Hz,      display: None },
                 ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.01,   max: 1.0,     default: 0.08,   stepped: false, in_kit: true,  unit: ParamUnit::Seconds, display: None },
                 ParamDescriptor { id: ap("open"),  name: "open".into(),  min: 0.0,    max: 1.0,     default: 0.0,    stepped: false, in_kit: true,  unit: ParamUnit::Generic, display: None },
+            ],
+            AnalogMachine::Tom => vec![
+                ParamDescriptor { id: ap("tune"),  name: "tune".into(),  min: -24.0, max: 24.0,   default: 0.0,    stepped: false, in_kit: true,  unit: ParamUnit::Semitones, display: None },
+                ParamDescriptor { id: ap("punch"), name: "punch".into(), min: 0.0,   max: 1.0,    default: 0.45,   stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
+                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.01,  max: 2.0,    default: 0.35,   stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
+                ParamDescriptor { id: ap("tone"),  name: "tone".into(),  min: 200.0, max: 8000.0, default: 2500.0, stepped: false, in_kit: true,  unit: ParamUnit::Hz,        display: None },
+            ],
+            AnalogMachine::Clap => vec![
+                ParamDescriptor { id: ap("tone"),  name: "tone".into(),  min: 200.0, max: 8000.0, default: 1200.0, stepped: false, in_kit: true,  unit: ParamUnit::Hz,      display: None },
+                ParamDescriptor { id: ap("snap"),  name: "snap".into(),  min: 0.005, max: 0.3,    default: 0.012,  stepped: false, in_kit: true,  unit: ParamUnit::Seconds, display: None },
+                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.01,  max: 2.0,    default: 0.28,   stepped: false, in_kit: true,  unit: ParamUnit::Seconds, display: None },
+                ParamDescriptor { id: ap("drive"), name: "drive".into(), min: 0.0,   max: 1.0,    default: 0.2,    stepped: false, in_kit: true,  unit: ParamUnit::Generic, display: None },
             ],
         }
     }
@@ -764,6 +824,7 @@ impl AnalogEngine {
         self.amp_env = AdState::new();
         self.body_env = AdState::new();
         self.noise_env = AdState::new();
+        self.clap_age_samples = 0;
         self.svf_low = 0.0;
         self.svf_band = 0.0;
         self.active = false;
@@ -784,6 +845,7 @@ impl AnalogEngine {
         self.amp_env.trigger();
         self.body_env.trigger();
         self.noise_env.trigger();
+        self.clap_age_samples = 0;
         self.osc_phase = 0.0;
         self.active    = true;
         self.lfo.trigger(self.lfo_settings());
@@ -825,6 +887,8 @@ impl AnalogEngine {
                 AnalogMachine::Kick  => self.process_kick(lo, hi),
                 AnalogMachine::Snare => self.process_snare(lo, hi),
                 AnalogMachine::HiHat => self.process_hihat(lo, hi),
+                AnalogMachine::Tom   => self.process_tom(lo, hi),
+                AnalogMachine::Clap  => self.process_clap(lo, hi),
             }
         }
         // Velocity is baked into the span at render time (review finding):
@@ -925,6 +989,74 @@ impl AnalogEngine {
         }
         self.active = !self.amp_env.is_idle();
     }
+
+    fn process_tom(&mut self, start: usize, end: usize) {
+        let punch   = self.get_param(ap("punch"));
+        let decay_s = self.get_param(ap("decay"));
+        let tone_hz = self.get_param(ap("tone"));
+        let sr = self.sample_rate;
+
+        let pitch_attack_inc  = 1.0 / (0.001 * sr);
+        let pitch_decay_coeff = 0.001f32.powf(1.0 / (0.055 * sr));
+        let amp_attack_inc    = 1.0 / (0.0008 * sr);
+        let amp_decay_coeff   = 0.001f32.powf(1.0 / (decay_s * sr).max(1.0));
+        let click_attack_inc  = 1.0 / (0.0005 * sr);
+        let click_decay_coeff = 0.001f32.powf(1.0 / (0.006 * sr));
+        let f_svf = (std::f32::consts::PI * tone_hz / sr).sin().clamp(0.0, 0.99);
+        // Shift base pitch +9 semitones above Kick reference (C2 -> A2 ~ 110 Hz)
+        let base_hz = self.swept_hz() * 1.6817928;
+
+        for i in start..end {
+            let pitch_val = self.pitch_env.tick(pitch_attack_inc, pitch_decay_coeff);
+            let click_val = self.body_env.tick(click_attack_inc, click_decay_coeff);
+            let freq = base_hz * 2.0f32.powf(pitch_val * punch * 18.0 / 12.0);
+            let phase_inc = (freq / sr).clamp(0.0, 0.5);
+            self.osc_phase = (self.osc_phase + phase_inc).fract();
+            let fundamental = (self.osc_phase * std::f32::consts::TAU).sin();
+            let overtone = (self.osc_phase * 1.58 * std::f32::consts::TAU).sin() * click_val * 0.25;
+            let amp = self.amp_env.tick(amp_attack_inc, amp_decay_coeff);
+            let sig = svf_lp_sample((fundamental + overtone) * amp, f_svf, 0.65, &mut self.svf_low, &mut self.svf_band);
+            let out = soft_clip(sig * 1.25);
+            self.render_l[i] = out;
+            self.render_r[i] = out;
+        }
+        self.active = !self.amp_env.is_idle();
+    }
+
+    fn process_clap(&mut self, start: usize, end: usize) {
+        let tone_hz = self.get_param(ap("tone"));
+        let snap_s  = self.get_param(ap("snap"));
+        let decay_s = self.get_param(ap("decay"));
+        let drive   = self.get_param(ap("drive"));
+        let sr = self.sample_rate;
+
+        let burst_samples = (snap_s.clamp(0.005, 0.05) * sr).max(16.0) as u32;
+        let total_burst_samples = burst_samples * 3;
+        let amp_attack_inc  = 1.0 / (0.0005 * sr);
+        let amp_decay_coeff = 0.001f32.powf(1.0 / (decay_s * sr).max(1.0));
+        let f_svf = (std::f32::consts::PI * tone_hz / sr).sin().clamp(0.0, 0.99);
+
+        for i in start..end {
+            let tail_amp = self.amp_env.tick(amp_attack_inc, amp_decay_coeff);
+            let env = if self.clap_age_samples < total_burst_samples {
+                let pos = (self.clap_age_samples % burst_samples) as f32 / burst_samples as f32;
+                let burst_env = (1.0 - pos).powi(3);
+                burst_env.max(tail_amp * 0.45)
+            } else {
+                tail_amp * 0.75
+            };
+            self.clap_age_samples = self.clap_age_samples.saturating_add(1);
+
+            let noise_raw = xorshift(&mut self.noise_state);
+            self.svf_low  += f_svf * self.svf_band;
+            self.svf_band += f_svf * (noise_raw - self.svf_low - 0.55 * self.svf_band);
+            let sig = self.svf_band * env;
+            let out = soft_clip(sig * (1.2 + drive * 4.5));
+            self.render_l[i] = out;
+            self.render_r[i] = out;
+        }
+        self.active = !self.amp_env.is_idle() || self.clap_age_samples < total_burst_samples;
+    }
 }
 
 impl AnalogEngine {
@@ -964,6 +1096,16 @@ impl AnalogEngine {
             AnalogMachine::HiHat => {
                 refs.push((ap("tone"), PageRef { page: Cow::Borrowed("SRC"), slot: 1 }));
                 refs.push((ap("open"), PageRef { page: Cow::Borrowed("SRC"), slot: 2 }));
+            }
+            AnalogMachine::Tom => {
+                refs.push((ap("tune"),  PageRef { page: Cow::Borrowed("SRC"), slot: 0 }));
+                refs.push((ap("tone"),  PageRef { page: Cow::Borrowed("SRC"), slot: 1 }));
+                refs.push((ap("punch"), PageRef { page: Cow::Borrowed("SRC"), slot: 2 }));
+            }
+            AnalogMachine::Clap => {
+                refs.push((ap("tone"),  PageRef { page: Cow::Borrowed("SRC"), slot: 1 }));
+                refs.push((ap("snap"),  PageRef { page: Cow::Borrowed("SRC"), slot: 2 }));
+                refs.push((ap("drive"), PageRef { page: Cow::Borrowed("SRC"), slot: 3 }));
             }
         }
         refs
@@ -1148,6 +1290,7 @@ impl Node for AnalogEngine {
         self.noise_env   = AdState::new();
         self.noise_state = 1;
         self.hihat_noise = 1;
+        self.clap_age_samples = 0;
         self.current_hz  = 65.41;
         self.active      = false;
         self.last_note   = 36;
@@ -1506,12 +1649,16 @@ mod tests {
                 AnalogMachine::Kick => whole.process_kick(0, END),
                 AnalogMachine::Snare => whole.process_snare(0, END),
                 AnalogMachine::HiHat => whole.process_hihat(0, END),
+                AnalogMachine::Tom => whole.process_tom(0, END),
+                AnalogMachine::Clap => whole.process_clap(0, END),
             }
             for (lo, hi) in sub_blocks(0, END) {
                 match m {
                     AnalogMachine::Kick => chunked.process_kick(lo, hi),
                     AnalogMachine::Snare => chunked.process_snare(lo, hi),
                     AnalogMachine::HiHat => chunked.process_hihat(lo, hi),
+                    AnalogMachine::Tom => chunked.process_tom(lo, hi),
+                    AnalogMachine::Clap => chunked.process_clap(lo, hi),
                 }
             }
 
@@ -1682,7 +1829,7 @@ mod tests {
         // #179: and every per-machine table must draw from this union, since
         // `LFO_DESTS.len()` is the width the bank persists `lfo_dest` at. A
         // machine list longer than the union would truncate on load.
-        for names in [KICK_DEST_NAMES, SNARE_DEST_NAMES, HIHAT_DEST_NAMES] {
+        for names in [KICK_DEST_NAMES, SNARE_DEST_NAMES, HIHAT_DEST_NAMES, TOM_DEST_NAMES, CLAP_DEST_NAMES] {
             assert!(
                 names.len() <= AnalogEngine::LFO_DESTS.len(),
                 "a machine cannot offer more dests than the bank can store"
@@ -1705,6 +1852,8 @@ mod tests {
             (KICK_DEST_NAMES, KICK_DEST_IDS),
             (SNARE_DEST_NAMES, SNARE_DEST_IDS),
             (HIHAT_DEST_NAMES, HIHAT_DEST_IDS),
+            (TOM_DEST_NAMES, TOM_DEST_IDS),
+            (CLAP_DEST_NAMES, CLAP_DEST_IDS),
         ] {
             assert_eq!(names.len(), ids.len(), "name and id tables must mirror");
             for (name, id) in names.iter().zip(ids) {
@@ -1730,6 +1879,8 @@ mod tests {
             (AnalogEngine::kick(), KICK_DEST_NAMES),
             (AnalogEngine::snare(), SNARE_DEST_NAMES),
             (AnalogEngine::hihat(), HIHAT_DEST_NAMES),
+            (AnalogEngine::tom(), TOM_DEST_NAMES),
+            (AnalogEngine::clap(), CLAP_DEST_NAMES),
         ] {
             let doc = eng.capability_document();
             let d = doc
@@ -2023,6 +2174,8 @@ mod tests {
         assert_eq!(KICK_DEST_NAMES, &["tune", "punch", "decay", "drive", "tone"]);
         assert_eq!(SNARE_DEST_NAMES, &["tune", "snap", "noise", "decay", "tone"]);
         assert_eq!(HIHAT_DEST_NAMES, &["tone", "decay", "open"]);
+        assert_eq!(TOM_DEST_NAMES, &["tune", "punch", "decay", "tone"]);
+        assert_eq!(CLAP_DEST_NAMES, &["tone", "snap", "decay", "drive"]);
     }
 
     /// BUG-069: the LFO range tables are a second copy of `machine_params`
@@ -2783,7 +2936,9 @@ mod tests {
             [
                 AnalogMachine::Kick,
                 AnalogMachine::Snare,
-                AnalogMachine::HiHat
+                AnalogMachine::HiHat,
+                AnalogMachine::Tom,
+                AnalogMachine::Clap,
             ]
         );
         // `value()` is a separate `match`, so the two can drift apart.
@@ -2926,7 +3081,23 @@ mod tests {
         let doc = AnalogEngine::build_doc(AnalogMachine::Kick);
         let m = doc.params.iter().find(|p| p.id == ap("machine")).expect("machine param");
         assert!(m.stepped);
-        assert_eq!((m.min, m.max), (0.0, 2.0));
+        assert_eq!((m.min, m.max), (0.0, (AnalogMachine::ALL.len() - 1) as f64));
+    }
+
+    #[test]
+    fn analog_tom_and_clap_produce_distinct_audio() {
+        let mut tom = AnalogEngine::tom();
+        tom.activate(44100.0, 512);
+        let out_tom = run_engine(&mut tom, &[make_note_on(48)]);
+        assert!(out_tom.iter().any(|&s| s.abs() > 1e-4), "tom should produce audio");
+
+        let mut clap = AnalogEngine::clap();
+        clap.activate(44100.0, 512);
+        let out_clap = run_engine(&mut clap, &[make_note_on(48)]);
+        assert!(out_clap.iter().any(|&s| s.abs() > 1e-4), "clap should produce audio");
+
+        let differ = out_tom.iter().zip(&out_clap).any(|(a, b)| (a - b).abs() > 1e-3);
+        assert!(differ, "tom and clap waveforms must differ");
     }
 
     /// Every variant must flag `machine` as identity — miss one and p-lock

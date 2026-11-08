@@ -1097,6 +1097,8 @@ fn build_view_registry(
         "analog_engine:kick",
         "analog_engine:snare",
         "analog_engine:hihat",
+        "analog_engine:tom",
+        "analog_engine:clap",
         "fm_engine:kick",
         "fm_engine:bell",
         "fm_engine:bass",

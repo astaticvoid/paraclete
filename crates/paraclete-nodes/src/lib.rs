@@ -275,6 +275,8 @@ mod view_validation {
         check("AnalogKick", &analog_engine::AnalogEngine::kick());
         check("AnalogSnare", &analog_engine::AnalogEngine::snare());
         check("AnalogHiHat", &analog_engine::AnalogEngine::hihat());
+        check("AnalogTom", &analog_engine::AnalogEngine::tom());
+        check("AnalogClap", &analog_engine::AnalogEngine::clap());
         check("FmKick", &fm_engine::FmEngine::kick());
         check("FmBell", &fm_engine::FmEngine::bell());
         check("FmBass", &fm_engine::FmEngine::bass());

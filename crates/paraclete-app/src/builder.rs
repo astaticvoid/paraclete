@@ -236,6 +236,8 @@ fn classify_node(node_def: &NodeDef, ids: &mut InstrumentIds) {
         | "analog_engine:kick"
         | "analog_engine:snare"
         | "analog_engine:hihat"
+        | "analog_engine:tom"
+        | "analog_engine:clap"
         | "fm_engine:kick"
         | "fm_engine:bell"
         | "fm_engine:bass"

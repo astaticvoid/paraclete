@@ -84,6 +84,8 @@ pub fn build_registry() -> NodeRegistry {
     r.register("analog_engine:kick", || Box::new(AnalogEngine::kick()));
     r.register("analog_engine:snare", || Box::new(AnalogEngine::snare()));
     r.register("analog_engine:hihat", || Box::new(AnalogEngine::hihat()));
+    r.register("analog_engine:tom", || Box::new(AnalogEngine::tom()));
+    r.register("analog_engine:clap", || Box::new(AnalogEngine::clap()));
     r.register("fm_engine:kick", || Box::new(FmEngine::kick()));
     r.register("fm_engine:bell", || Box::new(FmEngine::bell()));
     r.register("fm_engine:bass", || Box::new(FmEngine::bass()));

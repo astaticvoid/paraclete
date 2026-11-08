@@ -114,6 +114,13 @@ nodes:
     channel_count: 8
     initial_params:
       master_gain: 1.33
+  - id: 190
+    type: delay
+    initial_params:
+      wet: 0.0
+      dry: 1.0
+      delay_time_ms: 320.0
+      feedback: 0.45
   - id: 200
     type: reverb
     initial_params:
@@ -218,8 +225,10 @@ edges:
   - from: [47, 1]
     to:   [2, 7]
 
-  # mix -> reverb (100% dry by default for punchy master; wet knob adds space) -> audio output
+  # mix -> delay (100% dry by default) -> reverb (100% dry by default) -> audio output
   - from: [2, 8]
+    to:   [190, 0]
+  - from: [190, 1]
     to:   [200, 0]
   - from: [200, 1]
     to:   [60, 0]

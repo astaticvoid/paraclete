@@ -32,6 +32,8 @@ use crate::builder::InstrumentIds;
 
 /// Sequencer command type IDs (`paraclete-nodes::Sequencer`).
 const CMD_TOGGLE_STEP: u32 = 16;
+const CMD_SET_LOCK_TARGET: u32 = 33;
+const CMD_SET_STEP_LOCK: u32 = 34;
 const CMD_TRIG_NOW: u32 = 38;
 
 /// Surface node ID reserved for Launch Control XL.
@@ -91,6 +93,7 @@ pub struct LcxlDrumController {
     mix_id: u32,
     tracks: Vec<TrackTargets>,
     reverb_targets: Option<[KnobTarget; 4]>,
+    delay_targets: Option<[KnobTarget; 4]>,
     active_track: usize,
     active_page: usize,
     bottom_mode: BottomMode,
@@ -98,6 +101,9 @@ pub struct LcxlDrumController {
     prepare_mute_mode: bool,
     trigger_latch: bool,
     knob_policy: SyncPolicy,
+    held_step: Option<usize>,
+    held_step_was_active: bool,
+    held_step_locked: bool,
     last_fader_norm: [Option<f64>; 32],
     last_leds: [RgbColor; 48],
     leds_dirty: bool,
@@ -207,10 +213,32 @@ impl LcxlDrumController {
             ]
         });
 
+        let delay_targets = has_node(190).then(|| {
+            [
+                KnobTarget {
+                    node_id: 190,
+                    param_id: resolve_param_id(conf, 190, "wet"),
+                },
+                KnobTarget {
+                    node_id: 190,
+                    param_id: resolve_param_id(conf, 190, "delay_time_ms"),
+                },
+                KnobTarget {
+                    node_id: 190,
+                    param_id: resolve_param_id(conf, 190, "feedback"),
+                },
+                KnobTarget {
+                    node_id: 190,
+                    param_id: resolve_param_id(conf, 190, "filter_hz"),
+                },
+            ]
+        });
+
         let ctrl = Self {
             mix_id: ids.mix,
             tracks,
             reverb_targets,
+            delay_targets,
             active_track: 0,
             active_page: 0,
             bottom_mode: BottomMode::StepSequencer,
@@ -218,6 +246,9 @@ impl LcxlDrumController {
             prepare_mute_mode: false,
             trigger_latch: false,
             knob_policy: SyncPolicy::HardwareAuthoritative,
+            held_step: None,
+            held_step_was_active: false,
+            held_step_locked: false,
             last_fader_norm: [None; 32],
             last_leds: [RgbColor::OFF; 48],
             leds_dirty: true,
@@ -251,8 +282,13 @@ impl LcxlDrumController {
         let row = (id / 8) as usize;
         let col = (id % 8) as usize;
         if self.fx_layer && row == 2 {
-            let rev = self.reverb_targets.as_ref()?;
-            return rev.get(col).copied();
+            if col < 4 {
+                let rev = self.reverb_targets.as_ref()?;
+                return rev.get(col).copied();
+            } else {
+                let dly = self.delay_targets.as_ref()?;
+                return dly.get(col - 4).copied();
+            }
         }
 
         let t = self.tracks.get(col)?;
@@ -263,6 +299,18 @@ impl LcxlDrumController {
             (true, 0) => t.row1_fx,
             (true, _) => t.row2_fx,
         })
+    }
+
+    /// Map a normalized `[0.0, 1.0]` knob value to the physical range declared on `target`.
+    /// Returns `None` if the parameter is an identity parameter (`machine`).
+    fn physical_value_for_norm(conf: &NodeConfigurator, target: KnobTarget, norm: f64) -> Option<f64> {
+        let doc = conf.get_node_cap_doc(target.node_id)?;
+        let param = doc.params.iter().find(|p| p.id == target.param_id)?;
+        if param.name.as_str() == "machine" {
+            return None;
+        }
+        let raw = param.min + norm.clamp(0.0, 1.0) * (param.max - param.min);
+        Some(if param.stepped { raw.round() } else { raw })
     }
 
     /// Handle a single `SurfaceEvent` from `LcxlNode` and emit any resulting `NodeCommand`s.
@@ -296,6 +344,35 @@ impl LcxlDrumController {
                     let Some(target) = self.resolve_knob_target(id) else {
                         return;
                     };
+
+                    // Hold-step + knob turn parameter lock authoring (#190 / #127):
+                    // In StepSequencer mode, holding any of the 16 step buttons while turning
+                    // a knob locks that parameter on the held step instead of mutating the base track.
+                    if self.bottom_mode == BottomMode::StepSequencer {
+                        if let Some(step) = self.held_step {
+                            if let (Some(t), Some(phys)) = (
+                                self.tracks.get(self.active_track),
+                                Self::physical_value_for_norm(conf, target, norm),
+                            ) {
+                                let _ = conf.send_command(NodeCommand {
+                                    target_id: t.seq_id,
+                                    type_id: CMD_SET_LOCK_TARGET,
+                                    arg0: target.node_id as i64,
+                                    arg1: target.param_id as f64,
+                                });
+                                let _ = conf.send_command(NodeCommand {
+                                    target_id: t.seq_id,
+                                    type_id: CMD_SET_STEP_LOCK,
+                                    arg0: step as i64,
+                                    arg1: phys,
+                                });
+                                self.held_step_locked = true;
+                                self.leds_dirty = true;
+                                return;
+                            }
+                        }
+                    }
+
                     match self.knob_policy {
                         SyncPolicy::HardwareAuthoritative => {
                             let _ = conf.send_command(NodeCommand {
@@ -330,12 +407,20 @@ impl LcxlDrumController {
                             BottomMode::StepSequencer => {
                                 if let Some(t) = self.tracks.get(self.active_track) {
                                     let step = self.active_page * 16 + idx;
-                                    let _ = conf.send_command(NodeCommand {
-                                        target_id: t.seq_id,
-                                        type_id: CMD_TOGGLE_STEP,
-                                        arg0: step as i64,
-                                        arg1: 0.0,
-                                    });
+                                    let mask = Self::read_step_mask(conf, t.seq_id);
+                                    let is_active = (mask >> step) & 1 != 0;
+                                    self.held_step = Some(step);
+                                    self.held_step_was_active = is_active;
+                                    self.held_step_locked = false;
+                                    if !is_active {
+                                        // Activate step immediately on press; holding it now allows p-locking
+                                        let _ = conf.send_command(NodeCommand {
+                                            target_id: t.seq_id,
+                                            type_id: CMD_TOGGLE_STEP,
+                                            arg0: step as i64,
+                                            arg1: 0.0,
+                                        });
+                                    }
                                 }
                             }
                             BottomMode::TrackControl => {
@@ -456,6 +541,27 @@ impl LcxlDrumController {
                     _ => {}
                 }
                 self.leds_dirty = true;
+            }
+            SurfaceEvent::ButtonReleased { id } => {
+                if (0..=15).contains(&id) && self.bottom_mode == BottomMode::StepSequencer {
+                    let step = self.active_page * 16 + (id as usize);
+                    if self.held_step == Some(step) {
+                        if self.held_step_was_active && !self.held_step_locked {
+                            if let Some(t) = self.tracks.get(self.active_track) {
+                                let _ = conf.send_command(NodeCommand {
+                                    target_id: t.seq_id,
+                                    type_id: CMD_TOGGLE_STEP,
+                                    arg0: step as i64,
+                                    arg1: 0.0,
+                                });
+                            }
+                        }
+                        self.held_step = None;
+                        self.held_step_was_active = false;
+                        self.held_step_locked = false;
+                        self.leds_dirty = true;
+                    }
+                }
             }
             _ => {}
         }
@@ -584,7 +690,9 @@ impl LcxlDrumController {
                 let led_idx = 24 + row * 8 + col;
                 if self.fx_layer {
                     if row == 2 {
-                        leds[led_idx] = if col < 4 && self.reverb_targets.is_some() {
+                        leds[led_idx] = if (col < 4 && self.reverb_targets.is_some())
+                            || (col >= 4 && self.delay_targets.is_some())
+                        {
                             amber
                         } else {
                             RgbColor::OFF
@@ -842,5 +950,54 @@ mod tests {
             panic!("expected mute param on seq 12");
         };
         assert!((muted - 1.0).abs() < 1e-6, "track 2 should be muted");
+    }
+
+    #[test]
+    fn hold_step_and_turn_knob_writes_param_lock_without_toggling_step_off() {
+        let (mut conf, ids, mut ctrl) = setup_8track();
+        let mut exec = conf.build_executor();
+        let mut out_buf = [0.0f32; 1024];
+
+        // Hold step button 0 on Track 1 (seq 10)
+        ctrl.handle_event(SurfaceEvent::ButtonPressed { id: 0 }, &mut conf);
+        // While holding step 0, turn Row 1 Knob 0 (id 0 -> tune on voice 20) to 100%
+        ctrl.handle_event(
+            SurfaceEvent::FaderMoved {
+                id: 0,
+                value: 65535,
+            },
+            &mut conf,
+        );
+        // Release step button 0
+        ctrl.handle_event(SurfaceEvent::ButtonReleased { id: 0 }, &mut conf);
+
+        exec.process(&mut out_buf, 2);
+        conf.process_main_thread();
+
+        // Step 0 must remain active after release
+        let mask = LcxlDrumController::read_step_mask(&conf, ids.sequencers[0]);
+        assert_eq!(mask & 1, 1, "step 0 must stay active after hold-step p-lock");
+
+        // Base tune parameter on voice 20 must remain at default 0.0 (not mutated to +24.0)
+        let Some(StateBusValue::Float(base_tune)) =
+            conf.state_bus_read(&format!("/node/{}/param/tune", ids.generators[0]))
+        else {
+            panic!("expected AnalogEngine tune on StateBus");
+        };
+        assert!(
+            base_tune.abs() < 1e-4,
+            "base tune should remain 0.0 when knob was turned during step hold, got {base_tune}"
+        );
+
+        // Sequencer 10 must publish the authored lock on step 0 (`s0:20:<tune_id>=24.000000`)
+        let Some(StateBusValue::Text(locks_str)) =
+            conf.state_bus_read(&format!("/node/{}/state/locks", ids.sequencers[0]))
+        else {
+            panic!("expected /node/10/state/locks on StateBus");
+        };
+        assert!(
+            locks_str.starts_with("s0:20:") && locks_str.contains("=24.000000"),
+            "expected step 0 lock on node 20 at +24.0 semitones, got {locks_str}"
+        );
     }
 }
