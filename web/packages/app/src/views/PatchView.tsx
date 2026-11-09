@@ -155,7 +155,7 @@ export function PatchView({
     const term = searchTerm.toLowerCase();
     return nodes.filter(
       (n) =>
-        n.display_name.toLowerCase().includes(term) ||
+        (n.name ?? "").toLowerCase().includes(term) ||
         (n.type_tag && n.type_tag.toLowerCase().includes(term)) ||
         n.id.toString() === term,
     );
@@ -165,7 +165,7 @@ export function PatchView({
     const lines = ["# Exported Paraclete Signal Graph Topology", "nodes:"];
     for (const n of nodes) {
       lines.push(`  - id: ${n.id}`);
-      lines.push(`    type: ${n.type_tag ?? n.display_name.toLowerCase()}`);
+      lines.push(`    type: ${n.type_tag ?? (n.name ?? "").toLowerCase()}`);
     }
     lines.push("edges:");
     for (const e of edges) {
@@ -271,8 +271,8 @@ export function PatchView({
               <div key={node.id} class="patch-node-card">
                 <div class="patch-node-header">
                   <div class="patch-node-id">#{node.id}</div>
-                  <div class="patch-node-name" title={node.type_tag ?? node.display_name}>
-                    {node.display_name}
+                  <div class="patch-node-name" title={node.type_tag ?? node.name}>
+                    {node.name || node.type_tag}
                   </div>
                   <button
                     class="patch-node-close-btn"
@@ -371,8 +371,8 @@ export function PatchView({
             const srcPort = srcNode?.ports?.find((p) => p.id === e.src_port);
             const dstPort = dstNode?.ports?.find((p) => p.id === e.dst_port);
 
-            const srcLabel = srcNode ? `#${srcNode.id} (${srcNode.display_name})` : `#${e.src_node}`;
-            const dstLabel = dstNode ? `#${dstNode.id} (${dstNode.display_name})` : `#${e.dst_node}`;
+            const srcLabel = srcNode ? `#${srcNode.id} (${srcNode.name || srcNode.type_tag})` : `#${e.src_node}`;
+            const dstLabel = dstNode ? `#${dstNode.id} (${dstNode.name || dstNode.type_tag})` : `#${e.dst_node}`;
             const portType = srcPort?.port_type ?? dstPort?.port_type ?? "Signal";
 
             return (
