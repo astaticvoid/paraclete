@@ -14,6 +14,7 @@
 //!   mix       — 0.0–1.0,       default 1.0 (parallel compression)
 //!   sidechain — 0.0–1.0,       default 0.0 (0.0 = internal, 1.0 = external sidechain port)
 
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use paraclete_node_api::{
@@ -24,13 +25,14 @@ use paraclete_node_api::{
 fn cp(name: &str) -> u32 { ParamDescriptor::id_for_name(name) }
 
 pub struct CompressorNode {
-    ports:         [PortDescriptor; 4],
-    bank:          ParameterBank,
-    env_level:     f32,
-    current_gr_db: f32,
-    sample_rate:   f32,
-    node_id:       u32,
-    gr_path_cache: OnceLock<String>,
+    ports:                  [PortDescriptor; 4],
+    bank:                   ParameterBank,
+    env_level:              f32,
+    current_gr_db:          f32,
+    sample_rate:            f32,
+    node_id:                u32,
+    gr_path_cache:          OnceLock<String>,
+    pending_initial_params: HashMap<String, f64>,
 }
 
 impl CompressorNode {
@@ -48,12 +50,13 @@ impl CompressorNode {
                 PortDescriptor { id: Self::PORT_SIDECHAIN_IN, name: "sidechain_in".into(), direction: PortDirection::Input,  port_type: PortType::Audio },
                 PortDescriptor { id: Self::PORT_GAIN_RED_OUT, name: "gain_red_out".into(), direction: PortDirection::Output, port_type: PortType::Cv },
             ],
-            bank:          ParameterBank::from_capability_document(&doc),
-            env_level:     0.0,
-            current_gr_db: 0.0,
-            sample_rate:   44100.0,
-            node_id:       0,
-            gr_path_cache: OnceLock::new(),
+            bank:                   ParameterBank::from_capability_document(&doc),
+            env_level:              0.0,
+            current_gr_db:          0.0,
+            sample_rate:            44100.0,
+            node_id:                0,
+            gr_path_cache:          OnceLock::new(),
+            pending_initial_params: HashMap::new(),
         }
     }
 
@@ -98,8 +101,16 @@ impl Node for CompressorNode {
     fn activate(&mut self, sample_rate: f32, _block_size: usize) {
         self.sample_rate = sample_rate.max(1.0);
         self.bank = ParameterBank::from_capability_document(&Self::default_doc());
+        for (name, value) in std::mem::take(&mut self.pending_initial_params) {
+            let id = ParamDescriptor::id_for_name(&name);
+            self.bank.set(id, value);
+        }
         self.env_level = 0.0;
         self.current_gr_db = 0.0;
+    }
+
+    fn set_initial_params(&mut self, params: &HashMap<String, f64>) {
+        self.pending_initial_params = params.clone();
     }
 
     fn serialize(&self) -> Vec<u8> {

@@ -12,6 +12,7 @@
 //!   stereo_phase — 0.0–1.0,       default 0.25 (quadrature phase offset between L/R)
 //!   mix          — 0.0–1.0,       default 0.5 (wet/dry balance)
 
+use std::collections::HashMap;
 use std::f32::consts::TAU;
 
 use paraclete_node_api::{
@@ -22,14 +23,15 @@ use paraclete_node_api::{
 fn chp(name: &str) -> u32 { ParamDescriptor::id_for_name(name) }
 
 pub struct ChorusNode {
-    ports:       [PortDescriptor; 2],
-    bank:        ParameterBank,
-    buf_l:       Vec<f32>,
-    buf_r:       Vec<f32>,
-    write_pos:   usize,
-    lfo_phase:   f32,
-    sample_rate: f32,
-    node_id:     u32,
+    ports:                  [PortDescriptor; 2],
+    bank:                   ParameterBank,
+    buf_l:                  Vec<f32>,
+    buf_r:                  Vec<f32>,
+    write_pos:              usize,
+    lfo_phase:              f32,
+    sample_rate:            f32,
+    node_id:                u32,
+    pending_initial_params: HashMap<String, f64>,
 }
 
 impl ChorusNode {
@@ -46,13 +48,14 @@ impl ChorusNode {
                 PortDescriptor { id: Self::PORT_AUDIO_IN,  name: "audio_in".into(),  direction: PortDirection::Input,  port_type: PortType::Audio },
                 PortDescriptor { id: Self::PORT_AUDIO_OUT, name: "audio_out".into(), direction: PortDirection::Output, port_type: PortType::Audio },
             ],
-            bank:        ParameterBank::from_capability_document(&doc),
-            buf_l:       vec![0.0; Self::MAX_DELAY_SAMPLES],
-            buf_r:       vec![0.0; Self::MAX_DELAY_SAMPLES],
-            write_pos:   0,
-            lfo_phase:   0.0,
-            sample_rate: 44100.0,
-            node_id:     0,
+            bank:                   ParameterBank::from_capability_document(&doc),
+            buf_l:                  vec![0.0; Self::MAX_DELAY_SAMPLES],
+            buf_r:                  vec![0.0; Self::MAX_DELAY_SAMPLES],
+            write_pos:              0,
+            lfo_phase:              0.0,
+            sample_rate:            44100.0,
+            node_id:                0,
+            pending_initial_params: HashMap::new(),
         }
     }
 
@@ -119,10 +122,18 @@ impl Node for ChorusNode {
     fn activate(&mut self, sample_rate: f32, _block_size: usize) {
         self.sample_rate = sample_rate.max(1.0);
         self.bank = ParameterBank::from_capability_document(&Self::default_doc());
+        for (name, value) in std::mem::take(&mut self.pending_initial_params) {
+            let id = ParamDescriptor::id_for_name(&name);
+            self.bank.set(id, value);
+        }
         self.buf_l.fill(0.0);
         self.buf_r.fill(0.0);
         self.write_pos = 0;
         self.lfo_phase = 0.0;
+    }
+
+    fn set_initial_params(&mut self, params: &HashMap<String, f64>) {
+        self.pending_initial_params = params.clone();
     }
 
     fn serialize(&self) -> Vec<u8> {

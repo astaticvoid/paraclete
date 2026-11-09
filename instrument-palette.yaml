@@ -1,0 +1,36 @@
+format_version: 1
+name: "paraclete-palette-fixture"
+bpm: 140.0
+
+nodes:
+  - id: 1
+    type: internal_clock
+  - id: 10
+    type: sequencer
+    display_name: "Kick"
+    default_note: 36
+  - id: 20
+    type: analog_engine:kick
+  - id: 50
+    type: chorus
+  - id: 51
+    type: compressor
+  - id: 2
+    type: mix
+    channel_count: 8
+  - id: 60
+    type: audio_output
+
+edges:
+  - from: [1, "clock_out"]
+    to:   [10, "clock_in"]
+  - from: [10, "events_out"]
+    to:   [20, 0]
+  - from: [20, 1]
+    to:   [50, 0]
+  - from: [50, 1]
+    to:   [51, 0]
+  - from: [51, 1]
+    to:   [2, 0]
+  - from: [2, 8]
+    to:   [60, 0]

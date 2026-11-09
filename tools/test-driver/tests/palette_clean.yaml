@@ -1,0 +1,24 @@
+format_version: 1
+instrument: instrument-palette.yaml
+duration_secs: 3
+output: /tmp/palette_clean.wav
+play: false
+
+timeline:
+  - at: 1.0
+    trigger: { target: "analog_engine:kick", velocity: 1.0 }
+
+assert:
+  # Pre-trigger silence: no clicks while chorus/compressor start up empty
+  - discontinuity_lt: 0.005
+    until: 0.5
+  - dc_offset_lt: 0.001
+    until: 0.5
+  # Kick must sound through chorus and compressor
+  - at: 1.5
+    peak_gte: 0.01
+    window_ms: 500
+  # Post-trigger: smooth audio without dropouts
+  - dropout_lt_ms: 5.0
+    from: 0.9
+    until: 1.3
