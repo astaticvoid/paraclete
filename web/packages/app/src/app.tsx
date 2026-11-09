@@ -10,6 +10,7 @@ import {
   MessageBus,
   StateStore,
   type ConnectionStatus,
+  type EdgeSummary,
   type NodeSummary,
   type ServerMsg,
   type ViewMetaMsg,
@@ -24,6 +25,7 @@ import { PageNav } from "./views/PageNav";
 import { ParamPage } from "./views/ParamPage";
 import { ChainView } from "./views/ChainView";
 import { KitsView } from "./views/KitsView";
+import { PatchView } from "./views/PatchView";
 import { tracksFromNodes } from "./profileLink";
 
 const TOKEN_STORAGE_KEY = "antiphon-token";
@@ -51,6 +53,7 @@ export function App() {
   const [velocityPct, setVelocityPct] = useState(100);
   const [connection, setConnection] = useState<Connection | null>(null);
   const [nodes, setNodes] = useState<NodeSummary[]>([]);
+  const [edges, setEdges] = useState<EdgeSummary[]>([]);
   const tracks = useMemo(() => tracksFromNodes(nodes), [nodes]);
 
   // W2: editor state
@@ -74,8 +77,11 @@ export function App() {
           stateStore.applyUpdates(msg.updates);
         } else if (msg.t === "context") {
           contextStore.applySnapshot(msg.slots);
-        } else if (msg.t === "welcome" || msg.t === "topology") {
+        } else if (msg.t === "welcome") {
           setNodes(msg.nodes);
+        } else if (msg.t === "topology") {
+          setNodes(msg.nodes);
+          setEdges(msg.edges ?? []);
         } else if (msg.t === "view_meta") {
           setViewMeta(msg);
         }
@@ -103,6 +109,9 @@ export function App() {
 
   function handlePageSelect(pageId: string) {
     setActivePage(pageId);
+    if (pageId === "PATCH" && connection) {
+      connection.send({ t: "get_topology" });
+    }
   }
 
   const pages = viewMeta?.pages ?? [];
@@ -145,6 +154,15 @@ export function App() {
             />
           ) : activePage === "KIT" ? (
             <KitsView connection={connection} contextStore={contextStore} bus={bus} />
+          ) : activePage === "PATCH" ? (
+            <PatchView
+              connection={connection}
+              nodes={nodes}
+              edges={edges}
+              onRefreshTopology={() => {
+                if (connection) connection.send({ t: "get_topology" });
+              }}
+            />
           ) : currentPage ? (
             <ParamPage
               connection={connection}

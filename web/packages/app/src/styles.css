@@ -998,3 +998,379 @@ body {
     width: 56px;
   }
 }
+
+/* ── W5 Modular Patch Editor ─────────────────────────────────────────────── */
+
+.patch-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  background: #0f1015;
+  color: #e2e8f0;
+  font-family: ui-monospace, monospace;
+  overflow: hidden;
+}
+
+.patch-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: #161822;
+  border-bottom: 1px solid #2d3142;
+  gap: 12px;
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+}
+
+.patch-toolbar-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.patch-title-tag {
+  background: #3b82f6;
+  color: #ffffff;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-weight: 700;
+  font-size: 11px;
+}
+
+.patch-title-desc {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.patch-add-group,
+.patch-search-group,
+.patch-action-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.patch-select,
+.patch-input {
+  background: #1e2230;
+  border: 1px solid #333a4d;
+  color: #f1f5f9;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  outline: none;
+}
+
+.patch-select:focus,
+.patch-input:focus {
+  border-color: #3b82f6;
+}
+
+.patch-btn {
+  background: #252b3b;
+  border: 1px solid #3b4559;
+  color: #cbd5e1;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.patch-btn:hover {
+  background: #333a4d;
+  color: #ffffff;
+}
+
+.patch-btn-primary {
+  background: #2563eb;
+  border-color: #3b82f6;
+  color: #ffffff;
+}
+
+.patch-btn-primary:hover {
+  background: #1d4ed8;
+}
+
+.patch-btn-sm {
+  padding: 2px 6px;
+  font-size: 11px;
+}
+
+.patch-cable-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: #432800;
+  border-bottom: 1px solid #d97706;
+  color: #fef3c7;
+  font-size: 11px;
+  animation: pulse-banner 2s infinite ease-in-out;
+}
+
+@keyframes pulse-banner {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.85; }
+}
+
+.cable-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.patch-export-tray {
+  background: #13151f;
+  border-bottom: 1px solid #2d3142;
+  padding: 8px 12px;
+  max-height: 180px;
+  display: flex;
+  flex-direction: column;
+}
+
+.patch-export-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: #94a3b8;
+}
+
+.patch-export-content {
+  margin: 0;
+  background: #090a0f;
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid #262938;
+  font-size: 11px;
+  overflow-y: auto;
+  color: #a5b4fc;
+}
+
+.patch-canvas {
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 12px;
+  background: radial-gradient(circle, #1a1c28 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+
+.patch-nodes-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.patch-node-card {
+  width: 220px;
+  background: #181a24;
+  border: 1px solid #2e3347;
+  border-radius: 6px;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.patch-node-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  background: #202433;
+  border-bottom: 1px solid #2e3347;
+  gap: 6px;
+}
+
+.patch-node-id {
+  font-size: 10px;
+  font-weight: 700;
+  color: #64748b;
+  background: #0f111a;
+  padding: 2px 4px;
+  border-radius: 3px;
+}
+
+.patch-node-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: #f1f5f9;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.patch-node-close-btn {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.patch-node-close-btn:hover {
+  color: #ef4444;
+}
+
+.patch-node-body {
+  display: flex;
+  padding: 6px 8px;
+  gap: 8px;
+  min-height: 60px;
+}
+
+.patch-ports-col {
+  flex: 1 1 50%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.patch-port-col-label {
+  font-size: 9px;
+  font-weight: 700;
+  color: #64748b;
+  margin-bottom: 2px;
+}
+
+.patch-inputs-col .patch-port-col-label {
+  text-align: left;
+}
+
+.patch-outputs-col .patch-port-col-label {
+  text-align: right;
+}
+
+.patch-port-btn {
+  background: #12141c;
+  border: 1px solid #2b2f42;
+  border-radius: 4px;
+  padding: 3px 6px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: #cbd5e1;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s ease;
+}
+
+.patch-port-btn.in-port {
+  justify-content: flex-start;
+}
+
+.patch-port-btn.out-port {
+  justify-content: flex-end;
+}
+
+.patch-port-btn:hover {
+  background: #252b3d;
+  border-color: #4b5563;
+}
+
+.patch-port-btn.connected {
+  border-color: #38bdf8;
+}
+
+.patch-port-btn.active-source {
+  border-color: #f59e0b;
+  background: #332005;
+}
+
+.patch-port-btn.target-pulse {
+  animation: pulse-border 1.5s infinite;
+}
+
+@keyframes pulse-border {
+  0%, 100% { border-color: #3b82f6; }
+  50% { border-color: #60a5fa; box-shadow: 0 0 6px rgba(96, 165, 250, 0.5); }
+}
+
+.patch-port-jack {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  border: 2px solid #94a3b8;
+  display: inline-block;
+  flex: 0 0 auto;
+}
+
+.patch-port-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 70px;
+}
+
+.patch-ports-empty {
+  font-size: 10px;
+  color: #475569;
+  font-style: italic;
+}
+
+.patch-cables-panel {
+  flex: 0 0 auto;
+  max-height: 140px;
+  background: #14161f;
+  border-top: 1px solid #2d3142;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+}
+
+.patch-cables-header {
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+  margin-bottom: 6px;
+}
+
+.patch-cables-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  overflow-y: auto;
+}
+
+.patch-cable-pill {
+  background: #1e2230;
+  border: 1px solid #333a4d;
+  border-radius: 4px;
+  padding: 3px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: #e2e8f0;
+}
+
+.cable-remove-btn {
+  background: transparent;
+  border: none;
+  color: #64748b;
+  font-size: 10px;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.cable-remove-btn:hover {
+  color: #ef4444;
+}
+
+.patch-cables-none {
+  font-size: 10px;
+  color: #64748b;
+  font-style: italic;
+}
+

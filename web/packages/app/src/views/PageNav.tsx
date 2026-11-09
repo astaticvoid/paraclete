@@ -24,9 +24,10 @@ const PAGE_LABELS: Record<string, string> = {
   GRID: "GRID",
   CHAIN: "CHAIN",
   KIT: "KIT",
+  PATCH: "PATCH",
 };
 
-const PAGE_ORDER = ["GRID", "TRIG", "SRC", "FLTR", "AMP", "FX", "MOD", "CHAIN", "KIT"];
+const PAGE_ORDER = ["GRID", "TRIG", "SRC", "FLTR", "AMP", "FX", "MOD", "CHAIN", "KIT", "PATCH"];
 
 export function PageNav({ pages, activePage, onSelect }: PageNavProps) {
   const pageIds = new Set(pages.map((p) => p.id));
@@ -39,7 +40,8 @@ export function PageNav({ pages, activePage, onSelect }: PageNavProps) {
   return (
     <div class="page-nav">
       {PAGE_ORDER.map((id) => {
-        const hasContent = pageIds.has(id) || id === "GRID" || id === "CHAIN" || id === "KIT";
+        const hasContent =
+          pageIds.has(id) || id === "GRID" || id === "CHAIN" || id === "KIT" || id === "PATCH";
         const label = PAGE_LABELS[id] ?? id;
         return (
           <button
