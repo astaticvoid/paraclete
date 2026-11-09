@@ -255,15 +255,11 @@ impl Node for ReverbNode {
 
         let room_size    = self.bank.get(PARAM_ROOM_SIZE) as f32;
         let damping      = self.bank.get(PARAM_DAMPING)   as f32;
-        let wet          = self.bank.get(PARAM_WET)        as f32;
-        let dry          = self.bank.get(PARAM_DRY)        as f32;
         let width        = self.bank.get(PARAM_WIDTH)      as f32;
         let pre_delay_ms = self.bank.get(PARAM_PRE_DELAY) as f32;
 
         let feedback = room_size * 0.28 + 0.7;
         let damp     = damping * 0.4;
-        let wet1     = wet * (width / 2.0 + 0.5);
-        let wet2     = wet * ((1.0 - width) / 2.0);
 
         let pre_delay_samples = ((pre_delay_ms / 1000.0) * self.sample_rate) as usize;
         let pd_len = self.pre_delay_l.len();
@@ -274,8 +270,18 @@ impl Node for ReverbNode {
             output.audio_outputs.first_mut(),
         ) {
             let frames = input.block_size;
+            let (wet_start, wet_delta) = self.bank.get_ramp(PARAM_WET, frames);
+            let (dry_start, dry_delta) = self.bank.get_ramp(PARAM_DRY, frames);
+            let mut curr_wet = wet_start;
+            let mut curr_dry = dry_start;
 
             for i in 0..frames {
+                curr_wet += wet_delta;
+                curr_dry += dry_delta;
+                let wet1 = curr_wet * (width / 2.0 + 0.5);
+                let wet2 = curr_wet * ((1.0 - width) / 2.0);
+                let dry = curr_dry;
+
                 let raw_l = if audio_in.channels() >= 1 { audio_in.channel(0)[i] } else { 0.0 };
                 let raw_r = if audio_in.channels() >= 2 { audio_in.channel(1)[i] } else { raw_l };
 

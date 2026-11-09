@@ -8,6 +8,8 @@
 //!   dry           — 0.0–1.0,       default 1.0
 //!   filter_hz     — 200.0–8000.0,  default 4000.0
 
+use std::collections::HashMap;
+
 use paraclete_node_api::{
     CapabilityDocument, Node, ParameterBank, ParamDescriptor, ParamUnit,
     PortDescriptor, PortDirection, PortType, ProcessInput, ProcessOutput, StateBusValue,
@@ -33,6 +35,10 @@ pub struct DelayNode {
     low_r:     f32,
     band_r:    f32,
     sample_rate: f32,
+    pending_initial_params: HashMap<String, f64>,
+    curr_wet: f32,
+    curr_dry: f32,
+    first_block: bool,
 }
 
 impl DelayNode {
@@ -66,6 +72,10 @@ impl DelayNode {
             low_r:       0.0,
             band_r:      0.0,
             sample_rate: 44100.0,
+            pending_initial_params: HashMap::new(),
+            curr_wet:    0.5,
+            curr_dry:    1.0,
+            first_block: true,
         }
     }
 
@@ -100,6 +110,18 @@ impl Node for DelayNode {
     fn set_node_id(&mut self, id: u32) { self.node_id = id; }
     fn capability_document(&self) -> CapabilityDocument { Self::default_doc() }
 
+    fn set_initial_params(&mut self, params: &HashMap<String, f64>) {
+        self.pending_initial_params = params.clone();
+    }
+
+    fn serialize(&self) -> Vec<u8> {
+        self.bank.serialize()
+    }
+
+    fn deserialize(&mut self, data: &[u8]) {
+        self.bank.deserialize(data);
+    }
+
     fn published_state(&self, buf: &mut Vec<(String, StateBusValue)>) {
         paraclete_node_api::publish_bank_state(self.node_id, &self.bank, buf);
     }
@@ -114,17 +136,32 @@ impl Node for DelayNode {
         self.band_l      = 0.0;
         self.low_r       = 0.0;
         self.band_r      = 0.0;
-        self.bank        = ParameterBank::from_capability_document(&Self::default_doc());
+        let doc = Self::default_doc();
+        self.bank        = ParameterBank::from_capability_document(&doc);
+        for (name, value) in std::mem::take(&mut self.pending_initial_params) {
+            if let Some(param) = doc.params.iter().find(|p| p.name.as_str() == name.as_str()) {
+                self.bank.set(param.id, value);
+            }
+        }
+        self.curr_wet = self.bank.get(PARAM_WET) as f32;
+        self.curr_dry = self.bank.get(PARAM_DRY) as f32;
+        self.first_block = true;
     }
 
     fn process(&mut self, input: &ProcessInput, output: &mut ProcessOutput) {
         self.bank.handle_commands(input.commands);
 
-        let delay_ms  = self.bank.get(PARAM_DELAY_TIME) as f32;
-        let feedback  = self.bank.get(PARAM_FEEDBACK)   as f32;
-        let wet       = self.bank.get(PARAM_WET)        as f32;
-        let dry       = self.bank.get(PARAM_DRY)        as f32;
-        let filter_hz = self.bank.get(PARAM_FILTER_HZ)  as f32;
+        let delay_ms    = self.bank.get(PARAM_DELAY_TIME) as f32;
+        let feedback    = self.bank.get(PARAM_FEEDBACK)   as f32;
+        let target_wet  = self.bank.get(PARAM_WET)        as f32;
+        let target_dry  = self.bank.get(PARAM_DRY)        as f32;
+        let filter_hz   = self.bank.get(PARAM_FILTER_HZ)  as f32;
+
+        if self.first_block {
+            self.first_block = false;
+            self.curr_wet = target_wet;
+            self.curr_dry = target_dry;
+        }
 
         let delay_samples = ((delay_ms / 1000.0) * self.sample_rate) as usize;
         let delay_samples = delay_samples.clamp(1, self.max_len - 1);
@@ -138,8 +175,13 @@ impl Node for DelayNode {
             output.audio_outputs.first_mut(),
         ) {
             let frames = input.block_size;
+            let delta_wet = (target_wet - self.curr_wet) / (frames.max(1) as f32);
+            let delta_dry = (target_dry - self.curr_dry) / (frames.max(1) as f32);
 
             for i in 0..frames {
+                self.curr_wet += delta_wet;
+                self.curr_dry += delta_dry;
+
                 let in_l = if audio_in.channels() >= 1 { audio_in.channel(0)[i] } else { 0.0 };
                 let in_r = if audio_in.channels() >= 2 { audio_in.channel(1)[i] } else { in_l };
 
@@ -156,11 +198,13 @@ impl Node for DelayNode {
                 self.buf_l[self.write_pos] = in_l + self.low_l * feedback;
                 self.buf_r[self.write_pos] = in_r + self.low_r * feedback;
 
-                if audio_out.channels() >= 1 { audio_out.channel_mut(0)[i] = in_l * dry + delayed_l * wet; }
-                if audio_out.channels() >= 2 { audio_out.channel_mut(1)[i] = in_r * dry + delayed_r * wet; }
+                if audio_out.channels() >= 1 { audio_out.channel_mut(0)[i] = in_l * self.curr_dry + delayed_l * self.curr_wet; }
+                if audio_out.channels() >= 2 { audio_out.channel_mut(1)[i] = in_r * self.curr_dry + delayed_r * self.curr_wet; }
 
                 self.write_pos = (self.write_pos + 1) % self.max_len;
             }
+            self.curr_wet = target_wet;
+            self.curr_dry = target_dry;
         }
     }
 }
@@ -290,5 +334,14 @@ mod tests {
         assert_eq!(d.ports().len(), 2);
         assert_eq!(d.ports()[0].direction, PortDirection::Input);
         assert_eq!(d.ports()[1].direction, PortDirection::Output);
+    }
+
+    #[test]
+    fn delay_node_set_initial_params_applied() {
+        let mut d = DelayNode::new();
+        d.set_initial_params(&[("wet".to_string(), 0.0), ("dry".to_string(), 1.0)].into_iter().collect());
+        d.activate(44100.0, 512);
+        assert_eq!(d.bank.get(PARAM_WET), 0.0);
+        assert_eq!(d.bank.get(PARAM_DRY), 1.0);
     }
 }

@@ -37,6 +37,11 @@ const CMD_SET_LOCK_TARGET: u32 = 33;
 const CMD_SET_STEP_LOCK: u32 = 34;
 const CMD_TRIG_NOW: u32 = 38;
 
+/// Internal clock command type IDs (`paraclete-nodes::InternalClock`).
+const CMD_CLOCK_START: u32 = 16;
+const CMD_CLOCK_STOP: u32 = 17;
+const CMD_CLOCK_REWIND: u32 = 18;
+
 /// Surface node ID reserved for Launch Control XL.
 pub const ID_LCXL: u32 = 105;
 
@@ -91,6 +96,7 @@ fn resolve_param_id(conf: &NodeConfigurator, node_id: u32, param_name: &str) -> 
 
 /// Stateful controller bridging `LcxlNode` surface events, `NodeConfigurator`, and `StateBus`.
 pub struct LcxlDrumController {
+    clock_id: u32,
     mix_id: u32,
     tracks: Vec<TrackTargets>,
     master_fx_row: [Option<KnobTarget>; 8],
@@ -100,6 +106,8 @@ pub struct LcxlDrumController {
     fx_layer: bool,
     prepare_mute_mode: bool,
     trigger_latch: bool,
+    mute_held: bool,
+    mute_action_during_hold: bool,
     knob_policy: SyncPolicy,
     held_step: Option<usize>,
     held_step_was_active: bool,
@@ -300,6 +308,7 @@ impl LcxlDrumController {
         }
 
         let ctrl = Self {
+            clock_id: ids.clock,
             mix_id: ids.mix,
             tracks,
             master_fx_row,
@@ -309,6 +318,8 @@ impl LcxlDrumController {
             fx_layer: false,
             prepare_mute_mode: false,
             trigger_latch: false,
+            mute_held: false,
+            mute_action_during_hold: false,
             knob_policy: SyncPolicy::HardwareAuthoritative,
             held_step: None,
             held_step_was_active: false,
@@ -367,8 +378,7 @@ impl LcxlDrumController {
         if param.name.as_str() == "machine" {
             return None;
         }
-        let raw = param.min + norm.clamp(0.0, 1.0) * (param.max - param.min);
-        Some(if param.stepped { raw.round() } else { raw })
+        Some(param.norm_to_value(norm))
     }
 
     /// Handle a single `SurfaceEvent` from `LcxlNode` and emit any resulting `NodeCommand`s.
@@ -461,6 +471,32 @@ impl LcxlDrumController {
                     // Bottom 16 buttons: Step Sequencer or Track Control
                     0..=15 => {
                         let idx = id as usize;
+                        if self.mute_held {
+                            // Momentary hold-to-mute on ANY pad column (col = idx % 8)
+                            let col = idx % 8;
+                            if let Some(t) = self.tracks.get(col) {
+                                let currently_muted = Self::read_track_muted(conf, t.seq_id);
+                                let next_mute = if currently_muted { 0.0 } else { 1.0 };
+                                if self.prepare_mute_mode {
+                                    let _ = conf.send_command(NodeCommand {
+                                        target_id: t.seq_id,
+                                        type_id: CMD_PREPARE_MUTE as u32,
+                                        arg0: if currently_muted { 0 } else { 1 },
+                                        arg1: 0.0,
+                                    });
+                                } else {
+                                    let _ = conf.send_command(NodeCommand {
+                                        target_id: t.seq_id,
+                                        type_id: CMD_SET_PARAM,
+                                        arg0: t.mute_param_id as i64,
+                                        arg1: next_mute,
+                                    });
+                                }
+                                self.mute_action_during_hold = true;
+                                self.leds_dirty = true;
+                                return;
+                            }
+                        }
                         match self.bottom_mode {
                             BottomMode::StepSequencer => {
                                 if let Some(t) = self.tracks.get(self.active_track) {
@@ -531,13 +567,10 @@ impl LcxlDrumController {
                         self.fx_layer = !self.fx_layer;
                         self.publish_surface_state(conf);
                     }
-                    // Mute button (17): Toggle BottomMode (StepSequencer <-> TrackControl)
+                    // Mute button (17): Momentary hold-to-mute or mode toggle
                     17 => {
-                        self.bottom_mode = match self.bottom_mode {
-                            BottomMode::StepSequencer => BottomMode::TrackControl,
-                            BottomMode::TrackControl => BottomMode::StepSequencer,
-                        };
-                        self.publish_surface_state(conf);
+                        self.mute_held = true;
+                        self.mute_action_during_hold = false;
                     }
                     // Solo button (18): Toggle Immediate vs Pattern-Wrap Prepared Mute
                     18 => {
@@ -564,15 +597,47 @@ impl LcxlDrumController {
                             }
                         }
                     }
-                    // Up button (20): Previous step page
-                    20 if self.active_page > 0 => {
-                        self.active_page -= 1;
-                        self.publish_surface_state(conf);
+                    // Up button (20): Stop / Rewind transport (or previous step page in FX layer)
+                    20 => {
+                        if self.fx_layer {
+                            if self.active_page > 0 {
+                                self.active_page -= 1;
+                                self.publish_surface_state(conf);
+                            }
+                        } else {
+                            let _ = conf.send_command(NodeCommand {
+                                target_id: self.clock_id,
+                                type_id: CMD_CLOCK_STOP,
+                                arg0: 0,
+                                arg1: 0.0,
+                            });
+                            let _ = conf.send_command(NodeCommand {
+                                target_id: self.clock_id,
+                                type_id: CMD_CLOCK_REWIND,
+                                arg0: 0,
+                                arg1: 0.0,
+                            });
+                        }
                     }
-                    // Down button (21): Next step page (up to page 3)
-                    21 if self.active_page < 3 => {
-                        self.active_page += 1;
-                        self.publish_surface_state(conf);
+                    // Down button (21): Play / Pause transport (or next step page in FX layer)
+                    21 => {
+                        if self.fx_layer {
+                            if self.active_page < 3 {
+                                self.active_page += 1;
+                                self.publish_surface_state(conf);
+                            }
+                        } else {
+                            let playing = matches!(
+                                conf.state_bus_read("/transport/playing"),
+                                Some(StateBusValue::Bool(true))
+                            );
+                            let _ = conf.send_command(NodeCommand {
+                                target_id: self.clock_id,
+                                type_id: if playing { CMD_CLOCK_STOP } else { CMD_CLOCK_START },
+                                arg0: 0,
+                                arg1: 0.0,
+                            });
+                        }
                     }
                     // Left button (22): Previous drum track
                     22 if !self.tracks.is_empty() => {
@@ -601,24 +666,39 @@ impl LcxlDrumController {
                 self.leds_dirty = true;
             }
             SurfaceEvent::ButtonReleased { id } => {
-                if (0..=15).contains(&id) && self.bottom_mode == BottomMode::StepSequencer {
-                    let step = self.active_page * 16 + (id as usize);
-                    if self.held_step == Some(step) {
-                        if self.held_step_was_active && !self.held_step_locked {
-                            if let Some(t) = self.tracks.get(self.active_track) {
-                                let _ = conf.send_command(NodeCommand {
-                                    target_id: t.seq_id,
-                                    type_id: CMD_TOGGLE_STEP,
-                                    arg0: step as i64,
-                                    arg1: 0.0,
-                                });
+                match id {
+                    0..=15 if self.bottom_mode == BottomMode::StepSequencer && !self.mute_held => {
+                        let step = self.active_page * 16 + (id as usize);
+                        if self.held_step == Some(step) {
+                            if self.held_step_was_active && !self.held_step_locked {
+                                if let Some(t) = self.tracks.get(self.active_track) {
+                                    let _ = conf.send_command(NodeCommand {
+                                        target_id: t.seq_id,
+                                        type_id: CMD_TOGGLE_STEP,
+                                        arg0: step as i64,
+                                        arg1: 0.0,
+                                    });
+                                }
                             }
+                            self.held_step = None;
+                            self.held_step_was_active = false;
+                            self.held_step_locked = false;
+                            self.leds_dirty = true;
                         }
-                        self.held_step = None;
-                        self.held_step_was_active = false;
-                        self.held_step_locked = false;
+                    }
+                    17 => {
+                        self.mute_held = false;
+                        if !self.mute_action_during_hold {
+                            // Quick tap with no pads touched: toggle persistent mode
+                            self.bottom_mode = match self.bottom_mode {
+                                BottomMode::StepSequencer => BottomMode::TrackControl,
+                                BottomMode::TrackControl => BottomMode::StepSequencer,
+                            };
+                            self.publish_surface_state(conf);
+                        }
                         self.leds_dirty = true;
                     }
+                    _ => {}
                 }
             }
             _ => {}
@@ -669,27 +749,26 @@ impl LcxlDrumController {
         };
         let green_dim = RgbColor { r: 0, g: 64, b: 0 };
 
-        match self.bottom_mode {
-            BottomMode::StepSequencer => {
-                if let Some(t) = self.tracks.get(self.active_track) {
-                    let mask = Self::read_step_mask(conf, t.seq_id);
-                    let playhead = Self::read_current_step(conf, t.seq_id);
-                    let base = self.active_page * 16;
-                    for (i, led) in leds.iter_mut().enumerate().take(16) {
-                        let step = base + i;
-                        let is_active = (mask >> step) & 1 != 0;
-                        let is_head = playhead == Some(step);
-                        *led = match (is_head, is_active) {
-                            (true, true) => RgbColor::RED,
-                            (true, false) => RgbColor::GREEN,
-                            (false, true) => amber,
-                            (false, false) => RgbColor::OFF,
-                        };
-                    }
+        let show_track_control = self.mute_held || self.bottom_mode == BottomMode::TrackControl;
+        if !show_track_control {
+            if let Some(t) = self.tracks.get(self.active_track) {
+                let mask = Self::read_step_mask(conf, t.seq_id);
+                let playhead = Self::read_current_step(conf, t.seq_id);
+                let base = self.active_page * 16;
+                for (i, led) in leds.iter_mut().enumerate().take(16) {
+                    let step = base + i;
+                    let is_active = (mask >> step) & 1 != 0;
+                    let is_head = playhead == Some(step);
+                    *led = match (is_head, is_active) {
+                        (true, true) => RgbColor::RED,
+                        (true, false) => RgbColor::GREEN,
+                        (false, true) => amber,
+                        (false, false) => RgbColor::OFF,
+                    };
                 }
             }
-            BottomMode::TrackControl => {
-                for (col, t) in self.tracks.iter().enumerate().take(8) {
+        } else {
+            for (col, t) in self.tracks.iter().enumerate().take(8) {
                     leds[col] = if col == self.active_track {
                         RgbColor::GREEN
                     } else if self.trigger_latch {
@@ -708,14 +787,19 @@ impl LcxlDrumController {
                         green_dim
                     };
                 }
-            }
         }
 
         // Mode buttons 16..19
         leds[16] = if self.fx_layer { amber } else { RgbColor::OFF };
         leds[17] = match self.bottom_mode {
-            BottomMode::StepSequencer => RgbColor::OFF,
-            BottomMode::TrackControl => RgbColor::GREEN,
+            BottomMode::StepSequencer => {
+                if self.mute_held {
+                    amber
+                } else {
+                    RgbColor::OFF
+                }
+            }
+            BottomMode::TrackControl => amber,
         };
         leds[18] = if self.prepare_mute_mode {
             amber
@@ -723,24 +807,40 @@ impl LcxlDrumController {
             RgbColor::OFF
         };
         leds[19] = if self.trigger_latch {
-            RgbColor::RED
+            yellow
         } else {
             RgbColor::OFF
         };
 
-        // Nav buttons 20..23
-        leds[20] = if self.active_page > 0 {
-            amber
+        // Nav / Transport buttons 20..23 (single Red LEDs)
+        let is_playing = matches!(
+            conf.state_bus_read("/transport/playing"),
+            Some(StateBusValue::Bool(true))
+        );
+        leds[20] = if self.fx_layer {
+            if self.active_page > 0 {
+                RgbColor::RED
+            } else {
+                RgbColor::OFF
+            }
+        } else if !is_playing {
+            RgbColor::RED // Red when stopped (Stop indicator)
         } else {
             RgbColor::OFF
         };
-        leds[21] = if self.active_page < 3 {
-            amber
+        leds[21] = if self.fx_layer {
+            if self.active_page < 3 {
+                RgbColor::RED
+            } else {
+                RgbColor::OFF
+            }
+        } else if is_playing {
+            RgbColor::RED // Red when playing (Play indicator)
         } else {
             RgbColor::OFF
         };
-        leds[22] = green_dim;
-        leds[23] = green_dim;
+        leds[22] = RgbColor::RED;
+        leds[23] = RgbColor::RED;
 
         // Knob LEDs 24..47 (3 rows x 8 cols)
         for row in 0..3 {
@@ -897,11 +997,10 @@ mod tests {
             build_from_instrument(&def, &mut conf, &libs, &mut pool).expect("build x0x-lcxl graph");
         let ctrl = LcxlDrumController::from_definition(&ids, def.lcxl.as_ref(), &mut conf);
 
-        // Col 1 Row 3 (knob id = 16) in normal mode is mapped to Kick punch (node 20, param "punch")
-        // rather than filter cutoff (node 40), proving YAML override works.
+        // Col 1 Row 3 (knob id = 16) in normal mode is mapped to Filter cutoff (node 40, param "cutoff")
         let r3_col0 = ctrl.resolve_knob_target(16).expect("Col 1 Row 3 target");
-        assert_eq!(r3_col0.node_id, 20);
-        assert_eq!(r3_col0.param_id, ParamDescriptor::id_for_name("punch"));
+        assert_eq!(r3_col0.node_id, 40);
+        assert_eq!(r3_col0.param_id, resolve_param_id(&conf, 40, "cutoff"));
 
         // Col 3 Row 1 (knob id = 2) is Clap tone (node 22, param "tone")
         let r1_col2 = ctrl.resolve_knob_target(2).expect("Col 3 Row 1 target");
@@ -1019,8 +1118,9 @@ mod tests {
         let mut exec = conf.build_executor();
         let mut out_buf = [0.0f32; 1024];
 
-        // Press Mute mode button (id 17) -> enters TrackControl mode
+        // Tap Mute mode button (id 17) -> enters TrackControl mode
         ctrl.handle_event(SurfaceEvent::ButtonPressed { id: 17 }, &mut conf);
+        ctrl.handle_event(SurfaceEvent::ButtonReleased { id: 17 }, &mut conf);
         assert_eq!(ctrl.bottom_mode(), BottomMode::TrackControl);
 
         // Press top-row button 2 (id 2) -> selects Track 3 (index 2) and writes /script/theotokos/selected (seq_id = 12)
@@ -1091,5 +1191,65 @@ mod tests {
             locks_str.starts_with("s0:20:") && locks_str.contains("=24.000000"),
             "expected step 0 lock on node 20 at +24.0 semitones, got {locks_str}"
         );
+    }
+
+    #[test]
+    fn momentary_hold_to_mute_and_hardware_transport() {
+        let (mut conf, ids, mut ctrl) = setup_8track();
+        let mut exec = conf.build_executor();
+        let mut out_buf = [0.0f32; 1024];
+
+        assert_eq!(ctrl.bottom_mode(), BottomMode::StepSequencer);
+
+        // 1. Hardware transport: Press Down (21) -> Play
+        ctrl.handle_event(SurfaceEvent::ButtonPressed { id: 21 }, &mut conf);
+        exec.process(&mut out_buf, 2);
+        conf.process_main_thread();
+        assert_eq!(
+            conf.state_bus_read("/transport/playing"),
+            Some(StateBusValue::Bool(true)),
+            "Down button should start transport"
+        );
+
+        // Press Down again -> Pause
+        ctrl.handle_event(SurfaceEvent::ButtonPressed { id: 21 }, &mut conf);
+        exec.process(&mut out_buf, 2);
+        conf.process_main_thread();
+        assert_eq!(
+            conf.state_bus_read("/transport/playing"),
+            Some(StateBusValue::Bool(false)),
+            "Down button again should pause transport"
+        );
+
+        // Press Up (20) -> Stop / Rewind
+        ctrl.handle_event(SurfaceEvent::ButtonPressed { id: 20 }, &mut conf);
+        exec.process(&mut out_buf, 2);
+        conf.process_main_thread();
+        assert_eq!(
+            conf.state_bus_read("/transport/playing"),
+            Some(StateBusValue::Bool(false)),
+            "Up button should stop transport"
+        );
+
+        // 2. Momentary Hold-to-Mute: Hold Mute (17) -> tap pad 0 (Kick) -> release Mute (17)
+        assert_eq!(ctrl.bottom_mode(), BottomMode::StepSequencer);
+        ctrl.handle_event(SurfaceEvent::ButtonPressed { id: 17 }, &mut conf);
+        ctrl.handle_event(SurfaceEvent::ButtonPressed { id: 0 }, &mut conf);
+        ctrl.handle_event(SurfaceEvent::ButtonReleased { id: 0 }, &mut conf);
+        ctrl.handle_event(SurfaceEvent::ButtonReleased { id: 17 }, &mut conf);
+
+        exec.process(&mut out_buf, 2);
+        conf.process_main_thread();
+
+        // Should return directly to StepSequencer mode without getting trapped
+        assert_eq!(ctrl.bottom_mode(), BottomMode::StepSequencer);
+
+        // Track 0 (Kick) must now be muted
+        let Some(StateBusValue::Float(muted)) =
+            conf.state_bus_read(&format!("/node/{}/param/mute", ids.sequencers[0]))
+        else {
+            panic!("expected mute param on StateBus");
+        };
+        assert_eq!(muted, 1.0, "Kick should be muted by momentary hold-to-mute");
     }
 }

@@ -385,7 +385,7 @@ pub struct Sequencer {
     /// Keyed to `self.node_id` at first `published_state()` call.
     /// The `track_name`, `locks` entries and all VALUEs are still computed
     /// fresh each call.
-    state_path_cache: std::sync::OnceLock<[String; 21]>,
+    state_path_cache: std::sync::OnceLock<[String; 22]>,
 
     /// TK1 C1: current lock target set by CMD_SET_LOCK_TARGET.
     lock_target: Option<(u32, u32)>,
@@ -2032,6 +2032,8 @@ impl Node for Sequencer {
                 // TK3 C0 — per-step velocity/length/timing/condition for the
                 // Theotokos TRIG page's virtual params (#180).
                 format!("/node/{id}/state/step_detail"),
+                // P11 C4 / LCXL / Theoria — pending prepare-mute state
+                format!("/node/{id}/state/pending_mute"),
             ]
         });
         let p = &self.patterns[self.active_index()];
@@ -2095,6 +2097,12 @@ impl Node for Sequencer {
         // per-step text path, `steps_bitfield`) so a client never has to wait
         // for a first-change tick to see the active pattern's step data.
         buf.push((paths[20].clone(), StateBusValue::Text(self.step_detail())));
+        // Pending prepared-mute state (-1 = none, 0 = pending unmute, 1 = pending mute)
+        let pm = self
+            .pending_global_mute
+            .or(self.pending_pattern_mute)
+            .map_or(-1, |v| if v { 1 } else { 0 });
+        buf.push((paths[21].clone(), StateBusValue::Int(pm)));
         if self.locks_dirty.get() {
             self.locks_dirty.set(false);
             let mut s = String::new();
@@ -5241,24 +5249,37 @@ mod tests {
 
         let mut state = Vec::new();
         seq.published_state(&mut state);
-        let get = |key: &str| {
-            state
-                .iter()
+        let get = |s: &[(String, StateBusValue)], key: &str| {
+            s.iter()
                 .find(|(k, _)| k == &format!("/node/42/state/{key}"))
                 .map(|(_, v)| v.clone())
                 .unwrap_or_else(|| panic!("missing path {key}"))
         };
-        assert!(matches!(get("active_pattern"), StateBusValue::Int(0)));
-        assert!(matches!(get("cued_pattern"), StateBusValue::Int(1)));
-        assert!(matches!(get("current_page"), StateBusValue::Int(0)));
+        assert!(matches!(get(&state, "active_pattern"), StateBusValue::Int(0)));
+        assert!(matches!(get(&state, "cued_pattern"), StateBusValue::Int(1)));
+        assert!(matches!(get(&state, "current_page"), StateBusValue::Int(0)));
         assert!(
-            matches!(get("page_count"), StateBusValue::Int(2)),
+            matches!(get(&state, "page_count"), StateBusValue::Int(2)),
             "16 steps = 2 pages"
         );
-        assert!(matches!(get("page_loop_start"), StateBusValue::Int(0)));
-        assert!(matches!(get("page_loop_end"), StateBusValue::Int(1)));
-        assert!(matches!(get("speed_mult"), StateBusValue::Float(v) if v == 2.0));
-        assert!(matches!(get("chain_len"), StateBusValue::Int(2)));
+        assert!(matches!(get(&state, "page_loop_start"), StateBusValue::Int(0)));
+        assert!(matches!(get(&state, "page_loop_end"), StateBusValue::Int(1)));
+        assert!(matches!(get(&state, "speed_mult"), StateBusValue::Float(v) if v == 2.0));
+        assert!(matches!(get(&state, "chain_len"), StateBusValue::Int(2)));
+        assert!(matches!(get(&state, "pending_mute"), StateBusValue::Int(-1)));
+
+        run_seq_with_cmds(
+            &mut seq,
+            &[NodeCommand {
+                target_id: 42,
+                type_id: Sequencer::CMD_PREPARE_MUTE,
+                arg0: 1,
+                arg1: 0.0,
+            }],
+        );
+        state.clear();
+        seq.published_state(&mut state);
+        assert!(matches!(get(&state, "pending_mute"), StateBusValue::Int(1)));
 
         // No cue -> -1 sentinel.
         let mut seq2 = Sequencer::new();

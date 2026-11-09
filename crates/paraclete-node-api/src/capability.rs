@@ -159,6 +159,37 @@ impl ParamDescriptor {
         )
     }
 
+    /// Convert a normalized `[0.0, 1.0]` pot/encoder position to the physical parameter value.
+    ///
+    /// Parameters with [`ParamUnit::Hz`] and positive range (`min > 0`) map logarithmically (exponential taper)
+    /// so equal knob rotations correspond to equal musical octave intervals across the audible spectrum.
+    /// Stepped parameters round to the nearest integer step; other continuous parameters map linearly.
+    pub fn norm_to_value(&self, norm: f64) -> f64 {
+        let norm = norm.clamp(0.0, 1.0);
+        let raw = if self.unit == ParamUnit::Hz && self.min > 0.0 && self.max > self.min {
+            self.min * (self.max / self.min).powf(norm)
+        } else {
+            self.min + norm * (self.max - self.min)
+        };
+        let val = if self.stepped { raw.round() } else { raw };
+        val.clamp(self.min, self.max)
+    }
+
+    /// Convert a physical parameter value to a normalized `[0.0, 1.0]` pot/encoder position.
+    pub fn value_to_norm(&self, value: f64) -> f64 {
+        let val = value.clamp(self.min, self.max);
+        if self.max <= self.min {
+            return 0.0;
+        }
+        if self.unit == ParamUnit::Hz && self.min > 0.0 && self.max > self.min {
+            let ratio = (val / self.min).max(1e-9);
+            let span_ratio = (self.max / self.min).max(1e-9);
+            (ratio.ln() / span_ratio.ln()).clamp(0.0, 1.0)
+        } else {
+            ((val - self.min) / (self.max - self.min)).clamp(0.0, 1.0)
+        }
+    }
+
     /// Compute the stable parameter ID from a name string.
     ///
     /// Uses FNV-1a 32-bit hash. The result is deterministic and stable across

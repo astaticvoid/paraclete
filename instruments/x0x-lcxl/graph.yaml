@@ -253,24 +253,24 @@ edges:
 # Declarative Launch Control XL 8-Track x0x Drum Machine Mapping
 lcxl:
   tracks:
-    # Col 1: Kick — Tune, Decay, Punch | FX: Dist Drive, Filter Cutoff
-    - normal: [{ node: 20, param: tune }, { node: 20, param: decay }, { node: 20, param: punch }]
-      fx:     [{ node: 30, param: drive }, { node: 40, param: cutoff }]
-    # Col 2: Snare — Tune, Decay, Snap | FX: Dist Drive, Filter Cutoff
-    - normal: [{ node: 21, param: tune }, { node: 21, param: decay }, { node: 21, param: snap }]
-      fx:     [{ node: 31, param: drive }, { node: 41, param: cutoff }]
-    # Col 3: Clap — Tone, Decay, Snap | FX: Dist Drive, Filter Cutoff
-    - normal: [{ node: 22, param: tone }, { node: 22, param: decay }, { node: 22, param: snap }]
-      fx:     [{ node: 32, param: drive }, { node: 42, param: cutoff }]
-    # Col 4: Closed Hat — Tune, Decay, Tone | FX: Dist Drive, Filter Cutoff
-    - normal: [{ node: 23, param: tune }, { node: 23, param: decay }, { node: 23, param: tone }]
-      fx:     [{ node: 33, param: drive }, { node: 43, param: cutoff }]
-    # Col 5: Open Hat — Tune, Decay, Tone | FX: Dist Drive, Filter Cutoff
-    - normal: [{ node: 24, param: tune }, { node: 24, param: decay }, { node: 24, param: tone }]
-      fx:     [{ node: 34, param: drive }, { node: 44, param: cutoff }]
-    # Col 6: Tom — Tune, Decay, Punch | FX: Dist Drive, Filter Cutoff
-    - normal: [{ node: 25, param: tune }, { node: 25, param: decay }, { node: 25, param: punch }]
-      fx:     [{ node: 35, param: drive }, { node: 45, param: cutoff }]
+    # Col 1: Kick — Tune, Decay, Filter Cutoff | FX: Dist Drive, Filter Res
+    - normal: [{ node: 20, param: tune }, { node: 20, param: decay }, { node: 40, param: cutoff }]
+      fx:     [{ node: 30, param: drive }, { node: 40, param: resonance }]
+    # Col 2: Snare — Tune, Decay, Filter Cutoff | FX: Dist Drive, Filter Res
+    - normal: [{ node: 21, param: tune }, { node: 21, param: decay }, { node: 41, param: cutoff }]
+      fx:     [{ node: 31, param: drive }, { node: 41, param: resonance }]
+    # Col 3: Clap — Tone, Decay, Filter Cutoff | FX: Dist Drive, Filter Res
+    - normal: [{ node: 22, param: tone }, { node: 22, param: decay }, { node: 42, param: cutoff }]
+      fx:     [{ node: 32, param: drive }, { node: 42, param: resonance }]
+    # Col 4: Closed Hat — Tune, Decay, Filter Cutoff | FX: Dist Drive, Filter Res
+    - normal: [{ node: 23, param: tune }, { node: 23, param: decay }, { node: 43, param: cutoff }]
+      fx:     [{ node: 33, param: drive }, { node: 43, param: resonance }]
+    # Col 5: Open Hat — Tune, Decay, Filter Cutoff | FX: Dist Drive, Filter Res
+    - normal: [{ node: 24, param: tune }, { node: 24, param: decay }, { node: 44, param: cutoff }]
+      fx:     [{ node: 34, param: drive }, { node: 44, param: resonance }]
+    # Col 6: Tom — Tune, Decay, Filter Cutoff | FX: Dist Drive, Filter Res
+    - normal: [{ node: 25, param: tune }, { node: 25, param: decay }, { node: 45, param: cutoff }]
+      fx:     [{ node: 35, param: drive }, { node: 45, param: resonance }]
     # Col 7: Perc Sampler — Pitch, End, Filter Cutoff | FX: Dist Drive, Filter Res
     - normal: [{ node: 26, param: pitch }, { node: 26, param: end }, { node: 46, param: cutoff }]
       fx:     [{ node: 36, param: drive }, { node: 46, param: resonance }]

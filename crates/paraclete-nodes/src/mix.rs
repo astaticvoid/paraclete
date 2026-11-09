@@ -129,7 +129,7 @@ impl Node for MixNode {
         self.render_l[..frames].fill(0.0);
         self.render_r[..frames].fill(0.0);
 
-        let master = self.bank.get(self.master_id) as f32;
+        let (master_start, master_delta) = self.bank.get_ramp(self.master_id, frames);
 
         for (i, audio_in) in input
             .audio_inputs
@@ -137,23 +137,21 @@ impl Node for MixNode {
             .take(self.input_ids.len())
             .enumerate()
         {
-            let gain = self.bank.get(self.input_ids[i]) as f32 * master;
+            let (gain_start, gain_delta) = self.bank.get_ramp(self.input_ids[i], frames);
+            let mut curr_g = gain_start;
+            let mut curr_m = master_start;
+
             if audio_in.channels() >= 1 {
-                let ch = audio_in.channel(0);
-                for f in 0..frames.min(ch.len()) {
-                    self.render_l[f] += ch[f] * gain;
-                }
-            }
-            if audio_in.channels() >= 2 {
-                let ch = audio_in.channel(1);
-                for f in 0..frames.min(ch.len()) {
-                    self.render_r[f] += ch[f] * gain;
-                }
-            } else if audio_in.channels() >= 1 {
-                // Mono → both channels
-                let ch = audio_in.channel(0);
-                for f in 0..frames.min(ch.len()) {
-                    self.render_r[f] += ch[f] * gain;
+                let ch0 = audio_in.channel(0);
+                let ch1 = if audio_in.channels() >= 2 { Some(audio_in.channel(1)) } else { None };
+                let len = frames.min(ch0.len());
+                for f in 0..len {
+                    curr_g += gain_delta;
+                    curr_m += master_delta;
+                    let eff = curr_g * curr_m;
+                    self.render_l[f] += ch0[f] * eff;
+                    let r_val = ch1.map_or(ch0[f], |c| c[f]);
+                    self.render_r[f] += r_val * eff;
                 }
             }
         }
@@ -171,7 +169,7 @@ impl Node for MixNode {
 
 impl ViewPlugin for MixNode {
     fn to_rule(&self, _node_id: u64, _sub_nodes: &[(u64, &dyn ViewPlugin)]) -> Rule {
-        let mut pages = Vec::with_capacity(self.num_inputs as usize + 1);
+        let mut pages = Vec::with_capacity(self.num_inputs + 1);
         for i in 0..self.num_inputs {
             pages.push((self.input_ids[i], PageRef { page: Cow::Borrowed("FX"), slot: i as u8 }));
         }
@@ -195,9 +193,15 @@ impl ViewPlugin for MixNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use paraclete_node_api::{AudioBuffer, EventOutputBuffer, ExtendedEventSlab, TransportInfo};
+    use paraclete_node_api::{
+        AudioBuffer, EventOutputBuffer, ExtendedEventSlab, NodeCommand, TransportInfo,
+    };
 
     fn run_mix(mix: &mut MixNode, inputs: &[AudioBuffer]) -> AudioBuffer {
+        run_mix_with_commands(mix, inputs, &[])
+    }
+
+    fn run_mix_with_commands(mix: &mut MixNode, inputs: &[AudioBuffer], commands: &[NodeCommand]) -> AudioBuffer {
         let block = 64usize;
         let mut out = AudioBuffer::new(2, block);
         let mut events_out = EventOutputBuffer::new(16);
@@ -217,7 +221,7 @@ mod tests {
             sample_rate: 44100.0,
             block_size: block,
             extended_events: &slab,
-            commands: &[],
+            commands,
         };
         let mut output = ProcessOutput::new(
             &mut outs,
@@ -331,5 +335,36 @@ mod tests {
         assert_eq!(rule.page_groups[0], "FX");
         // 4 input gains + master = 5 slots on the FX page
         assert_eq!(rule.param_pages.len(), 5);
+    }
+
+    #[test]
+    fn mix_node_gain_dezippering_ramps_linearly_across_block() {
+        use paraclete_node_api::CMD_SET_PARAM;
+
+        let mut mix = MixNode::new(1);
+        mix.activate(44100.0, 64);
+
+        let mut in0 = AudioBuffer::new(1, 64);
+        in0.channel_mut(0).fill(1.0);
+        let mut in1 = AudioBuffer::new(1, 64);
+        in1.channel_mut(0).fill(1.0);
+
+        // Block 0 at default unity gain
+        let out0 = run_mix(&mut mix, &[in0]);
+        assert!((out0.channel(0)[63] - 1.0).abs() < 1e-4);
+
+        // Block 1: change input_gain_0 to 0.0 via command
+        let cmd = NodeCommand {
+            target_id: 0,
+            type_id: CMD_SET_PARAM,
+            arg0: mix.input_ids[0] as i64,
+            arg1: 0.0,
+        };
+        let out1 = run_mix_with_commands(&mut mix, &[in1], &[cmd]);
+        let ch0 = out1.channel(0);
+        // Sample 0 ramps from 1.0, mid-sample is ~0.5, final sample reaches 0.0
+        assert!((ch0[0] - (1.0 - 1.0 / 64.0)).abs() < 1e-4, "sample 0 should ramp from 1.0");
+        assert!((ch0[31] - 0.5).abs() < 0.02, "midway sample should be ~0.5");
+        assert!(ch0[63].abs() < 1e-4, "end sample should reach target 0.0");
     }
 }

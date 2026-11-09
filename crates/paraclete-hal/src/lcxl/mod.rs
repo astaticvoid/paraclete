@@ -181,7 +181,18 @@ impl LcxlOutputHandle {
         };
         for update in &output.led_updates {
             let led_id = update.control_id;
-            let vel = rgb_to_lcxl_velocity(update.color);
+            let vel = if (16..=23).contains(&led_id) {
+                // Mode buttons (16..=19) and directional buttons (20..=23) are single-color
+                // LEDs (yellow). Novation's bi-color velocity bit-packing for pure red has green=0,
+                // which leaves single-color LEDs dark. Map any non-off color to full brightness (127).
+                if update.color == RgbColor::OFF {
+                    12
+                } else {
+                    127
+                }
+            } else {
+                rgb_to_lcxl_velocity(update.color)
+            };
             if (led_id as usize) < BUTTON_NOTES.len() {
                 let note = BUTTON_NOTES[led_id as usize];
                 let msg = [0x90 | FACTORY_TEMPLATE_CHANNEL, note, vel];
@@ -248,7 +259,14 @@ impl LcxlNode {
         let (mut incoming_tx, incoming_rx) = RingBuffer::<SurfaceEvent>::new(256);
 
         let reg_out = MidiDeviceRegistry::new()?;
-        let conn_out = reg_out.open_output(PORT_PATTERN)?;
+        let mut conn_out = reg_out.open_output(PORT_PATTERN)?;
+
+        // Switch Launch Control XL to Factory Template 1 (SysEx: F0 00 20 29 02 11 77 08 F7).
+        let _ = conn_out.send(&[
+            0xF0, 0x00, 0x20, 0x29, 0x02, 0x11, 0x77, FACTORY_TEMPLATE_CHANNEL, 0xF7,
+        ]);
+        log::info!("[lcxl] Factory Template 1 SysEx handshake sent");
+        std::thread::sleep(std::time::Duration::from_millis(50));
 
         let reg_in = MidiDeviceRegistry::new()?;
         let conn_in = reg_in.open_input(PORT_PATTERN, move |_ts, bytes, _| {
@@ -458,5 +476,30 @@ mod tests {
             }),
             63
         );
+    }
+
+    #[test]
+    #[ignore = "requires physical Launch Control XL connected"]
+    fn physical_lcxl_hardware_open_and_handshake() {
+        let mut node = LcxlNode::open().expect("open physical Launch Control XL");
+        let mut handle = node.take_output_handle().expect("take output handle");
+        handle.deliver(SurfaceOutput {
+            led_updates: vec![
+                paraclete_node_api::LedUpdate {
+                    control_id: 0,
+                    color: RgbColor::GREEN,
+                },
+                paraclete_node_api::LedUpdate {
+                    control_id: 24,
+                    color: RgbColor {
+                        r: 255,
+                        g: 128,
+                        b: 0,
+                    },
+                },
+            ],
+            display_updates: Vec::new(),
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }

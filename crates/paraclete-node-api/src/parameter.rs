@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: LGPL-3.0-or-later
 
-use crate::capability::CapabilityDocument;
+use crate::capability::{CapabilityDocument, ParamUnit};
 use crate::command::{
     NodeCommand, CMD_BUMP_PARAM, CMD_BUMP_PARAM_NORM, CMD_SET_PARAM, CMD_SET_PARAM_NORM,
 };
@@ -10,10 +10,39 @@ struct ParameterSlot {
     param_id: u32,
     name: String,
     current: f64,
+    block_start: f64,
     min: f64,
     max: f64,
     default: f64,
     stepped: bool,
+    unit: ParamUnit,
+}
+
+impl ParameterSlot {
+    fn norm_to_value(&self, norm: f64) -> f64 {
+        let norm = norm.clamp(0.0, 1.0);
+        let raw = if self.unit == ParamUnit::Hz && self.min > 0.0 && self.max > self.min {
+            self.min * (self.max / self.min).powf(norm)
+        } else {
+            self.min + norm * (self.max - self.min)
+        };
+        let val = if self.stepped { raw.round() } else { raw };
+        val.clamp(self.min, self.max)
+    }
+
+    fn value_to_norm(&self, value: f64) -> f64 {
+        let val = value.clamp(self.min, self.max);
+        if self.max <= self.min {
+            return 0.0;
+        }
+        if self.unit == ParamUnit::Hz && self.min > 0.0 && self.max > self.min {
+            let ratio = (val / self.min).max(1e-9);
+            let span_ratio = (self.max / self.min).max(1e-9);
+            (ratio.ln() / span_ratio.ln()).clamp(0.0, 1.0)
+        } else {
+            ((val - self.min) / (self.max - self.min)).clamp(0.0, 1.0)
+        }
+    }
 }
 
 /// Pre-allocated parameter storage built from a node's capability document.
@@ -67,10 +96,12 @@ impl ParameterBank {
                 param_id: p.id,
                 name: p.name.as_str().to_string(),
                 current: p.default,
+                block_start: p.default,
                 min: p.min,
                 max: p.max,
                 default: p.default,
                 stepped: p.stepped,
+                unit: p.unit.clone(),
             })
             .collect();
         Self {
@@ -97,6 +128,9 @@ impl ParameterBank {
     /// *result*, not just the delta, so a finite delta added to a slot that
     /// somehow reached infinity still cannot store NaN.
     pub fn handle_commands(&mut self, commands: &[NodeCommand]) {
+        for s in &mut self.slots {
+            s.block_start = s.current;
+        }
         for cmd in commands {
             if cmd.type_id == CMD_SET_PARAM {
                 let param_id = cmd.arg0 as u32;
@@ -117,32 +151,26 @@ impl ParameterBank {
                 let param_id = cmd.arg0 as u32;
                 if let Some(s) = self.slots.iter_mut().find(|s| s.param_id == param_id) {
                     if cmd.arg1.is_finite() {
-                        let norm = cmd.arg1.clamp(0.0, 1.0);
-                        let mapped = s.min + norm * (s.max - s.min);
-                        if mapped.is_finite() {
-                            let val = if s.stepped { mapped.round() } else { mapped };
-                            s.current = val.clamp(s.min, s.max);
-                        }
+                        s.current = s.norm_to_value(cmd.arg1);
                     }
                 }
             } else if cmd.type_id == CMD_BUMP_PARAM_NORM {
                 let param_id = cmd.arg0 as u32;
                 if let Some(s) = self.slots.iter_mut().find(|s| s.param_id == param_id) {
                     if cmd.arg1.is_finite() && cmd.arg1 != 0.0 {
-                        let span = s.max - s.min;
-                        let next = if s.stepped {
+                        if s.stepped {
+                            let span = s.max - s.min;
                             let raw_step = (cmd.arg1 * span).round();
                             let d = if raw_step == 0.0 {
                                 cmd.arg1.signum()
                             } else {
                                 raw_step
                             };
-                            (s.current + d).round()
-                        } else {
-                            s.current + cmd.arg1 * span
-                        };
-                        if next.is_finite() {
+                            let next = (s.current + d).round();
                             s.current = next.clamp(s.min, s.max);
+                        } else {
+                            let cur_norm = s.value_to_norm(s.current);
+                            s.current = s.norm_to_value(cur_norm + cmd.arg1);
                         }
                     }
                 }
@@ -157,6 +185,47 @@ impl ParameterBank {
             .find(|s| s.param_id == param_id)
             .map(|s| s.current)
             .unwrap_or(0.0)
+    }
+
+    /// Returns `(start, delta)` where `start` is the parameter's value at sample 0 of the current
+    /// block, and `delta` is the linear per-sample increment across `frames` samples to reach its
+    /// updated value by sample `frames - 1`.
+    ///
+    /// If the parameter is stepped (`stepped: true`), was not updated this block, or `frames == 0`,
+    /// `delta` is `0.0`.
+    ///
+    /// Enables continuous audio-rate de-zippering across any DSP processing loop without manual state tracking.
+    #[inline]
+    pub fn get_ramp(&self, param_id: u32, frames: usize) -> (f32, f32) {
+        if let Some(s) = self.slots.iter().find(|s| s.param_id == param_id) {
+            let start = s.block_start as f32;
+            let target = s.current as f32;
+            let delta = if s.stepped || frames == 0 {
+                0.0
+            } else {
+                (target - start) / (frames as f32)
+            };
+            (start, delta)
+        } else {
+            (0.0, 0.0)
+        }
+    }
+
+    /// Same as `get_ramp`, but using `f64` precision.
+    #[inline]
+    pub fn get_ramp_f64(&self, param_id: u32, frames: usize) -> (f64, f64) {
+        if let Some(s) = self.slots.iter().find(|s| s.param_id == param_id) {
+            let start = s.block_start;
+            let target = s.current;
+            let delta = if s.stepped || frames == 0 {
+                0.0
+            } else {
+                (target - start) / (frames as f64)
+            };
+            (start, delta)
+        } else {
+            (0.0, 0.0)
+        }
     }
 
     /// Set a parameter value directly (clamped to declared range).
@@ -195,7 +264,9 @@ impl ParameterBank {
             return;
         }
         if let Some(s) = self.slots.iter_mut().find(|s| s.param_id == param_id) {
-            s.current = value.clamp(s.min, s.max);
+            let clamped = value.clamp(s.min, s.max);
+            s.current = clamped;
+            s.block_start = clamped;
         }
     }
 
@@ -203,6 +274,7 @@ impl ParameterBank {
     pub fn reset(&mut self) {
         for s in &mut self.slots {
             s.current = s.default;
+            s.block_start = s.default;
         }
     }
 
@@ -789,6 +861,7 @@ mod tests {
         use crate::capability::{CapabilityDocument, ParamDescriptor, ParamUnit};
         use std::borrow::Cow;
 
+        let gain_id = ParamDescriptor::id_for_name("gain");
         let machine_id = ParamDescriptor::id_for_name("machine");
         let doc = CapabilityDocument {
             name: Cow::Borrowed("TestNorm"),
@@ -797,11 +870,22 @@ mod tests {
             ports: vec![],
             params: vec![
                 ParamDescriptor {
-                    id: cutoff_id(),
-                    name: "cutoff".into(),
+                    id: gain_id,
+                    name: "gain".into(),
                     min: 20.0,
                     max: 1020.0,
                     default: 520.0,
+                    stepped: false,
+                    in_kit: true,
+                    unit: ParamUnit::Generic,
+                    display: None,
+                },
+                ParamDescriptor {
+                    id: cutoff_id(),
+                    name: "cutoff".into(),
+                    min: 20.0,
+                    max: 20000.0,
+                    default: 1000.0,
                     stepped: false,
                     in_kit: true,
                     unit: ParamUnit::Hz,
@@ -825,13 +909,23 @@ mod tests {
 
         let mut bank = ParameterBank::from_capability_document(&doc);
 
-        // CMD_SET_PARAM_NORM on continuous param: 0.25 -> 20 + 0.25 * 1000 = 270.0
-        bank.handle_commands(&[cmd(CMD_SET_PARAM_NORM, cutoff_id(), 0.25)]);
-        assert!((bank.get(cutoff_id()) - 270.0).abs() < 1e-9);
+        // CMD_SET_PARAM_NORM on continuous linear param: 0.25 -> 20 + 0.25 * 1000 = 270.0
+        bank.handle_commands(&[cmd(CMD_SET_PARAM_NORM, gain_id, 0.25)]);
+        assert!((bank.get(gain_id) - 270.0).abs() < 1e-9);
 
-        // CMD_BUMP_PARAM_NORM on continuous param: +0.1 -> +100.0 -> 370.0
-        bank.handle_commands(&[cmd(CMD_BUMP_PARAM_NORM, cutoff_id(), 0.1)]);
-        assert!((bank.get(cutoff_id()) - 370.0).abs() < 1e-9);
+        // CMD_BUMP_PARAM_NORM on continuous linear param: +0.1 -> norm 0.35 -> 370.0
+        bank.handle_commands(&[cmd(CMD_BUMP_PARAM_NORM, gain_id, 0.1)]);
+        assert!((bank.get(gain_id) - 370.0).abs() < 1e-9);
+
+        // CMD_SET_PARAM_NORM on continuous ParamUnit::Hz param: exponential taper
+        // 0.0 -> 20.0 Hz, 1.0 -> 20000.0 Hz, 0.5 -> 20 * (1000)^0.5 = 632.4555 Hz
+        bank.handle_commands(&[cmd(CMD_SET_PARAM_NORM, cutoff_id(), 0.0)]);
+        assert!((bank.get(cutoff_id()) - 20.0).abs() < 1e-9);
+        bank.handle_commands(&[cmd(CMD_SET_PARAM_NORM, cutoff_id(), 1.0)]);
+        assert!((bank.get(cutoff_id()) - 20000.0).abs() < 1e-9);
+        bank.handle_commands(&[cmd(CMD_SET_PARAM_NORM, cutoff_id(), 0.5)]);
+        let expected_half = 20.0 * 1000.0_f64.sqrt();
+        assert!((bank.get(cutoff_id()) - expected_half).abs() < 1e-6);
 
         // CMD_SET_PARAM_NORM on stepped param: 0.6 -> 3.0, 0.52 -> rounds to 3.0
         bank.handle_commands(&[cmd(CMD_SET_PARAM_NORM, machine_id, 0.52)]);
@@ -840,5 +934,78 @@ mod tests {
         // Small CMD_BUMP_PARAM_NORM on stepped param advances by at least 1 step
         bank.handle_commands(&[cmd(CMD_BUMP_PARAM_NORM, machine_id, 0.02)]);
         assert!((bank.get(machine_id) - 4.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn get_ramp_provides_continuous_dezippering_deltas() {
+        use crate::capability::{CapabilityDocument, ParamDescriptor, ParamUnit};
+        use std::borrow::Cow;
+
+        let machine_id = ParamDescriptor::id_for_name("machine");
+        let doc = CapabilityDocument {
+            name: Cow::Borrowed("TestRamp"),
+            vendor: Cow::Borrowed("Test"),
+            version: (0, 1, 0),
+            ports: vec![],
+            params: vec![
+                ParamDescriptor {
+                    id: cutoff_id(),
+                    name: "cutoff".into(),
+                    min: 0.0,
+                    max: 1.0,
+                    default: 1.0,
+                    stepped: false,
+                    in_kit: true,
+                    unit: ParamUnit::Generic,
+                    display: None,
+                },
+                ParamDescriptor {
+                    id: machine_id,
+                    name: "machine".into(),
+                    min: 0.0,
+                    max: 5.0,
+                    default: 0.0,
+                    stepped: true,
+                    in_kit: false,
+                    unit: ParamUnit::Generic,
+                    display: None,
+                },
+            ],
+            extensions: vec![],
+            view: None,
+        };
+
+        let mut bank = ParameterBank::from_capability_document(&doc);
+
+        // Before any commands, ramp is constant (delta = 0)
+        let (start, delta) = bank.get_ramp(cutoff_id(), 64);
+        assert_eq!(start, 1.0);
+        assert_eq!(delta, 0.0);
+
+        // Continuous param changes: 1.0 -> 0.0 across 64 frames
+        bank.handle_commands(&[cmd(CMD_SET_PARAM, cutoff_id(), 0.0)]);
+        let (start, delta) = bank.get_ramp(cutoff_id(), 64);
+        assert_eq!(start, 1.0);
+        assert_eq!(delta, -1.0 / 64.0);
+
+        // Verify per-sample accumulator reaches target at final sample
+        let mut val = start;
+        for _ in 0..64 {
+            val += delta;
+        }
+        assert!(val.abs() < 1e-6);
+
+        // Next block with no commands: delta becomes 0.0 at the new target
+        bank.handle_commands(&[]);
+        let (start, delta) = bank.get_ramp(cutoff_id(), 64);
+        assert_eq!(start, 0.0);
+        assert_eq!(delta, 0.0);
+
+        // Stepped param: delta is ALWAYS 0.0
+        bank.handle_commands(&[cmd(CMD_SET_PARAM, machine_id, 3.0)]);
+        let (start, delta) = bank.get_ramp(machine_id, 64);
+        assert_eq!(start, 0.0); // start of this block
+        assert_eq!(delta, 0.0); // stepped params never ramp
+        assert_eq!(bank.get(machine_id), 3.0); // target is 3.0
     }
 }

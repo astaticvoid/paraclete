@@ -73,6 +73,7 @@ Platform crates (all GPL3): `paraclete-antiphon`, `paraclete-clap`, `paraclete-c
 - **ParamLock:** route to `node_locks: Vec<(u32, f64)>`, NOT through `bank.handle_commands()`. Lock lives for the note (#169) — clear at next trigger, not top of `process()`.
 - **`serde_yml` not `serde_yaml`.** Removed in P9.
 - **`publish_bank_state()` caches in `OnceLock`** — no `format!` on audio thread after first cycle (BUG-007).
+- **Parameter de-zippering:** Continuous audio-rate parameters (gains, wet/dry mixes, cutoffs) must ramp sample-by-sample across the block using `bank.get_ramp(param_id, frames)` to prevent zipper noise.
 - **`SurfaceOutputHandle`:** `take_output_handle()` returning `Some(Box<dyn SurfaceOutputHandle>)`. Ticked on main thread.
 - **CLAP host:** `clap-sys` + `libloading`, not `clack`.
 
@@ -182,6 +183,7 @@ Verify responsive at 390×844, 768×1024, 1024×768.
 3. **Audio-thread rules are hard constraints.**
 4. **Naming policy:** third-party marks never in identifiers/features/UI strings.
 5. **Defect-filing:** architectural defects filed as GitHub issues, never silently worked around.
+6. **Fix at the lowest level:** Discovering a core defect is striking gold — never defer or paper over it with ad-hoc node workarounds. Implement foundational solutions at the lowest layer (e.g. L2 `paraclete-node-api`) and establish verified baselines.
 
 ## Skills (loaded on-demand)
 
