@@ -19,19 +19,19 @@ nodes:
     default_note: 36
   - id: 12
     type: sequencer
-    display_name: "Clap"
+    display_name: "Tom"
     default_note: 36
   - id: 13
     type: sequencer
-    display_name: "CHat"
+    display_name: "Clap"
     default_note: 36
   - id: 14
     type: sequencer
-    display_name: "OHat"
+    display_name: "CHat"
     default_note: 36
   - id: 15
     type: sequencer
-    display_name: "Tom"
+    display_name: "OHat"
     default_note: 36
   - id: 16
     type: sequencer
@@ -51,34 +51,35 @@ nodes:
   - id: 21
     type: analog_engine:snare
     initial_params:
-      decay: 0.28
-      snap: 0.65
-      tone: 900.0
+      decay: 0.22
+      snap: 0.08
+      tone: 3200.0
+      noise: 0.60
   - id: 22
-    type: analog_engine:clap
-    initial_params:
-      decay: 0.35
-      snap: 0.70
-      tone: 1200.0
-  - id: 23
-    type: analog_engine:hihat
-    display_name: "CHat"
-    initial_params:
-      decay: 0.07
-      tone: 9500.0
-  - id: 24
-    type: analog_engine:hihat
-    display_name: "OHat"
-    initial_params:
-      decay: 0.42
-      tone: 8500.0
-  - id: 25
     type: analog_engine:tom
     initial_params:
       tune: -3.0
       decay: 0.32
       punch: 0.55
       tone: 600.0
+  - id: 23
+    type: analog_engine:clap
+    initial_params:
+      decay: 0.28
+      snap: 0.012
+      tone: 1500.0
+  - id: 24
+    type: analog_engine:hihat
+    display_name: "CHat"
+    initial_params:
+      decay: 0.07
+      tone: 9500.0
+  - id: 25
+    type: analog_engine:hihat
+    display_name: "OHat"
+    initial_params:
+      decay: 0.42
+      tone: 8500.0
   - id: 26
     type: sampler
     display_name: "Perc"
@@ -126,18 +127,33 @@ nodes:
     channel_count: 8
     initial_params:
       master_gain: 1.33
+  - id: 180
+    type: mix
+    display_name: "FX Send"
+    channel_count: 8
+    initial_params:
+      input_gain_0: 0.0   # Kick FX Send: 0.0 = bypassed (100% dry kick punch)
+      input_gain_1: 1.0   # Snare
+      input_gain_2: 1.0   # Tom
+      input_gain_3: 1.0   # Clap
+      input_gain_4: 0.8   # CHat
+      input_gain_5: 0.8   # OHat
+      input_gain_6: 1.0   # Perc
+      input_gain_7: 0.7   # Bass
   - id: 190
     type: delay
     initial_params:
       wet: 0.0
-      dry: 1.0
+      dry: 0.0
       delay_time_ms: 340.0
       feedback: 0.45
   - id: 200
     type: reverb
     initial_params:
       wet: 0.0
-      dry: 1.0
+      dry: 0.0
+      room_size: 0.75
+      damping: 0.4
   - id: 210
     type: recorder
   - id: 60
@@ -171,11 +187,11 @@ edges:
     to:   [22, 0]
   - from: [13, "events_out"]
     to:   [23, 0]
-  # Closed Hat (seq 13) chokes Open Hat (voice 24) via graph-native choke_in port (#172)
-  - from: [13, "events_out"]
-    to:   [24, "choke_in"]
   - from: [14, "events_out"]
     to:   [24, 0]
+  # Closed Hat (seq 14) chokes Open Hat (voice 25) via graph-native choke_in port (#172)
+  - from: [14, "events_out"]
+    to:   [25, "choke_in"]
   - from: [15, "events_out"]
     to:   [25, 0]
   - from: [16, "events_out"]
@@ -183,13 +199,15 @@ edges:
   - from: [17, "events_out"]
     to:   [27, 0]
 
-  # voice -> distortion -> filter -> mix channel
+  # voice -> distortion -> filter -> mix channel (dry faders) & fx send channel
   - from: [20, 1]
     to:   [30, 0]
   - from: [30, 1]
     to:   [40, 0]
   - from: [40, 1]
     to:   [2, 0]
+  - from: [40, 1]
+    to:   [180, 0]
 
   - from: [21, 1]
     to:   [31, 0]
@@ -197,6 +215,8 @@ edges:
     to:   [41, 0]
   - from: [41, 1]
     to:   [2, 1]
+  - from: [41, 1]
+    to:   [180, 1]
 
   - from: [22, 1]
     to:   [32, 0]
@@ -204,6 +224,8 @@ edges:
     to:   [42, 0]
   - from: [42, 1]
     to:   [2, 2]
+  - from: [42, 1]
+    to:   [180, 2]
 
   - from: [23, 1]
     to:   [33, 0]
@@ -211,6 +233,8 @@ edges:
     to:   [43, 0]
   - from: [43, 1]
     to:   [2, 3]
+  - from: [43, 1]
+    to:   [180, 3]
 
   - from: [24, 1]
     to:   [34, 0]
@@ -218,6 +242,8 @@ edges:
     to:   [44, 0]
   - from: [44, 1]
     to:   [2, 4]
+  - from: [44, 1]
+    to:   [180, 4]
 
   - from: [25, 1]
     to:   [35, 0]
@@ -225,6 +251,8 @@ edges:
     to:   [45, 0]
   - from: [45, 1]
     to:   [2, 5]
+  - from: [45, 1]
+    to:   [180, 5]
 
   - from: [26, 1]
     to:   [36, 0]
@@ -232,6 +260,8 @@ edges:
     to:   [46, 0]
   - from: [46, 1]
     to:   [2, 6]
+  - from: [46, 1]
+    to:   [180, 6]
 
   - from: [27, 1]
     to:   [37, 0]
@@ -239,15 +269,31 @@ edges:
     to:   [47, 0]
   - from: [47, 1]
     to:   [2, 7]
+  - from: [47, 1]
+    to:   [180, 7]
 
-  # master bus
+  # master bus & FX send/return
+  # 1. Main dry drums from MixNode 2 to AudioOutput 60 & Recorder 210
   - from: [2, 8]
-    to:   [190, 0]
-  - from: [190, 1]
-    to:   [200, 0]
-  - from: [200, 1]
     to:   [60, 0]
   - from: [2, 8]
+    to:   [210, 0]
+  # 2. FX Send (MixNode 180) to Delay 190 and Reverb 200
+  - from: [180, 8]
+    to:   [190, 0]
+  - from: [180, 8]
+    to:   [200, 0]
+  # 3. Delay wet output feeds Reverb (delayed reverb wash) and AudioOutput 60
+  - from: [190, 1]
+    to:   [200, 0]
+  - from: [190, 1]
+    to:   [60, 0]
+  - from: [190, 1]
+    to:   [210, 0]
+  # 4. Reverb wet output to AudioOutput 60 & Recorder 210
+  - from: [200, 1]
+    to:   [60, 0]
+  - from: [200, 1]
     to:   [210, 0]
 
 # Declarative Launch Control XL 8-Track x0x Drum Machine Mapping
@@ -259,17 +305,17 @@ lcxl:
     # Col 2: Snare — Tune, Decay, Filter Cutoff | FX: Dist Drive, Filter Res
     - normal: [{ node: 21, param: tune }, { node: 21, param: decay }, { node: 41, param: cutoff }]
       fx:     [{ node: 31, param: drive }, { node: 41, param: resonance }]
-    # Col 3: Clap — Tone, Decay, Filter Cutoff | FX: Dist Drive, Filter Res
-    - normal: [{ node: 22, param: tone }, { node: 22, param: decay }, { node: 42, param: cutoff }]
+    # Col 3: Tom — Tune, Decay, Filter Cutoff | FX: Dist Drive, Filter Res
+    - normal: [{ node: 22, param: tune }, { node: 22, param: decay }, { node: 42, param: cutoff }]
       fx:     [{ node: 32, param: drive }, { node: 42, param: resonance }]
-    # Col 4: Closed Hat — Tune, Decay, Filter Cutoff | FX: Dist Drive, Filter Res
-    - normal: [{ node: 23, param: tune }, { node: 23, param: decay }, { node: 43, param: cutoff }]
+    # Col 4: Clap — Flam Snap (Tight Clap ↔ Stomp), Decay, Filter Cutoff | FX: Dist Drive, Filter Res
+    - normal: [{ node: 23, param: snap }, { node: 23, param: decay }, { node: 43, param: cutoff }]
       fx:     [{ node: 33, param: drive }, { node: 43, param: resonance }]
-    # Col 5: Open Hat — Tune, Decay, Filter Cutoff | FX: Dist Drive, Filter Res
-    - normal: [{ node: 24, param: tune }, { node: 24, param: decay }, { node: 44, param: cutoff }]
+    # Col 5: Closed Hat — Tone (Metallic Ring), Decay, Filter Cutoff | FX: Dist Drive, Filter Res
+    - normal: [{ node: 24, param: tone }, { node: 24, param: decay }, { node: 44, param: cutoff }]
       fx:     [{ node: 34, param: drive }, { node: 44, param: resonance }]
-    # Col 6: Tom — Tune, Decay, Filter Cutoff | FX: Dist Drive, Filter Res
-    - normal: [{ node: 25, param: tune }, { node: 25, param: decay }, { node: 45, param: cutoff }]
+    # Col 6: Open Hat — Tone (Metallic Ring), Decay, Filter Cutoff | FX: Dist Drive, Filter Res
+    - normal: [{ node: 25, param: tone }, { node: 25, param: decay }, { node: 45, param: cutoff }]
       fx:     [{ node: 35, param: drive }, { node: 45, param: resonance }]
     # Col 7: Perc Sampler — Pitch, End, Filter Cutoff | FX: Dist Drive, Filter Res
     - normal: [{ node: 26, param: pitch }, { node: 26, param: end }, { node: 46, param: cutoff }]
@@ -278,11 +324,11 @@ lcxl:
     - normal: [{ node: 27, param: tune }, { node: 27, param: decay }, { node: 47, param: cutoff }]
       fx:     [{ node: 27, param: index1 }, { node: 47, param: resonance }]
   master_fx:
-    # FX Layer Row 3 Cols 1-4: Master Reverb (200)
+    # FX Layer Row 3 Cols 1-4: Master Reverb (200) + Kick FX Send (180)
     - { node: 200, param: wet }
     - { node: 200, param: room_size }
     - { node: 200, param: damping }
-    - { node: 200, param: dry }
+    - { node: 180, param: input_gain_0 }
     # FX Layer Row 3 Cols 5-8: Master Dub Delay (190)
     - { node: 190, param: wet }
     - { node: 190, param: delay_time_ms }

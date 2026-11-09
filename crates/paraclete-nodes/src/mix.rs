@@ -2,6 +2,7 @@
 //! MixNode — N stereo audio inputs → 1 stereo output.
 
 use std::borrow::Cow;
+use std::collections::HashMap;
 use paraclete_node_api::{
     CapabilityDocument, Node, ParameterBank, ParamDescriptor, ParamUnit, PortDescriptor,
     PortDirection, PortName, PortType, ProcessInput, ProcessOutput, StateBusValue,
@@ -28,6 +29,7 @@ pub struct MixNode {
     bank: ParameterBank,
     render_l: Vec<f32>,
     render_r: Vec<f32>,
+    pending_initial_params: HashMap<String, f64>,
 }
 
 impl MixNode {
@@ -59,6 +61,7 @@ impl MixNode {
             bank: ParameterBank::empty(),
             render_l: Vec::new(),
             render_r: Vec::new(),
+            pending_initial_params: HashMap::new(),
         }
     }
 
@@ -68,6 +71,10 @@ impl MixNode {
 impl Node for MixNode {
     fn ports(&self) -> &[PortDescriptor] { &self.ports }
     fn set_node_id(&mut self, id: u32) { self.node_id = id; }
+
+    fn set_initial_params(&mut self, params: &HashMap<String, f64>) {
+        self.pending_initial_params = params.clone();
+    }
 
     fn capability_document(&self) -> CapabilityDocument {
         let mut params: Vec<ParamDescriptor> = self.input_ids.iter().enumerate().map(|(i, id)| ParamDescriptor {
@@ -104,7 +111,13 @@ impl Node for MixNode {
     }
 
     fn activate(&mut self, _sr: f32, block: usize) {
-        self.bank = ParameterBank::from_capability_document(&self.capability_document());
+        let doc = self.capability_document();
+        self.bank = ParameterBank::from_capability_document(&doc);
+        for (name, value) in std::mem::take(&mut self.pending_initial_params) {
+            if let Some(param) = doc.params.iter().find(|p| p.name.as_str() == name.as_str()) {
+                self.bank.set(param.id, value);
+            }
+        }
         self.render_l = vec![0.0; block];
         self.render_r = vec![0.0; block];
     }
@@ -366,5 +379,21 @@ mod tests {
         assert!((ch0[0] - (1.0 - 1.0 / 64.0)).abs() < 1e-4, "sample 0 should ramp from 1.0");
         assert!((ch0[31] - 0.5).abs() < 0.02, "midway sample should be ~0.5");
         assert!(ch0[63].abs() < 1e-4, "end sample should reach target 0.0");
+    }
+
+    #[test]
+    fn mix_node_applies_initial_params_on_activate() {
+        let mut mix = MixNode::new(4);
+        let mut initial = HashMap::new();
+        initial.insert("input_gain_0".to_string(), 0.0);
+        initial.insert("input_gain_2".to_string(), 1.5);
+        initial.insert("master_gain".to_string(), 1.33);
+        mix.set_initial_params(&initial);
+        mix.activate(44100.0, 64);
+
+        assert_eq!(mix.bank.get(mix.input_ids[0]), 0.0);
+        assert_eq!(mix.bank.get(mix.input_ids[1]), 1.0); // default
+        assert_eq!(mix.bank.get(mix.input_ids[2]), 1.5);
+        assert_eq!(mix.bank.get(mix.master_id), 1.33);
     }
 }

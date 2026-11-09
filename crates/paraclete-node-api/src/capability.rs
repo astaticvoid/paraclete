@@ -166,7 +166,10 @@ impl ParamDescriptor {
     /// Stepped parameters round to the nearest integer step; other continuous parameters map linearly.
     pub fn norm_to_value(&self, norm: f64) -> f64 {
         let norm = norm.clamp(0.0, 1.0);
-        let raw = if self.unit == ParamUnit::Hz && self.min > 0.0 && self.max > self.min {
+        let is_exp = (self.unit == ParamUnit::Hz || self.unit == ParamUnit::Seconds)
+            && self.min > 0.0
+            && self.max > self.min;
+        let raw = if is_exp {
             self.min * (self.max / self.min).powf(norm)
         } else {
             self.min + norm * (self.max - self.min)
@@ -181,7 +184,10 @@ impl ParamDescriptor {
         if self.max <= self.min {
             return 0.0;
         }
-        if self.unit == ParamUnit::Hz && self.min > 0.0 && self.max > self.min {
+        let is_exp = (self.unit == ParamUnit::Hz || self.unit == ParamUnit::Seconds)
+            && self.min > 0.0
+            && self.max > self.min;
+        if is_exp {
             let ratio = (val / self.min).max(1e-9);
             let span_ratio = (self.max / self.min).max(1e-9);
             (ratio.ln() / span_ratio.ln()).clamp(0.0, 1.0)

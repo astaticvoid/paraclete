@@ -106,6 +106,8 @@ pub struct LcxlDrumController {
     fx_layer: bool,
     prepare_mute_mode: bool,
     trigger_latch: bool,
+    device_held: bool,
+    device_action_during_hold: bool,
     mute_held: bool,
     mute_action_during_hold: bool,
     knob_policy: SyncPolicy,
@@ -318,6 +320,8 @@ impl LcxlDrumController {
             fx_layer: false,
             prepare_mute_mode: false,
             trigger_latch: false,
+            device_held: false,
+            device_action_during_hold: false,
             mute_held: false,
             mute_action_during_hold: false,
             knob_policy: SyncPolicy::HardwareAuthoritative,
@@ -346,6 +350,10 @@ impl LcxlDrumController {
 
     pub fn fx_layer(&self) -> bool {
         self.fx_layer
+    }
+
+    pub fn set_fx_layer(&mut self, enabled: bool) {
+        self.fx_layer = enabled;
     }
 
     pub fn set_knob_policy(&mut self, policy: SyncPolicy) {
@@ -398,6 +406,24 @@ impl LcxlDrumController {
                 }
 
                 if (24..32).contains(&id) {
+                    if self.device_held {
+                        if let Some(p) = prev {
+                            let delta = norm - p;
+                            if delta.abs() > 1e-6 {
+                                self.device_action_during_hold = true;
+                                for t in &self.tracks {
+                                    let _ = conf.send_command(NodeCommand {
+                                        target_id: self.mix_id,
+                                        type_id: CMD_BUMP_PARAM_NORM,
+                                        arg0: t.gain_param_id as i64,
+                                        arg1: delta,
+                                    });
+                                }
+                            }
+                        }
+                        return;
+                    }
+
                     // Channel Fader 0..7 -> MixNode input_gain_N (always HardwareAuthoritative)
                     let col = (id - 24) as usize;
                     if let Some(t) = self.tracks.get(col) {
@@ -409,6 +435,41 @@ impl LcxlDrumController {
                         });
                     }
                 } else if id < 24 {
+                    if self.device_held {
+                        if let Some(p) = prev {
+                            let delta = norm - p;
+                            if delta.abs() > 1e-6 {
+                                self.device_action_during_hold = true;
+                                let row = id / 8;
+                                if self.fx_layer && row == 2 {
+                                    // Row 2 in FX layer is Master FX (Reverb/Delay), not per-track
+                                    if let Some(target) = self.resolve_knob_target(id) {
+                                        let _ = conf.send_command(NodeCommand {
+                                            target_id: target.node_id,
+                                            type_id: CMD_BUMP_PARAM_NORM,
+                                            arg0: target.param_id as i64,
+                                            arg1: delta,
+                                        });
+                                    }
+                                } else {
+                                    // Elektron Control-All across all 8 tracks for this knob row
+                                    for col in 0..self.tracks.len() {
+                                        let track_knob_id = row * 8 + col as u32;
+                                        if let Some(target) = self.resolve_knob_target(track_knob_id) {
+                                            let _ = conf.send_command(NodeCommand {
+                                                target_id: target.node_id,
+                                                type_id: CMD_BUMP_PARAM_NORM,
+                                                arg0: target.param_id as i64,
+                                                arg1: delta,
+                                            });
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        return;
+                    }
+
                     let Some(target) = self.resolve_knob_target(id) else {
                         return;
                     };
@@ -562,10 +623,11 @@ impl LcxlDrumController {
                             }
                         }
                     }
-                    // Device button (16): Toggle FX knob layer
+                    // Device button (16): Momentary hold for Control-All or quick tap for FX knob layer
                     16 => {
-                        self.fx_layer = !self.fx_layer;
-                        self.publish_surface_state(conf);
+                        self.device_held = true;
+                        self.device_action_during_hold = false;
+                        self.leds_dirty = true;
                     }
                     // Mute button (17): Momentary hold-to-mute or mode toggle
                     17 => {
@@ -686,6 +748,15 @@ impl LcxlDrumController {
                             self.leds_dirty = true;
                         }
                     }
+                    16 => {
+                        self.device_held = false;
+                        if !self.device_action_during_hold {
+                            // Quick tap with no knobs turned: toggle FX knob layer
+                            self.fx_layer = !self.fx_layer;
+                            self.publish_surface_state(conf);
+                        }
+                        self.leds_dirty = true;
+                    }
                     17 => {
                         self.mute_held = false;
                         if !self.mute_action_during_hold {
@@ -790,7 +861,7 @@ impl LcxlDrumController {
         }
 
         // Mode buttons 16..19
-        leds[16] = if self.fx_layer { amber } else { RgbColor::OFF };
+        leds[16] = if self.device_held || self.fx_layer { amber } else { RgbColor::OFF };
         leds[17] = match self.bottom_mode {
             BottomMode::StepSequencer => {
                 if self.mute_held {
@@ -846,7 +917,9 @@ impl LcxlDrumController {
         for row in 0..3 {
             for col in 0..8 {
                 let led_idx = 24 + row * 8 + col;
-                if self.fx_layer {
+                if self.device_held {
+                    leds[led_idx] = amber;
+                } else if self.fx_layer {
                     if row == 2 {
                         leds[led_idx] = if self.master_fx_row.get(col).copied().flatten().is_some() {
                             amber
@@ -1002,15 +1075,32 @@ mod tests {
         assert_eq!(r3_col0.node_id, 40);
         assert_eq!(r3_col0.param_id, resolve_param_id(&conf, 40, "cutoff"));
 
-        // Col 3 Row 1 (knob id = 2) is Clap tone (node 22, param "tone")
+        // Col 3 Row 1 (knob id = 2) is Tom tune (node 22, param "tune")
         let r1_col2 = ctrl.resolve_knob_target(2).expect("Col 3 Row 1 target");
         assert_eq!(r1_col2.node_id, 22);
-        assert_eq!(r1_col2.param_id, ParamDescriptor::id_for_name("tone"));
+        assert_eq!(r1_col2.param_id, ParamDescriptor::id_for_name("tune"));
 
-        // Col 6 Row 1 (knob id = 5) is Tom tune (node 25, param "tune")
-        let r1_col5 = ctrl.resolve_knob_target(5).expect("Col 6 Row 1 target");
-        assert_eq!(r1_col5.node_id, 25);
-        assert_eq!(r1_col5.param_id, ParamDescriptor::id_for_name("tune"));
+        // Col 4 Row 1 (knob id = 3) is Clap flam snap (node 23, param "snap")
+        let r1_col3 = ctrl.resolve_knob_target(3).expect("Col 4 Row 1 target");
+        assert_eq!(r1_col3.node_id, 23);
+        assert_eq!(r1_col3.param_id, ParamDescriptor::id_for_name("snap"));
+
+        // FX layer Row 3 Col 4 (knob id = 19) is Kick FX Send (node 180, param "input_gain_0")
+        let mut fx_ctrl = ctrl;
+        fx_ctrl.set_fx_layer(true);
+        let r3_col3_fx = fx_ctrl.resolve_knob_target(19).expect("Col 4 Row 3 FX target");
+        assert_eq!(r3_col3_fx.node_id, 180);
+        assert_eq!(r3_col3_fx.param_id, resolve_param_id(&conf, 180, "input_gain_0"));
+
+        // Verify Kick FX send is 0.0 by default in node 180
+        let mut exec = conf.build_executor();
+        let mut out = [0.0f32; 1024];
+        exec.process(&mut out, 2);
+        conf.process_main_thread();
+        let kick_send = conf
+            .state_bus_read("/node/180/param/input_gain_0")
+            .expect("node 180 input_gain_0 on statebus");
+        assert_eq!(kick_send, StateBusValue::Float(0.0), "Kick must bypass FX by default");
     }
 
     #[test]
@@ -1090,8 +1180,9 @@ mod tests {
             "full Row 1 knob should set tune near max, got {tune0}"
         );
 
-        // Toggle Device button (id 16) -> FX layer active -> Row 3 Knob 0 (id 16) controls Reverb wet (id 200)
+        // Tap Device button (id 16) -> FX layer active -> Row 3 Knob 0 (id 16) controls Reverb wet (id 200)
         ctrl.handle_event(SurfaceEvent::ButtonPressed { id: 16 }, &mut conf);
+        ctrl.handle_event(SurfaceEvent::ButtonReleased { id: 16 }, &mut conf);
         assert!(ctrl.fx_layer());
         ctrl.handle_event(
             SurfaceEvent::FaderMoved {
@@ -1251,5 +1342,66 @@ mod tests {
             panic!("expected mute param on StateBus");
         };
         assert_eq!(muted, 1.0, "Kick should be muted by momentary hold-to-mute");
+    }
+
+    #[test]
+    fn control_all_adjusts_all_tracks_when_device_button_is_held() {
+        let (mut conf, _ids, mut ctrl) = setup_8track();
+        let mut exec = conf.build_executor();
+        let mut out_buf = [0.0f32; 1024];
+
+        // Process a block to initialize StateBus with default params
+        exec.process(&mut out_buf, 2);
+        conf.process_main_thread();
+
+        // Check initial cutoffs on all 8 tracks (filters 40..47)
+        let get_cutoff = |conf: &NodeConfigurator, filter_id: u32| -> f64 {
+            match conf.state_bus_read(&format!("/node/{filter_id}/param/cutoff")) {
+                Some(StateBusValue::Float(v)) => v,
+                other => panic!("expected cutoff for filter {filter_id}, got {other:?}"),
+            }
+        };
+
+        let initial_cutoffs: Vec<f64> = (40..48).map(|id| get_cutoff(&conf, id)).collect();
+        assert_eq!(initial_cutoffs.len(), 8);
+
+        // 1. Hold Device button (16)
+        ctrl.handle_event(SurfaceEvent::ButtonPressed { id: 16 }, &mut conf);
+
+        // Check that knob LEDs switch to amber for control-all visual feedback
+        let leds = ctrl.compute_leds(&conf);
+        assert_eq!(leds[16], RgbColor { r: 255, g: 128, b: 0 }); // Device button yellow/amber
+        assert_eq!(leds[24], RgbColor { r: 255, g: 128, b: 0 }); // Knob 0 collar amber
+
+        // 2. Turn Row 3 Knob (e.g. knob 16 = track 0 Row 3 Cutoff)
+        // Simulate knob moving from ~0.50 (32768) to ~0.60 (39321) (delta ~ +0.1)
+        ctrl.handle_event(SurfaceEvent::FaderMoved { id: 16, value: 32768 }, &mut conf);
+        ctrl.handle_event(SurfaceEvent::FaderMoved { id: 16, value: 39321 }, &mut conf);
+
+        // Process commands
+        exec.process(&mut out_buf, 2);
+        conf.process_main_thread();
+
+        // All 8 filters should have their cutoff bumped!
+        for (i, filter_id) in (40..48).enumerate() {
+            let new_cutoff = get_cutoff(&conf, filter_id);
+            assert!(
+                new_cutoff > initial_cutoffs[i],
+                "Filter {filter_id} cutoff should have increased from {}, got {}",
+                initial_cutoffs[i],
+                new_cutoff
+            );
+        }
+
+        // 3. Release Device button (16)
+        ctrl.handle_event(SurfaceEvent::ButtonReleased { id: 16 }, &mut conf);
+
+        // Since a knob was turned during hold, fx_layer must NOT have toggled!
+        assert!(!ctrl.fx_layer(), "fx_layer must remain false when Device is released after Control-All");
+
+        // 4. Quick tap Device button (16) without turning knobs -> should toggle fx_layer
+        ctrl.handle_event(SurfaceEvent::ButtonPressed { id: 16 }, &mut conf);
+        ctrl.handle_event(SurfaceEvent::ButtonReleased { id: 16 }, &mut conf);
+        assert!(ctrl.fx_layer(), "Quick tap on Device button should toggle fx_layer to true");
     }
 }

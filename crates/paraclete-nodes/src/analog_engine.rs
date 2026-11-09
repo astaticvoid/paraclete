@@ -251,7 +251,7 @@ const CLAP_DEST_IDS: &[u32] = &[
 const KICK_DEST_RANGES: &[(u32, f32, f32)] = &[
     (ParamDescriptor::id_for_name("tune"),  -24.0, 24.0),
     (ParamDescriptor::id_for_name("punch"),   0.0, 1.0),
-    (ParamDescriptor::id_for_name("decay"),   0.01, 2.0),
+    (ParamDescriptor::id_for_name("decay"),   0.05, 2.5),
     (ParamDescriptor::id_for_name("drive"),   0.0, 1.0),
     (ParamDescriptor::id_for_name("tone"),  200.0, 8000.0),
 ];
@@ -259,24 +259,24 @@ const SNARE_DEST_RANGES: &[(u32, f32, f32)] = &[
     (ParamDescriptor::id_for_name("tune"),  -24.0, 24.0),
     (ParamDescriptor::id_for_name("snap"),   0.005, 0.3),
     (ParamDescriptor::id_for_name("noise"),  0.0, 1.0),
-    (ParamDescriptor::id_for_name("decay"),  0.01, 2.0),
+    (ParamDescriptor::id_for_name("decay"),  0.05, 2.0),
     (ParamDescriptor::id_for_name("tone"),  200.0, 8000.0),
 ];
 const HIHAT_DEST_RANGES: &[(u32, f32, f32)] = &[
     (ParamDescriptor::id_for_name("tone"),  1000.0, 18000.0),
-    (ParamDescriptor::id_for_name("decay"),   0.01, 1.0),
+    (ParamDescriptor::id_for_name("decay"),   0.05, 1.2),
     (ParamDescriptor::id_for_name("open"),    0.0, 1.0),
 ];
 const TOM_DEST_RANGES: &[(u32, f32, f32)] = &[
     (ParamDescriptor::id_for_name("tune"),  -24.0, 24.0),
     (ParamDescriptor::id_for_name("punch"),   0.0, 1.0),
-    (ParamDescriptor::id_for_name("decay"),   0.01, 2.0),
+    (ParamDescriptor::id_for_name("decay"),   0.05, 2.0),
     (ParamDescriptor::id_for_name("tone"),  200.0, 8000.0),
 ];
 const CLAP_DEST_RANGES: &[(u32, f32, f32)] = &[
     (ParamDescriptor::id_for_name("tone"),  200.0, 8000.0),
-    (ParamDescriptor::id_for_name("snap"),   0.005, 0.3),
-    (ParamDescriptor::id_for_name("decay"),  0.01, 2.0),
+    (ParamDescriptor::id_for_name("snap"),   0.005, 0.065),
+    (ParamDescriptor::id_for_name("decay"),  0.05, 2.0),
     (ParamDescriptor::id_for_name("drive"),  0.0, 1.0),
 ];
 
@@ -581,7 +581,7 @@ impl AnalogEngine {
             AnalogMachine::Kick => vec![
                 ParamDescriptor { id: ap("tune"),  name: "tune".into(),  min: -24.0, max: 24.0,   default: 0.0,   stepped: false, in_kit: true,  unit: ParamUnit::Semitones, display: None },
                 ParamDescriptor { id: ap("punch"), name: "punch".into(), min: 0.0,   max: 1.0,    default: 0.7,   stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
-                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.01,  max: 2.0,    default: 0.5,   stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
+                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.05,  max: 2.5,    default: 0.5,   stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
                 ParamDescriptor { id: ap("drive"), name: "drive".into(), min: 0.0,   max: 1.0,    default: 0.0,   stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
                 ParamDescriptor { id: ap("tone"),  name: "tone".into(),  min: 200.0, max: 8000.0, default: 4000.0, stepped: false, in_kit: true,  unit: ParamUnit::Hz,        display: None },
             ],
@@ -589,24 +589,24 @@ impl AnalogEngine {
                 ParamDescriptor { id: ap("tune"),  name: "tune".into(),  min: -24.0, max: 24.0,    default: 0.0,  stepped: false, in_kit: true,  unit: ParamUnit::Semitones, display: None },
                 ParamDescriptor { id: ap("snap"),  name: "snap".into(),  min: 0.005, max: 0.3,     default: 0.05, stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
                 ParamDescriptor { id: ap("noise"), name: "noise".into(), min: 0.0,   max: 1.0,     default: 0.5,  stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
-                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.01,  max: 2.0,     default: 0.3,  stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
+                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.05,  max: 2.0,     default: 0.22, stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
                 ParamDescriptor { id: ap("tone"),  name: "tone".into(),  min: 200.0, max: 8000.0,  default: 2000.0, stepped: false, in_kit: true,  unit: ParamUnit::Hz,      display: None },
             ],
             AnalogMachine::HiHat => vec![
                 ParamDescriptor { id: ap("tone"),  name: "tone".into(),  min: 1000.0, max: 18000.0, default: 8000.0, stepped: false, in_kit: true,  unit: ParamUnit::Hz,      display: None },
-                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.01,   max: 1.0,     default: 0.08,   stepped: false, in_kit: true,  unit: ParamUnit::Seconds, display: None },
+                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.05,   max: 1.2,     default: 0.08,   stepped: false, in_kit: true,  unit: ParamUnit::Seconds, display: None },
                 ParamDescriptor { id: ap("open"),  name: "open".into(),  min: 0.0,    max: 1.0,     default: 0.0,    stepped: false, in_kit: true,  unit: ParamUnit::Generic, display: None },
             ],
             AnalogMachine::Tom => vec![
                 ParamDescriptor { id: ap("tune"),  name: "tune".into(),  min: -24.0, max: 24.0,   default: 0.0,    stepped: false, in_kit: true,  unit: ParamUnit::Semitones, display: None },
                 ParamDescriptor { id: ap("punch"), name: "punch".into(), min: 0.0,   max: 1.0,    default: 0.45,   stepped: false, in_kit: true,  unit: ParamUnit::Generic,   display: None },
-                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.01,  max: 2.0,    default: 0.35,   stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
+                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.05,  max: 2.0,    default: 0.35,   stepped: false, in_kit: true,  unit: ParamUnit::Seconds,   display: None },
                 ParamDescriptor { id: ap("tone"),  name: "tone".into(),  min: 200.0, max: 8000.0, default: 2500.0, stepped: false, in_kit: true,  unit: ParamUnit::Hz,        display: None },
             ],
             AnalogMachine::Clap => vec![
                 ParamDescriptor { id: ap("tone"),  name: "tone".into(),  min: 200.0, max: 8000.0, default: 1200.0, stepped: false, in_kit: true,  unit: ParamUnit::Hz,      display: None },
-                ParamDescriptor { id: ap("snap"),  name: "snap".into(),  min: 0.005, max: 0.3,    default: 0.012,  stepped: false, in_kit: true,  unit: ParamUnit::Seconds, display: None },
-                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.01,  max: 2.0,    default: 0.28,   stepped: false, in_kit: true,  unit: ParamUnit::Seconds, display: None },
+                ParamDescriptor { id: ap("snap"),  name: "snap".into(),  min: 0.005, max: 0.065,  default: 0.012,  stepped: false, in_kit: true,  unit: ParamUnit::Seconds, display: None },
+                ParamDescriptor { id: ap("decay"), name: "decay".into(), min: 0.05,  max: 2.0,    default: 0.28,   stepped: false, in_kit: true,  unit: ParamUnit::Seconds, display: None },
                 ParamDescriptor { id: ap("drive"), name: "drive".into(), min: 0.0,   max: 1.0,    default: 0.2,    stepped: false, in_kit: true,  unit: ParamUnit::Generic, display: None },
             ],
         }
@@ -974,23 +974,28 @@ impl AnalogEngine {
         let tone_hz  = self.get_param(ap("tone"));
         let sr = self.sample_rate;
 
-        let body_attack_inc   = 1.0 / (0.001 * sr);
-        let body_decay_coeff  = 0.001f32.powf(1.0 / (snap_s * sr).max(1.0));
-        let noise_attack_inc  = 1.0 / (0.001 * sr);
+        let pitch_attack_inc  = 1.0 / (0.0005 * sr);
+        let pitch_decay_coeff = 0.001f32.powf(1.0 / (0.012 * sr));
+        let body_attack_inc   = 1.0 / (0.0008 * sr);
+        let body_decay_coeff  = 0.001f32.powf(1.0 / (snap_s.clamp(0.01, 0.5) * sr).max(1.0));
+        let noise_attack_inc  = 1.0 / (0.0008 * sr);
         let noise_decay_coeff = 0.001f32.powf(1.0 / (decay_s * sr).max(1.0));
         let f_svf = (std::f32::consts::PI * tone_hz / sr).sin().clamp(0.0, 0.99);
-        let swept_hz = self.swept_hz(); // #175
+        let swept_hz = self.swept_hz() * 2.8; // Snare drumhead fundamental (~183 Hz at C2, rather than 65 Hz)
 
         for i in start..end {
+            let pitch_val = self.pitch_env.tick(pitch_attack_inc, pitch_decay_coeff);
+            let freq = swept_hz * 2.0f32.powf(pitch_val * 1.5);
+            let phase_inc = (freq / sr).clamp(0.0, 0.5);
+            self.osc_phase = (self.osc_phase + phase_inc).fract();
             let body_amp = self.body_env.tick(body_attack_inc, body_decay_coeff);
-            self.osc_phase = (self.osc_phase + swept_hz / sr).fract();
             let body = (self.osc_phase * std::f32::consts::TAU).sin() * body_amp;
 
             let noise_raw = xorshift(&mut self.noise_state);
             let noise_amp = self.noise_env.tick(noise_attack_inc, noise_decay_coeff);
             // Bandpass SVF: use band output
             self.svf_low  += f_svf * self.svf_band;
-            self.svf_band += f_svf * (noise_raw - self.svf_low - 1.0 * self.svf_band);
+            self.svf_band += f_svf * (noise_raw - self.svf_low - 0.7 * self.svf_band);
             let noise_out = self.svf_band * noise_amp * noise_lvl;
 
             let out = soft_clip(body + noise_out);
@@ -1064,7 +1069,7 @@ impl AnalogEngine {
         let drive   = self.get_param(ap("drive"));
         let sr = self.sample_rate;
 
-        let burst_samples = (snap_s.clamp(0.005, 0.05) * sr).max(16.0) as u32;
+        let burst_samples = (snap_s.clamp(0.005, 0.065) * sr).max(16.0) as u32;
         let total_burst_samples = burst_samples * 3;
         let amp_attack_inc  = 1.0 / (0.0005 * sr);
         let amp_decay_coeff = 0.001f32.powf(1.0 / (decay_s * sr).max(1.0));

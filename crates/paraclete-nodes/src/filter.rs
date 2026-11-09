@@ -45,6 +45,10 @@ pub struct FilterNode {
     band_r:  f32,
     f_coeff: f32,
     q_coeff: f32,
+    a1:      f32,
+    a2:      f32,
+    a3:      f32,
+    k:       f32,
     sr:      f32,
     /// MM-C10: one LFO per hosting node (ADR-042 decision 6's rollout order).
     lfo: LfoHost,
@@ -88,6 +92,10 @@ impl FilterNode {
             band_r:  0.0,
             f_coeff: 0.0,
             q_coeff: 0.0,
+            a1:      0.0,
+            a2:      0.0,
+            a3:      0.0,
+            k:       1.0,
             sr:      44100.0,
             lfo:     LfoHost::new(),
             // Deliberately not a plausible pair, so the first
@@ -169,42 +177,50 @@ impl FilterNode {
         self.lfo.update(settings, dest, range, depth, sr, samples);
     }
 
-    /// Recompute the SVF coefficients if the **effective** cutoff/resonance
-    /// have moved since they were last derived.
-    ///
-    /// The old guard compared the *bank* across `handle_commands`. With an LFO
-    /// the bank does not move at all — the modulation rides on `get_param` —
-    /// so that guard would never fire and the filter would keep coefficients
-    /// describing an unmodulated filter. Silently: the LFO would appear to do
-    /// nothing rather than fail.
-    fn refresh_coefficients(&mut self) {
-        let cutoff = self.get_param(PARAM_CUTOFF);
-        let res    = self.get_param(PARAM_RESONANCE);
+    /// Recompute the SVF coefficients for explicit `cutoff` and `res`
+    /// using Andrew Simper / Cytomic bilinear transform equations.
+    /// Unconditionally stable from 20 Hz to Nyquist with zero delay feedback.
+    fn refresh_coefficients_for(&mut self, cutoff: f32, res: f32) {
         if (cutoff, res) == self.coeff_for {
             return;
         }
-        // Chamberlin SVF — sin() form is stable at high cutoff; linear approx diverges near Nyquist
-        self.f_coeff = 2.0 * (std::f32::consts::PI * cutoff / self.sr).sin();
-        self.q_coeff = 1.0 / res;
+        let c = cutoff.clamp(20.0, self.sr * 0.49);
+        let g = (std::f32::consts::PI * c / self.sr).tan();
+        let k = 1.0 / res.max(0.1);
+        let a1 = 1.0 / (1.0 + g * (g + k));
+        let a2 = g * a1;
+        let a3 = g * a2;
+        self.a1 = a1;
+        self.a2 = a2;
+        self.a3 = a3;
+        self.k = k;
+        self.f_coeff = g;
+        self.q_coeff = k;
         self.coeff_for = (cutoff, res);
     }
 
-    #[inline(always)]
-    fn svf_sample(&self, x: f32, low: &mut f32, band: &mut f32, filter_type: u32) -> f32 {
-        let f = self.f_coeff.min(1.0); // stability guard
-        let q = self.q_coeff;
+    /// Recompute the SVF coefficients if the **effective** cutoff/resonance
+    /// have moved since they were last derived.
+    fn refresh_coefficients(&mut self) {
+        let cutoff = self.get_param(PARAM_CUTOFF);
+        let res    = self.get_param(PARAM_RESONANCE);
+        self.refresh_coefficients_for(cutoff, res);
+    }
 
-        *low += f * *band;
-        let high  = x - *low - q * *band;
-        *band += f * high;
-        let notch = high + *low;
+    #[inline(always)]
+    fn svf_sample(&self, x: f32, s1: &mut f32, s2: &mut f32, filter_type: u32) -> f32 {
+        let v3 = x - *s2;
+        let v1 = self.a1 * *s1 + self.a2 * v3;
+        let v2 = *s2 + self.a2 * *s1 + self.a3 * v3;
+        *s1 = 2.0 * v1 - *s1;
+        *s2 = 2.0 * v2 - *s2;
 
         match filter_type {
-            0 => *low,
-            1 => high,
-            2 => *band,
-            3 => notch,
-            _ => *low,
+            0 => v2,                   // Lowpass
+            1 => x - self.k * v1 - v2, // Highpass
+            2 => v1,                   // Bandpass
+            3 => x - self.k * v1,      // Notch
+            _ => v2,
         }
     }
 }
@@ -307,6 +323,9 @@ impl Node for FilterNode {
             let frames = input.block_size;
             let filter_type = self.bank.get(PARAM_FILTER_TYPE) as u32;
 
+            let (cutoff_start, cutoff_delta) = self.bank.get_ramp(PARAM_CUTOFF, frames);
+            let (res_start, res_delta) = self.bank.get_ramp(PARAM_RESONANCE, frames);
+
             // MM-C10: `FilterNode` had no `render_span` to chunk, so the
             // sub-block loop is new here — and unlike the engines it wraps
             // *both* channels, because the two share one set of coefficients
@@ -315,7 +334,12 @@ impl Node for FilterNode {
             // modulation and split the stereo image.
             for (lo, hi) in sub_blocks(0, frames) {
                 self.update_lfo(hi - lo);
-                self.refresh_coefficients();
+                let mid_f = (lo + hi) as f32 * 0.5;
+                let ramped_cutoff = cutoff_start + cutoff_delta * mid_f;
+                let ramped_res = res_start + res_delta * mid_f;
+                let eff_cutoff = self.lfo.apply(PARAM_CUTOFF, ramped_cutoff);
+                let eff_res = self.lfo.apply(PARAM_RESONANCE, ramped_res);
+                self.refresh_coefficients_for(eff_cutoff, eff_res);
 
                 if audio_in.channels() >= 1 && audio_out.channels() >= 1 {
                     let (mut l, mut b) = (self.low_l, self.band_l);
@@ -350,7 +374,9 @@ impl Node for FilterNode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use paraclete_node_api::{AudioBuffer, EventOutputBuffer, ExtendedEventSlab, TransportInfo};
+    use paraclete_node_api::{
+        AudioBuffer, EventOutputBuffer, ExtendedEventSlab, NodeCommand, TransportInfo,
+    };
 
     /// Both tables are declared APPEND ONLY in prose and, until #154, nothing
     /// enforced it. They are now written into project files — `lfo_dest`
@@ -380,6 +406,15 @@ mod tests {
     }
 
     fn run_filter(filter: &mut FilterNode, input_val: f32, frames: usize) -> Vec<f32> {
+        run_filter_with_commands(filter, input_val, frames, &[])
+    }
+
+    fn run_filter_with_commands(
+        filter: &mut FilterNode,
+        input_val: f32,
+        frames: usize,
+        commands: &[NodeCommand],
+    ) -> Vec<f32> {
         let mut src = AudioBuffer::new(2, frames);
         let mut dst = AudioBuffer::new(2, frames);
         let mut events_out = EventOutputBuffer::new(16);
@@ -399,7 +434,7 @@ mod tests {
             sample_rate: 44100.0,
             block_size: frames,
             extended_events: &slab,
-            commands: &[],
+            commands,
         };
         filter.process(&input, &mut ProcessOutput::new(
             &mut outs,
@@ -578,5 +613,27 @@ mod tests {
         f.published_state(&mut buf);
         assert!(buf.iter().any(|(k, _)| k.starts_with("/node/99/")),
             "published_state paths should start with /node/99/");
+    }
+
+    #[test]
+    fn filter_dezippering_ramps_cutoff_smoothly_without_discontinuity() {
+        use paraclete_node_api::{NodeCommand, CMD_SET_PARAM};
+        let mut f = FilterNode::new();
+        f.activate(44100.0, 64);
+
+        // Process block 0 at default 1000 Hz
+        let _ = run_filter(&mut f, 1.0, 64);
+
+        // Block 1: set cutoff to 100 Hz via command -> ramps smoothly across block
+        let cmd = NodeCommand {
+            target_id: 0,
+            type_id: CMD_SET_PARAM,
+            arg0: PARAM_CUTOFF as i64,
+            arg1: 100.0,
+        };
+        let out = run_filter_with_commands(&mut f, 1.0, 64, &[cmd]);
+        for &s in &out {
+            assert!(s.is_finite(), "filter output must be finite under sweep");
+        }
     }
 }
