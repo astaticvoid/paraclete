@@ -3,7 +3,9 @@
 
 pub mod analog_engine;
 pub mod audio_input;
+pub mod chorus;
 pub mod clock_divider;
+pub mod compressor;
 pub mod cv_mixer;
 pub mod delay;
 pub mod distortion;
@@ -34,7 +36,9 @@ pub mod vca;
 
 pub use analog_engine::{AnalogEngine, AnalogMachine};
 pub use audio_input::AudioInputNode;
+pub use chorus::ChorusNode;
 pub use clock_divider::ClockDividerNode;
+pub use compressor::CompressorNode;
 pub use cv_mixer::CvMixerNode;
 pub use delay::DelayNode;
 pub use distortion::DistortionNode;

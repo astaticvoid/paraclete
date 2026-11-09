@@ -57,7 +57,7 @@ impl Default for NodeRegistry {
 pub fn build_registry() -> NodeRegistry {
     use paraclete_graph_nodes::InnerGraphNode;
     use paraclete_nodes::{
-        AnalogEngine, AudioOutputNode, ClockDividerNode, CvMixerNode, DelayNode, DistortionNode,
+        AnalogEngine, AudioOutputNode, ChorusNode, ClockDividerNode, CompressorNode, CvMixerNode, DelayNode, DistortionNode,
         EnvelopeNode, FilterNode, FmEngine, FmVoice, InternalClock, LadderFilterNode, LfoNode,
         LoopBreakNode, MatrixNode, MixNode, OscillatorNode, QuantizerNode, RecorderNode, ReverbNode,
         SampleHoldNode, Sampler, Sequencer, SlewNode, SplitNode, VcaNode,
@@ -78,6 +78,8 @@ pub fn build_registry() -> NodeRegistry {
     r.register("lfo", || Box::new(LfoNode::new()));
     r.register("reverb", || Box::new(ReverbNode::new()));
     r.register("delay", || Box::new(DelayNode::new()));
+    r.register("chorus", || Box::new(ChorusNode::new()));
+    r.register("compressor", || Box::new(CompressorNode::new()));
     r.register("mix", || Box::new(MixNode::new(8)));
     r.register("split", || Box::new(SplitNode::new()));
     r.register("audio_output", || Box::new(AudioOutputNode::new()));
